@@ -101,4 +101,11 @@ typedef struct KeyInput {
 
 void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult *out);
 
+#if TEAL_DEV
+// --keys: the events one token produces, as the platform would deliver them. A token in kbd
+// notation is a chord (a KEY_DOWN); a single character (or SPC) is typed: a KEY_DOWN without
+// Ctrl / Alt, then its text event. Returns the event count (0 for a bad token, *error set).
+i32 key_dev_events(String8 token, Event out[2], const char **error);
+#endif
+
 #endif // KEYMAP_H

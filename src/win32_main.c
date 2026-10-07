@@ -57,6 +57,7 @@ typedef struct Platform {
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
+    String8 keys; // --keys: injected after startup
 #endif
 } Platform;
 
@@ -997,9 +998,24 @@ static b32 win32_write_png(Platform *p, String8 path, u8 *bgra, i32 w, i32 h) {
     return 1;
 }
 
-// --screenshot and --dump-atlas: one frame with the window hidden, then write the files.
+// --keys: the tokens' events go through the normal queue (a full queue runs a frame).
+static void win32_inject_keys(Platform *p) {
+    if (!p->keys.len) return;
+    i64 cap = p->keys.len * 2 + 2;
+    Event *events = PUSH_ARRAY(&p->perm, Event, cap);
+    i32 n = app_dev_key_events(p->app, p->keys, events, (i32)cap);
+    LOG("--keys: %d events", n);
+    for (i32 i = 0; i < n && !p->quit; i++) win32_push_event(p, events[i]);
+    p->keys = str8(NULL, 0);
+    p->redraw = 1;
+}
+
+// --screenshot and --dump-atlas: one frame with the window hidden (after --keys), then write the files.
 static i32 win32_write_outputs(Platform *p) {
     app_dev_force_focus(p->app, 1); // the cursor as it looks while typing
+    win32_inject_keys(p);
+    if (p->event_count) win32_frame(p);
+    if (p->quit) return EXIT_OK;
     r_request_capture(p->renderer);
     win32_frame(p);
     i32 result = EXIT_OK;
@@ -1278,6 +1294,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
         if (str8_equal(a, STR8_LIT("--config")) && has_value) { p->config_path = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
             p->render_mode_forced = 1;
@@ -1425,6 +1442,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         win32_frame(p);
         cloak = FALSE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+#if TEAL_DEV
+        win32_inject_keys(p);
+#endif
     }
 
 #if TEAL_DEV

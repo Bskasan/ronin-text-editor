@@ -1058,6 +1058,24 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
     return n;
 }
 
+i32 app_dev_key_events(App *app, String8 keys, Event *out, i32 cap) {
+    (void)app;
+    i32 n = 0;
+    for (i64 i = 0; i < keys.len;) {
+        while (i < keys.len && keys.data[i] == ' ') i++;
+        i64 start = i;
+        while (i < keys.len && keys.data[i] != ' ') i++;
+        if (i == start) break;
+        String8 token = str8(keys.data + start, i - start);
+        Event e[2];
+        const char *error = NULL;
+        i32 k = key_dev_events(token, e, &error);
+        if (!k) LOG("--keys: bad token '%S': %s", token, error);
+        for (i32 j = 0; j < k && n < cap; j++) out[n++] = e[j];
+    }
+    return n;
+}
+
 // Point to the start of `line` (< 0: the last line), the window recentered on it if needed.
 void app_dev_goto_line(App *app, i64 line) {
     View *v = app->views[0];
