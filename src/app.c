@@ -705,35 +705,79 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
 //   line 0: "int x = 1;"
 //   line 1: TAB "|"   columns 0-3 empty, '|' (centered, so no ClearType fringe reaches column 3) at 4
 //   line 2: ""        column 5 is empty, and so are its neighbors above, below and to the sides
-//   line 3: "abc"
-// Point at the end (line 4), out of the way of the probes.
+//   line 3: "a" ^A "b"  the control character takes columns 1-2, 'b' is at 3
+// Stage 0: point on the empty line 2, no focus: a hollow cursor there. Stage 1 (after the
+// platform clicks the 'x' of line 0 and forces focus): a filled cursor on that 'x'.
 void app_dev_smoke_buffer_view(App *app) {
     app->sample = 0;
     Buffer *buf = app->buffer;
-    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\nabc\n"));
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\na\x01" "b\n"));
     View *v = app->views[0];
-    view_set_point(v, &v->cursors[0], buffer_size(buf));
+    view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
     buffer_marker_set(buf, v->top, 0);
+    app->force_focus = 0;
 }
 
-i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
+void app_dev_force_focus(App *app, i32 focused) {
+    app->force_focus = focused;
+}
+
+// Where the smoke clicks: the center of the 'x' cell (line 0, column 4).
+void app_dev_smoke_click_point(App *app, FrameInput *in, i32 *x, i32 *y) {
+    AppLayout l = app_layout(app, in);
+    *x = l.pad + 4 * l.cell_w + l.cell_w / 2;
+    *y = l.line_h / 2;
+}
+
+i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 stage) {
     AppLayout l = app_layout(app, in);
     i32 n = 0;
     i32 cw = l.cell_w, lh = l.line_h, x = l.pad;
     i32 mode_y = l.minibuffer_y - lh;
+    i32 t = MAX((i32)(in->dpi_scale + 0.5f), 1); // the hollow cursor's line width
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x, .y0 = 0, .x1 = x + cw, .y1 = lh,
-                   .rgb = THEME_BACKGROUND, .what = "buffer: text cell 'i' (line 0, column 0)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 5 * cw, .y0 = 2 * lh, .x1 = x + 6 * cw, .y1 = 3 * lh,
-                   .rgb = THEME_BACKGROUND, .what = "buffer: empty cell (line 2, column 5)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = lh, .x1 = x + 4 * cw, .y1 = 2 * lh,
-                   .rgb = THEME_BACKGROUND, .what = "buffer: tab, columns 0-3 of line 1 empty");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + 4 * cw, .y0 = lh, .x1 = x + 5 * cw, .y1 = 2 * lh,
-                   .rgb = THEME_BACKGROUND, .what = "buffer: '|' after the tab drawn at column 4");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = mode_y + lh / 2,
-                   .rgb = THEME_TEXT, .what = "buffer: mode line (right end)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + cw, .y0 = mode_y, .x1 = x + 2 * cw, .y1 = mode_y + lh,
-                   .rgb = THEME_TEXT, .what = "buffer: mode line text ('-' in cell 1)");
+#define CELL(col, line) .x0 = x + (col) * cw, .y0 = (line) * lh, .x1 = x + ((col) + 1) * cw, .y1 = ((line) + 1) * lh
+    if (stage == 0) {
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(0, 0), .rgb = THEME_BACKGROUND,
+                       .what = "buffer: text cell 'i' (line 0, column 0)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(5, 2), .rgb = THEME_BACKGROUND,
+                       .what = "buffer: empty cell (line 2, column 5)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = lh, .x1 = x + 4 * cw, .y1 = 2 * lh,
+                       .rgb = THEME_BACKGROUND, .what = "buffer: tab, columns 0-3 of line 1 empty");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 1), .rgb = THEME_BACKGROUND,
+                       .what = "buffer: '|' after the tab drawn at column 4");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(2, 3), .rgb = THEME_BACKGROUND,
+                       .what = "buffer: 'A' of ^A drawn at column 2");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(3, 3), .rgb = THEME_BACKGROUND,
+                       .what = "buffer: 'b' after ^A drawn at column 3");
+        // Hollow cursor on the empty line 2: edges in the cursor color, inside untouched.
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = 2 * lh, .x1 = x + t, .y1 = 3 * lh,
+                       .rgb = THEME_CURSOR, .what = "buffer: hollow cursor, left edge");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = 2 * lh, .x1 = x + cw, .y1 = 2 * lh + t,
+                       .rgb = THEME_CURSOR, .what = "buffer: hollow cursor, top edge");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + t, .y0 = 2 * lh + t, .x1 = x + cw - t, .y1 = 3 * lh - t,
+                       .rgb = THEME_BACKGROUND, .what = "buffer: hollow cursor, inside");
+        // Mode line: inverse video to the right end, the buffer name drawn, nothing after the text.
+        String8 mode = app_mode_line_text(app->views[0], in->scratch);
+        i32 cells = (i32)mode.len; // ASCII here
+        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = mode_y + lh / 2,
+                       .rgb = THEME_TEXT, .what = "buffer: mode line (right end)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + cw, .y0 = mode_y, .x1 = x + 2 * cw, .y1 = mode_y + lh,
+                       .rgb = THEME_TEXT, .what = "buffer: mode line text ('-' in cell 1)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + 8 * cw, .y0 = mode_y, .x1 = x + 17 * cw, .y1 = mode_y + lh,
+                       .rgb = THEME_TEXT, .what = "buffer: mode line buffer name (cells 8-16)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + (cells + 1) * cw, .y0 = mode_y, .x1 = in->width, .y1 = mode_y + lh,
+                       .rgb = THEME_TEXT, .what = "buffer: mode line empty after its text");
+    } else {
+        // Filled cursor on the clicked 'x' (line 0, column 4), the glyph in the background color.
+        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + 4 * cw, .y0 = 0, .rgb = THEME_CURSOR,
+                       .what = "buffer: filled cursor on 'x' (top-left pixel)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 0), .rgb = THEME_CURSOR,
+                       .what = "buffer: filled cursor, 'x' drawn over it");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(0, 2), .rgb = THEME_BACKGROUND,
+                       .what = "buffer: the old cursor cell is background again");
+    }
+#undef CELL
 #undef APP_PUSH_PROBE
     return n;
 }
