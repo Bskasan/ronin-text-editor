@@ -6,10 +6,12 @@
 #include "platform.h"
 #include "render.h"
 #include "font.h"
+#include "buffer.h"
 
 #include "base.c"
 #include "png.c"
 #include "font.c"
+#include "buffer.c"
 #include "app.c"
 
 #include "render_d3d11.c"
