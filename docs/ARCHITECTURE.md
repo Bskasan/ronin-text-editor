@@ -12,17 +12,21 @@
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
 | `src/font.h/.c` | metrics, CPU glyph atlas (shelf packer), glyph cache, `font_draw_text` |
 | `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, markers, language from the extension, file load (encodings, line endings) and save |
-| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), `view_run_command`, motion and editing commands, echo messages |
-| `src/app.c` | editor core: layout of views and echo area, drawing of text / cursors / mode lines, window title, temporary key bindings, mouse; dev: the Phase 2 sample behind `--sample`, smoke probes |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view tests, file round trips, failures) and the `--bench-buffer` core |
+| `src/command.h/.c` | `Command` and `CommandContext`; the table of every command, lookup by Emacs name |
+| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), `view_run_command`, motion and editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
+| `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
+| `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
+| `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
+| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap, buffers, app commands (quit, buffer switching, open/reload config, text scale, describe-key), layout of views and echo area, drawing, window title, mouse; dev: the Phase 2 sample behind `--sample`, smoke probes |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain, window, message loop, input translation, os_* implementation, dev flags |
+| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation, os_* implementation, dev flags |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `test.c`) includes only `platform.h` and `render.h`;
-`font.c` additionally calls `font_backend.h`.
+Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
+includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
 
 ## Startup and frame loop
 
@@ -31,10 +35,13 @@ Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `test.c`) includes only `platform
    `D3D11CreateDevice` (`r_create_device`: no logging, no arenas, results go into Renderer
    fields). Meanwhile the main thread creates the window hidden on the monitor under the
    mouse, sizes it for that monitor's DPI (clamped to the work area) and creates the app,
-   which opens DirectWrite and pre-rasterizes ASCII. Then it joins the worker, logs its
+   which reads the config (built-in defaults, then the user's teal.conf), opens DirectWrite
+   once with the configured font and pre-rasterizes ASCII. Then it joins the worker, logs its
    results, and creates swap chain, pipeline and atlas texture (`r_finish_create`).
 2. Shows the window cloaked (DWMWA_CLOAK), presents the first frame, uncloaks: no white flash.
-3. Loop: if no redraw is pending, block in `MsgWaitForMultipleObjectsEx`. Drain every queued
+3. Loop: if no redraw is pending, block in `MsgWaitForMultipleObjectsEx` on the messages and the
+   directory watches, with no timeout unless the app asks for one (`app_wait_ms`: only while a
+   config read is to be retried). Signalled watches become `EVENT_DIR_CHANGED`. Drain every queued
    message; the window procedure turns them into `Event`s in a fixed array (consecutive
    mouse-move and resize events are coalesced). If the array is nearly full, run a frame
    mid-drain instead of dropping anything. If anything requested a redraw, run exactly one
@@ -59,11 +66,18 @@ pending quads are flushed, atlas and cache are cleared, ASCII is re-rasterized, 
 
 Input: modifiers come from `GetKeyState` at message time. The only tracked modifier state
 is AltGr: a non-extended Left Ctrl immediately followed by an extended Right Alt with the
-same message time is the synthetic AltGr Ctrl (GLFW technique) and is dropped; while AltGr
-is held, events carry neither CTRL nor ALT and WM_CHAR is delivered as text. Alt works as
-Meta (WM_SYSKEY* handled, WM_SYSCHAR swallowed, SC_KEYMENU swallowed); Alt+F4 still closes.
-Numpad: Enter arrives as KEY_ENTER, NumLock-off navigation keys as the ordinary ones, digits
-as text events.
+same message time is the synthetic AltGr Ctrl (GLFW technique) and is dropped. While AltGr
+is held, its own Ctrl and Alt are not modifiers, but Left Alt still counts as ALT and Right
+Ctrl as CTRL; WM_CHAR becomes text only without Ctrl and Alt. KEY_DOWN carries the character
+the key produces with the current Shift / AltGr state (ToUnicodeEx with Ctrl and Alt cleared,
+flag 0x4 so the kernel's dead-key state is untouched; a dead key gives its spacing accent).
+Alt works as Meta (WM_SYSKEY* handled, WM_SYSCHAR swallowed, SC_KEYMENU swallowed); Alt+F4
+still closes, through save-buffers-kill-terminal. Numpad: Enter arrives as KEY_ENTER,
+NumLock-off navigation keys as the ordinary ones, digits as text events.
+
+Keys: KEY_DOWN and text events go through the key sequence state machine (keymap.c) with the
+keymap stack; the result is a command run through `view_run_command`, a prefix shown at once
+("C-x-"), an undefined sequence, or a description (describe-key).
 
 ## Measurements (Phase 3)
 
@@ -97,6 +111,29 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
 `--bench-buffer` frames (now with cursor and mode line): 13 / 35 / 15 us avg at top / middle /
 end. Release exe 156,672 bytes (132,608 before Phase 4), same six imports. Startup ~187 ms,
 with or without the 100 MB file.
+
+## Measurements (Phase 5)
+
+`build\teal_bench.exe`, same machine (2560x1440 at 144 Hz), 1280x800 client.
+
+- The ~7 ms "flush + Present" of the Phase 4 bench-buffer run: the benches now split it and log
+  the presentation mode. Whenever Present takes ~6.9 ms (one 144 Hz refresh interval), DWM
+  reports the swap chain as "overlay": it has promoted the window to a hardware overlay plane
+  after it presented for a while, the plane holds the buffer on screen until the next vertical
+  blank, and with two buffers Present(0, 0) must wait for it. Runs reported "composed by DWM"
+  present in ~0.1 ms. Both happen run to run. The frames upload no atlas texels and the final
+  flush takes 1-3 us, so it is not CPU work of ours; real frames present with vsync anyway.
+- Command + frame build (bench-view): next-line 12-23 us avg, PageDown 15-21, C-End / C-Home
+  12-20, self-insert 18-29 (worst 5 ms: the first insert moving the gap): the keymap adds
+  nothing measurable to Phase 4.
+- Config: parsing the built-in config (4839 bytes, 49 bindings) 8 us; reading and parsing the
+  defaults plus a 4.8 KB teal.conf at startup 140-230 us (mostly opening the file).
+- Startup (`--startup-ms`, release, 10 runs alternating): 189 ms median before Phase 5, 190 ms
+  without a teal.conf, 191 ms with a full one. The font is set up exactly once.
+- Idle with the config directory watched: 0 ms CPU over 10 s.
+- Release exe 188,928 bytes (156,672 after Phase 4); the same six imports (kernel32 adds
+  GetEnvironmentVariableW, Find*ChangeNotification, CreateDirectoryW; user32 adds ToUnicodeEx,
+  GetKeyboardState, GetKeyboardLayout).
 
 ## Roadmap
 
@@ -136,7 +173,8 @@ with or without the 100 MB file.
   on integer pixel coordinates.
 - No shaping, no ligatures, no kerning: one codepoint -> one glyph. Combining marks and
   complex scripts are out of scope.
-- One font face (Consolas, fallback Courier New), regular weight, 12 pt. No bold or italic.
+- One font face (the font setting, default Consolas; a missing family falls back to Consolas,
+  then Courier New, with a message), regular weight, font_size points. No bold or italic.
 - Missing glyph -> hollow box (drawn by font.c, one atlas entry shared by all missing
   codepoints and by invalid UTF-8 bytes).
 - ClearType via dual-source blending; glyphs are rasterized white on black and their R, G, B
@@ -154,8 +192,8 @@ with or without the 100 MB file.
   space; exceeding the cap takes the "atlas full" reset path, so probing always terminates.
 - D3D11CreateDevice runs on a worker thread started at the top of wWinMain; the device stays
   SINGLETHREADED and is only used after the join.
-- Line height is the font's natural height times `FONT_LINE_HEIGHT_PERCENT` (100 for now;
-  Phase 5 exposes it). Render mode stays NATURAL_SYMMETRIC until it becomes a setting in Phase 5.
+- Line height is the font's natural height times the line_height setting (percent). The render
+  mode is the render_mode setting (default NATURAL_SYMMETRIC).
 
 ### Buffers (Phase 3)
 
@@ -232,18 +270,18 @@ with or without the 100 MB file.
   center point when its column leaves the visible range, back to column 0 when it fits.
 - No cursor blink, no smooth scrolling, no line numbers, no scroll bars: nothing that needs a
   timer.
-- Visual columns: a tab advances to the next multiple of 4 (a constant for now); an ASCII
+- Visual columns: a tab advances to the next multiple of the buffer's tab_width; an ASCII
   control character (0x00-0x1F except tab and newline, and 0x7F) is 2 cells, drawn as ^@, ^M,
   ^? in the number/constant color; anything else is 1. Invalid bytes and missing glyphs keep
   the box. (line, column) -> offset picks the nearest character boundary (the start of a
   character that covers the column when the column is in its first half).
 - A word is a run of letters and digits; underscore is not a word character (Emacs' default in
-  C mode); every byte >= 0x80 counts as a letter, so word scanning is bytewise and always
-  stops on a character boundary. Phase 5 makes it configurable.
+  C mode) unless underscore_is_word is set; every byte >= 0x80 counts as a letter, so word
+  scanning is bytewise and always stops on a character boundary.
 - View logic (positions, motions, scrolling, commands) lives in view.c and runs headless in
   --test; drawing is in app.c.
-- Commands take one context argument and nothing else, so Phase 5 can register them in a
-  command table unchanged. The keys of Phase 4 are a temporary hard-coded switch.
+- Commands take one context argument and nothing else; they are registered in one table
+  (Phase 5).
 - Messages go to the echo area through `echo_message`; a message stays until the next key
   event. Hitting a limit shows a message and never makes a sound.
 - Cursor: a filled block with the character under it in the background color while the window
@@ -266,6 +304,77 @@ with or without the 100 MB file.
 - The mouse: a left click activates the view and sets point; the wheel scrolls the view under
   the mouse, 3 lines per notch.
 
+### Commands, keys, config (Phase 5)
+
+- Everything the user can do is a named command in one table (command.c), with Emacs names.
+  Keys only ever map to command names. App-level commands get the App through the context.
+- Keys match by the character they produce, as in Emacs, not by physical position: C-/ is Ctrl
+  plus whatever produces "/" in the current layout. Letters keep Shift as a modifier (C-S-a);
+  every other character absorbs Shift and AltGr (C-/ where "/" is Shift+7 is still C-/). A
+  modified uppercase letter in the config means S- plus the letter; S- with a non-letter
+  character is rejected (it can never match). Letter case: a small table (ASCII, Latin-1,
+  Latin Extended-A, Greek, Cyrillic) with the default Unicode mapping, so on Turkish Q
+  Ctrl+Shift+ı is C-S-i.
+- A chord is modifiers (C, M, S) plus a named key or a character, packed in a u32; a key
+  sequence is 1 to 4 chords. kbd notation as Emacs, with <prior> / <next> canonical and
+  <pageup> / <pagedown> (and <return> <tab> <escape> <backspace>) accepted.
+- A character key without Ctrl or Alt is not a chord: its text event (after dead keys have
+  composed) is. So plain characters can be bound too (C-x o), and an unbound plain character
+  outside a prefix runs self-insert-command. When a KEY_DOWN is consumed, the text events it
+  produced are dropped (up to the next KEY_DOWN).
+- Keymaps are named and searched as a stack, context maps first, then "global" (only global in
+  Phase 5). Prefixes merge across maps as in Emacs: the first map with an exact match runs it;
+  otherwise the sequence waits if it is a proper prefix in any map; otherwise it is undefined.
+  A keymap is a flat array searched linearly (a few dozen bindings, well under a microsecond).
+- The sequence state machine: an exact match runs the command; a proper prefix waits and shows
+  "C-x-" in the echo area at once; no match shows "<sequence> is undefined" and resets;
+  keyboard-quit (C-g, ESC) cancels a pending prefix with "Quit". A chord with Shift and no
+  binding is looked up again without Shift and the context records shift_translated (Emacs'
+  shift-translation, for shift-select in Phase 6). describe-key describes the next complete
+  sequence instead of running it. No allocation per keystroke.
+- Escape is bound to keyboard-quit by default. This is the one deliberate deviation from
+  Emacs, where ESC is the Meta prefix.
+- One config file in plain text holds settings, colors and keys: sections [settings],
+  [colors], [keys]; `name = value`; in [keys] the last word is the command and everything
+  before it the key sequence (so "=" needs no escaping); "none" removes a binding. A line
+  starting with '#' is a comment (only there: colors contain '#'), so a lone "#" key cannot be
+  bound. The built-in defaults are the same format, embedded as a C string
+  (config_default.h, fully commented) and parsed by the same code at startup; the user's file
+  is applied on top. Dev builds assert that the defaults parse without diagnostics.
+- Location: teal.conf next to the exe if it exists (portable), otherwise
+  %APPDATA%\teal\teal.conf (APPDATA from the environment, no shell32). Startup never creates a
+  file; open-config creates it from the defaults.
+- A config error never blocks startup or a reload: bad lines are skipped and reported with file
+  and line number; out-of-range values are clamped with a warning. A binding removes the older
+  bindings it conflicts with (one is a proper prefix of the other) with a warning naming how
+  many. Every diagnostic goes to *Messages* (at most 1000 kept per load); the echo area shows
+  the first error and "(and N more)".
+- The config is read before the font, so the font is set up exactly once at startup with the
+  configured face, size, render mode and line height. A load parses into the second of two
+  arenas and switches to it, so a config is never half applied.
+- Settings: font, font_size (4-96 pt), line_height (80-300 %), render_mode, tab_width (1-16,
+  stored per buffer as Emacs' buffer-local tab-width), underscore_is_word, fsync_on_save.
+  Colors: the ten theme roles; the Windows 11 caption color follows background.
+- Hot reload is driven by a directory change notification (FindFirstChangeNotification) waited
+  on with the messages; no polling and no timers. On a notification the file is read again only
+  if its size or write time changed; a file missing for a moment (saved through a temporary
+  file and a rename) counts as unchanged. A sharing violation is retried: the app asks the
+  platform for a 100 ms wait timeout only while a retry is pending, at most 5 reads, then
+  reports the failure; otherwise the wait is infinite. A file that cannot be read leaves the
+  config as it was. Everything applies live: colors, keys, font and size, render mode, line
+  height, tab width, the other settings.
+- The app keeps a list of buffers; visiting a path that is already open switches to it (full
+  paths compared case-insensitively for ASCII). Each entry keeps markers for where its buffer was
+  last shown, so switching a view away and back restores point and scroll; a view shows one
+  cursor after a switch.
+- *Messages*: every echo-area message is also appended to this read-only buffer through the
+  inhibit_read_only path, keeping the last 1000 lines. Key prefixes and the describe-key prompt
+  are shown, not logged.
+- save-buffers-kill-terminal refuses once while file-visiting buffers are modified and quits on
+  an immediate repeat (real prompts come with the minibuffer in Phase 7); the window's close
+  button and Alt+F4 run it too. Text scale: 1.2 per step for the session (never written to
+  the config); Ctrl + wheel does the same; other mouse input stays hard-coded.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -275,8 +384,14 @@ with or without the 100 MB file.
   instant: show the window immediately with the background color painted (GDI) until the
   first Present.
 - Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
-- A setting to turn off the flush on save (Phase 5).
-- Detect changes made outside the editor (file size and write time are already recorded).
+- Detect changes made outside the editor (file size and write time are already recorded; the
+  directory watches of Phase 5 are general and can deliver the notifications).
+- ESC as the Meta prefix, as in Emacs (ESC is keyboard-quit for now).
+- *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
+- Chords on Turkish Q: Ctrl+Shift+ı gives C-S-i (default case mapping); a layout-aware letter
+  case would make it C-S-ı.
+- Hot reload of a file truncated and then written in place (not saved by rename) can load the
+  empty file first and apply the defaults for one frame; a debounce would need a timer.
 - Wide (East Asian) characters and emoji occupying two cells; color emoji.
 - System font fallback for codepoints Consolas lacks.
 - Bold / italic faces, if a theme ever wants them.

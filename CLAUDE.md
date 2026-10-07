@@ -86,13 +86,25 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
     build/teal_debug.exe --sample ...                     # the Phase 2 colored sample (smoke implies it)
     build/teal_debug.exe +LINE:COL <file> --screenshot .. # open a file at a position (cursor drawn focused)
     build/teal_debug.exe --dump-atlas build/shots/a.png   # the CPU glyph atlas
-    build/teal_debug.exe --render-mode classic|natural|symmetric   (default symmetric)
+    build/teal_debug.exe --render-mode classic|natural|symmetric   (overrides the config)
+    build/teal_debug.exe --config build/tmp/x.conf        # this file instead of the user's teal.conf
+    build/teal_debug.exe <file> --keys "M-> RET h i C-x C-s"   # input after startup, kbd notation:
+                                                          # a chord is a KEY_DOWN, a single character
+                                                          # (or SPC) is typed; with --screenshot the
+                                                          # frame is taken after the keys
     build/teal_debug.exe --scale 150                      # force the DPI scale (percent)
     build/teal_debug.exe --bench-text                     # 300 frames, Present(0, 0)
     build/teal_bench.exe --bench-buffer                   # 100 MB file (build\tmp): load, inserts,
                                                           # lookups, save, frames at top/middle/end
     build/teal_bench.exe --bench-view                     # same file, key/text events through the app:
                                                           # next-line, PageDown, C-End/C-Home, typing
+
+The smoke and the benches read only the built-in config (deterministic) unless --config is
+given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
+checks, so open-config never touches the real %APPDATA%\teal\teal.conf. The benches report
+the final flush and the Present separately, the Presents that waited a vertical blank (>= 5 ms)
+and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait
+one refresh interval with two buffers; that is not CPU work of ours.
 
 `--smoke` shows the window without activating it, renders 3 frames, reads back the third
 and checks the probes from app_dev_probes: exact background / mode line / cursor pixels, a
@@ -105,11 +117,16 @@ with the next character at column 4, ^A taking two cells, a hollow cursor (edges
 cursor color, inside background), the mode line with the buffer name and nothing after its
 text. A synthetic click on a character with focus forced on gives a fifth frame (stage 1): a
 filled cursor there with the glyph drawn over it, the old cursor cell cleared. The window
-title must be "*scratch* - teal", set exactly once. It also requires a non-empty atlas, the D3D11 debug layer active with zero WARNING+ messages, and no leaks
-(device refcount 0, empty DXGI live-object report, DirectWrite references 0).
+title must be "*scratch* - teal", set exactly once. Then: the font was set up exactly once at
+startup; build\tmp\smoke_keys.txt is edited and saved through the --keys path ("M-> RET h i
+C-x C-s") and its bytes compared; a config with background = #102030 is loaded (as C-c r), the
+pixel probed, and the font must not have been set up again. It also requires a non-empty atlas,
+the D3D11 debug layer active with zero WARNING+ messages, and no leaks (device refcount 0, empty
+DXGI live-object report, DirectWrite references 0, no directory watch left open).
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer
-messages, 6 leak (D3D, DirectWrite, buffers, live markers), 7 output file, 8 font / ClearType,
-9 test failure (--test), 10 unknown argument (every build).
+messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches), 7 output file, 8 font /
+ClearType (also: the font set up more than once), 9 test failure (--test; in the smoke: the
+--keys edit saved the wrong bytes), 10 unknown argument (every build).
 
 `--test` runs without a window or device: a differential fuzz of `buffer_replace` against a
 flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
@@ -118,15 +135,24 @@ overrides; decimal or 0x hex), capacity and read-only checks, byte-for-byte file
 load-edit-save-reload, save / load failures, a marker differential fuzz (300 markers, both
 insertion types), the language table, a column-mapping round trip on fuzzed lines, a table of
 motion cases with their messages, scrolling and recentering, three cursors through the
-command driver, read-only refusals and save messages, and a view fuzz (point always on a
-boundary and visible, valid scroll position). A failed dev ASSERT logs its
+command driver, read-only refusals and save messages, a view fuzz (point always on a
+boundary and visible, valid scroll position), the command table, kbd notation (canonical
+forms, rejections, 20,000 round trips), chords from key events, the key sequence state machine
+(prefix, undefined, quit, shift-translation, dropped text, C-x o, describe-key, two keymaps
+sharing a prefix, binding conflicts), the config (defaults, layering, every diagnostic with
+its line, clamping, none, files, 10,000 random inputs, settings in the view), the buffer list
+and *Messages*, and hot reload with a real directory watch in build\tmp\watch (write, other
+file, save by rename, a locked file retried and given up). A failed dev ASSERT logs its
 file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
 check exact colors with an independent decoder, e.g. PowerShell `System.Drawing.Bitmap`.
 When touching rasterization, check that the three render modes still produce different files.
 
-## Theme (source of truth until the theme file arrives in Phase 7)
+## Theme (the built-in defaults: src/config_default.h, [colors])
+
+The config file's color names are the roles below (text is also the mode line; number is
+number/constant).
 
 | role             | color   |   | role            | color   |
 |------------------|---------|---|-----------------|---------|
