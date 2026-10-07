@@ -1,19 +1,7 @@
-// app.c — the editor core: views laid out in the frame, drawing of text, cursors, mode lines
-// and the echo area, and (temporarily, until the keymap of Phase 5) the key bindings. View
+// app.c — the editor core: the config (loaded before the font), keys through the keymap,
+// views laid out in the frame, drawing of text, cursors, mode lines and the echo area. View
 // logic lives in view.c. Dev builds keep the Phase 2 hand-colored sample behind --sample for
 // the smoke probes and screenshots (until highlighting in Phase 8).
-
-// Theme (source of truth until the theme file arrives in Phase 7).
-#define THEME_BACKGROUND 0x072626
-#define THEME_TEXT       0xd3b58d // also the mode line
-#define THEME_CURSOR     0x90ee90
-#define THEME_SELECTION  0x0000ff
-#define THEME_COMMENT    0x3fdf1f
-#define THEME_STRING     0x0fdfaf
-#define THEME_KEYWORD    0xffffff
-#define THEME_NUMBER     0x7ad0c6
-#define THEME_TYPE       0x8cde94
-#define THEME_VARIABLE   0xc1d1e3
 
 #if TEAL_DEV
 // Sample text markup: these bytes switch the color of what follows and take no cell.
@@ -25,9 +13,10 @@
 #define C "\x06" // comment
 #define V "\x07" // variable
 
-static const u32 app_markup_colors[8] = {
-    0, THEME_TEXT, THEME_KEYWORD, THEME_TYPE, THEME_STRING, THEME_NUMBER, THEME_COMMENT, THEME_VARIABLE,
-};
+static u32 app_markup_color(Theme *th, u8 markup) {
+    u32 colors[8] = { 0, th->text, th->keyword, th->type, th->string, th->number, th->comment, th->variable };
+    return colors[markup & 7];
+}
 
 static const char *app_sample[] = {
     C "// sample.jai: a small Jai program to judge the theme.",
@@ -82,6 +71,8 @@ static const char *app_sample[] = {
 #define APP_MAX_VIEWS 8
 #define APP_WHEEL_LINES 3 // per notch (120 units)
 #define APP_PAD_PX 4      // left padding of a text area at 96 DPI
+#define APP_CONFIG_RESERVE MB(16)
+#define APP_MAX_KEYMAPS 4
 
 struct App {
     Font *font;
@@ -91,6 +82,15 @@ struct App {
     i32 active_view;
     Echo echo;
     CommandContext ctx;          // keeps last_command between events
+    KeyInput keys;               // the key sequence state
+    Keymap *keymaps[APP_MAX_KEYMAPS]; // the lookup stack: context maps first, then "global"
+    i32 keymap_count;
+    Config *config;              // in config_arenas[config_slot]
+    Arena config_arenas[2];      // a load parses into the other arena, then switches
+    i32 config_slot;
+    String8 config_path;         // the user's teal.conf; empty = built-in defaults only
+    i32 forced_render_mode;      // dev --render-mode, -1 = from the config
+    i32 text_scale;              // text-scale-increase / decrease steps, session only
     b32 focused;                 // the window has keyboard focus
     i32 wheel_accum;             // wheel units * APP_WHEEL_LINES not yet turned into lines
     u8 title[256];               // the window title last set
@@ -205,9 +205,9 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
     while (i < s.len && col < right) {
         u8 b = s.data[i];
         if (b == '\t' || view_is_control(b)) {
-            if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(THEME_TEXT));
-            if (b != '\t') app_draw_caret(app, r, x0, y, col, left, right, b, COLOR_HEX(THEME_NUMBER));
-            col += view_char_width(b, col);
+            if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(app->config->theme.text));
+            if (b != '\t') app_draw_caret(app, r, x0, y, col, left, right, b, COLOR_HEX(app->config->theme.number));
+            col += view_char_width(b, col, buf->tab_width);
             run = ++i;
             run_col = col;
             continue;
@@ -217,7 +217,7 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
         i += advance;
         col++;
     }
-    if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(THEME_TEXT));
+    if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(app->config->theme.text));
 }
 
 // The cell rect of a cursor, or false when it is outside the window (only the primary cursor
@@ -240,7 +240,7 @@ static b32 app_cursor_rect(App *app, AppLayout *l, View *v, i64 pos, i32 *x0, i3
 static void app_draw_cursor(App *app, Renderer *r, AppLayout *l, View *v, i64 pos, b32 filled, f32 dpi_scale, Arena *scratch) {
     i32 x0, y0, x1, y1;
     if (!app_cursor_rect(app, l, v, pos, &x0, &y0, &x1, &y1)) return;
-    Color cursor = COLOR_HEX(THEME_CURSOR);
+    Color cursor = COLOR_HEX(app->config->theme.cursor);
     if (!filled) {
         i32 t = MAX((i32)(dpi_scale + 0.5f), 1);
         r_push_rect(r, (Rect){ (f32)x0, (f32)y0, (f32)x1, (f32)(y0 + t) }, cursor);
@@ -254,7 +254,7 @@ static void app_draw_cursor(App *app, Renderer *r, AppLayout *l, View *v, i64 po
     if (pos >= buffer_line_end(buf, buffer_line_of(buf, pos))) return; // end of line: nothing under it
     u8 b = buffer_byte(buf, pos);
     if (b == '\t') return;
-    Color under = COLOR_HEX(THEME_BACKGROUND);
+    Color under = COLOR_HEX(app->config->theme.background);
     if (view_is_control(b)) app_draw_caret(app, r, x0, y0, 0, 0, 2, b, under);
     else font_draw_text(app->font, r, x0, y0, buffer_text(buf, scratch, pos, buffer_next_char(buf, pos)), under);
 }
@@ -293,9 +293,9 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, V
         app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[k]), filled, in->dpi_scale, in->scratch);
     }
     // Mode line, inverse video.
-    r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)(v->x + v->w), (f32)(mode_y + line_h) }, COLOR_HEX(THEME_TEXT));
+    r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)(v->x + v->w), (f32)(mode_y + line_h) }, COLOR_HEX(app->config->theme.text));
     String8 mode = app_mode_line_text(v, in->scratch);
-    font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((v->w - l->pad) / l->cell_w, 0)), COLOR_HEX(THEME_BACKGROUND));
+    font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((v->w - l->pad) / l->cell_w, 0)), COLOR_HEX(app->config->theme.background));
 }
 
 #if TEAL_DEV
@@ -325,14 +325,14 @@ static String8 app_char_at(i32 row, i32 col) {
     return str8(NULL, 0);
 }
 
-// Color of the character at `col` (the markup color in effect), or 0 if there is none.
-static u32 app_color_at(i32 row, i32 col) {
+// The markup in effect at the character at `col` (1 = plain text), or 0 if there is no character.
+static u8 app_markup_at(i32 row, i32 col) {
     String8 line = app_sample_line(row);
-    u32 color = THEME_TEXT;
+    u8 color = 1;
     i32 c = 0;
     for (i64 i = 0; i < line.len;) {
         if (line.data[i] < 8) {
-            color = app_markup_colors[line.data[i]];
+            color = line.data[i];
             i++;
             continue;
         }
@@ -347,12 +347,12 @@ static u32 app_color_at(i32 row, i32 col) {
 
 static void app_draw_sample_line(App *app, Renderer *r, i32 y, String8 line) {
     i32 x = 0;
-    u32 color = THEME_TEXT;
+    u32 color = app->config->theme.text;
     i64 run = 0;
     for (i64 i = 0; i <= line.len; i++) {
         if (i == line.len || line.data[i] < 8) {
             x = font_draw_text(app->font, r, x, y, str8(line.data + run, i - run), COLOR_HEX(color));
-            if (i < line.len) color = app_markup_colors[line.data[i]];
+            if (i < line.len) color = app_markup_color(&app->config->theme, line.data[i]);
             run = i + 1;
         }
     }
@@ -391,7 +391,7 @@ static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout
     app->cursor_col = CLAMP(app->cursor_col, 0, l->cols - 1);
     app->cursor_row = CLAMP(app->cursor_row, 0, l->rows - 1);
 
-    r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
+    r_begin_frame(r, COLOR_HEX(app->config->theme.background));
 
     for (i32 row = 0; row < l->rows && row < ARRAY_COUNT(app_sample); row++) {
         app_draw_sample_line(app, r, row * l->line_h, app_sample_line(row));
@@ -400,13 +400,13 @@ static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout
     // Block cursor; the character under it is redrawn in the background color, as Emacs does.
     i32 cx = app->cursor_col * l->cell_w, cy = app->cursor_row * l->line_h;
     Rect cursor = { (f32)cx, (f32)cy, (f32)(cx + l->cell_w), (f32)(cy + l->line_h) };
-    r_push_rect(r, cursor, COLOR_HEX(THEME_CURSOR));
-    font_draw_text(app->font, r, cx, cy, app_char_at(app->cursor_row, app->cursor_col), COLOR_HEX(THEME_BACKGROUND));
+    r_push_rect(r, cursor, COLOR_HEX(app->config->theme.cursor));
+    font_draw_text(app->font, r, cx, cy, app_char_at(app->cursor_row, app->cursor_col), COLOR_HEX(app->config->theme.background));
 
     String8 status = str8_fmt(in->scratch, "-:---  sample.jai    (Jai)    L%d C%d", app->cursor_row + 1, app->cursor_col);
-    r_push_rect(r, (Rect){ 0, (f32)l->mode_line_y, (f32)in->width, (f32)(l->mode_line_y + l->line_h) }, COLOR_HEX(THEME_TEXT));
-    font_draw_text(app->font, r, 0, l->mode_line_y, status, COLOR_HEX(THEME_BACKGROUND));
-    font_draw_text(app->font, r, 0, l->minibuffer_y, str8(app->echo.text, app->echo.len), COLOR_HEX(THEME_TEXT));
+    r_push_rect(r, (Rect){ 0, (f32)l->mode_line_y, (f32)in->width, (f32)(l->mode_line_y + l->line_h) }, COLOR_HEX(app->config->theme.text));
+    font_draw_text(app->font, r, 0, l->mode_line_y, status, COLOR_HEX(app->config->theme.background));
+    font_draw_text(app->font, r, 0, l->minibuffer_y, str8(app->echo.text, app->echo.len), COLOR_HEX(app->config->theme.text));
 
     r_end_frame(r);
     return 1;
@@ -416,27 +416,126 @@ static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout
 // ---------------------------------------------------------------------------
 // Startup and frames
 
-// Opens config->file_path, or *scratch* without one or when it cannot be opened.
-static void app_open_initial_buffer(App *app, AppConfig *config) {
-    if (config->file_path.len) {
+// ---------------------------------------------------------------------------
+// Config
+
+// teal.conf next to the exe if it exists (portable), else %APPDATA%\teal\teal.conf. Nothing is
+// created here. Empty: built-in defaults only.
+static String8 app_config_path(Arena *perm, AppArgs *args) {
+#if TEAL_DEV
+    if (args->config_path.len) {
+        String8 full = os_full_path(perm, args->config_path);
+        return full.len ? full : args->config_path;
+    }
+    if (!args->user_config) return str8(NULL, 0);
+#else
+    (void)args;
+#endif
+    String8 portable = str8_fmt(perm, "%S\\teal.conf", os_exe_dir(perm));
+    OsFileInfo info;
+    if (os_file_info(portable, &info) == OS_FILE_OK && !info.is_dir) return portable;
+    String8 appdata = os_get_env(perm, STR8_LIT("APPDATA"));
+    if (!appdata.len) return str8(NULL, 0);
+    return str8_fmt(perm, "%S\\teal\\teal.conf", appdata);
+}
+
+// The font the config asks for, with the session's text scale (1.2 per step, as in Emacs).
+static FontParams app_font_params(App *app) {
+    Settings *s = &app->config->settings;
+    f32 size = s->font_size;
+    for (i32 i = 0; i < app->text_scale; i++) size *= 1.2f;
+    for (i32 i = 0; i > app->text_scale; i--) size /= 1.2f;
+    FontParams fp = {
+        .family = str8(s->font, s->font_len),
+        .size_pt = CLAMP(size, 4.0f, 96.0f),
+        .line_height_percent = s->line_height,
+        .mode = app->forced_render_mode >= 0 ? (FbRenderMode)app->forced_render_mode : s->render_mode,
+    };
+    return fp;
+}
+
+// Reads and parses the config into the other arena and switches to it. Returns the status of
+// reading the user's file.
+static OsFileStatus app_read_config(App *app) {
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
+    i32 slot = app->config_slot ^ 1;
+    arena_reset(&app->config_arenas[slot]);
+    Config *c = PUSH_STRUCT(&app->config_arenas[slot], Config);
+    OsFileInfo info;
+    OsFileStatus status = config_load(c, &app->config_arenas[slot], app->config_path, &info);
+    app->config = c;
+    app->config_slot = slot;
+    LOG("config: %S: %s, %D bytes; parsed with the defaults in %U us, %d error(s), %d warning(s)",
+        app->config_path.len ? app->config_path : STR8_LIT("(none, built-in defaults only)"),
+        buffer_status_text(status), info.size, os_time_us() - t0, c->errors, c->warnings);
+#if TEAL_DEV
+    for (ConfigDiag *d = c->first_diag; d; d = d->next) LOG("config: %S", d->text);
+#endif
+    return status;
+}
+
+// Reports a load in the echo area: the first error (and how many more), or a failed read.
+static void app_report_config(App *app, OsFileStatus status, b32 reload) {
+    String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("teal.conf");
+    if (status != OS_FILE_OK && status != OS_FILE_NOT_FOUND) {
+        echo_message(&app->echo, "Cannot read %S: %s", name, buffer_status_text(status));
+        return;
+    }
+    Config *c = app->config;
+    if (c->errors) {
+        for (ConfigDiag *d = c->first_diag; d; d = d->next) {
+            if (d->warning) continue;
+            if (c->errors == 1) echo_message(&app->echo, "%S", d->text);
+            else echo_message(&app->echo, "%S (and %d more)", d->text, c->errors - 1);
+            return;
+        }
+        echo_message(&app->echo, "%S: %d errors", name, c->errors);
+        return;
+    }
+    if (reload) echo_message(&app->echo, "Reloaded %S", name);
+}
+
+// Applies the current config: font, caption color, tab width, keys, settings.
+static void app_apply_config(App *app, Renderer *r, b32 startup) {
+    Config *c = app->config;
+    if (!startup) {
+        FontParams fp = app_font_params(app);
+        font_reconfigure(app->font, r, &fp);
+    }
+    os_set_caption_color(c->theme.background);
+    app->buffer->tab_width = c->settings.tab_width;
+    app->keymaps[0] = &c->global;
+    app->keymap_count = 1;
+    app->keys.pending.len = 0;
+    app->ctx.settings = &c->settings;
+}
+
+// ---------------------------------------------------------------------------
+// Startup
+
+// Opens args->file_path, or *scratch* without one or when it cannot be opened.
+static void app_open_initial_buffer(App *app, AppArgs *args) {
+    if (args->file_path.len) {
         Buffer *buf = buffer_create(STR8_LIT(""));
         if (buf) {
 #if TEAL_DEV
             u64 t0 = os_time_us();
 #endif
-            OsFileStatus status = buffer_load_file(buf, config->file_path);
+            OsFileStatus status = buffer_load_file(buf, args->file_path);
             if (status == OS_FILE_OK) {
                 app->buffer = buf;
                 LOG("app: loaded %S: %D bytes, %D lines, %s %s, %U us", buf->path, buffer_size(buf), buffer_line_count(buf),
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol), os_time_us() - t0);
             } else if (status == OS_FILE_NOT_FOUND) {
                 // As in Emacs: visit the path as a new file.
-                String8 full = os_full_path(&buf->meta, config->file_path);
-                buffer_set_path(buf, full.len ? full : config->file_path);
+                String8 full = os_full_path(&buf->meta, args->file_path);
+                buffer_set_path(buf, full.len ? full : args->file_path);
                 app->buffer = buf;
                 echo_message(&app->echo, "(New file)");
             } else {
-                echo_message(&app->echo, "Cannot open %S: %s", config->file_path, buffer_status_text(status));
+                echo_message(&app->echo, "Cannot open %S: %s", args->file_path, buffer_status_text(status));
                 buffer_destroy(buf);
             }
         }
@@ -445,19 +544,30 @@ static void app_open_initial_buffer(App *app, AppConfig *config) {
     if (!app->buffer) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
 }
 
-App *app_create(Arena *perm, AppConfig *config) {
+// The config is read before the font, so the font is set up exactly once, as configured.
+App *app_create(Arena *perm, AppArgs *args) {
     App *app = PUSH_STRUCT(perm, App);
-    app->font = font_create(perm, config->dpi_scale, config->render_mode);
+    app->forced_render_mode = args->render_mode_forced ? (i32)args->render_mode : -1;
+    app->config_arenas[0] = arena_create(APP_CONFIG_RESERVE);
+    app->config_arenas[1] = arena_create(APP_CONFIG_RESERVE);
+    app->config_path = app_config_path(perm, args);
+    OsFileStatus config_status = app_read_config(app);
+    FontParams fp = app_font_params(app);
+    app->font = font_create(perm, &fp, args->dpi_scale);
     if (!app->font) return NULL;
-    app_open_initial_buffer(app, config);
+    app_open_initial_buffer(app, args);
     app->views[0] = view_create(perm, app->buffer);
     app->view_count = 1;
+    app->ctx.app = app;
     app->ctx.echo = &app->echo;
+    app_apply_config(app, NULL, 1);
+    app_report_config(app, config_status, 0);
+    if (app->font->used_fallback) echo_message(&app->echo, "Font '%S' not found, using %s", str8(app->font->family, app->font->family_len), "Consolas");
     // +LINE:COLUMN, 1-based on the command line as in Emacs (move-to-column (1- COLUMN)).
-    app->initial_line = config->goto_line > 0 ? config->goto_line - 1 : -1;
-    app->initial_col = MAX(config->goto_col - 1, 0);
+    app->initial_line = args->goto_line > 0 ? args->goto_line - 1 : -1;
+    app->initial_col = MAX(args->goto_col - 1, 0);
 #if TEAL_DEV
-    app->sample = config->sample;
+    app->sample = args->sample;
     app->force_focus = -1;
 #endif
     return app;
@@ -468,38 +578,8 @@ i32 app_shutdown(App *app) {
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += (i32)app->buffer->marker_live;
     if (!buffer_destroy(app->buffer)) leaks++;
+    for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
     return leaks;
-}
-
-// The temporary key bindings (Phase 5 replaces them with the keymap). Shift is ignored.
-static const Command *app_key_command(Event *e, u32 *codepoint) {
-    u32 mods = e->mods & ~(u32)MOD_SHIFT;
-    b32 plain = mods == 0, ctrl = mods == MOD_CTRL, meta = mods == MOD_ALT;
-    switch (e->key) {
-    case KEY_LEFT:      return plain ? &CMD_BACKWARD_CHAR : ctrl ? &CMD_BACKWARD_WORD : NULL;
-    case KEY_RIGHT:     return plain ? &CMD_FORWARD_CHAR : ctrl ? &CMD_FORWARD_WORD : NULL;
-    case KEY_UP:        return plain ? &CMD_PREVIOUS_LINE : ctrl ? &CMD_BACKWARD_PARAGRAPH : NULL;
-    case KEY_DOWN:      return plain ? &CMD_NEXT_LINE : ctrl ? &CMD_FORWARD_PARAGRAPH : NULL;
-    case KEY_HOME:      return plain ? &CMD_MOVE_BEGINNING_OF_LINE : ctrl ? &CMD_BEGINNING_OF_BUFFER : NULL;
-    case KEY_END:       return plain ? &CMD_MOVE_END_OF_LINE : ctrl ? &CMD_END_OF_BUFFER : NULL;
-    case KEY_PAGE_UP:   return plain ? &CMD_SCROLL_DOWN_COMMAND : NULL;
-    case KEY_PAGE_DOWN: return plain ? &CMD_SCROLL_UP_COMMAND : NULL;
-    case KEY_BACKSPACE: return plain ? &CMD_DELETE_BACKWARD_CHAR : NULL;
-    case KEY_DELETE:    return plain ? &CMD_DELETE_CHAR : NULL;
-    case KEY_ENTER:     return plain ? &CMD_NEWLINE : NULL;
-    case KEY_TAB:       *codepoint = '\t'; return plain ? &CMD_SELF_INSERT : NULL;
-    case KEY_F:         return ctrl ? &CMD_FORWARD_CHAR : meta ? &CMD_FORWARD_WORD : NULL;
-    case KEY_B:         return ctrl ? &CMD_BACKWARD_CHAR : meta ? &CMD_BACKWARD_WORD : NULL;
-    case KEY_N:         return ctrl ? &CMD_NEXT_LINE : NULL;
-    case KEY_P:         return ctrl ? &CMD_PREVIOUS_LINE : NULL;
-    case KEY_A:         return ctrl ? &CMD_MOVE_BEGINNING_OF_LINE : NULL;
-    case KEY_E:         return ctrl ? &CMD_MOVE_END_OF_LINE : NULL;
-    case KEY_V:         return ctrl ? &CMD_SCROLL_UP_COMMAND : meta ? &CMD_SCROLL_DOWN_COMMAND : NULL;
-    case KEY_L:         return ctrl ? &CMD_RECENTER_TOP_BOTTOM : NULL;
-    case KEY_D:         return ctrl ? &CMD_DELETE_CHAR : NULL;
-    case KEY_S:         return ctrl ? &CMD_SAVE_BUFFER : NULL; // temporary: C-x C-s in Phase 5
-    default:            return NULL;
-    }
 }
 
 // The view under a pixel, or -1.
@@ -547,10 +627,43 @@ static void app_update_title(App *app, Arena *scratch) {
     os_set_window_title(title);
 }
 
-static void app_run_command(App *app, const Command *cmd, u32 codepoint) {
+static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
     app->ctx.view = app->views[app->active_view];
     app->ctx.codepoint = codepoint;
+    app->ctx.shift_translated = shift_translated;
     view_run_command(&app->ctx, cmd);
+}
+
+// A KEY_DOWN or text event through the keymap.
+static void app_key_event(App *app, Event *e) {
+    KeyResult k;
+    key_input_feed(&app->keys, app->keymaps, app->keymap_count, e, &k);
+    u8 seq[KEY_SEQ_TEXT_CAP];
+    i64 n = key_seq_print(&k.seq, seq, sizeof(seq) - 1);
+    switch (k.kind) {
+    case KEY_RESULT_IGNORED:
+    case KEY_RESULT_DROPPED:
+        break;
+    case KEY_RESULT_PREFIX: // shown at once, as "C-x-"
+        seq[n++] = '-';
+        echo_set(&app->echo, str8(seq, n));
+        break;
+    case KEY_RESULT_COMMAND:
+    case KEY_RESULT_SELF_INSERT:
+    case KEY_RESULT_QUIT:
+        echo_clear(&app->echo); // a message stays until the next key
+        app_run_command(app, k.command, k.codepoint, k.shift_translated);
+        break;
+    case KEY_RESULT_UNDEFINED:
+        echo_message(&app->echo, "%S is undefined", str8(seq, n));
+        app->ctx.last_command = NULL;
+        break;
+    case KEY_RESULT_DESCRIBE:
+        if (k.command) echo_message(&app->echo, "%S runs the command %s", str8(seq, n), k.command->name);
+        else echo_message(&app->echo, "%S is undefined", str8(seq, n));
+        app->ctx.last_command = NULL;
+        break;
+    }
 }
 
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
@@ -577,16 +690,9 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
         case EVENT_FOCUS:
             app->focused = e->focused;
             break;
-        case EVENT_KEY_DOWN: {
-            echo_clear(&app->echo); // a message stays until the next key
-            u32 codepoint = 0;
-            const Command *cmd = app_key_command(e, &codepoint);
-            if (cmd) app_run_command(app, cmd, codepoint);
-            else app->ctx.last_command = NULL;
-        } break;
+        case EVENT_KEY_DOWN:
         case EVENT_TEXT:
-            echo_clear(&app->echo);
-            app_run_command(app, &CMD_SELF_INSERT, e->codepoint);
+            app_key_event(app, e);
             break;
         case EVENT_MOUSE_DOWN:
             if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y);
@@ -601,10 +707,10 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
 
     app_update_title(app, in->scratch);
 
-    r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
+    r_begin_frame(r, COLOR_HEX(app->config->theme.background));
     for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view);
     String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
-    font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(THEME_TEXT));
+    font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));
 
 #if TEAL_DEV
     app->dev_build_us = os_time_us() - t0;
@@ -620,11 +726,11 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
 
     APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = in->height - 1,
-                   .rgb = THEME_BACKGROUND, .what = "background (bottom-right corner)");
+                   .rgb = app->config->theme.background, .what = "background (bottom-right corner)");
     APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = l.mode_line_y + l.line_h / 2,
-                   .rgb = THEME_TEXT, .what = "mode line (right end)");
+                   .rgb = app->config->theme.text, .what = "mode line (right end)");
     i32 cx = app->cursor_col * l.cell_w, cy = app->cursor_row * l.line_h;
-    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = cx, .y0 = cy, .rgb = THEME_CURSOR, .what = "cursor (top-left pixel)");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = cx, .y0 = cy, .rgb = app->config->theme.cursor, .what = "cursor (top-left pixel)");
 
     // First non-space character cell not under the cursor: some pixel must differ from the background.
     for (i32 row = 0; row < l.rows && row < ARRAY_COUNT(app_sample); row++) {
@@ -635,7 +741,7 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
             if (ch.data[0] == ' ' || (row == app->cursor_row && col == app->cursor_col)) continue;
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = col * l.cell_w, .y0 = row * l.line_h,
                            .x1 = (col + 1) * l.cell_w, .y1 = (row + 1) * l.line_h,
-                           .rgb = THEME_BACKGROUND, .what = "first text cell");
+                           .rgb = app->config->theme.background, .what = "first text cell");
             found = 1;
             break;
         }
@@ -653,7 +759,7 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
         if (spaces && !(app->cursor_row == row && app->cursor_col == 1)) {
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = l.cell_w, .y0 = row * l.line_h,
                            .x1 = 2 * l.cell_w, .y1 = (row + 1) * l.line_h,
-                           .rgb = THEME_BACKGROUND, .what = "space cell");
+                           .rgb = app->config->theme.background, .what = "space cell");
             break;
         }
     }
@@ -668,9 +774,9 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
             if (ch.data[0] == '_' && !(row == app->cursor_row && col == app->cursor_col)) {
                 i32 x0 = col * l.cell_w, y0 = row * l.line_h;
                 APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x0, .y0 = y0, .x1 = x0 + l.cell_w,
-                               .y1 = y0 + l.line_h * 2 / 5, .rgb = THEME_BACKGROUND, .what = "'_' upper part");
+                               .y1 = y0 + l.line_h * 2 / 5, .rgb = app->config->theme.background, .what = "'_' upper part");
                 APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x0, .y0 = y0 + l.line_h / 2,
-                               .x1 = x0 + l.cell_w, .y1 = y0 + l.line_h, .rgb = THEME_BACKGROUND,
+                               .x1 = x0 + l.cell_w, .y1 = y0 + l.line_h, .rgb = app->config->theme.background,
                                .what = "'_' lower part");
                 found = 1;
                 break;
@@ -685,11 +791,11 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
         for (i32 col = 0; col < l.cols; col++) {
             String8 ch = app_char_at(row, col);
             if (!ch.len) break;
-            if (ch.data[0] == '|' && app_color_at(row, col) == 0xffffff &&
+            if (ch.data[0] == '|' && app_markup_at(row, col) == 2 && app->config->theme.keyword == 0xffffff &&
                 !(row == app->cursor_row && col == app->cursor_col)) {
                 APP_PUSH_PROBE(.kind = DEV_PROBE_CLEARTYPE, .x0 = col * l.cell_w - 1, .y0 = row * l.line_h,
                                .x1 = (col + 1) * l.cell_w + 1, .y1 = (row + 1) * l.line_h,
-                               .rgb = THEME_BACKGROUND, .text_rgb = 0xffffff,
+                               .rgb = app->config->theme.background, .text_rgb = 0xffffff,
                                .geometry = app->font->backend.pixel_geometry, .what = "ClearType '|'");
                 found = 1;
                 break;
@@ -738,43 +844,43 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
 #define CELL(col, line) .x0 = x + (col) * cw, .y0 = (line) * lh, .x1 = x + ((col) + 1) * cw, .y1 = ((line) + 1) * lh
     if (stage == 0) {
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(0, 0), .rgb = THEME_BACKGROUND,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(0, 0), .rgb = app->config->theme.background,
                        .what = "buffer: text cell 'i' (line 0, column 0)");
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(5, 2), .rgb = THEME_BACKGROUND,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(5, 2), .rgb = app->config->theme.background,
                        .what = "buffer: empty cell (line 2, column 5)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = lh, .x1 = x + 4 * cw, .y1 = 2 * lh,
-                       .rgb = THEME_BACKGROUND, .what = "buffer: tab, columns 0-3 of line 1 empty");
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 1), .rgb = THEME_BACKGROUND,
+                       .rgb = app->config->theme.background, .what = "buffer: tab, columns 0-3 of line 1 empty");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 1), .rgb = app->config->theme.background,
                        .what = "buffer: '|' after the tab drawn at column 4");
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(2, 3), .rgb = THEME_BACKGROUND,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(2, 3), .rgb = app->config->theme.background,
                        .what = "buffer: 'A' of ^A drawn at column 2");
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(3, 3), .rgb = THEME_BACKGROUND,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(3, 3), .rgb = app->config->theme.background,
                        .what = "buffer: 'b' after ^A drawn at column 3");
         // Hollow cursor on the empty line 2: edges in the cursor color, inside untouched.
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = 2 * lh, .x1 = x + t, .y1 = 3 * lh,
-                       .rgb = THEME_CURSOR, .what = "buffer: hollow cursor, left edge");
+                       .rgb = app->config->theme.cursor, .what = "buffer: hollow cursor, left edge");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = 2 * lh, .x1 = x + cw, .y1 = 2 * lh + t,
-                       .rgb = THEME_CURSOR, .what = "buffer: hollow cursor, top edge");
+                       .rgb = app->config->theme.cursor, .what = "buffer: hollow cursor, top edge");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + t, .y0 = 2 * lh + t, .x1 = x + cw - t, .y1 = 3 * lh - t,
-                       .rgb = THEME_BACKGROUND, .what = "buffer: hollow cursor, inside");
+                       .rgb = app->config->theme.background, .what = "buffer: hollow cursor, inside");
         // Mode line: inverse video to the right end, the buffer name drawn, nothing after the text.
         String8 mode = app_mode_line_text(app->views[0], in->scratch);
         i32 cells = (i32)mode.len; // ASCII here
         APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = mode_y + lh / 2,
-                       .rgb = THEME_TEXT, .what = "buffer: mode line (right end)");
+                       .rgb = app->config->theme.text, .what = "buffer: mode line (right end)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + cw, .y0 = mode_y, .x1 = x + 2 * cw, .y1 = mode_y + lh,
-                       .rgb = THEME_TEXT, .what = "buffer: mode line text ('-' in cell 1)");
+                       .rgb = app->config->theme.text, .what = "buffer: mode line text ('-' in cell 1)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + 8 * cw, .y0 = mode_y, .x1 = x + 17 * cw, .y1 = mode_y + lh,
-                       .rgb = THEME_TEXT, .what = "buffer: mode line buffer name (cells 8-16)");
+                       .rgb = app->config->theme.text, .what = "buffer: mode line buffer name (cells 8-16)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + (cells + 1) * cw, .y0 = mode_y, .x1 = in->width, .y1 = mode_y + lh,
-                       .rgb = THEME_TEXT, .what = "buffer: mode line empty after its text");
+                       .rgb = app->config->theme.text, .what = "buffer: mode line empty after its text");
     } else {
         // Filled cursor on the clicked 'x' (line 0, column 4), the glyph in the background color.
-        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + 4 * cw, .y0 = 0, .rgb = THEME_CURSOR,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + 4 * cw, .y0 = 0, .rgb = app->config->theme.cursor,
                        .what = "buffer: filled cursor on 'x' (top-left pixel)");
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 0), .rgb = THEME_CURSOR,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 0), .rgb = app->config->theme.cursor,
                        .what = "buffer: filled cursor, 'x' drawn over it");
-        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(0, 2), .rgb = THEME_BACKGROUND,
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(0, 2), .rgb = app->config->theme.background,
                        .what = "buffer: the old cursor cell is background again");
     }
 #undef CELL
@@ -808,12 +914,13 @@ u8 *app_dev_atlas(App *app, i32 *size) {
 
 // Fills every text cell with ASCII in rotating theme colors.
 i32 app_dev_bench_frame(App *app, FrameInput *in, Renderer *r, u64 *build_us, u64 *submit_us) {
-    static const u32 colors[] = { THEME_TEXT, THEME_KEYWORD, THEME_TYPE, THEME_STRING, THEME_NUMBER, THEME_COMMENT, THEME_VARIABLE };
+    Theme *th = &app->config->theme;
+    u32 colors[] = { th->text, th->keyword, th->type, th->string, th->number, th->comment, th->variable };
     u64 t0 = os_time_us();
     font_frame_begin(app->font, r, in->dpi_scale);
     AppLayout l = app_layout(app, in);
     u8 *row_text = PUSH_ARRAY(in->scratch, u8, l.cols);
-    r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
+    r_begin_frame(r, COLOR_HEX(app->config->theme.background));
     for (i32 row = 0; row < l.rows; row++) {
         for (i32 col = 0; col < l.cols; col++) row_text[col] = (u8)(33 + (row * 7 + col) % 94);
         // Eight-character runs so colors change along the line, as in highlighted code.

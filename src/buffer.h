@@ -11,6 +11,7 @@
 #define BUFFER_META_RESERVE MB(1) // the Buffer struct, path and name
 #define BUFFER_MAX_FILE_SIZE GB(1)
 #define BUFFER_MARKER_RESERVE MB(64) // marker slots, 16 bytes each
+#define BUFFER_DEFAULT_TAB_WIDTH 4
 
 typedef enum BufferEncoding {
     BUFFER_UTF8,
@@ -86,6 +87,7 @@ typedef struct Buffer {
     u64 edit_count;
     i64 file_size;  // as of the last load or save
     u64 file_time;  // last write time, same
+    i32 tab_width;  // columns per tab stop (Emacs' buffer-local tab-width; the app sets it from the config)
 } Buffer;
 
 Buffer *buffer_create(String8 name); // NULL if the address space cannot be reserved
@@ -134,8 +136,9 @@ const char  *buffer_language_name(BufferLanguage language);    // "C", "C++", "F
 // ReplaceFileW, or writes in place when a swap is not possible. Encoding and line-ending mode
 // are the buffer's. A read-only target is refused untouched. Save-as visits the new path.
 OsFileStatus buffer_save(Buffer *buf);
+OsFileStatus buffer_save_opt(Buffer *buf, b32 flush); // flush = 0: no FlushFileBuffers (fsync_on_save = false)
 OsFileStatus buffer_save_as(Buffer *buf, String8 path);
-OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush); // flush = 0 only for benchmarks (setting in Phase 5)
+OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush);
 const char  *buffer_status_text(OsFileStatus status);           // "access denied", ...
 
 #endif // BUFFER_H

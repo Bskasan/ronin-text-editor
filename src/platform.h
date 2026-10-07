@@ -14,6 +14,9 @@ b32   os_write_file(String8 path, String8 data);
 void  os_fatal(String8 message); // does not return
 u64   os_time_us(void);              // monotonic microseconds
 void  os_set_window_title(String8 title);
+void  os_set_caption_color(u32 rgb); // the title bar (Windows 11; ignored elsewhere)
+String8 os_exe_dir(Arena *arena);                  // the directory of the executable, no trailing separator
+String8 os_get_env(Arena *arena, String8 name);    // empty when not set
 #if TEAL_DEV
 void  os_log_write(String8 text);
 #endif
@@ -142,18 +145,21 @@ typedef struct FrameInput {
 typedef struct App App;
 typedef struct Renderer Renderer;
 
-typedef struct AppConfig {
+typedef struct AppArgs {
     f32 dpi_scale;
+    b32 render_mode_forced; // dev --render-mode: overrides the config's render_mode
     FbRenderMode render_mode;
     String8 file_path; // the first non-flag argument; empty = *scratch*
     i64 goto_line;     // +LINE[:COLUMN], 1-based as in Emacs; 0 = not given
     i64 goto_col;      // visual column, 1-based; 0 = not given
 #if TEAL_DEV
-    b32 sample; // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
+    b32 sample;          // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
+    String8 config_path; // --config: this file instead of the user's teal.conf
+    b32 user_config;     // read the user's teal.conf (off in the smoke and the benches: defaults only)
 #endif
-} AppConfig;
+} AppArgs;
 
-App *app_create(Arena *perm, AppConfig *config); // NULL on failure (logged)
+App *app_create(Arena *perm, AppArgs *args); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 

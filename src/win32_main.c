@@ -41,6 +41,7 @@ typedef struct Platform {
     f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
     String8 file_path;    // the first argument that is not a flag
     i64 goto_line, goto_col; // +LINE[:COLUMN], 1-based; 0 = not given
+    b32 render_mode_forced;
     FbRenderMode render_mode;
 #if TEAL_DEV
     HANDLE log_file;
@@ -55,6 +56,7 @@ typedef struct Platform {
     b32 bench_view;
     String8 screenshot_path;
     String8 atlas_path;
+    String8 config_path;
 #endif
 } Platform;
 
@@ -382,6 +384,40 @@ void os_set_window_title(String8 title) {
 #if TEAL_DEV
     p->title_sets++;
 #endif
+}
+
+void os_set_caption_color(u32 rgb) {
+    Platform *p = g_platform;
+    if (!p || !p->hwnd) return;
+    COLORREF caption = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    DwmSetWindowAttribute(p->hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption)); // fails before Windows 11
+}
+
+String8 os_exe_dir(Arena *arena) {
+    u16 path[MAX_PATH * 4];
+    DWORD len = GetModuleFileNameW(NULL, (WCHAR *)path, ARRAY_COUNT(path));
+    if (len >= ARRAY_COUNT(path)) len = 0;
+    while (len > 0 && path[len - 1] != '\\') len--;
+    return str8_from_str16(arena, path, len > 0 ? len - 1 : 0);
+}
+
+String8 os_get_env(Arena *arena, String8 name) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    WCHAR *name16 = (WCHAR *)str16_from_str8(scratch, name).data;
+    String8 result = { 0 };
+    DWORD cap = GetEnvironmentVariableW(name16, NULL, 0);
+    if (cap > 1) {
+        WCHAR *value = PUSH_ARRAY(scratch, WCHAR, cap);
+        DWORD len = GetEnvironmentVariableW(name16, value, cap);
+        if (len && len < cap) result = str8_from_str16(scratch, (u16 *)value, len);
+    }
+    if (arena != scratch) {
+        String8 copy = result.len ? str8_copy(arena, result) : result;
+        arena_pop_to(scratch, mark);
+        result = copy;
+    }
+    return result;
 }
 
 void os_fatal(String8 message) {
@@ -1104,6 +1140,7 @@ static void win32_bench_view(Platform *p) {
     Event end = { .kind = EVENT_KEY_DOWN, .key = KEY_END, .mods = MOD_CTRL };
     Event home = { .kind = EVENT_KEY_DOWN, .key = KEY_HOME, .mods = MOD_CTRL };
     Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' }; // ends dropping text after C-Home
     BenchStat st = { 0 }, st2 = { 0 };
     r_dev_take_frame_stats(p->renderer);
 
@@ -1122,6 +1159,7 @@ static void win32_bench_view(Platform *p) {
     win32_bench_log("bench-view", "beginning-of-buffer (C-Home)", &st2);
     st = (BenchStat){ 0 };
     app_dev_goto_line(p->app, 1000000);
+    win32_bench_view_step(p, plain, &st2);
     for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &st);
     win32_bench_log("bench-view", "self-insert at line 1,000,000", &st);
     r_dev_set_present_interval(p->renderer, 1);
@@ -1231,8 +1269,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
+        if (str8_equal(a, STR8_LIT("--config")) && has_value) { p->config_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
+            p->render_mode_forced = 1;
             if (str8_equal(mode, STR8_LIT("classic"))) p->render_mode = FB_RENDER_GDI_CLASSIC;
             else if (str8_equal(mode, STR8_LIT("natural"))) p->render_mode = FB_RENDER_NATURAL;
             else p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
@@ -1247,10 +1287,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
 #if TEAL_DEV
     // Log next to the executable (build\teal.log), independent of the working directory.
-    u16 exe_path[MAX_PATH * 4];
-    DWORD exe_len = GetModuleFileNameW(NULL, (WCHAR *)exe_path, ARRAY_COUNT(exe_path));
-    while (exe_len > 0 && exe_path[exe_len - 1] != '\\') exe_len--;
-    String8 exe_dir = str8_from_str16(&p->perm, exe_path, exe_len > 0 ? exe_len - 1 : 0);
+    String8 exe_dir = os_exe_dir(&p->perm);
     String8 log_path = str8_fmt(&p->perm, "%S\\teal.log", exe_dir);
     String16 log_path16 = str16_from_str8(&p->perm, log_path);
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
@@ -1309,23 +1346,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     SetWindowPos(p->hwnd, NULL, work.left + (work_w - win_w) / 2, work.top + (work_h - win_h) / 2, win_w, win_h,
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
-    // Dark title bar; on Windows 11 also paint the caption in the background color. Failures are fine.
+    // Dark title bar. The app paints the caption in the background color (os_set_caption_color).
     BOOL dark = TRUE;
     DwmSetWindowAttribute(p->hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-    COLORREF caption = RGB((THEME_BACKGROUND >> 16) & 0xFF, (THEME_BACKGROUND >> 8) & 0xFF, THEME_BACKGROUND & 0xFF);
-    DwmSetWindowAttribute(p->hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
 
     RECT client;
     GetClientRect(p->hwnd, &client);
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
 
-    AppConfig config = { .dpi_scale = scale, .render_mode = p->render_mode, .file_path = p->file_path,
-                         .goto_line = p->goto_line, .goto_col = p->goto_col };
+    AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
+                         .file_path = p->file_path, .goto_line = p->goto_line, .goto_col = p->goto_col };
 #if TEAL_DEV
-    config.sample = p->sample || p->smoke; // the smoke probes check the sample
+    app_args.sample = p->sample || p->smoke; // the smoke probes check the sample
+    app_args.config_path = p->config_path;
+    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view); // deterministic: defaults
 #endif
-    p->app = app_create(&p->perm, &config);
+    p->app = app_create(&p->perm, &app_args);
     if (!p->app) {
 #if TEAL_DEV
         if (win32_dev_batch_mode(p)) {

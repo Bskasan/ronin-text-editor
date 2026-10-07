@@ -10,6 +10,7 @@
 #include "command.h"
 #include "view.h"
 #include "keymap.h"
+#include "config.h"
 
 #include "base.c"
 #include "png.c"
@@ -17,6 +18,7 @@
 #include "buffer.c"
 #include "view.c"
 #include "keymap.c"
+#include "config.c"
 #include "app.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only
