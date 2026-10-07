@@ -1,6 +1,6 @@
-// app.c — Phase 2 placeholder. Throwaway (replaced in Phase 4): hand-colored sample text to
-// judge the theme and the glyph pipeline, a mode line, a minibuffer that echoes typed text,
-// and a block cursor over the text grid.
+// app.c — the editor core. Phase 3: a throwaway display of one buffer (the real view arrives
+// in Phase 4), a mode line and a minibuffer. Dev builds keep the Phase 2 hand-colored sample
+// behind --sample for the smoke probes and screenshots (until highlighting in Phase 8).
 
 // Theme (source of truth until the theme file arrives in Phase 7).
 #define THEME_BACKGROUND 0x072626
@@ -14,6 +14,7 @@
 #define THEME_TYPE       0x8cde94
 #define THEME_VARIABLE   0xc1d1e3
 
+#if TEAL_DEV
 // Sample text markup: these bytes switch the color of what follows and take no cell.
 #define P "\x01" // plain text
 #define K "\x02" // keyword
@@ -75,14 +76,18 @@ static const char *app_sample[] = {
 #undef N
 #undef C
 #undef V
+#endif // TEAL_DEV
 
 #define APP_MINIBUFFER_CAP 1024
 
 struct App {
     Font *font;
-    i32 cursor_col, cursor_row;
     u8 minibuffer[APP_MINIBUFFER_CAP];
     i32 minibuffer_len;
+#if TEAL_DEV
+    b32 sample; // --sample: the Phase 2 display
+    i32 cursor_col, cursor_row;
+#endif
 };
 
 typedef struct AppLayout {
@@ -103,6 +108,13 @@ static AppLayout app_layout(App *app, FrameInput *in) {
     return l;
 }
 
+static void app_draw_mode_line(App *app, Renderer *r, FrameInput *in, AppLayout *l, String8 text) {
+    Rect mode_line = { 0, (f32)l->mode_line_y, (f32)in->width, (f32)(l->mode_line_y + l->line_h) };
+    r_push_rect(r, mode_line, COLOR_HEX(THEME_TEXT)); // inverse video
+    font_draw_text(app->font, r, 0, l->mode_line_y, text, COLOR_HEX(THEME_BACKGROUND));
+}
+
+#if TEAL_DEV
 static String8 app_sample_line(i32 row) {
     if (row < 0 || row >= ARRAY_COUNT(app_sample)) return str8(NULL, 0);
     return str8_cstr(app_sample[row]);
@@ -159,21 +171,9 @@ static void app_draw_sample_line(App *app, Renderer *r, i32 y, String8 line) {
     }
 }
 
-App *app_create(Arena *perm, AppConfig *config) {
-    App *app = PUSH_STRUCT(perm, App);
-    app->font = font_create(perm, config->dpi_scale, config->render_mode);
-    if (!app->font) return NULL;
-    return app;
-}
-
-i32 app_shutdown(App *app) {
-    return font_shutdown(app->font);
-}
-
-b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
-    font_frame_begin(app->font, r, in->dpi_scale);
-    AppLayout l = app_layout(app, in);
-
+// --sample: the Phase 2 display. Hand-colored sample text, a block cursor moved by the arrow
+// keys, a minibuffer that echoes typed text.
+static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout *l) {
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
         switch (e->kind) {
@@ -201,30 +201,58 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
             break;
         }
     }
-    app->cursor_col = CLAMP(app->cursor_col, 0, l.cols - 1);
-    app->cursor_row = CLAMP(app->cursor_row, 0, l.rows - 1);
+    app->cursor_col = CLAMP(app->cursor_col, 0, l->cols - 1);
+    app->cursor_row = CLAMP(app->cursor_row, 0, l->rows - 1);
 
     r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
 
-    for (i32 row = 0; row < l.rows && row < ARRAY_COUNT(app_sample); row++) {
-        app_draw_sample_line(app, r, row * l.line_h, app_sample_line(row));
+    for (i32 row = 0; row < l->rows && row < ARRAY_COUNT(app_sample); row++) {
+        app_draw_sample_line(app, r, row * l->line_h, app_sample_line(row));
     }
 
     // Block cursor; the character under it is redrawn in the background color, as Emacs does.
-    i32 cx = app->cursor_col * l.cell_w, cy = app->cursor_row * l.line_h;
-    Rect cursor = { (f32)cx, (f32)cy, (f32)(cx + l.cell_w), (f32)(cy + l.line_h) };
+    i32 cx = app->cursor_col * l->cell_w, cy = app->cursor_row * l->line_h;
+    Rect cursor = { (f32)cx, (f32)cy, (f32)(cx + l->cell_w), (f32)(cy + l->line_h) };
     r_push_rect(r, cursor, COLOR_HEX(THEME_CURSOR));
     font_draw_text(app->font, r, cx, cy, app_char_at(app->cursor_row, app->cursor_col), COLOR_HEX(THEME_BACKGROUND));
 
-    // Mode line: inverse video.
-    Rect mode_line = { 0, (f32)l.mode_line_y, (f32)in->width, (f32)(l.mode_line_y + l.line_h) };
-    r_push_rect(r, mode_line, COLOR_HEX(THEME_TEXT));
     String8 status = str8_fmt(in->scratch, "-:---  sample.jai    (Jai)    L%d C%d", app->cursor_row + 1, app->cursor_col);
-    font_draw_text(app->font, r, 0, l.mode_line_y, status, COLOR_HEX(THEME_BACKGROUND));
+    app_draw_mode_line(app, r, in, l, status);
+    font_draw_text(app->font, r, 0, l->minibuffer_y, str8(app->minibuffer, app->minibuffer_len), COLOR_HEX(THEME_TEXT));
 
-    // Minibuffer: echoes typed text.
+    r_end_frame(r);
+    return 1;
+}
+#endif
+
+App *app_create(Arena *perm, AppConfig *config) {
+    App *app = PUSH_STRUCT(perm, App);
+    app->font = font_create(perm, config->dpi_scale, config->render_mode);
+    if (!app->font) return NULL;
+#if TEAL_DEV
+    app->sample = config->sample;
+#endif
+    return app;
+}
+
+i32 app_shutdown(App *app) {
+    return font_shutdown(app->font);
+}
+
+b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
+    font_frame_begin(app->font, r, in->dpi_scale);
+    AppLayout l = app_layout(app, in);
+#if TEAL_DEV
+    if (app->sample) return app_dev_sample_frame(app, in, r, &l);
+#endif
+
+    for (i32 i = 0; i < in->event_count; i++) {
+        if (in->events[i].kind == EVENT_CLOSE) return 0;
+    }
+
+    r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
+    app_draw_mode_line(app, r, in, &l, STR8_LIT("-:---  *scratch*"));
     font_draw_text(app->font, r, 0, l.minibuffer_y, str8(app->minibuffer, app->minibuffer_len), COLOR_HEX(THEME_TEXT));
-
     r_end_frame(r);
     return 1;
 }
