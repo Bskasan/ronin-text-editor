@@ -21,6 +21,8 @@ typedef int32_t  b32;
 typedef float    f32;
 typedef double   f64;
 
+#define I64_MAX INT64_MAX
+
 #ifndef TEAL_DEV
 #define TEAL_DEV 0
 #endif
