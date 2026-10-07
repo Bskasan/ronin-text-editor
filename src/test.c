@@ -11,7 +11,7 @@ typedef struct Test {
     Arena arena; // test data; reset between tests
     u64 rng;
     i32 failures;
-    String8 tmp_dir; // build	mp: round-trip inputs stay there for inspection
+    String8 tmp_dir; // build\tmp: round-trip inputs stay there for inspection
 } Test;
 
 static u64 test_rand(Test *t) { // splitmix64
