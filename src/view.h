@@ -29,10 +29,10 @@ i64 view_offset_at_column(Buffer *buf, i64 line, i64 col);
 
 #define ECHO_CAP 1024
 
-typedef struct Echo {
+struct Echo {
     u8 text[ECHO_CAP];
     i32 len;
-} Echo;
+};
 
 void echo_message(Echo *e, const char *fmt, ...); // the base.h formatter
 void echo_clear(Echo *e);
@@ -43,13 +43,13 @@ void echo_clear(Echo *e);
 #define VIEW_CURSOR_RESERVE MB(16)  // address space for the cursor array (~1M cursors)
 #define VIEW_CONTEXT_LINES 2        // kept on screen by scroll-up/down-command (Emacs next-screen-context-lines)
 
-typedef struct Cursor {
+struct Cursor {
     BufferMarker point; // advances over text inserted at it
     BufferMarker mark;  // does not; unused until Phase 6
     i64 goal_col;       // visual column kept across consecutive vertical motions, -1 = none
-} Cursor;
+};
 
-typedef struct View {
+struct View {
     Buffer *buffer;
     Arena cursor_arena; // holds only `cursors`, so the array stays contiguous
     Cursor *cursors;    // [0] is the primary cursor; visibility follows it
@@ -60,7 +60,7 @@ typedef struct View {
     i32 rows, cols;     // full text cells, from the layout (or a test)
     i32 recenter_step;  // recenter-top-bottom: 0 center, 1 top, 2 bottom
     i32 recenter_row;   // a command's request: if point is off screen, put its line on this row; -1 = center
-} View;
+};
 
 View   *view_create(Arena *arena, Buffer *buf); // one cursor at 0, scrolled to the top
 void    view_destroy(View *view);               // releases its markers and the cursor array
@@ -78,32 +78,9 @@ void view_set_point_at(View *view, i64 row, i64 col);      // a click: text row 
 void view_goto_line_column(View *view, i64 line, i64 col); // 0-based; the line is clamped
 
 // ---------------------------------------------------------------------------
-// Commands. A command is written for one cursor; its only argument is the context, which
-// carries the View and that cursor. view_run_command is the single place that loops over the
-// cursors (Phase 14 adds merging and ordered edits there); COMMAND_ONCE commands act on the
-// View as a whole and run once, with the primary cursor.
-
-typedef struct CommandContext CommandContext;
-typedef void CommandFn(CommandContext *ctx);
-
-enum {
-    COMMAND_ONCE = 1 << 0,
-};
-
-typedef struct Command {
-    const char *name; // the Emacs name
-    CommandFn *fn;
-    u32 flags;
-} Command;
-
-struct CommandContext {
-    View *view;
-    Cursor *cursor;   // the cursor being processed
-    Echo *echo;
-    u32 codepoint;    // self-insert: the typed character
-    const Command *this_command;
-    const Command *last_command;
-};
+// Commands (command.h). view_run_command is the single place that loops over the cursors
+// (Phase 14 adds merging and ordered edits there); COMMAND_ONCE commands act on the View as a
+// whole and run once, with the primary cursor.
 
 void view_run_command(CommandContext *ctx, const Command *cmd);
 

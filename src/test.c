@@ -1473,6 +1473,24 @@ static b32 test_view_fuzz(Test *t, u64 seed) {
 }
 
 // ---------------------------------------------------------------------------
+// Commands
+
+// Every command is found by its own name, names are unique, and unknown names are refused.
+static b32 test_commands(Test *t) {
+    i32 n = command_count();
+    for (i32 i = 0; i < n; i++) {
+        const Command *c = command_at(i);
+        String8 name = str8_cstr(c->name);
+        TEST_CHECK(t, name.len > 0 && c->fn, "commands: entry %d has no name or function", i);
+        TEST_CHECK(t, command_find(name) == c, "commands: '%s' does not find itself (duplicate name?)", c->name);
+    }
+    TEST_CHECK(t, !command_find(STR8_LIT("no-such-command")) && !command_find(STR8_LIT("")) &&
+                  !command_find(STR8_LIT("forward-cha")), "commands: unknown names must not be found");
+    LOG("test: ok: commands, %d in the table", n);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
 #define TEST_BENCH_SIZE MB(100)
@@ -1626,6 +1644,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_view_edit_limits(&t);
     arena_reset(&t.arena);
     test_view_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_commands(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
