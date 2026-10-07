@@ -302,6 +302,140 @@ static b32 test_fuzz(Test *t, u64 seed) {
 }
 
 // ---------------------------------------------------------------------------
+// Markers: differential fuzz against naively adjusted positions
+
+#define TEST_MARKER_OPS 20000
+#define TEST_MARKER_COUNT 300
+
+typedef struct TestMarker {
+    BufferMarker handle; // 0 = destroyed
+    i64 pos;
+    b32 advance;
+} TestMarker;
+
+// The rules of buffer.h, applied to one position. Snapping is done separately, on every marker.
+static i64 test_ref_adjust(i64 pos, b32 advance, i64 start, i64 end, i64 len) {
+    if (pos < start) return pos;
+    if (pos > end) return pos + len - (end - start);
+    if (pos == end && end > start) return start + len;
+    return advance ? start + len : start;
+}
+
+static i64 test_random_live_marker(Test *t, TestMarker *m, i64 count) {
+    for (i32 tries = 0; tries < 16; tries++) {
+        i64 k = test_below(t, count);
+        if (m[k].handle) return k;
+    }
+    return -1;
+}
+
+static b32 test_markers(Test *t, u64 seed) {
+    t->rng = seed ^ 0x6d61726b6572ull;
+    Buffer *buf = buffer_create(STR8_LIT("markers"));
+    TEST_CHECK(t, buf, "markers: buffer_create failed");
+    TestRef ref = { PUSH_ARRAY(&t->arena, u8, MB(1)), 0, MB(1), 0 };
+    u8 *text = PUSH_ARRAY(&t->arena, u8, KB(64));
+    String8 init = test_random_text(t, text, KB(4));
+    buffer_replace(buf, 0, 0, init);
+    test_ref_replace(&ref, 0, 0, init);
+
+    TestMarker *m = PUSH_ARRAY(&t->arena, TestMarker, TEST_MARKER_COUNT);
+    for (i64 k = 0; k < TEST_MARKER_COUNT; k++) {
+        m[k].advance = (b32)test_below(t, 2);
+        m[k].pos = test_ref_snap(&ref, test_below(t, ref.len + 1));
+        m[k].handle = buffer_marker_create(buf, m[k].pos, m[k].advance);
+    }
+    i64 live = TEST_MARKER_COUNT, snaps = 0, at_marker = 0;
+    b32 ok = 1;
+    for (i32 op = 0; op < TEST_MARKER_OPS && ok; op++) {
+        i64 r = test_below(t, 100);
+        i64 start = 0, end = 0;
+        String8 s = str8(text, 0);
+        if (r < 4) { // destroy one, or bring a destroyed one back (slot reuse)
+            i64 k = test_below(t, TEST_MARKER_COUNT);
+            if (m[k].handle) {
+                buffer_marker_destroy(buf, m[k].handle);
+                m[k].handle = 0;
+                live--;
+            } else {
+                m[k].advance = (b32)test_below(t, 2);
+                i64 want = test_below(t, ref.len + 1); // not necessarily a boundary: create snaps
+                m[k].pos = test_ref_snap(&ref, want);
+                m[k].handle = buffer_marker_create(buf, want, m[k].advance);
+                live++;
+            }
+        } else if (r < 8) { // set
+            i64 k = test_random_live_marker(t, m, TEST_MARKER_COUNT);
+            if (k >= 0) {
+                i64 want = test_below(t, ref.len + 1);
+                buffer_marker_set(buf, m[k].handle, want);
+                m[k].pos = test_ref_snap(&ref, want);
+            }
+        } else { // edit, often exactly at markers
+            i64 k = test_random_live_marker(t, m, TEST_MARKER_COUNT);
+            b32 from_marker = k >= 0 && test_below(t, 2);
+            start = from_marker ? m[k].pos : test_below(t, ref.len + 1);
+            at_marker += from_marker;
+            i64 kind = test_below(t, 3); // insert, delete, replace
+            if (ref.len > (i64)KB(32)) kind = 1;
+            if (kind != 0) {
+                i64 k2 = test_random_live_marker(t, m, TEST_MARKER_COUNT);
+                end = (k2 >= 0 && test_below(t, 2) && m[k2].pos >= start) ? m[k2].pos : start + 1 + test_below(t, 24);
+            } else {
+                end = start;
+            }
+            end = MIN(end, ref.len);
+            start = test_ref_snap(&ref, start);
+            end = test_ref_snap(&ref, MAX(start, end));
+            if (kind != 1) s = test_random_text(t, text, 1 + test_below(t, 8));
+            if (kind != 1 && test_below(t, 3) == 0) { // fragments of multi-byte characters: joins and splits
+                static const char *frags[] = { "â", "", "¬", "â", "¬", "Ä", "", "ð", "" };
+                String8 f = str8_cstr(frags[test_below(t, ARRAY_COUNT(frags))]);
+                memcpy(text, f.data, (size_t)f.len);
+                s = str8(text, f.len);
+            }
+            if (!buffer_replace(buf, start, end, s)) {
+                LOG("test: FAIL: markers op %d (seed 0x%X): replace(%D, %D, %D bytes) refused", op, seed, start, end, s.len);
+                t->failures++;
+                ok = 0;
+                break;
+            }
+            test_ref_replace(&ref, start, end, s);
+            for (i64 j = 0; j < TEST_MARKER_COUNT; j++) {
+                if (!m[j].handle) continue;
+                i64 adjusted = test_ref_adjust(m[j].pos, m[j].advance, start, end, s.len);
+                m[j].pos = test_ref_snap(&ref, adjusted); // every marker, not only the ones near the edit
+                snaps += m[j].pos != adjusted;
+            }
+        }
+        if (buf->marker_live != live) {
+            LOG("test: FAIL: markers op %d (seed 0x%X): %D live markers, expected %D", op, seed, buf->marker_live, live);
+            t->failures++;
+            ok = 0;
+            break;
+        }
+        for (i64 j = 0; j < TEST_MARKER_COUNT && ok; j++) {
+            if (!m[j].handle) continue;
+            i64 got = buffer_marker_get(buf, m[j].handle);
+            if (got != m[j].pos) {
+                LOG("test: FAIL: markers op %d (seed 0x%X): marker %D (%s) at %D, expected %D; last edit replace(%D, %D, %D bytes)",
+                    op, seed, j, m[j].advance ? "advance" : "stay", got, m[j].pos, start, end, s.len);
+                t->failures++;
+                ok = 0;
+            }
+        }
+    }
+    if (ok) {
+        for (i64 j = 0; j < TEST_MARKER_COUNT; j++) if (m[j].handle) buffer_marker_destroy(buf, m[j].handle);
+        TEST_CHECK(t, buf->marker_live == 0, "markers: %D live after destroying all", buf->marker_live);
+        LOG("test: ok: markers, %d ops, %d markers, seed 0x%X, %D edits at a marker, %D snaps to a boundary, %D slots used",
+            TEST_MARKER_OPS, TEST_MARKER_COUNT, seed, at_marker, snaps, buf->marker_count);
+    }
+    buffer_destroy(buf);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // Capacity and read-only
 
 static b32 test_fill(Buffer *buf, TestRef *ref, i64 n, u8 *scratch) {
@@ -890,6 +1024,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     u64 t0 = os_time_us();
 
     test_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_markers(&t, seed);
     arena_reset(&t.arena);
     test_capacity(&t);
     arena_reset(&t.arena);
