@@ -500,6 +500,41 @@ static const Command *app_key_command(Event *e, u32 *codepoint) {
     }
 }
 
+// The view under a pixel, or -1.
+static i32 app_view_at(App *app, i32 x, i32 y) {
+    for (i32 i = 0; i < app->view_count; i++) {
+        View *v = app->views[i];
+        if (x >= v->x && x < v->x + v->w && y >= v->y && y < v->y + v->h) return i;
+    }
+    return -1;
+}
+
+// A left click in a text area activates its view and puts point at the clicked cell.
+static void app_click(App *app, AppLayout *l, i32 x, i32 y) {
+    i32 i = app_view_at(app, x, y);
+    if (i < 0) return;
+    View *v = app->views[i];
+    if (y >= v->y + v->h - l->line_h) return; // the mode line
+    i64 row = MIN((y - v->y) / l->line_h, v->rows - 1); // the partial row counts as the last one
+    i64 col = v->left_col + MAX(x - (v->x + l->pad), 0) / l->cell_w;
+    app->active_view = i;
+    view_set_point_at(v, row, col);
+    view_ensure_visible(v);
+    app->ctx.last_command = NULL;
+}
+
+// The wheel scrolls the view under the mouse; point is dragged along to stay visible.
+static void app_wheel(App *app, i32 x, i32 y, i32 wheel) {
+    app->wheel_accum += wheel * APP_WHEEL_LINES;
+    i32 lines = app->wheel_accum / 120;
+    app->wheel_accum -= lines * 120;
+    i32 i = app_view_at(app, x, y);
+    if (!lines || i < 0) return;
+    view_scroll_lines(app->views[i], -lines); // positive = away from the user = towards the top
+    view_ensure_visible(app->views[i]);
+    app->ctx.last_command = NULL;
+}
+
 static void app_run_command(App *app, const Command *cmd, u32 codepoint) {
     app->ctx.view = app->views[app->active_view];
     app->ctx.codepoint = codepoint;
@@ -540,6 +575,12 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
         case EVENT_TEXT:
             echo_clear(&app->echo);
             app_run_command(app, &CMD_SELF_INSERT, e->codepoint);
+            break;
+        case EVENT_MOUSE_DOWN:
+            if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y);
+            break;
+        case EVENT_MOUSE_WHEEL:
+            app_wheel(app, e->x, e->y, e->wheel);
             break;
         default:
             break;
