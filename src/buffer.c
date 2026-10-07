@@ -495,6 +495,168 @@ OsFileStatus buffer_load_file(Buffer *buf, String8 path) {
     return OS_FILE_OK;
 }
 
+// ---------------------------------------------------------------------------
+// Saving
+
+typedef struct BufferWriter {
+    OsFile file;
+    OsFileStatus status;
+    i64 used;
+    u8 chunk[BUFFER_CHUNK];
+} BufferWriter;
+
+static void buffer_writer_flush(BufferWriter *w) {
+    if (w->used && w->status == OS_FILE_OK) w->status = os_file_write(w->file, w->chunk, w->used);
+    w->used = 0;
+}
+
+static void buffer_writer_put(BufferWriter *w, u8 *data, i64 len) {
+    if (w->used + len > (i64)sizeof(w->chunk)) buffer_writer_flush(w);
+    if (len >= (i64)sizeof(w->chunk)) { // large runs go straight to the file
+        if (w->status == OS_FILE_OK) w->status = os_file_write(w->file, data, len);
+        return;
+    }
+    memcpy(w->chunk + w->used, data, (size_t)len);
+    w->used += len;
+}
+
+// Like utf8_decode, but a 3-byte encoded surrogate (WTF-8, from a UTF-16 load) is that unit.
+static u32 buffer_decode_unit(u8 *s, i64 len, i64 *advance) {
+    if (len >= 3 && s[0] == 0xED && (s[1] & 0xE0) == 0xA0 && (s[2] & 0xC0) == 0x80) {
+        *advance = 3;
+        return 0xD000u | ((u32)(s[1] & 0x3F) << 6) | (s[2] & 0x3Fu);
+    }
+    return utf8_decode(s, len, advance);
+}
+
+static void buffer_writer_put_unit(BufferWriter *w, u32 unit, b32 big_endian) {
+    u8 b[2] = { (u8)(big_endian ? unit >> 8 : unit), (u8)(big_endian ? unit : unit >> 8) };
+    buffer_writer_put(w, b, 2);
+}
+
+// Writes the text in the buffer's encoding and line-ending mode. Without conversion the two
+// segments go to the file as they are; otherwise everything streams through the fixed chunk.
+static OsFileStatus buffer_write_contents(Buffer *buf, OsFile file) {
+    BufferWriter *w = (BufferWriter *)os_reserve(sizeof(BufferWriter)); // 64 KB: too big for the stack
+    if (!w || !os_commit(w, sizeof(BufferWriter))) {
+        if (w) os_release(w);
+        return OS_FILE_OUT_OF_MEMORY;
+    }
+    w->file = file;
+    w->status = OS_FILE_OK;
+    w->used = 0;
+    b32 crlf = buf->eol == BUFFER_EOL_CRLF;
+    String8 seg[2];
+
+    if (buf->encoding == BUFFER_UTF16LE || buf->encoding == BUFFER_UTF16BE) {
+        b32 big = buf->encoding == BUFFER_UTF16BE;
+        buffer_move_gap(buf, buffer_size(buf)); // one contiguous run, so no character straddles the gap
+        u8 *t = buf->text;
+        i64 n = buf->gap_start;
+        buffer_writer_put_unit(w, 0xFEFF, big);
+        for (i64 i = 0; i < n && w->status == OS_FILE_OK;) {
+            i64 advance;
+            u32 cp = buffer_decode_unit(t + i, n - i, &advance);
+            i += advance;
+            if (cp == '\n' && crlf) buffer_writer_put_unit(w, '\r', big);
+            if (cp >= 0x10000) {
+                cp -= 0x10000;
+                buffer_writer_put_unit(w, 0xD800 + (cp >> 10), big);
+                buffer_writer_put_unit(w, 0xDC00 + (cp & 0x3FF), big);
+            } else {
+                buffer_writer_put_unit(w, cp, big);
+            }
+        }
+    } else {
+        if (buf->encoding == BUFFER_UTF8_BOM) buffer_writer_put(w, (u8 *)"\xEF\xBB\xBF", 3);
+        buffer_segments(buf, &seg[0], &seg[1]);
+        for (i32 k = 0; k < 2; k++) {
+            if (!crlf) {
+                buffer_writer_put(w, seg[k].data, seg[k].len);
+                continue;
+            }
+            for (i64 i = 0; i < seg[k].len && w->status == OS_FILE_OK;) {
+                i64 nl = buffer_find_newline(seg[k].data, i, seg[k].len);
+                buffer_writer_put(w, seg[k].data + i, nl - i);
+                if (nl < seg[k].len) buffer_writer_put(w, (u8 *)"\r\n", 2);
+                i = nl + 1;
+            }
+        }
+    }
+    buffer_writer_flush(w);
+    OsFileStatus status = w->status;
+    os_release(w);
+    return status;
+}
+
+OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
+    u64 mark = arena_pos(&buf->meta);
+    String8 full = os_full_path(&buf->meta, path);
+    if (!full.len) return OS_FILE_BAD_PATH;
+    u64 mark_full = arena_pos(&buf->meta);
+
+    OsFileInfo info;
+    OsFileStatus status = os_file_info(full, &info);
+    b32 exists = status == OS_FILE_OK;
+    if (exists && info.is_dir) status = OS_FILE_IS_DIRECTORY;
+    else if (exists && info.read_only) status = OS_FILE_READ_ONLY; // refused before anything is written
+    else if (status == OS_FILE_NOT_FOUND) status = OS_FILE_OK;
+
+    b32 done = 0;
+    if (status == OS_FILE_OK && (!exists || info.swap_ok)) {
+        // Write a temp file next to the target, flush it, swap it in. A failed write never
+        // touches the original. Only creating or swapping the temp file falls back to in place.
+        OsFile temp;
+        String8 temp_path;
+        OsFileStatus temp_status = os_file_create_temp(full, &buf->meta, &temp, &temp_path);
+        if (temp_status == OS_FILE_OK) {
+            status = buffer_write_contents(buf, temp);
+            if (status == OS_FILE_OK && flush) status = os_file_flush(temp);
+            os_file_close(temp);
+            if (status == OS_FILE_OK) done = os_file_replace(full, temp_path) == OS_FILE_OK;
+            if (!done) os_file_delete(temp_path);
+        }
+    }
+    if (status == OS_FILE_OK && !done) {
+        // In place: a symlink or a file with several hard links (a swap would detach them), a
+        // directory that refuses the temp file, or a swap that failed.
+        OsFile file;
+        status = os_file_open_overwrite(full, &file);
+        if (status == OS_FILE_OK) {
+            status = buffer_write_contents(buf, file);
+            if (status == OS_FILE_OK && flush) status = os_file_flush(file);
+            os_file_close(file);
+        }
+    }
+    arena_pop_to(&buf->meta, mark_full);
+    if (status != OS_FILE_OK) {
+        arena_pop_to(&buf->meta, mark);
+        return status;
+    }
+
+    if (str8_equal(full, buf->path)) {
+        arena_pop_to(&buf->meta, mark);
+    } else {
+        buf->path = full; // keeps the copy made by os_full_path
+        buf->name = buffer_file_name(full);
+    }
+    buf->modified = 0;
+    if (os_file_info(buf->path, &info) == OS_FILE_OK) {
+        buf->file_size = info.size;
+        buf->file_time = info.write_time;
+    }
+    return OS_FILE_OK;
+}
+
+OsFileStatus buffer_save_as(Buffer *buf, String8 path) {
+    return buffer_save_as_opt(buf, path, 1);
+}
+
+OsFileStatus buffer_save(Buffer *buf) {
+    if (!buf->path.len) return OS_FILE_NO_PATH;
+    return buffer_save_as_opt(buf, buf->path, 1);
+}
+
 const char *buffer_status_text(OsFileStatus status) {
     switch (status) {
     case OS_FILE_OK:                return "ok";
