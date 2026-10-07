@@ -230,6 +230,9 @@ i32 font_draw_text(Font *f, Renderer *r, i32 x, i32 y, String8 text, Color color
         if (b >= 32 && b < 127) { // ASCII: table lookup
             g = f->ascii[b];
             i++;
+        } else if (b < 32) { // control bytes (NUL, CR, ...): the box, whatever the font maps them to
+            g = f->missing;
+            i++;
         } else {
             i64 advance;
             u32 cp = utf8_decode(text.data + i, text.len - i, &advance);
