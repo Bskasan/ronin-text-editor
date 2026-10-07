@@ -124,7 +124,8 @@ static b32 font_setup(Font *f) {
 #endif
 
     f->cell_w = MAX((i32)(m.advance + 0.5f), 1);
-    f32 height = m.ascent + m.descent + m.line_gap;
+    f32 height = (m.ascent + m.descent + m.line_gap) * (f32)FONT_LINE_HEIGHT_PERCENT / 100.0f;
+    // The baseline below centers the glyphs, so extra height splits evenly above and below.
     f->line_h = MAX((i32)height + ((f32)(i32)height < height ? 1 : 0), 1);
     f->baseline = (i32)(m.ascent + (f->line_h - (m.ascent + m.descent)) * 0.5f + 0.5f);
 

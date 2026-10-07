@@ -5,6 +5,7 @@
 #define FONT_H
 
 #define FONT_SIZE_PT 12
+#define FONT_LINE_HEIGHT_PERCENT 100 // of the font's natural line height; Phase 5 makes it a setting
 #define FONT_FAMILY          L"Consolas"
 #define FONT_FAMILY_FALLBACK L"Courier New"
 
