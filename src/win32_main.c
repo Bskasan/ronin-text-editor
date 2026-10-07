@@ -525,15 +525,39 @@ static void win32_push_event(Platform *p, Event e) {
     if (p->event_count < EVENT_CAPACITY) p->events[p->event_count++] = e;
 }
 
+// While AltGr is held Windows reports Ctrl and Alt as down; those are not modifiers then, but Left
+// Alt still counts as ALT and Right Ctrl as CTRL, so a chord such as M-{ works where "{" needs AltGr.
 static u32 win32_mods(Platform *p) {
     u32 mods = 0;
     if (GetKeyState(VK_SHIFT) & 0x8000) mods |= MOD_SHIFT;
-    // While AltGr is held Windows reports Ctrl and Alt as down; they are not modifiers then.
-    if (!p->altgr) {
+    if (p->altgr) {
+        if (GetKeyState(VK_RCONTROL) & 0x8000) mods |= MOD_CTRL;
+        if (GetKeyState(VK_LMENU) & 0x8000) mods |= MOD_ALT;
+    } else {
         if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CTRL;
         if (GetKeyState(VK_MENU) & 0x8000) mods |= MOD_ALT;
     }
     return mods;
+}
+
+// The character a key produces with the current Shift / AltGr (and Caps Lock) state, Ctrl and
+// Alt ignored. Flag 0x4 leaves the kernel's dead-key state untouched, so typing is not disturbed.
+// A dead key yields its spacing accent. 0 when the key produces nothing printable.
+static u32 win32_key_char(Platform *p, u32 vk, u32 scancode) {
+    BYTE state[256];
+    if (!GetKeyboardState(state)) return 0;
+    state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_RCONTROL] = 0;
+    state[VK_MENU] = state[VK_LMENU] = state[VK_RMENU] = 0;
+    if (p->altgr) state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_MENU] = state[VK_RMENU] = 0x80;
+    WCHAR buf[8];
+    int n = ToUnicodeEx(vk, scancode, state, buf, ARRAY_COUNT(buf), 0x4, GetKeyboardLayout(0));
+    if (n == 0) return 0;
+    u32 c = buf[0];
+    if (c >= 0xD800 && c <= 0xDBFF && n >= 2 && buf[1] >= 0xDC00 && buf[1] <= 0xDFFF) {
+        c = 0x10000 + ((c - 0xD800) << 10) + (buf[1] - 0xDC00);
+    }
+    if (c < 0x20 || (c >= 0x7F && c <= 0x9F) || (c >= 0xD800 && c <= 0xDFFF)) return 0;
+    return c;
 }
 
 static Key win32_map_vk(u32 vk) {
@@ -681,6 +705,7 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     .mods = win32_mods(p),
                     .scancode = (u32)(HIWORD(lp) & (KF_EXTENDED | 0xFF)),
                     .repeat = (HIWORD(lp) & KF_REPEAT) != 0,
+                    .codepoint = win32_key_char(p, vk, (u32)(HIWORD(lp) & 0xFF)),
                 };
                 win32_push_event(p, e);
                 p->redraw = 1;
@@ -705,7 +730,7 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         p->high_surrogate = 0;
         if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) return 0; // control characters
         u32 mods = win32_mods(p);
-        if ((mods & (MOD_CTRL | MOD_ALT)) && !p->altgr) return 0;
+        if (mods & (MOD_CTRL | MOD_ALT)) return 0; // with AltGr: only when Left Alt / Right Ctrl are added
         Event e = { .kind = EVENT_TEXT, .codepoint = c, .mods = mods };
         win32_push_event(p, e);
         p->redraw = 1;
