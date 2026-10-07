@@ -116,13 +116,68 @@ as text events.
   space; exceeding the cap takes the "atlas full" reset path, so probing always terminates.
 - D3D11CreateDevice runs on a worker thread started at the top of wWinMain; the device stays
   SINGLETHREADED and is only used after the join.
+- Line height is the font's natural height times `FONT_LINE_HEIGHT_PERCENT` (100 for now;
+  Phase 5 exposes it). Render mode stays NATURAL_SYMMETRIC until it becomes a setting in Phase 5.
+
+### Buffers (Phase 3)
+
+- A buffer is raw bytes, treated as UTF-8. Loading and saving never lose or alter bytes:
+  invalid UTF-8 and NUL bytes stay in the buffer, draw as the missing-glyph box, and are
+  written back unchanged. Control bytes other than tab (expanded at draw time) draw as the box,
+  so the CRs of a mixed-ending file are visible.
+- Storage is a gap buffer. Positions are byte offsets (i64) into the logical text and always
+  sit on a codepoint boundary (an invalid byte counts as one unit).
+- Every modification goes through one function, `buffer_replace(buf, start, end, text)`.
+  Insert is an empty range, delete is empty text. It maintains the gap, the line index, the
+  modified flag and an edit counter. Undo (6), highlighting (8) and cursor fix-ups (4, 14)
+  hook in there; nothing else writes buffer memory (except loading, which fills a fresh
+  buffer before anyone sees it).
+- A read-only buffer rejects `buffer_replace` unless its `inhibit_read_only` flag is set
+  (Emacs' inhibit-read-only): program-written buffers such as build output still go through
+  the single entry point.
+- Each buffer owns three reservations and never reallocates: a 1 MB meta arena (the Buffer
+  struct, path, name), 2 GB of text and 8 GB of line index (address space only; the worst case
+  is one newline per byte). Files over 1 GB are refused with a message. An edit that would
+  exceed capacity, or whose commit fails, is rejected and leaves the buffer unchanged.
+- Line index: the positions of the '\n' bytes as u32 (capacity < 2^31), in an array with its
+  own gap paired with the text gap. Entries before the gap are absolute positions, entries
+  after it are distances from the end of the text, so an edit at the gap only touches the
+  entries of the newlines it inserts or deletes; moving the text gap converts the entries it
+  passes. Never rebuilt by rescanning. Line count = newlines + 1 (Emacs).
+- Line endings: a file that is entirely CRLF is stored with LF and written back as CRLF; a
+  file that is entirely LF stays LF; a file with mixed endings is stored and saved byte for
+  byte, CRs left in the text. A file without newlines and a new buffer are LF. Loading strips
+  CRs optimistically in the same pass that builds the line index (SSE2 scan for '\n'); the
+  first bare LF after stripping started restores the processed prefix in one backward pass.
+- Encodings: UTF-8 with or without BOM (BOM stripped, restored on save). UTF-16 LE / BE with
+  BOM (and an even length) is converted to UTF-8 on load and written back in its encoding;
+  unpaired surrogates are kept as 3-byte WTF-8 so the round trip stays exact. Everything else
+  is raw bytes.
+- Saving writes a temp file `<name>.teal~N` in the same directory, streaming through a fixed
+  64 KB chunk when converting (no second copy of the text), flushes it (FlushFileBuffers), then
+  swaps it in with ReplaceFileW (attributes, ACLs, creation time preserved; MoveFileExW when
+  the target does not exist). It writes in place instead (also flushed) when the target is a
+  symlink or has several hard links, when the temp file cannot be created, or when
+  ReplaceFileW fails. A read-only target is refused before anything is written.
+- Paths are stored as full, normalized UTF-8 paths (GetFullPathNameW). Opening a path that
+  does not exist gives an empty buffer visiting it, "(New file)", as in Emacs.
+- Every file failure returns an `OsFileStatus` the caller turns into a minibuffer message.
+- `TEAL_D3D_DEBUG` (defaults to TEAL_DEV) controls the D3D11 debug layer, so `build.bat bench`
+  is an optimized dev build without it.
 
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
   message wait, for lower input latency (Phase 15 candidate).
 - Startup is ~190 ms, of which ~155 ms is `D3D11CreateDevice` (NVIDIA driver load) even on
-  its own thread; everything else already overlaps it.
+  its own thread; everything else already overlaps it. Accepted. To make the launch feel
+  instant: show the window immediately with the background color painted (GDI) until the
+  first Present.
+- Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
+- A setting to turn off the flush on save (Phase 5).
+- Deleting bytes can join invalid sequences into a valid character, so a position that was a
+  codepoint boundary may stop being one; cursor fix-ups (Phase 4) must snap.
+- Detect changes made outside the editor (file size and write time are already recorded).
 - Wide (East Asian) characters and emoji occupying two cells; color emoji.
 - System font fallback for codepoints Consolas lacks.
 - Bold / italic faces, if a theme ever wants them.
