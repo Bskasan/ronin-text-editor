@@ -84,6 +84,8 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
     build/teal_debug.exe --render-mode classic|natural|symmetric   (default symmetric)
     build/teal_debug.exe --scale 150                      # force the DPI scale (percent)
     build/teal_debug.exe --bench-text                     # 300 frames, Present(0, 0)
+    build/teal_bench.exe --bench-buffer                   # 100 MB file (build\tmp): load, inserts,
+                                                          # lookups, save, frames at top/middle/end
 
 `--smoke` shows the window without activating it, renders 3 frames, reads back the third
 and checks the probes from app_dev_probes: exact background / mode line / cursor pixels, a

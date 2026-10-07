@@ -762,6 +762,126 @@ static b32 test_failures(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// --bench-buffer (the frame part runs in the platform layer, through the real app path)
+
+#define TEST_BENCH_SIZE MB(100)
+
+// build\tmp\bench_100mb.txt: ~100 MB of code-like lines (~2 M), generated once.
+String8 test_bench_buffer_file(Arena *arena, String8 tmp_dir) {
+    String8 path = str8_fmt(arena, "%S\\bench_100mb.txt", tmp_dir);
+    OsFileInfo info;
+    if (os_file_info(path, &info) == OS_FILE_OK && info.size >= (i64)TEST_BENCH_SIZE) return path;
+
+    static const char *words[] = {
+        "if", "(", ")", "{", "}", "return", "buffer", "->", "gap_start", "=", "+", "i64", "u8", "*",
+        "line", "count", "0", ";", "//", "the", "text", "for", "while", "x", "y", "size", "<", "1",
+    };
+    Test t = { 0 };
+    t.rng = 0xbe7c4;
+    i64 cap = MB(1), used = 0, total = 0, lines = 0;
+    u8 *chunk = PUSH_ARRAY(arena, u8, cap + 256);
+    OsFile file;
+    if (os_file_open_overwrite(path, &file) != OS_FILE_OK) {
+        LOG("bench-buffer: cannot create %S", path);
+        return str8(NULL, 0);
+    }
+    u64 t0 = os_time_us();
+    while (total + used < (i64)TEST_BENCH_SIZE) {
+        // One line: indentation, then words up to a random length (0..~100 bytes, ~50 on average).
+        i64 indent = test_below(&t, 4) * 4, target = test_below(&t, 90);
+        for (i64 i = 0; i < indent; i++) chunk[used++] = ' ';
+        while (target > 0) {
+            String8 w = str8_cstr(words[test_below(&t, ARRAY_COUNT(words))]);
+            memcpy(chunk + used, w.data, (size_t)w.len);
+            used += w.len;
+            chunk[used++] = ' ';
+            target -= w.len + 1;
+        }
+        chunk[used++] = '\n';
+        lines++;
+        if (used >= cap) {
+            os_file_write(file, chunk, used);
+            total += used;
+            used = 0;
+        }
+    }
+    os_file_write(file, chunk, used);
+    total += used;
+    os_file_close(file);
+    LOG("bench-buffer: generated %S: %D bytes, %D lines in %U ms", path, total, lines, (os_time_us() - t0) / 1000);
+    return path;
+}
+
+void test_bench_buffer(String8 path, String8 tmp_dir) {
+    Test t = { 0 };
+    t.rng = 0x5eed;
+    Buffer *buf = buffer_create(STR8_LIT("bench"));
+    u64 t0 = os_time_us();
+    OsFileStatus status = buffer_load_file(buf, path);
+    u64 load_us = os_time_us() - t0;
+    if (status != OS_FILE_OK) {
+        LOG("bench-buffer: load failed: %s", buffer_status_text(status));
+        buffer_destroy(buf);
+        return;
+    }
+    i64 size = buffer_size(buf), lines = buffer_line_count(buf);
+    LOG("bench-buffer: load (warm file cache): %U ms for %D bytes, %D lines (%U MB/s)", load_us / 1000, size, lines,
+        load_us ? (u64)size / load_us : 0);
+
+    // Typing: 10,000 single characters at one spot in the middle. The first one moves the gap there.
+    i64 at = buffer_line_start(buf, lines / 2);
+    u64 first_us = 0, max_us = 0;
+    t0 = os_time_us();
+    for (i32 i = 0; i < 10000; i++) {
+        u64 a = os_time_us();
+        buffer_replace(buf, at + i, at + i, STR8_LIT("x"));
+        u64 d = os_time_us() - a;
+        if (i == 0) first_us = d;
+        else max_us = MAX(max_us, d);
+    }
+    u64 typing_us = os_time_us() - t0;
+    LOG("bench-buffer: 10,000 inserts at one spot: %U us total, first (gap move to the middle) %U us, then avg %U ns, worst %U us",
+        typing_us, first_us, (typing_us - first_us) * 1000 / 9999, max_us);
+
+    // 1,000 inserts at random positions: every one moves the gap.
+    max_us = 0;
+    t0 = os_time_us();
+    for (i32 i = 0; i < 1000; i++) {
+        i64 line = test_below(&t, buffer_line_count(buf));
+        i64 pos = buffer_line_start(buf, line);
+        u64 a = os_time_us();
+        buffer_replace(buf, pos, pos, STR8_LIT("y"));
+        max_us = MAX(max_us, os_time_us() - a);
+    }
+    u64 random_us = os_time_us() - t0;
+    LOG("bench-buffer: 1,000 inserts at random positions: %U ms total, avg %U us, worst %U us", random_us / 1000,
+        random_us / 1000, max_us);
+
+    // 1,000,000 offset-to-line lookups.
+    size = buffer_size(buf);
+    i64 checksum = 0;
+    t0 = os_time_us();
+    for (i32 i = 0; i < 1000000; i++) checksum += buffer_line_of(buf, test_below(&t, size + 1));
+    u64 lookup_us = os_time_us() - t0;
+    LOG("bench-buffer: 1,000,000 line_of: %U ms total, avg %U ns (checksum %D)", lookup_us / 1000, lookup_us / 1000, checksum);
+
+    // Saving, with and without the flush to disk.
+    Arena scratch = arena_create(MB(1));
+    String8 out = str8_fmt(&scratch, "%S\\bench_out.txt", tmp_dir);
+    for (i32 flush = 1; flush >= 0; flush--) {
+        os_file_delete(out);
+        t0 = os_time_us();
+        status = buffer_save_as_opt(buf, out, flush);
+        u64 save_us = os_time_us() - t0;
+        LOG("bench-buffer: save-as %s flush: %U ms for %D bytes (%s)", flush ? "with" : "without", save_us / 1000,
+            buffer_size(buf), buffer_status_text(status));
+    }
+    os_file_delete(out);
+    os_release(scratch.base);
+    buffer_destroy(buf);
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
