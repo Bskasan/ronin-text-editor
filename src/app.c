@@ -90,6 +90,8 @@ struct App {
     Arena config_arenas[2];      // a load parses into the other arena, then switches
     i32 config_slot;
     String8 config_path;         // the user's teal.conf; empty = built-in defaults only
+    ConfigSource config_source;  // when to read it again
+    OsWatch config_watch;        // its directory
     i32 forced_render_mode;      // dev --render-mode, -1 = from the config
     i32 text_scale;              // text-scale-increase / decrease steps, session only
     i32 wheel_scale_accum;       // Ctrl + wheel units not yet turned into text scale steps
@@ -458,37 +460,50 @@ static FontParams app_font_params(App *app) {
     return fp;
 }
 
-// Reads and parses the config into the other arena and switches to it. Returns the status of
-// reading the user's file.
-static OsFileStatus app_read_config(App *app, b32 keep_old_on_error) {
+// Polls the config source (config_poll): a read parses into the other arena, and the app switches
+// to it when it loaded (at startup also with the defaults alone, while a retry is pending).
+static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
 #if TEAL_DEV
     u64 t0 = os_time_us();
 #endif
     i32 slot = app->config_slot ^ 1;
     arena_reset(&app->config_arenas[slot]);
     Config *c = PUSH_STRUCT(&app->config_arenas[slot], Config);
-    OsFileInfo info;
-    OsFileStatus status = config_load(c, &app->config_arenas[slot], app->config_path, &info);
-    if (keep_old_on_error && status != OS_FILE_OK && status != OS_FILE_NOT_FOUND) return status;
-    app->config = c;
-    app->config_slot = slot;
-    LOG("config: %S: %s, %D bytes; parsed with the defaults in %U us, %d error(s), %d warning(s)",
+    ConfigPoll result = config_poll(&app->config_source, c, &app->config_arenas[slot], force, os_time_us());
+    if (result == CONFIG_POLL_UNCHANGED) return result;
+    if (result == CONFIG_POLL_LOADED || startup) {
+        app->config = c;
+        app->config_slot = slot;
+    }
+    LOG("config: %S: %s (%s), %D bytes; parsed with the defaults in %U us, %d error(s), %d warning(s)",
         app->config_path.len ? app->config_path : STR8_LIT("(none, built-in defaults only)"),
-        buffer_status_text(status), info.size, os_time_us() - t0, c->errors, c->warnings);
+        buffer_status_text(app->config_source.status),
+        result == CONFIG_POLL_LOADED ? "loaded" : result == CONFIG_POLL_RETRY ? "retry" : "failed",
+        app->config_source.size, os_time_us() - t0, c->errors, c->warnings);
 #if TEAL_DEV
-    for (ConfigDiag *d = c->first_diag; d; d = d->next) LOG("config: %S", d->text);
+    if (result == CONFIG_POLL_LOADED) for (ConfigDiag *d = c->first_diag; d; d = d->next) LOG("config: %S", d->text);
 #endif
-    return status;
+    return result;
+}
+
+// Watches the config file's directory (when it exists), so edits apply live.
+static void app_watch_config(App *app) {
+    if (app->config_watch || !app->config_path.len) return;
+    String8 dir = str8(app->config_path.data, app->config_path.len - config_file_name(app->config_path).len);
+    if (dir.len > 1 && dir.data[dir.len - 1] == '\\' && dir.data[dir.len - 2] != ':') dir.len--;
+    app->config_watch = os_watch_dir(dir);
+    LOG("config: watching %S: %s", dir, app->config_watch ? "yes" : "no (no such directory)");
 }
 
 // Reports a load: every diagnostic goes to *Messages*; the echo area shows the first error and
-// how many more, a failed read, or "Reloaded".
-static void app_report_config(App *app, OsFileStatus status, b32 reload) {
+// how many more, a failed read, or "Reloaded". Nothing while a retry is pending.
+static void app_report_config(App *app, ConfigPoll result, b32 reload) {
     String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("teal.conf");
-    if (status != OS_FILE_OK && status != OS_FILE_NOT_FOUND) {
-        echo_message(&app->echo, "Cannot read %S: %s", name, buffer_status_text(status));
+    if (result == CONFIG_POLL_FAILED) {
+        echo_message(&app->echo, "Cannot read %S: %s", name, buffer_status_text(app->config_source.status));
         return;
     }
+    if (result != CONFIG_POLL_LOADED) return;
     Config *c = app->config;
     i32 stored = 0;
     for (ConfigDiag *d = c->first_diag; d; d = d->next, stored++) echo_log(&app->echo, d->text);
@@ -583,7 +598,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->config_arenas[0] = arena_create(APP_CONFIG_RESERVE);
     app->config_arenas[1] = arena_create(APP_CONFIG_RESERVE);
     app->config_path = app_config_path(perm, args);
-    OsFileStatus config_status = app_read_config(app, 0);
+    app->config_source.path = app->config_path;
+    ConfigPoll config_result = app_poll_config(app, 1, 1);
     FontParams fp = app_font_params(app);
     app->font = font_create(perm, &fp, args->dpi_scale);
     if (!app->font) return NULL;
@@ -603,7 +619,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
     app_apply_config(app, NULL, 1);
-    app_report_config(app, config_status, 0);
+    app_report_config(app, config_result, 0);
+    app_watch_config(app);
     if (app->font->used_fallback) {
         echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
     }
@@ -622,6 +639,7 @@ i32 app_shutdown(App *app) {
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += buffer_list_destroy(&app->buffers);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
+    os_unwatch(app->config_watch);
     return leaks;
 }
 
@@ -683,11 +701,13 @@ static void app_update_title(App *app, Arena *scratch) {
 // ---------------------------------------------------------------------------
 // App commands (COMMAND_ONCE)
 
-// Reads the config again and applies it; a file that cannot be read leaves the config as it was.
-static void app_reload_config(App *app) {
-    OsFileStatus status = app_read_config(app, 1);
-    app_apply_config(app, app->renderer, 0);
-    app_report_config(app, status, 1);
+// Reads the config (force: even if it looks unchanged) and applies it. A file that cannot be read
+// leaves the config as it was.
+static void app_reload_config(App *app, b32 force) {
+    ConfigPoll result = app_poll_config(app, force, 0);
+    if (result == CONFIG_POLL_UNCHANGED) return;
+    if (result == CONFIG_POLL_LOADED) app_apply_config(app, app->renderer, 0);
+    app_report_config(app, result, 1);
 }
 
 // Refuses once while file buffers are modified (real prompts come with the minibuffer, Phase 7);
@@ -739,6 +759,7 @@ static void cmd_open_config(CommandContext *ctx) {
             return;
         }
         created = 1;
+        app_watch_config(app); // the directory may be new
     }
     Buffer *buf = app_find_file(app, path);
     if (!buf) return;
@@ -748,7 +769,7 @@ static void cmd_open_config(CommandContext *ctx) {
 }
 
 static void cmd_reload_config(CommandContext *ctx) {
-    app_reload_config(ctx->app);
+    app_reload_config(ctx->app, 1);
 }
 
 // step 0 resets. 1.2 times per step (Emacs' text-scale-mode-step); the size stays within 4..96 pt.
@@ -828,6 +849,10 @@ static void app_key_event(App *app, Event *e) {
     }
 }
 
+u32 app_wait_ms(App *app) {
+    return config_wait_ms(&app->config_source, os_time_us());
+}
+
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
 #if TEAL_DEV
     u64 t0 = os_time_us();
@@ -864,10 +889,14 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
         case EVENT_MOUSE_WHEEL:
             app_wheel(app, e->x, e->y, e->wheel, e->mods);
             break;
+        case EVENT_DIR_CHANGED:
+            if (e->watch == app->config_watch) app_reload_config(app, 0);
+            break;
         default:
             break;
         }
     }
+    if (app->config_source.attempts > 0) app_reload_config(app, 0); // a retry may be due (EVENT_WAKEUP)
     app->renderer = NULL;
     if (app->quit) return 0;
     // A command may have changed the font (text scale, config): lay out again.

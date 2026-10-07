@@ -72,6 +72,20 @@ b32          os_dev_hard_link(String8 existing, String8 link);
 #endif
 
 // ---------------------------------------------------------------------------
+// Directory watches: a change notification (file names, sizes, write times) on one directory,
+// delivered as EVENT_DIR_CHANGED. Waited on with the messages: no polling, no timers.
+
+typedef u32 OsWatch; // 0 = none
+
+OsWatch os_watch_dir(String8 dir); // 0 on failure (no such directory, too many watches)
+void    os_unwatch(OsWatch watch);
+#if TEAL_DEV
+b32     os_dev_watch_wait(OsWatch watch, u32 timeout_ms); // true when it signalled (then re-armed)
+i32     os_dev_watch_count(void);                         // watches still open
+OsFileStatus os_dev_lock_file(String8 path, OsFile *file); // opened without sharing: readers get a sharing violation
+#endif
+
+// ---------------------------------------------------------------------------
 // Input
 
 typedef enum Key {
@@ -114,6 +128,8 @@ typedef enum EventKind {
     EVENT_RESIZE,
     EVENT_FOCUS,
     EVENT_CLOSE,
+    EVENT_DIR_CHANGED, // a watched directory changed (`watch`)
+    EVENT_WAKEUP,      // the wait timeout the app asked for (app_wait_ms) elapsed
 } EventKind;
 
 typedef struct Event {
@@ -130,6 +146,7 @@ typedef struct Event {
     i32 wheel;         // EVENT_MOUSE_WHEEL, 120 per notch, positive = away from user
     i32 width, height; // EVENT_RESIZE, client pixels
     b32 focused;       // EVENT_FOCUS
+    OsWatch watch;     // EVENT_DIR_CHANGED
 } Event;
 
 typedef struct FrameInput {
@@ -162,6 +179,7 @@ typedef struct AppArgs {
 
 App *app_create(Arena *perm, AppArgs *args); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
+u32  app_wait_ms(App *app); // how long the platform may block before EVENT_WAKEUP; 0xFFFFFFFF = until an event
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
 #if TEAL_DEV
