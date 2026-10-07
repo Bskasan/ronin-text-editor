@@ -190,6 +190,7 @@ b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
 void app_dev_goto_line(App *app, i64 line); // point to the start of line (< 0: the last line), recentered
+i32  app_dev_key_events(App *app, String8 keys, Event *out, i32 cap); // --keys: tokens to events (bad tokens logged, skipped)
 i64  app_dev_line_count(App *app);
 u64  app_dev_build_us(App *app); // the last frame, from its start to r_end_frame
 String8 test_bench_buffer_file(Arena *arena, String8 tmp_dir); // --bench-buffer: generates the 100 MB file once
