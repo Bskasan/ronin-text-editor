@@ -39,7 +39,9 @@ typedef double   f64;
 #define ALIGN_UP_POW2(x, a) (((x) + (a) - 1) & ~((u64)(a) - 1))
 
 #if TEAL_DEV
-#define ASSERT(c) do { if (!(c)) __debugbreak(); } while (0)
+// Logs the failed condition before breaking: without a debugger the break ends the process.
+void assert_log(const char *file, int line, const char *expr);
+#define ASSERT(c) do { if (!(c)) { assert_log(__FILE__, __LINE__, #c); __debugbreak(); } } while (0)
 #else
 #define ASSERT(c) ((void)0)
 #endif
