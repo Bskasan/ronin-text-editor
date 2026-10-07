@@ -1,6 +1,7 @@
-// app.c — the editor core. Phase 3: a throwaway display of one buffer (the real view arrives
-// in Phase 4), a mode line and a minibuffer. Dev builds keep the Phase 2 hand-colored sample
-// behind --sample for the smoke probes and screenshots (until highlighting in Phase 8).
+// app.c — the editor core: views laid out in the frame, drawing of text, cursors, mode lines
+// and the echo area, and (temporarily, until the keymap of Phase 5) the key bindings. View
+// logic lives in view.c. Dev builds keep the Phase 2 hand-colored sample behind --sample for
+// the smoke probes and screenshots (until highlighting in Phase 8).
 
 // Theme (source of truth until the theme file arrives in Phase 7).
 #define THEME_BACKGROUND 0x072626
@@ -78,45 +79,43 @@ static const char *app_sample[] = {
 #undef V
 #endif // TEAL_DEV
 
-#define APP_MINIBUFFER_CAP 1024
-#define APP_TAB_WIDTH 4
-#define APP_WHEEL_LINES 3          // per notch (120 units)
-#define APP_PAGE_CONTEXT_LINES 2   // kept on screen by PageUp / PageDown (Emacs next-screen-context-lines)
+#define APP_MAX_VIEWS 8
+#define APP_WHEEL_LINES 3 // per notch (120 units)
+#define APP_PAD_PX 4      // left padding of a text area at 96 DPI
 
 struct App {
     Font *font;
-    Buffer *buffer;
-    i64 top_line;    // first visible line
-    i32 wheel_accum; // wheel units * APP_WHEEL_LINES not yet turned into lines
-    u8 minibuffer[APP_MINIBUFFER_CAP]; // the last message
-    i32 minibuffer_len;
+    Buffer *buffer;              // the only buffer until buffer switching (Phase 9)
+    View *views[APP_MAX_VIEWS];  // laid out side by side
+    i32 view_count;
+    i32 active_view;
+    Echo echo;
+    CommandContext ctx;          // keeps last_command between events
+    b32 focused;                 // the window has keyboard focus
+    i32 wheel_accum;             // wheel units * APP_WHEEL_LINES not yet turned into lines
+    i64 initial_line;            // 0-based line to visit on the first frame, -1 = none
+    i64 initial_col;
 #if TEAL_DEV
     b32 sample; // --sample: the Phase 2 display
     i32 cursor_col, cursor_row;
-    b32 top_line_end;  // --top-line end: scroll to the last screen on the first frame
-    u64 dev_build_us;  // last frame: time from the start of the frame to r_end_frame
+    i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
+    u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
 #endif
 };
 
-static void app_message(App *app, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    i64 n = fmt_v(app->minibuffer, APP_MINIBUFFER_CAP, fmt, args);
-    va_end(args);
-    app->minibuffer_len = (i32)MIN(n, (i64)APP_MINIBUFFER_CAP);
-}
-
 typedef struct AppLayout {
     i32 cell_w, line_h;
-    i32 cols, rows;      // text area grid
-    i32 mode_line_y;     // the mode line occupies [mode_line_y, mode_line_y + line_h)
-    i32 minibuffer_y;
+    i32 pad;             // left padding of text areas, pixels
+    i32 cols, rows;      // whole-frame grid (the --sample display)
+    i32 mode_line_y;     // the --sample mode line
+    i32 minibuffer_y;    // the echo area occupies [minibuffer_y, minibuffer_y + line_h)
 } AppLayout;
 
 static AppLayout app_layout(App *app, FrameInput *in) {
     AppLayout l;
     l.cell_w = app->font->cell_w;
     l.line_h = app->font->line_h;
+    l.pad = MAX((i32)(APP_PAD_PX * in->dpi_scale + 0.5f), 1);
     l.minibuffer_y = in->height - l.line_h;
     l.mode_line_y = l.minibuffer_y - l.line_h;
     l.cols = MAX(in->width / l.cell_w, 1);
@@ -124,27 +123,26 @@ static AppLayout app_layout(App *app, FrameInput *in) {
     return l;
 }
 
-// One line of text from column 0: tabs expanded to the next multiple of APP_TAB_WIDTH, cut
-// after `cols` columns. Each codepoint (or invalid byte) is one column, as in font_draw_text.
-static void app_draw_line(App *app, Renderer *r, i32 y, String8 s, i32 cols, Color color) {
-    i32 cell_w = app->font->cell_w;
-    i32 col = 0, run_col = 0;
-    i64 i = 0, run = 0;
-    while (i < s.len && col < cols) {
-        u8 b = s.data[i];
-        if (b == '\t') {
-            font_draw_text(app->font, r, run_col * cell_w, y, str8(s.data + run, i - run), color);
-            col = (col / APP_TAB_WIDTH + 1) * APP_TAB_WIDTH;
-            run = ++i;
-            run_col = col;
-            continue;
-        }
-        i64 advance = 1;
-        if (b >= 0x80) utf8_decode(s.data + i, s.len - i, &advance);
-        i += advance;
-        col++;
+// Hands every view its rect: equal columns side by side above the echo area. Each view is its
+// text area plus a mode line at the bottom.
+static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
+    i32 area_h = MAX(l->minibuffer_y, 0);
+    for (i32 i = 0; i < app->view_count; i++) {
+        View *v = app->views[i];
+        v->x = in->width * i / app->view_count;
+        v->w = in->width * (i + 1) / app->view_count - v->x;
+        v->y = 0;
+        v->h = area_h;
+        v->rows = MAX((v->h - l->line_h) / l->line_h, 1);
+        v->cols = MAX((v->w - l->pad) / l->cell_w, 1);
     }
-    font_draw_text(app->font, r, run_col * cell_w, y, str8(s.data + run, i - run), color);
+}
+
+static b32 app_has_focus(App *app) {
+#if TEAL_DEV
+    if (app->force_focus >= 0) return app->force_focus;
+#endif
+    return app->focused;
 }
 
 static const char *app_encoding_name(BufferEncoding e) {
@@ -166,18 +164,142 @@ static const char *app_eol_name(BufferEol e) {
     return "?";
 }
 
-static void app_scroll(App *app, i64 lines) {
-    i64 last = buffer_line_count(app->buffer) - 1;
-    app->top_line = CLAMP(app->top_line + lines, 0, last);
+
+// Text shorter than `cells` cells: one cell per codepoint (or invalid byte), as font_draw_text.
+static String8 app_clip_cells(String8 s, i64 cells) {
+    i64 i = 0;
+    for (i64 c = 0; i < s.len && c < cells; c++) {
+        i64 advance = 1;
+        if (s.data[i] >= 0x80) utf8_decode(s.data + i, s.len - i, &advance);
+        i += advance;
+    }
+    return str8(s.data, i);
 }
 
-static void app_draw_mode_line(App *app, Renderer *r, FrameInput *in, AppLayout *l, String8 text) {
-    Rect mode_line = { 0, (f32)l->mode_line_y, (f32)in->width, (f32)(l->mode_line_y + l->line_h) };
-    r_push_rect(r, mode_line, COLOR_HEX(THEME_TEXT)); // inverse video
-    font_draw_text(app->font, r, 0, l->mode_line_y, text, COLOR_HEX(THEME_BACKGROUND));
+// ---------------------------------------------------------------------------
+// Drawing
+
+// The two cells of a control character in caret notation (^@, ^M, ^?), each only if visible.
+static void app_draw_caret(App *app, Renderer *r, i32 x0, i32 y, i64 col, i64 left, i64 right, u8 b, Color color) {
+    u8 cells[2] = { '^', (u8)(b ^ 0x40) };
+    for (i32 k = 0; k < 2; k++) {
+        i64 c = col + k;
+        if (c >= left && c < right) font_draw_text(app->font, r, x0 + (i32)(c - left) * app->font->cell_w, y, str8(cells + k, 1), color);
+    }
+}
+
+// One line of the buffer, only its columns [left, left + cols). x0 is the x of column `left`.
+static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i32 x0, i32 y, i64 left, i64 cols, Arena *scratch) {
+    i32 cell_w = app->font->cell_w;
+    i64 right = left + cols;
+    i64 end = buffer_line_end(buf, line);
+    i64 col = 0;
+    // The first character that reaches column `left` (a tab or ^X may start before it).
+    i64 pos = view_walk(buf, buffer_line_start(buf, line), end, &col, left);
+    // Every visible column needs at most 4 bytes, so a huge line is never copied whole.
+    String8 s = buffer_text(buf, scratch, pos, MIN(end, pos + (cols + 1) * 4));
+    i64 run = 0, run_col = col;
+    i64 i = 0;
+    while (i < s.len && col < right) {
+        u8 b = s.data[i];
+        if (b == '\t' || view_is_control(b)) {
+            if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(THEME_TEXT));
+            if (b != '\t') app_draw_caret(app, r, x0, y, col, left, right, b, COLOR_HEX(THEME_NUMBER));
+            col += view_char_width(b, col);
+            run = ++i;
+            run_col = col;
+            continue;
+        }
+        i64 advance = 1;
+        if (b >= 0x80) utf8_decode(s.data + i, s.len - i, &advance);
+        i += advance;
+        col++;
+    }
+    if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(THEME_TEXT));
+}
+
+// The cell rect of a cursor, or false when it is outside the window (only the primary cursor
+// is kept visible).
+static b32 app_cursor_rect(App *app, AppLayout *l, View *v, i64 pos, i32 *x0, i32 *y0, i32 *x1, i32 *y1) {
+    Buffer *buf = v->buffer;
+    i64 row = buffer_line_of(buf, pos) - view_top_line(v);
+    if (row < 0 || row >= v->rows) return 0;
+    i64 col = view_column_of(buf, pos);
+    i64 w = pos < buffer_size(buf) && view_is_control(buffer_byte(buf, pos)) ? 2 : 1;
+    if (col < v->left_col || col + w > v->left_col + v->cols) return 0;
+    *x0 = v->x + l->pad + (i32)(col - v->left_col) * app->font->cell_w;
+    *y0 = v->y + (i32)row * app->font->line_h;
+    *x1 = *x0 + (i32)w * app->font->cell_w;
+    *y1 = *y0 + app->font->line_h;
+    return 1;
+}
+
+// Filled: a block with the character under it in the background color. Hollow: a box.
+static void app_draw_cursor(App *app, Renderer *r, AppLayout *l, View *v, i64 pos, b32 filled, f32 dpi_scale, Arena *scratch) {
+    i32 x0, y0, x1, y1;
+    if (!app_cursor_rect(app, l, v, pos, &x0, &y0, &x1, &y1)) return;
+    Color cursor = COLOR_HEX(THEME_CURSOR);
+    if (!filled) {
+        i32 t = MAX((i32)(dpi_scale + 0.5f), 1);
+        r_push_rect(r, (Rect){ (f32)x0, (f32)y0, (f32)x1, (f32)(y0 + t) }, cursor);
+        r_push_rect(r, (Rect){ (f32)x0, (f32)(y1 - t), (f32)x1, (f32)y1 }, cursor);
+        r_push_rect(r, (Rect){ (f32)x0, (f32)(y0 + t), (f32)(x0 + t), (f32)(y1 - t) }, cursor);
+        r_push_rect(r, (Rect){ (f32)(x1 - t), (f32)(y0 + t), (f32)x1, (f32)(y1 - t) }, cursor);
+        return;
+    }
+    r_push_rect(r, (Rect){ (f32)x0, (f32)y0, (f32)x1, (f32)y1 }, cursor);
+    Buffer *buf = v->buffer;
+    if (pos >= buffer_line_end(buf, buffer_line_of(buf, pos))) return; // end of line: nothing under it
+    u8 b = buffer_byte(buf, pos);
+    if (b == '\t') return;
+    Color under = COLOR_HEX(THEME_BACKGROUND);
+    if (view_is_control(b)) app_draw_caret(app, r, x0, y0, 0, 0, 2, b, under);
+    else font_draw_text(app->font, r, x0, y0, buffer_text(buf, scratch, pos, buffer_next_char(buf, pos)), under);
+}
+
+// " -:**-  win32_main.c    37%   L120 C8    (C)    UTF-8 CRLF"
+static String8 app_mode_line_text(View *v, Arena *arena) {
+    Buffer *buf = v->buffer;
+    const char *flags = buf->read_only ? "%%" : buf->modified ? "**" : "--";
+    i64 name_cells = 0;
+    for (i64 i = 0; i < buf->name.len; i++) name_cells += (buf->name.data[i] & 0xC0) != 0x80;
+    String8 pad = str8((u8 *)"            ", MAX(12 - name_cells, 0)); // Emacs pads the name to 12 (%12b)
+    i64 top_pos = buffer_marker_get(buf, v->top);
+    i64 top = buffer_line_of(buf, top_pos);
+    b32 bottom = top + v->rows >= buffer_line_count(buf);
+    String8 where = top == 0 && bottom ? STR8_LIT("All") : top == 0 ? STR8_LIT("Top") : bottom ? STR8_LIT("Bot")
+                  : str8_fmt(arena, "%D%%", top_pos * 100 / MAX(buffer_size(buf), 1));
+    i64 p = view_point(v, &v->cursors[0]);
+    return str8_fmt(arena, " -:%s-  %S%S    %S   L%D C%D    (%s)    %s %s", flags, buf->name, pad, where,
+                    buffer_line_of(buf, p) + 1, view_column_of(buf, p), buffer_language_name(buf->language),
+                    app_encoding_name(buf->encoding), app_eol_name(buf->eol));
+}
+
+static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, View *v, b32 active) {
+    Buffer *buf = v->buffer;
+    i32 line_h = l->line_h;
+    i32 text_x = v->x + l->pad;
+    i32 mode_y = v->y + v->h - line_h;
+    // Only the visible lines (the partial one above the mode line too, which covers it).
+    i64 top = view_top_line(v), count = buffer_line_count(buf);
+    i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
+    for (i32 row = 0; row < draw_rows && top + row < count; row++) {
+        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, in->scratch);
+    }
+    b32 filled = active && app_has_focus(app);
+    for (i32 k = 0; k < v->cursor_count; k++) {
+        app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[k]), filled, in->dpi_scale, in->scratch);
+    }
+    // Mode line, inverse video.
+    r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)(v->x + v->w), (f32)(mode_y + line_h) }, COLOR_HEX(THEME_TEXT));
+    String8 mode = app_mode_line_text(v, in->scratch);
+    font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((v->w - l->pad) / l->cell_w, 0)), COLOR_HEX(THEME_BACKGROUND));
 }
 
 #if TEAL_DEV
+// ---------------------------------------------------------------------------
+// Dev: the Phase 2 sample
+
 static String8 app_sample_line(i32 row) {
     if (row < 0 || row >= ARRAY_COUNT(app_sample)) return str8(NULL, 0);
     return str8_cstr(app_sample[row]);
@@ -247,17 +369,17 @@ static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout
             if (e->key == KEY_RIGHT) app->cursor_col++;
             if (e->key == KEY_UP)    app->cursor_row--;
             if (e->key == KEY_DOWN)  app->cursor_row++;
-            if (e->key == KEY_BACKSPACE && app->minibuffer_len > 0) {
-                do app->minibuffer_len--;
-                while (app->minibuffer_len > 0 && (app->minibuffer[app->minibuffer_len] & 0xC0) == 0x80);
+            if (e->key == KEY_BACKSPACE && app->echo.len > 0) {
+                do app->echo.len--;
+                while (app->echo.len > 0 && (app->echo.text[app->echo.len] & 0xC0) == 0x80);
             }
             break;
         case EVENT_TEXT: {
             u8 bytes[4];
             i64 n = utf8_encode(e->codepoint, bytes);
-            if (app->minibuffer_len + n <= APP_MINIBUFFER_CAP) {
-                memcpy(app->minibuffer + app->minibuffer_len, bytes, (size_t)n);
-                app->minibuffer_len += (i32)n;
+            if (app->echo.len + n <= ECHO_CAP) {
+                memcpy(app->echo.text + app->echo.len, bytes, (size_t)n);
+                app->echo.len += (i32)n;
             }
         } break;
         default:
@@ -280,13 +402,17 @@ static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout
     font_draw_text(app->font, r, cx, cy, app_char_at(app->cursor_row, app->cursor_col), COLOR_HEX(THEME_BACKGROUND));
 
     String8 status = str8_fmt(in->scratch, "-:---  sample.jai    (Jai)    L%d C%d", app->cursor_row + 1, app->cursor_col);
-    app_draw_mode_line(app, r, in, l, status);
-    font_draw_text(app->font, r, 0, l->minibuffer_y, str8(app->minibuffer, app->minibuffer_len), COLOR_HEX(THEME_TEXT));
+    r_push_rect(r, (Rect){ 0, (f32)l->mode_line_y, (f32)in->width, (f32)(l->mode_line_y + l->line_h) }, COLOR_HEX(THEME_TEXT));
+    font_draw_text(app->font, r, 0, l->mode_line_y, status, COLOR_HEX(THEME_BACKGROUND));
+    font_draw_text(app->font, r, 0, l->minibuffer_y, str8(app->echo.text, app->echo.len), COLOR_HEX(THEME_TEXT));
 
     r_end_frame(r);
     return 1;
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Startup and frames
 
 // Opens config->file_path, or *scratch* without one or when it cannot be opened.
 static void app_open_initial_buffer(App *app, AppConfig *config) {
@@ -306,9 +432,9 @@ static void app_open_initial_buffer(App *app, AppConfig *config) {
                 String8 full = os_full_path(&buf->meta, config->file_path);
                 buffer_set_path(buf, full.len ? full : config->file_path);
                 app->buffer = buf;
-                app_message(app, "(New file)");
+                echo_message(&app->echo, "(New file)");
             } else {
-                app_message(app, "Cannot open %S: %s", config->file_path, buffer_status_text(status));
+                echo_message(&app->echo, "Cannot open %S: %s", config->file_path, buffer_status_text(status));
                 buffer_destroy(buf);
             }
         }
@@ -322,19 +448,62 @@ App *app_create(Arena *perm, AppConfig *config) {
     app->font = font_create(perm, config->dpi_scale, config->render_mode);
     if (!app->font) return NULL;
     app_open_initial_buffer(app, config);
+    app->views[0] = view_create(perm, app->buffer);
+    app->view_count = 1;
+    app->ctx.echo = &app->echo;
+    app->initial_line = -1;
 #if TEAL_DEV
     app->sample = config->sample;
-    app->top_line_end = config->top_line_end;
-    app_scroll(app, config->top_line);
+    app->force_focus = -1;
+    if (config->top_line_end) app->initial_line = I64_MAX; // clamped to the last line
+    else if (config->top_line) app->initial_line = config->top_line;
 #endif
     return app;
 }
 
 i32 app_shutdown(App *app) {
     i32 leaks = font_shutdown(app->font);
+    for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += (i32)app->buffer->marker_live;
     if (!buffer_destroy(app->buffer)) leaks++;
     return leaks;
+}
+
+// The temporary key bindings (Phase 5 replaces them with the keymap). Shift is ignored.
+static const Command *app_key_command(Event *e, u32 *codepoint) {
+    u32 mods = e->mods & ~(u32)MOD_SHIFT;
+    b32 plain = mods == 0, ctrl = mods == MOD_CTRL, meta = mods == MOD_ALT;
+    switch (e->key) {
+    case KEY_LEFT:      return plain ? &CMD_BACKWARD_CHAR : ctrl ? &CMD_BACKWARD_WORD : NULL;
+    case KEY_RIGHT:     return plain ? &CMD_FORWARD_CHAR : ctrl ? &CMD_FORWARD_WORD : NULL;
+    case KEY_UP:        return plain ? &CMD_PREVIOUS_LINE : ctrl ? &CMD_BACKWARD_PARAGRAPH : NULL;
+    case KEY_DOWN:      return plain ? &CMD_NEXT_LINE : ctrl ? &CMD_FORWARD_PARAGRAPH : NULL;
+    case KEY_HOME:      return plain ? &CMD_MOVE_BEGINNING_OF_LINE : ctrl ? &CMD_BEGINNING_OF_BUFFER : NULL;
+    case KEY_END:       return plain ? &CMD_MOVE_END_OF_LINE : ctrl ? &CMD_END_OF_BUFFER : NULL;
+    case KEY_PAGE_UP:   return plain ? &CMD_SCROLL_DOWN_COMMAND : NULL;
+    case KEY_PAGE_DOWN: return plain ? &CMD_SCROLL_UP_COMMAND : NULL;
+    case KEY_BACKSPACE: return plain ? &CMD_DELETE_BACKWARD_CHAR : NULL;
+    case KEY_DELETE:    return plain ? &CMD_DELETE_CHAR : NULL;
+    case KEY_ENTER:     return plain ? &CMD_NEWLINE : NULL;
+    case KEY_TAB:       *codepoint = '\t'; return plain ? &CMD_SELF_INSERT : NULL;
+    case KEY_F:         return ctrl ? &CMD_FORWARD_CHAR : meta ? &CMD_FORWARD_WORD : NULL;
+    case KEY_B:         return ctrl ? &CMD_BACKWARD_CHAR : meta ? &CMD_BACKWARD_WORD : NULL;
+    case KEY_N:         return ctrl ? &CMD_NEXT_LINE : NULL;
+    case KEY_P:         return ctrl ? &CMD_PREVIOUS_LINE : NULL;
+    case KEY_A:         return ctrl ? &CMD_MOVE_BEGINNING_OF_LINE : NULL;
+    case KEY_E:         return ctrl ? &CMD_MOVE_END_OF_LINE : NULL;
+    case KEY_V:         return ctrl ? &CMD_SCROLL_UP_COMMAND : meta ? &CMD_SCROLL_DOWN_COMMAND : NULL;
+    case KEY_L:         return ctrl ? &CMD_RECENTER_TOP_BOTTOM : NULL;
+    case KEY_D:         return ctrl ? &CMD_DELETE_CHAR : NULL;
+    case KEY_S:         return ctrl ? &CMD_SAVE_BUFFER : NULL; // temporary: C-x C-s in Phase 5
+    default:            return NULL;
+    }
+}
+
+static void app_run_command(App *app, const Command *cmd, u32 codepoint) {
+    app->ctx.view = app->views[app->active_view];
+    app->ctx.codepoint = codepoint;
+    view_run_command(&app->ctx, cmd);
 }
 
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
@@ -345,61 +514,42 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     AppLayout l = app_layout(app, in);
 #if TEAL_DEV
     if (app->sample) return app_dev_sample_frame(app, in, r, &l);
-    if (app->top_line_end) {
-        app->top_line_end = 0;
-        app_scroll(app, buffer_line_count(app->buffer));
-        app_scroll(app, -(l.rows - 1));
-    }
 #endif
-    Buffer *buf = app->buffer;
+    app_layout_views(app, in, &l);
+    if (app->initial_line >= 0) { // the first frame: the layout is known now
+        view_goto_line_column(app->views[0], app->initial_line, app->initial_col);
+        app->initial_line = -1;
+    }
+    for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]); // the size may have changed
 
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
         switch (e->kind) {
         case EVENT_CLOSE:
             return 0;
+        case EVENT_FOCUS:
+            app->focused = e->focused;
+            break;
         case EVENT_KEY_DOWN: {
-            i64 page = MAX(l.rows - APP_PAGE_CONTEXT_LINES, 1);
-            b32 ctrl = (e->mods & MOD_CTRL) != 0;
-            if (e->key == KEY_UP) app_scroll(app, -1);
-            if (e->key == KEY_DOWN) app_scroll(app, 1);
-            if (e->key == KEY_PAGE_UP) app_scroll(app, -page);
-            if (e->key == KEY_PAGE_DOWN) app_scroll(app, page);
-            if (e->key == KEY_HOME && ctrl) app->top_line = 0;
-            if (e->key == KEY_END && ctrl) {
-                app->top_line = 0;
-                app_scroll(app, buffer_line_count(buf) - l.rows);
-            }
+            echo_clear(&app->echo); // a message stays until the next key
+            u32 codepoint = 0;
+            const Command *cmd = app_key_command(e, &codepoint);
+            if (cmd) app_run_command(app, cmd, codepoint);
+            else app->ctx.last_command = NULL;
         } break;
-        case EVENT_MOUSE_WHEEL: {
-            app->wheel_accum += e->wheel * APP_WHEEL_LINES;
-            i32 lines = app->wheel_accum / 120;
-            app->wheel_accum -= lines * 120;
-            app_scroll(app, -lines); // positive = away from the user = towards the top
-        } break;
+        case EVENT_TEXT:
+            echo_clear(&app->echo);
+            app_run_command(app, &CMD_SELF_INSERT, e->codepoint);
+            break;
         default:
             break;
         }
     }
 
     r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
-
-    // Only the visible lines are touched. A line is cut at 4 bytes per column (the longest
-    // UTF-8 sequence), so a huge line is never copied whole even when it straddles the gap.
-    i32 draw_cols = (in->width + l.cell_w - 1) / l.cell_w; // the partial last column is clipped by the viewport
-    i64 line_count = buffer_line_count(buf);
-    for (i32 row = 0; row < l.rows && app->top_line + row < line_count; row++) {
-        i64 line = app->top_line + row;
-        i64 start = buffer_line_start(buf, line);
-        i64 end = MIN(buffer_line_end(buf, line), start + (i64)draw_cols * 4);
-        app_draw_line(app, r, row * l.line_h, buffer_text(buf, in->scratch, start, end), draw_cols, COLOR_HEX(THEME_TEXT));
-    }
-
-    const char *flags = buf->read_only ? "%%" : buf->modified ? "**" : "--";
-    String8 mode = str8_fmt(in->scratch, "-:%s-  %S    L%D/%D    %s %s", flags, buf->name, app->top_line + 1, line_count,
-                            app_encoding_name(buf->encoding), app_eol_name(buf->eol));
-    app_draw_mode_line(app, r, in, &l, mode);
-    font_draw_text(app->font, r, 0, l.minibuffer_y, str8(app->minibuffer, app->minibuffer_len), COLOR_HEX(THEME_TEXT));
+    for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view);
+    String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
+    font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(THEME_TEXT));
 
 #if TEAL_DEV
     app->dev_build_us = os_time_us() - t0;
@@ -496,43 +646,48 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
     return n;
 }
 
-// Smoke, second frame: a known buffer in the buffer view.
+// Smoke, buffer frames: a known buffer in the buffer view.
 //   line 0: "int x = 1;"
 //   line 1: TAB "|"   columns 0-3 empty, '|' (centered, so no ClearType fringe reaches column 3) at 4
 //   line 2: ""        column 5 is empty, and so are its neighbors above, below and to the sides
 //   line 3: "abc"
+// Point at the end (line 4), out of the way of the probes.
 void app_dev_smoke_buffer_view(App *app) {
     app->sample = 0;
-    app->top_line = 0;
     Buffer *buf = app->buffer;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\nabc\n"));
+    View *v = app->views[0];
+    view_set_point(v, &v->cursors[0], buffer_size(buf));
+    buffer_marker_set(buf, v->top, 0);
 }
 
 i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
     AppLayout l = app_layout(app, in);
     i32 n = 0;
-    i32 cw = l.cell_w, lh = l.line_h;
+    i32 cw = l.cell_w, lh = l.line_h, x = l.pad;
+    i32 mode_y = l.minibuffer_y - lh;
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = 0, .y0 = 0, .x1 = cw, .y1 = lh,
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x, .y0 = 0, .x1 = x + cw, .y1 = lh,
                    .rgb = THEME_BACKGROUND, .what = "buffer: text cell 'i' (line 0, column 0)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = 5 * cw, .y0 = 2 * lh, .x1 = 6 * cw, .y1 = 3 * lh,
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 5 * cw, .y0 = 2 * lh, .x1 = x + 6 * cw, .y1 = 3 * lh,
                    .rgb = THEME_BACKGROUND, .what = "buffer: empty cell (line 2, column 5)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = 0, .y0 = lh, .x1 = 4 * cw, .y1 = 2 * lh,
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = lh, .x1 = x + 4 * cw, .y1 = 2 * lh,
                    .rgb = THEME_BACKGROUND, .what = "buffer: tab, columns 0-3 of line 1 empty");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = 4 * cw, .y0 = lh, .x1 = 5 * cw, .y1 = 2 * lh,
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + 4 * cw, .y0 = lh, .x1 = x + 5 * cw, .y1 = 2 * lh,
                    .rgb = THEME_BACKGROUND, .what = "buffer: '|' after the tab drawn at column 4");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = l.mode_line_y + lh / 2,
+    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = mode_y + lh / 2,
                    .rgb = THEME_TEXT, .what = "buffer: mode line (right end)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = 0, .y0 = l.mode_line_y, .x1 = cw, .y1 = l.mode_line_y + lh,
-                   .rgb = THEME_TEXT, .what = "buffer: mode line text (first cell)");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + cw, .y0 = mode_y, .x1 = x + 2 * cw, .y1 = mode_y + lh,
+                   .rgb = THEME_TEXT, .what = "buffer: mode line text ('-' in cell 1)");
 #undef APP_PUSH_PROBE
     return n;
 }
 
-void app_dev_set_top_line(App *app, i64 line) {
-    app->top_line = 0;
-    if (line < 0) app->top_line_end = 1; // the last screen, resolved by the next frame
-    else app_scroll(app, line);
+// Point to the start of `line` (< 0: the last line), the window recentered on it if needed.
+void app_dev_goto_line(App *app, i64 line) {
+    View *v = app->views[0];
+    view_goto_line_column(v, line < 0 ? I64_MAX : line, 0);
+    view_ensure_visible(v);
 }
 
 i64 app_dev_line_count(App *app) {
