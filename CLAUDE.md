@@ -36,8 +36,9 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   (arena_push, r_push_rect, os_write_file); macros and enum constants UPPER_SNAKE.
 - Scope discipline: build only what the current phase asks for. No speculative
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
-- Verify every change: build, run the tests and the smoke test (`--test`, `--smoke`), take a
-  screenshot and look at it.
+- Verify every change: debug build + `--smoke`, and bench build + `--test` (the optimized
+  build runs the fuzz tests quickly). Run the full `--test` on the debug build once per
+  phase, before its final commit. Take a screenshot after a visual change and look at it.
 - Code, comments and docs in English. Talk to the user in Turkish.
 - Whenever the user asks for changes to a plan, show the full revised plan again with the
   changes marked and wait for approval before implementing.

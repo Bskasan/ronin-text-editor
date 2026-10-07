@@ -113,8 +113,9 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
   break kills the process and loses the message); messages are always logged and counted.
 - Back-buffer capture (smoke, screenshot) is copied before Present: FLIP_DISCARD leaves the
   back buffer undefined afterwards.
-- Monospace cell grid only. Every codepoint occupies exactly one cell. Column to x is a
-  multiplication. cell_w and line_h are integers in physical pixels; every glyph quad lands
+- Monospace cell grid only. Every codepoint occupies exactly one cell, except in the buffer
+  view: a tab advances to the next tab stop and an ASCII control character takes two cells
+  (caret notation, Phase 4). Column to x is a multiplication. cell_w and line_h are integers in physical pixels; every glyph quad lands
   on integer pixel coordinates.
 - No shaping, no ligatures, no kerning: one codepoint -> one glyph. Combining marks and
   complex scripts are out of scope.
@@ -143,8 +144,8 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
 
 - A buffer is raw bytes, treated as UTF-8. Loading and saving never lose or alter bytes:
   invalid UTF-8 and NUL bytes stay in the buffer, draw as the missing-glyph box, and are
-  written back unchanged. Control bytes other than tab (expanded at draw time) draw as the box,
-  so the CRs of a mixed-ending file are visible.
+  written back unchanged. Control bytes other than tab draw in caret notation (Phase 4), so
+  the CRs of a mixed-ending file are visible as ^M.
 - Storage is a gap buffer. Positions are byte offsets (i64) into the logical text and always
   sit on a codepoint boundary (an invalid byte counts as one unit).
 - Every modification goes through one function, `buffer_replace(buf, start, end, text)`.
@@ -185,6 +186,57 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
 - `TEAL_D3D_DEBUG` (defaults to TEAL_DEV) controls the D3D11 debug layer, so `build.bat bench`
   is an optimized dev build without it.
 
+### Views, cursors, markers (Phase 4)
+
+- A View is an Emacs window: one buffer, an array of cursors, a scroll position (a top-of-window
+  marker and a left column) and a pixel rect. Layout hands each View its rect (for now: equal
+  side-by-side columns above the echo area, each with its own mode line); nothing assumes a
+  single View. Phase 10 adds splitting.
+- Cursors are an array from the start. Every motion and edit command is written for a single
+  cursor (its context carries the View and that Cursor). `view_run_command` is the only place
+  that loops over cursors, and it does the work after the loop (keep point visible, update
+  `last_command`). Commands that act on the View as a whole (scroll-up-command,
+  scroll-down-command, recenter-top-bottom, save-buffer) are flagged COMMAND_ONCE and run once
+  with the primary cursor. Phase 14 adds cursor creation, merging and ordered edits to that
+  driver only.
+- Markers: every position that must survive edits (each cursor's point and mark, each View's
+  top of window) is a marker registered with its buffer, and `buffer_replace` is the only
+  thing that adjusts positions. For a replace of [start, end) by len bytes: a marker before
+  start stays; after end it shifts; exactly at end (of a non-empty range) it goes to
+  start + len; inside the range, or at start, it goes to start, or to start + len if it is an
+  advancing marker (insertion type: point markers advance, the top-of-window marker does not).
+  Markers within 3 bytes of the edit are then snapped back to a character boundary, since
+  joined invalid bytes can form a valid sequence. Storage: a flat slot array with a free list
+  in its own reservation, one linear pass per edit.
+- Point is always visible, as in Emacs: scrolling drags point along (to the start of the
+  nearest visible line), and moving point off screen recenters the window on it. The top line
+  may scroll as far as the last line of the buffer. Visibility follows the primary cursor.
+- No line wrapping in v1: long lines are truncated and the window scrolls horizontally to
+  center point when its column leaves the visible range, back to column 0 when it fits.
+- No cursor blink, no smooth scrolling, no line numbers, no scroll bars: nothing that needs a
+  timer.
+- Visual columns: a tab advances to the next multiple of 4 (a constant for now); an ASCII
+  control character (0x00-0x1F except tab and newline, and 0x7F) is 2 cells, drawn as ^@, ^M,
+  ^? in the number/constant color; anything else is 1. Invalid bytes and missing glyphs keep
+  the box. (line, column) -> offset picks the nearest character boundary (the start of a
+  character that covers the column when the column is in its first half).
+- A word is a run of letters and digits; underscore is not a word character (Emacs' default in
+  C mode); every byte >= 0x80 counts as a letter, so word scanning is bytewise and always
+  stops on a character boundary. Phase 5 makes it configurable.
+- View logic (positions, motions, scrolling, commands) lives in view.c and runs headless in
+  --test; drawing is in app.c.
+- Commands take one context argument and nothing else, so Phase 5 can register them in a
+  command table unchanged. The keys of Phase 4 are a temporary hard-coded switch.
+- Messages go to the echo area through `echo_message`; a message stays until the next key
+  event. Hitting a limit shows a message and never makes a sound.
+- Cursor: a filled block with the character under it in the background color while the window
+  has keyboard focus (and the View is active); a hollow box otherwise. One cell wide at the end
+  of a line and on a tab, two on a control character.
+- Command line: `teal [+LINE[:COLUMN]] [file]`, LINE and COLUMN 1-based as in Emacs (COLUMN is a
+  visual column); the mode line shows the column 0-based. Any unrecognized argument starting
+  with "--" exits immediately with code 10, before a window exists.
+- The window title is "<buffer name> - teal", set only when it changes.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -195,10 +247,14 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
   first Present.
 - Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
 - A setting to turn off the flush on save (Phase 5).
-- Deleting bytes can join invalid sequences into a valid character, so a position that was a
-  codepoint boundary may stop being one; cursor fix-ups (Phase 4) must snap.
 - Detect changes made outside the editor (file size and write time are already recorded).
 - Wide (East Asian) characters and emoji occupying two cells; color emoji.
 - System font fallback for codepoints Consolas lacks.
 - Bold / italic faces, if a theme ever wants them.
 - Linear-space (gamma-corrected) ClearType blending for dark text on light backgrounds.
+- Apply multi-cursor edits in one ordered pass so the gap moves monotonically (random-position
+  edits on a 100 MB file cost ~2.3 ms each; Phase 14).
+- Line wrapping (visual lines).
+- Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
+  more layout).
+- Column cache for very long lines: point's column is found by scanning from the line start.
