@@ -1010,6 +1010,373 @@ static b32 test_columns(Test *t, u64 seed) {
 }
 
 // ---------------------------------------------------------------------------
+// View: commands, scrolling, fuzz
+
+typedef struct TestView {
+    Buffer *buf;
+    View *view;
+    Echo echo;
+    CommandContext ctx;
+} TestView;
+
+// `marked` is the text with '|' at each cursor (in order; the first is the primary).
+static b32 test_view_open(Test *t, TestView *tv, const char *marked, i32 rows, i32 cols) {
+    String8 m = str8_cstr(marked);
+    u8 *text = PUSH_ARRAY(&t->arena, u8, m.len);
+    i64 n = 0, cursors[16], count = 0;
+    for (i64 i = 0; i < m.len; i++) {
+        if (m.data[i] == '|' && count < ARRAY_COUNT(cursors)) cursors[count++] = n;
+        else text[n++] = m.data[i];
+    }
+    memset(tv, 0, sizeof(*tv));
+    tv->buf = buffer_create(STR8_LIT("test.c"));
+    TEST_CHECK(t, tv->buf, "view: buffer_create failed");
+    buffer_replace(tv->buf, 0, 0, str8(text, n));
+    tv->buf->modified = 0;
+    tv->view = view_create(&t->arena, tv->buf);
+    tv->view->rows = rows;
+    tv->view->cols = cols;
+    view_set_point(tv->view, &tv->view->cursors[0], count ? cursors[0] : 0);
+    for (i64 k = 1; k < count; k++) view_add_cursor(tv->view, cursors[k]);
+    tv->ctx.view = tv->view;
+    tv->ctx.echo = &tv->echo;
+    view_ensure_visible(tv->view);
+    return 1;
+}
+
+static b32 test_view_close(Test *t, TestView *tv) {
+    view_destroy(tv->view);
+    i64 live = tv->buf->marker_live;
+    buffer_destroy(tv->buf);
+    TEST_CHECK(t, live == 0, "view: %D markers still live after view_destroy", live);
+    return 1;
+}
+
+// As the app does for a key: the echo area is cleared, then the command runs.
+static void test_view_run(TestView *tv, const Command *cmd) {
+    echo_clear(&tv->echo);
+    view_run_command(&tv->ctx, cmd);
+}
+
+// The text with '|' at every cursor, NUL-terminated, in the test arena.
+static char *test_view_marked(Test *t, TestView *tv) {
+    i64 size = buffer_size(tv->buf);
+    View *v = tv->view;
+    char *out = PUSH_ARRAY(&t->arena, char, size + v->cursor_count + 1);
+    i64 n = 0;
+    for (i64 i = 0; i <= size; i++) {
+        for (i32 k = 0; k < v->cursor_count; k++) if (view_point(v, &v->cursors[k]) == i) out[n++] = '|';
+        if (i < size) out[n++] = (char)buffer_byte(tv->buf, i);
+    }
+    out[n] = 0;
+    return out;
+}
+
+static b32 test_cstr_equal(const char *a, const char *b) {
+    return str8_equal(str8_cstr(a), str8_cstr(b));
+}
+
+typedef struct TestMotion {
+    const char *before;      // '|' marks point
+    const Command *cmds[6];  // run in order, NULL-terminated
+    const char *after;
+    const char *message;     // the echo area after the last command; NULL = empty
+} TestMotion;
+
+static b32 test_motions(Test *t) {
+#define F &CMD_FORWARD_CHAR
+#define B &CMD_BACKWARD_CHAR
+#define N &CMD_NEXT_LINE
+#define P &CMD_PREVIOUS_LINE
+#define A &CMD_MOVE_BEGINNING_OF_LINE
+#define E &CMD_MOVE_END_OF_LINE
+#define WF &CMD_FORWARD_WORD
+#define WB &CMD_BACKWARD_WORD
+#define PF &CMD_FORWARD_PARAGRAPH
+#define PB &CMD_BACKWARD_PARAGRAPH
+#define BOB &CMD_BEGINNING_OF_BUFFER
+#define EOB &CMD_END_OF_BUFFER
+    static const TestMotion cases[] = {
+        // Characters, multi-byte, limits.
+        { "|abc", { F }, "a|bc", NULL },
+        { "abc|", { F }, "abc|", "End of buffer" },
+        { "|abc", { B }, "|abc", "Beginning of buffer" },
+        { "a|\xC4\x9F" "b", { F }, "a\xC4\x9F|b", NULL },
+        { "a\xC4\x9F|b", { B }, "a|\xC4\x9F" "b", NULL },
+        { "a|\xF0\x9F\x98\x80" "b", { F, F }, "a\xF0\x9F\x98\x80" "b|", NULL },
+        { "a|\x80\xFF" "b", { F, F }, "a\x80\xFF|b", NULL },
+        { "ab\n|cd", { B }, "ab|\ncd", NULL },
+        // Lines: goal column, shorter lines, tabs, control characters, limits.
+        { "ab|c\nde", { N }, "abc\nde|", NULL },
+        { "abcdef|gh\nab\nabcdefgh", { N, N }, "abcdefgh\nab\nabcdef|gh", NULL },
+        { "abcdef|gh\nab\nx", { N, P }, "abcdef|gh\nab\nx", NULL },
+        { "abcdefgh\nab\nabcdef|gh", { P, P }, "abcdef|gh\nab\nabcdefgh", NULL },
+        { "abcdef|gh\nab\nabcdefgh", { N, B, N }, "abcdefgh\nab\na|bcdefgh", NULL }, // the goal is retaken after C-b
+        { "abcde|f\n\tx", { N }, "abcdef\n\tx|", NULL },
+        { "ab|cdef\n\tx", { N }, "abcdef\n|\tx", NULL },     // column 2 is in the first half of the tab
+        { "abc|def\n\tx", { N }, "abcdef\n\t|x", NULL },     // column 3 is in its second half
+        { "x\t|y\nabcdefgh", { N }, "x\ty\nabcd|efgh", NULL },
+        { "a\rb|c\nabcdefg", { N }, "a\rbc\nabcd|efg", NULL }, // ^M is two columns
+        { "abcd|e\na\rbc", { N }, "abcde\na\rb|c", NULL },
+        { "abc|\na\rbc", { N }, "abc\na\r|bc", NULL },         // column 3 is the second half of ^M
+        { "ab|\na\rbc", { N }, "ab\na|\rbc", NULL },           // column 2 is its first half
+        { "ab\nc|d", { N }, "ab\ncd|", "End of buffer" },
+        { "ab\ncd\n|", { N }, "ab\ncd\n|", "End of buffer" },
+        { "a|b\ncd", { P }, "|ab\ncd", "Beginning of buffer" },
+        { "ab|c\n\nxyz", { N }, "abc\n|\nxyz", NULL },
+        { "ab|c\n\nxyz", { N, N }, "abc\n\nxy|z", NULL },
+        { "a\xC4\x9F\xC4\x9F|x\nabcdef", { N }, "a\xC4\x9F\xC4\x9F" "x\nabc|def", NULL },
+        { "abc|def\na\xC4\x9F\xC4\x9F\xC4\x9F" "b", { N }, "abcdef\na\xC4\x9F\xC4\x9F|\xC4\x9F" "b", NULL },
+        // Line ends.
+        { "x\nab|c\nd", { A }, "x\n|abc\nd", NULL },
+        { "x\nab|c\nd", { E }, "x\nabc|\nd", NULL },
+        { "x\nabc|", { E }, "x\nabc|", NULL },
+        // Words: underscore is not a word character, digits are, bytes >= 0x80 are letters.
+        { "|foo_bar baz", { WF }, "foo|_bar baz", NULL },
+        { "|foo_bar baz", { WF, WF }, "foo_bar| baz", NULL },
+        { "foo_bar baz|", { WB }, "foo_bar |baz", NULL },
+        { "foo_bar baz|", { WB, WB }, "foo_|bar baz", NULL },
+        { "|  x1y2 z", { WF }, "  x1y2| z", NULL },
+        { "|\xC4\x9F\xC3\xBC\xC5\x9F abc", { WF }, "\xC4\x9F\xC3\xBC\xC5\x9F| abc", NULL },
+        { "abc \xC4\x9F\xC3\xBC|", { WB }, "abc |\xC4\x9F\xC3\xBC", NULL },
+        { "abc|", { WF }, "abc|", NULL },
+        { "|abc", { WB }, "|abc", NULL },
+        { "a|b; (c)", { WF, WF }, "ab; (c|)", NULL },
+        // Paragraphs: separators are lines of spaces and tabs.
+        { "|a\nb\n\nc\nd", { PF }, "a\nb\n|\nc\nd", NULL },
+        { "|a\nb\n\nc\nd", { PF, PF }, "a\nb\n\nc\nd|", NULL },
+        { "|a\n  \t\nb", { PF }, "a\n|  \t\nb", NULL },
+        { "a\nb\n\nc\nd|", { PB }, "a\nb\n|\nc\nd", NULL },
+        { "a\nb\n\nc\nd|", { PB, PB }, "|a\nb\n\nc\nd", NULL },
+        { "a\n\n|\n\nb", { PF }, "a\n\n\n\nb|", NULL },
+        { "a\n\n\n|b\nc", { PB }, "a\n\n|\nb\nc", NULL },      // Emacs: right after an empty line, stop there
+        { "a\n  \n|b", { PB }, "|a\n  \nb", NULL },             // ... but not after a line of spaces (Emacs too)
+        { "a\n  \nb|c", { PB }, "a\n|  \nbc", NULL },
+        { "a\n\n\nb\nc|", { PF }, "a\n\n\nb\nc|", NULL },
+        // Buffer ends.
+        { "ab\nc|d", { BOB }, "|ab\ncd", NULL },
+        { "a|b\ncd", { EOB }, "ab\ncd|", NULL },
+    };
+#undef F
+#undef B
+#undef N
+#undef P
+#undef A
+#undef E
+#undef WF
+#undef WB
+#undef PF
+#undef PB
+#undef BOB
+#undef EOB
+    for (i64 i = 0; i < ARRAY_COUNT(cases); i++) {
+        u64 mark = arena_pos(&t->arena);
+        const TestMotion *c = &cases[i];
+        TestView tv;
+        if (!test_view_open(t, &tv, c->before, 10, 40)) return 0;
+        for (i32 k = 0; k < 6 && c->cmds[k]; k++) test_view_run(&tv, c->cmds[k]);
+        char *got = test_view_marked(t, &tv);
+        String8 msg = str8(tv.echo.text, tv.echo.len);
+        b32 ok = test_cstr_equal(got, c->after);
+        b32 msg_ok = c->message ? str8_equal(msg, str8_cstr(c->message)) : msg.len == 0;
+        if (!test_view_close(t, &tv)) return 0;
+        TEST_CHECK(t, ok, "motion case %D (%s...): got \"%s\", expected \"%s\"", i, c->cmds[0]->name, got, c->after);
+        TEST_CHECK(t, msg_ok, "motion case %D (%s...): message \"%S\", expected \"%s\"", i, c->cmds[0]->name, msg,
+                   c->message ? c->message : "");
+        arena_pop_to(&t->arena, mark);
+    }
+    LOG("test: ok: motion table, %D cases", ARRAY_COUNT(cases));
+    return 1;
+}
+
+// Scrolling, recentering and horizontal scrolling on a 100-line buffer, 10 rows x 40 columns.
+static b32 test_scrolling(Test *t) {
+    u8 *text = PUSH_ARRAY(&t->arena, u8, 1024);
+    i64 n = 0;
+    text[n++] = '|';
+    for (i32 l = 0; l < 100; l++) {
+        String8 num = str8_fmt(&t->arena, "%d", l);
+        memcpy(text + n, num.data, (size_t)num.len);
+        n += num.len;
+        if (l < 99) text[n++] = '\n';
+    }
+    text[n] = 0;
+    TestView tv;
+    if (!test_view_open(t, &tv, (char *)text, 10, 40)) return 0;
+    View *v = tv.view;
+    Buffer *buf = tv.buf;
+#define LINE() buffer_line_of(buf, view_point(v, &v->cursors[0]))
+#define EXPECT(cmd, top, line, msg)                                                                              \
+    do {                                                                                                         \
+        test_view_run(&tv, cmd);                                                                                 \
+        String8 m = str8(tv.echo.text, tv.echo.len);                                                             \
+        TEST_CHECK(t, view_top_line(v) == (top) && LINE() == (line) && str8_equal(m, STR8_LIT(msg)),            \
+                   "scrolling: %s: top %D, line %D, message \"%S\"; expected top %D, line %D, \"%s\"", (cmd)->name, \
+                   view_top_line(v), LINE(), m, (i64)(top), (i64)(line), msg);                                  \
+    } while (0)
+    EXPECT(&CMD_SCROLL_UP_COMMAND, 8, 8, "");    // point dragged to the start of the top line
+    EXPECT(&CMD_SCROLL_UP_COMMAND, 16, 16, "");
+    EXPECT(&CMD_SCROLL_DOWN_COMMAND, 8, 16, ""); // still visible: stays
+    EXPECT(&CMD_SCROLL_DOWN_COMMAND, 0, 9, "");  // dragged to the bottom line
+    EXPECT(&CMD_SCROLL_DOWN_COMMAND, 0, 9, "Beginning of buffer");
+    TEST_CHECK(t, view_point(v, &v->cursors[0]) == buffer_line_start(buf, 9), "scrolling: dragged point is not at a line start");
+    view_goto_line_column(v, 50, 0);
+    view_ensure_visible(v);
+    tv.ctx.last_command = NULL;
+    TEST_CHECK(t, view_top_line(v) == 45, "scrolling: goto line 50 gave top %D, expected 45 (centered)", view_top_line(v));
+    EXPECT(&CMD_RECENTER_TOP_BOTTOM, 45, 50, "");
+    EXPECT(&CMD_RECENTER_TOP_BOTTOM, 50, 50, "");
+    EXPECT(&CMD_RECENTER_TOP_BOTTOM, 41, 50, "");
+    EXPECT(&CMD_RECENTER_TOP_BOTTOM, 45, 50, "");
+    EXPECT(&CMD_NEXT_LINE, 45, 51, "");
+    EXPECT(&CMD_NEXT_LINE, 45, 52, "");
+    EXPECT(&CMD_NEXT_LINE, 45, 53, "");
+    EXPECT(&CMD_NEXT_LINE, 45, 54, "");
+    EXPECT(&CMD_NEXT_LINE, 50, 55, "");          // off screen: recentered
+    EXPECT(&CMD_RECENTER_TOP_BOTTOM, 50, 55, ""); // a new cycle starts at the center
+    EXPECT(&CMD_END_OF_BUFFER, 92, 99, "");      // (recenter -3)
+    EXPECT(&CMD_SCROLL_UP_COMMAND, 99, 99, "");  // the top may reach the last line
+    EXPECT(&CMD_SCROLL_UP_COMMAND, 99, 99, "End of buffer");
+    EXPECT(&CMD_BEGINNING_OF_BUFFER, 0, 0, "");
+    EXPECT(&CMD_END_OF_BUFFER, 92, 99, "");
+    EXPECT(&CMD_PREVIOUS_LINE, 92, 98, "");
+    EXPECT(&CMD_END_OF_BUFFER, 92, 99, "");      // visible: no recenter
+#undef EXPECT
+#undef LINE
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Horizontal: a 200-column line in 40 columns.
+    u8 *line = PUSH_ARRAY(&t->arena, u8, 256);
+    line[0] = '|';
+    for (i32 i = 1; i <= 200; i++) line[i] = (u8)('a' + i % 26);
+    memcpy(line + 201, "\nshort", 7);
+    if (!test_view_open(t, &tv, (char *)line, 10, 40)) return 0;
+    v = tv.view;
+    test_view_run(&tv, &CMD_MOVE_END_OF_LINE);
+    TEST_CHECK(t, v->left_col == 180, "horizontal: end of a 200-column line gave left %D, expected 180", v->left_col);
+    test_view_run(&tv, &CMD_NEXT_LINE);
+    TEST_CHECK(t, v->left_col == 0, "horizontal: a short line gave left %D, expected 0", v->left_col);
+    view_goto_line_column(v, 0, 39);
+    view_ensure_visible(v);
+    TEST_CHECK(t, v->left_col == 0, "horizontal: column 39 of 40 gave left %D, expected 0", v->left_col);
+    view_goto_line_column(v, 0, 40);
+    view_ensure_visible(v);
+    TEST_CHECK(t, v->left_col == 20, "horizontal: column 40 of 40 gave left %D, expected 20", v->left_col);
+    view_goto_line_column(v, 0, 50);
+    view_ensure_visible(v);
+    TEST_CHECK(t, v->left_col == 20, "horizontal: column 50 (visible) moved left to %D", v->left_col);
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: scrolling, recentering, horizontal scrolling");
+    return 1;
+}
+
+// Every cursor on a boundary inside the buffer, the primary one visible, a valid scroll position.
+static b32 test_view_valid(Test *t, TestView *tv, const char *when) {
+    View *v = tv->view;
+    Buffer *buf = tv->buf;
+    i64 size = buffer_size(buf);
+    for (i32 k = 0; k < v->cursor_count; k++) {
+        i64 p = view_point(v, &v->cursors[k]);
+        TEST_CHECK(t, p >= 0 && p <= size && buffer_snap_char(buf, p) == p, "%s: cursor %d at %D (size %D) is not a boundary",
+                   when, k, p, size);
+    }
+    i64 top_pos = buffer_marker_get(buf, v->top);
+    i64 top = buffer_line_of(buf, top_pos);
+    TEST_CHECK(t, top_pos == buffer_line_start(buf, top), "%s: top at %D is not a line start", when, top_pos);
+    TEST_CHECK(t, top <= buffer_line_count(buf) - 1, "%s: top line %D past the last line", when, top);
+    i64 p = view_point(v, &v->cursors[0]);
+    i64 line = buffer_line_of(buf, p);
+    TEST_CHECK(t, line >= top && line < top + v->rows, "%s: point line %D outside [%D, %D)", when, line, top, top + v->rows);
+    i64 col = view_column_of(buf, p);
+    i64 w = p < size && view_is_control(buffer_byte(buf, p)) ? 2 : 1;
+    TEST_CHECK(t, v->left_col >= 0 && col >= v->left_col && col + w <= v->left_col + v->cols,
+               "%s: point column %D (width %D) outside [%D, %D)", when, col, w, v->left_col, v->left_col + v->cols);
+    return 1;
+}
+
+#define TEST_VIEW_FUZZ_OPS 20000
+
+static b32 test_view_fuzz(Test *t, u64 seed) {
+    t->rng = seed ^ 0x76696577ull;
+    static const char *pieces[] = {
+        "a", "b", "x", "_", "1", " ", " ", " ", "\t", "\n", "\n", "\n\n", "\n  \n", "\xC4\x9F", "\xE2\x82\xAC",
+        "\xF0\x9F\x98\x80", "\r", "\x01", "\x7F", "\x80", "\xFF", "\xE2\x82", "word", "longer_identifier",
+    };
+    static const Command *motions[] = {
+        &CMD_FORWARD_CHAR, &CMD_BACKWARD_CHAR, &CMD_NEXT_LINE, &CMD_PREVIOUS_LINE, &CMD_NEXT_LINE, &CMD_PREVIOUS_LINE,
+        &CMD_MOVE_BEGINNING_OF_LINE, &CMD_MOVE_END_OF_LINE, &CMD_FORWARD_WORD, &CMD_BACKWARD_WORD,
+        &CMD_FORWARD_PARAGRAPH, &CMD_BACKWARD_PARAGRAPH, &CMD_BEGINNING_OF_BUFFER, &CMD_END_OF_BUFFER,
+        &CMD_SCROLL_UP_COMMAND, &CMD_SCROLL_DOWN_COMMAND, &CMD_RECENTER_TOP_BOTTOM,
+    };
+    u8 *text = PUSH_ARRAY(&t->arena, u8, KB(64));
+    i64 n = 0;
+    while (n < (i64)KB(16)) {
+        String8 piece = str8_cstr(pieces[test_below(t, ARRAY_COUNT(pieces))]);
+        if (test_below(t, 200) == 0) for (i32 i = 0; i < 300; i++) text[n++] = 'L'; // a long line
+        memcpy(text + n, piece.data, (size_t)piece.len);
+        n += piece.len;
+    }
+    text[n] = 0;
+    TestView tv;
+    if (!test_view_open(t, &tv, "", 20, 60)) return 0;
+    buffer_replace(tv.buf, 0, 0, str8(text, n));
+    View *v = tv.view;
+    i64 commands = 0, edits = 0;
+    for (i32 op = 0; op < TEST_VIEW_FUZZ_OPS; op++) {
+        i64 r = test_below(t, 100);
+        i64 size = buffer_size(tv.buf);
+        const char *what;
+        if (r < 60) {
+            const Command *cmd = motions[test_below(t, ARRAY_COUNT(motions))];
+            test_view_run(&tv, cmd);
+            what = cmd->name;
+            commands++;
+        } else {
+            tv.ctx.last_command = NULL; // as the app does for anything that is not a command
+            if (r < 72) { // an edit elsewhere (another view, a program): markers keep up
+                i64 start = buffer_snap_char(tv.buf, test_below(t, size + 1));
+                i64 end = buffer_snap_char(tv.buf, MIN(start + test_below(t, size > (i64)KB(32) ? 400 : 40), size));
+                end = MAX(start, end);
+                i64 len = 0;
+                if (size < (i64)KB(32)) {
+                    for (i64 k = test_below(t, 4); k > 0; k--) {
+                        String8 piece = str8_cstr(pieces[test_below(t, ARRAY_COUNT(pieces))]);
+                        memcpy(text + len, piece.data, (size_t)piece.len);
+                        len += piece.len;
+                    }
+                }
+                buffer_replace(tv.buf, start, end, str8(text, len));
+                what = "edit";
+                edits++;
+            } else if (r < 80) {
+                view_scroll_lines(v, test_below(t, 61) - 30);
+                what = "wheel";
+            } else if (r < 88) {
+                view_set_point_at(v, test_below(t, v->rows + 2), v->left_col + test_below(t, v->cols + 4));
+                what = "click";
+            } else if (r < 93) {
+                v->rows = (i32)(1 + test_below(t, 40));
+                v->cols = (i32)(4 + test_below(t, 100));
+                what = "resize";
+            } else {
+                view_goto_line_column(v, test_below(t, buffer_line_count(tv.buf) + 5), test_below(t, 120));
+                what = "goto";
+            }
+            view_ensure_visible(v); // every frame does this after the layout
+        }
+        char when[96];
+        test_cstr(when, sizeof(when), "view fuzz op %d (seed 0x%X, %s)", op, seed, what);
+        if (!test_view_valid(t, &tv, when)) {
+            test_view_close(t, &tv);
+            return 0;
+        }
+    }
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: view fuzz, %d ops (%D commands, %D edits), seed 0x%X", TEST_VIEW_FUZZ_OPS, commands, edits, seed);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
 #define TEST_BENCH_SIZE MB(100)
@@ -1153,6 +1520,12 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_language(&t);
     arena_reset(&t.arena);
     test_columns(&t, seed);
+    arena_reset(&t.arena);
+    test_motions(&t);
+    arena_reset(&t.arena);
+    test_scrolling(&t);
+    arena_reset(&t.arena);
+    test_view_fuzz(&t, seed);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
