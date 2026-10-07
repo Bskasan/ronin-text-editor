@@ -173,8 +173,10 @@ typedef struct DevProbe {
 } DevProbe;
 
 i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap); // the --sample frame
-void app_dev_smoke_buffer_view(App *app); // leaves the sample and shows a known buffer
-i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap); // that buffer's frame
+void app_dev_smoke_buffer_view(App *app); // leaves the sample and shows a known buffer, focus forced off
+i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click
+void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
+void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
 b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log

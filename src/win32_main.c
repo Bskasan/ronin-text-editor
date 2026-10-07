@@ -866,9 +866,10 @@ static b32 win32_check_probe(DevProbe *pr, u8 *pixels, i32 w, i32 h) {
     return 0;
 }
 
-// Called right after the captured frame.
-// `buffer_view`: the frame shows the smoke buffer (app_dev_buffer_probes) instead of the sample.
-static i32 win32_smoke_check_frame(Platform *p, b32 buffer_view) {
+// Called right after the captured frame. `stage`: -1 the sample (app_dev_probes), 0 / 1 the
+// smoke buffer with a hollow / filled cursor (app_dev_buffer_probes).
+static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
+    b32 buffer_view = stage >= 0;
     i32 w, h;
     u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
     if (!pixels) {
@@ -877,11 +878,11 @@ static i32 win32_smoke_check_frame(Platform *p, b32 buffer_view) {
     }
     FrameInput input = win32_frame_input(p);
     DevProbe probes[16];
-    i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes))
+    i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
-    i32 expected = buffer_view ? 6 : 8;
+    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : 8;
     i32 result = EXIT_OK;
-    LOG("smoke: checking the %s frame", buffer_view ? "buffer view" : "sample");
+    LOG("smoke: checking the %s frame", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)" : "sample");
     for (i32 i = 0; i < count; i++) {
         if (!win32_check_probe(&probes[i], pixels, w, h) && result == EXIT_OK) {
             result = probes[i].kind == DEV_PROBE_CLEARTYPE ? EXIT_FONT : EXIT_PIXEL_MISMATCH;
@@ -928,6 +929,7 @@ static b32 win32_write_png(Platform *p, String8 path, u8 *bgra, i32 w, i32 h) {
 
 // --screenshot and --dump-atlas: one frame with the window hidden, then write the files.
 static i32 win32_write_outputs(Platform *p) {
+    app_dev_force_focus(p->app, 1); // the cursor as it looks while typing
     r_request_capture(p->renderer);
     win32_frame(p);
     i32 result = EXIT_OK;
@@ -1301,18 +1303,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
 #if TEAL_DEV
         if (p->smoke) {
-            // Two plain frames, then a third one (the sample) and a fourth one (a known buffer)
-            // whose back buffers are read back and checked.
+            // Two plain frames, then a third one (the sample), a fourth one (a known buffer, no
+            // focus) and a fifth one (after a click, focus forced on) whose back buffers are read
+            // back and checked.
             if (p->frame_count >= 2) {
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                i32 code = win32_smoke_check_frame(p, 0);
+                i32 code = win32_smoke_check_frame(p, -1);
                 app_dev_smoke_buffer_view(p->app);
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                i32 code2 = win32_smoke_check_frame(p, 1);
-                i32 code3 = win32_smoke_check_title(p);
-                p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3;
+                i32 code2 = win32_smoke_check_frame(p, 0);
+                FrameInput input = win32_frame_input(p);
+                Event click = { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT };
+                app_dev_smoke_click_point(p->app, &input, &click.x, &click.y);
+                win32_push_event(p, click);
+                app_dev_force_focus(p->app, 1);
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                i32 code3 = win32_smoke_check_frame(p, 1);
+                i32 code4 = win32_smoke_check_title(p);
+                p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3 != EXIT_OK ? code3 : code4;
                 p->quit = 1;
                 break;
             }
