@@ -495,6 +495,39 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
     return n;
 }
 
+// Smoke, second frame: a known buffer in the buffer view.
+//   line 0: "int x = 1;"
+//   line 1: TAB "|"   columns 0-3 empty, '|' (centered, so no ClearType fringe reaches column 3) at 4
+//   line 2: ""        column 5 is empty, and so are its neighbors above, below and to the sides
+//   line 3: "abc"
+void app_dev_smoke_buffer_view(App *app) {
+    app->sample = 0;
+    app->top_line = 0;
+    Buffer *buf = app->buffer;
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\nabc\n"));
+}
+
+i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
+    AppLayout l = app_layout(app, in);
+    i32 n = 0;
+    i32 cw = l.cell_w, lh = l.line_h;
+#define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = 0, .y0 = 0, .x1 = cw, .y1 = lh,
+                   .rgb = THEME_BACKGROUND, .what = "buffer: text cell 'i' (line 0, column 0)");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = 5 * cw, .y0 = 2 * lh, .x1 = 6 * cw, .y1 = 3 * lh,
+                   .rgb = THEME_BACKGROUND, .what = "buffer: empty cell (line 2, column 5)");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = 0, .y0 = lh, .x1 = 4 * cw, .y1 = 2 * lh,
+                   .rgb = THEME_BACKGROUND, .what = "buffer: tab, columns 0-3 of line 1 empty");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = 4 * cw, .y0 = lh, .x1 = 5 * cw, .y1 = 2 * lh,
+                   .rgb = THEME_BACKGROUND, .what = "buffer: '|' after the tab drawn at column 4");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = l.mode_line_y + lh / 2,
+                   .rgb = THEME_TEXT, .what = "buffer: mode line (right end)");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = 0, .y0 = l.mode_line_y, .x1 = cw, .y1 = l.mode_line_y + lh,
+                   .rgb = THEME_TEXT, .what = "buffer: mode line text (first cell)");
+#undef APP_PUSH_PROBE
+    return n;
+}
+
 b32 app_dev_atlas_has_coverage(App *app) {
     return font_dev_atlas_has_coverage(app->font);
 }
