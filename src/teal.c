@@ -7,11 +7,13 @@
 #include "render.h"
 #include "font.h"
 #include "buffer.h"
+#include "view.h"
 
 #include "base.c"
 #include "png.c"
 #include "font.c"
 #include "buffer.c"
+#include "view.c"
 #include "app.c"
 #include "test.c" // TEAL_DEV only
 
