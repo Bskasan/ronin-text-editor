@@ -79,6 +79,7 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
     build/teal_debug.exe --smoke                          # exit 0 = pass
     build/teal_debug.exe --screenshot build/shots/x.png   # window hidden, one frame
     build/teal_debug.exe --sample ...                     # the Phase 2 colored sample (smoke implies it)
+    build/teal_debug.exe <file> --top-line N|end ...      # open a file, initial scroll (for screenshots)
     build/teal_debug.exe --dump-atlas build/shots/a.png   # the CPU glyph atlas
     build/teal_debug.exe --render-mode classic|natural|symmetric   (default symmetric)
     build/teal_debug.exe --scale 150                      # force the DPI scale (percent)

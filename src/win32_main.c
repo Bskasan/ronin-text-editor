@@ -39,12 +39,15 @@ typedef struct Platform {
     // Command-line options.
     b32 startup_ms;       // --startup-ms: exit after the first Present, exit code = ms since process creation
     f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
+    String8 file_path;    // the first argument that is not a flag
     FbRenderMode render_mode;
 #if TEAL_DEV
     HANDLE log_file;
     b32 smoke;
     b32 test;
     b32 sample;
+    i64 top_line;
+    b32 top_line_end;
     u64 seed;
     String8 exe_dir;
     b32 bench_text;
@@ -1010,11 +1013,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     for (i32 i = 1; i < arg_count; i++) {
         String8 a = args[i];
         if (str8_equal(a, STR8_LIT("--startup-ms"))) p->startup_ms = 1;
+        else if (!p->file_path.len && !(a.len >= 2 && a.data[0] == '-' && a.data[1] == '-')) p->file_path = a;
 #if TEAL_DEV
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) p->smoke = 1;
         else if (str8_equal(a, STR8_LIT("--test"))) p->test = 1;
         else if (str8_equal(a, STR8_LIT("--sample"))) p->sample = 1;
+        else if (str8_equal(a, STR8_LIT("--top-line")) && has_value) {
+            String8 v = args[++i];
+            if (str8_equal(v, STR8_LIT("end"))) p->top_line_end = 1;
+            else p->top_line = (i64)win32_parse_u64(v);
+        }
         else if (str8_equal(a, STR8_LIT("--seed")) && has_value) p->seed = win32_parse_u64(args[++i]);
         else if (str8_equal(a, STR8_LIT("--bench-text"))) p->bench_text = 1;
         else if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) p->screenshot_path = args[++i];
@@ -1095,9 +1104,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
 
-    AppConfig config = { .dpi_scale = scale, .render_mode = p->render_mode };
+    AppConfig config = { .dpi_scale = scale, .render_mode = p->render_mode, .file_path = p->file_path };
 #if TEAL_DEV
     config.sample = p->sample || p->smoke; // the smoke probes check the sample
+    config.top_line = p->top_line;
+    config.top_line_end = p->top_line_end;
 #endif
     p->app = app_create(&p->perm, &config);
     if (!p->app) {
@@ -1199,11 +1210,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
 
     u32 leaks = r_shutdown(p->renderer);
-    i32 font_refs = app_shutdown(p->app);
+    i32 font_refs = app_shutdown(p->app); // DirectWrite references + unreleased buffers
     DestroyWindow(p->hwnd);
 
 #if TEAL_DEV
-    LOG("font: DirectWrite references still held after close: %d", font_refs);
+    LOG("app: resources still held after close (DirectWrite references, buffers): %d", font_refs);
     if (p->smoke) {
         i32 code = p->exit_code;
 #if TEAL_D3D_DEBUG
@@ -1219,7 +1230,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             code = EXIT_DEBUG_MESSAGES;
         }
         if (code == EXIT_OK && (leaks != 0 || font_refs != 0)) {
-            LOG("smoke: FAIL: %u leaked D3D reference(s) / live object(s), %d DirectWrite reference(s)", leaks, font_refs);
+            LOG("smoke: FAIL: %u leaked D3D reference(s) / live object(s), %d app resource(s) (DirectWrite, buffers)", leaks, font_refs);
             code = EXIT_LEAK;
         }
         LOG("smoke: %s (exit %d, %D frames)", code == EXIT_OK ? "PASS" : "FAIL", code, p->frame_count);

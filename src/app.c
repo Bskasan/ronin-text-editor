@@ -79,16 +79,32 @@ static const char *app_sample[] = {
 #endif // TEAL_DEV
 
 #define APP_MINIBUFFER_CAP 1024
+#define APP_TAB_WIDTH 4
+#define APP_WHEEL_LINES 3          // per notch (120 units)
+#define APP_PAGE_CONTEXT_LINES 2   // kept on screen by PageUp / PageDown (Emacs next-screen-context-lines)
 
 struct App {
     Font *font;
-    u8 minibuffer[APP_MINIBUFFER_CAP];
+    Buffer *buffer;
+    i64 top_line;    // first visible line
+    i32 wheel_accum; // wheel units * APP_WHEEL_LINES not yet turned into lines
+    u8 minibuffer[APP_MINIBUFFER_CAP]; // the last message
     i32 minibuffer_len;
 #if TEAL_DEV
     b32 sample; // --sample: the Phase 2 display
     i32 cursor_col, cursor_row;
+    b32 top_line_end;  // --top-line end: scroll to the last screen on the first frame
+    u64 dev_build_us;  // last frame: time from the start of the frame to r_end_frame
 #endif
 };
+
+static void app_message(App *app, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    i64 n = fmt_v(app->minibuffer, APP_MINIBUFFER_CAP, fmt, args);
+    va_end(args);
+    app->minibuffer_len = (i32)MIN(n, (i64)APP_MINIBUFFER_CAP);
+}
 
 typedef struct AppLayout {
     i32 cell_w, line_h;
@@ -106,6 +122,53 @@ static AppLayout app_layout(App *app, FrameInput *in) {
     l.cols = MAX(in->width / l.cell_w, 1);
     l.rows = MAX(l.mode_line_y / l.line_h, 1);
     return l;
+}
+
+// One line of text from column 0: tabs expanded to the next multiple of APP_TAB_WIDTH, cut
+// after `cols` columns. Each codepoint (or invalid byte) is one column, as in font_draw_text.
+static void app_draw_line(App *app, Renderer *r, i32 y, String8 s, i32 cols, Color color) {
+    i32 cell_w = app->font->cell_w;
+    i32 col = 0, run_col = 0;
+    i64 i = 0, run = 0;
+    while (i < s.len && col < cols) {
+        u8 b = s.data[i];
+        if (b == '\t') {
+            font_draw_text(app->font, r, run_col * cell_w, y, str8(s.data + run, i - run), color);
+            col = (col / APP_TAB_WIDTH + 1) * APP_TAB_WIDTH;
+            run = ++i;
+            run_col = col;
+            continue;
+        }
+        i64 advance = 1;
+        if (b >= 0x80) utf8_decode(s.data + i, s.len - i, &advance);
+        i += advance;
+        col++;
+    }
+    font_draw_text(app->font, r, run_col * cell_w, y, str8(s.data + run, i - run), color);
+}
+
+static const char *app_encoding_name(BufferEncoding e) {
+    switch (e) {
+    case BUFFER_UTF8:     return "UTF-8";
+    case BUFFER_UTF8_BOM: return "UTF-8 BOM";
+    case BUFFER_UTF16LE:  return "UTF-16LE";
+    case BUFFER_UTF16BE:  return "UTF-16BE";
+    }
+    return "?";
+}
+
+static const char *app_eol_name(BufferEol e) {
+    switch (e) {
+    case BUFFER_EOL_LF:    return "LF";
+    case BUFFER_EOL_CRLF:  return "CRLF";
+    case BUFFER_EOL_MIXED: return "Mixed";
+    }
+    return "?";
+}
+
+static void app_scroll(App *app, i64 lines) {
+    i64 last = buffer_line_count(app->buffer) - 1;
+    app->top_line = CLAMP(app->top_line + lines, 0, last);
 }
 
 static void app_draw_mode_line(App *app, Renderer *r, FrameInput *in, AppLayout *l, String8 text) {
@@ -225,34 +288,121 @@ static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout
 }
 #endif
 
+// Opens config->file_path, or *scratch* without one or when it cannot be opened.
+static void app_open_initial_buffer(App *app, AppConfig *config) {
+    if (config->file_path.len) {
+        Buffer *buf = buffer_create(STR8_LIT(""));
+        if (buf) {
+#if TEAL_DEV
+            u64 t0 = os_time_us();
+#endif
+            OsFileStatus status = buffer_load_file(buf, config->file_path);
+            if (status == OS_FILE_OK) {
+                app->buffer = buf;
+                LOG("app: loaded %S: %D bytes, %D lines, %s %s, %U us", buf->path, buffer_size(buf), buffer_line_count(buf),
+                    app_encoding_name(buf->encoding), app_eol_name(buf->eol), os_time_us() - t0);
+            } else if (status == OS_FILE_NOT_FOUND) {
+                // As in Emacs: visit the path as a new file.
+                String8 full = os_full_path(&buf->meta, config->file_path);
+                buffer_set_path(buf, full.len ? full : config->file_path);
+                app->buffer = buf;
+                app_message(app, "(New file)");
+            } else {
+                app_message(app, "Cannot open %S: %s", config->file_path, buffer_status_text(status));
+                buffer_destroy(buf);
+            }
+        }
+    }
+    if (!app->buffer) app->buffer = buffer_create(STR8_LIT("*scratch*"));
+    if (!app->buffer) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
+}
+
 App *app_create(Arena *perm, AppConfig *config) {
     App *app = PUSH_STRUCT(perm, App);
     app->font = font_create(perm, config->dpi_scale, config->render_mode);
     if (!app->font) return NULL;
+    app_open_initial_buffer(app, config);
 #if TEAL_DEV
     app->sample = config->sample;
+    app->top_line_end = config->top_line_end;
+    app_scroll(app, config->top_line);
 #endif
     return app;
 }
 
 i32 app_shutdown(App *app) {
-    return font_shutdown(app->font);
+    i32 leaks = font_shutdown(app->font);
+    if (!buffer_destroy(app->buffer)) leaks++;
+    return leaks;
 }
 
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
     font_frame_begin(app->font, r, in->dpi_scale);
     AppLayout l = app_layout(app, in);
 #if TEAL_DEV
     if (app->sample) return app_dev_sample_frame(app, in, r, &l);
+    if (app->top_line_end) {
+        app->top_line_end = 0;
+        app_scroll(app, buffer_line_count(app->buffer));
+        app_scroll(app, -(l.rows - 1));
+    }
 #endif
+    Buffer *buf = app->buffer;
 
     for (i32 i = 0; i < in->event_count; i++) {
-        if (in->events[i].kind == EVENT_CLOSE) return 0;
+        Event *e = &in->events[i];
+        switch (e->kind) {
+        case EVENT_CLOSE:
+            return 0;
+        case EVENT_KEY_DOWN: {
+            i64 page = MAX(l.rows - APP_PAGE_CONTEXT_LINES, 1);
+            b32 ctrl = (e->mods & MOD_CTRL) != 0;
+            if (e->key == KEY_UP) app_scroll(app, -1);
+            if (e->key == KEY_DOWN) app_scroll(app, 1);
+            if (e->key == KEY_PAGE_UP) app_scroll(app, -page);
+            if (e->key == KEY_PAGE_DOWN) app_scroll(app, page);
+            if (e->key == KEY_HOME && ctrl) app->top_line = 0;
+            if (e->key == KEY_END && ctrl) {
+                app->top_line = 0;
+                app_scroll(app, buffer_line_count(buf) - l.rows);
+            }
+        } break;
+        case EVENT_MOUSE_WHEEL: {
+            app->wheel_accum += e->wheel * APP_WHEEL_LINES;
+            i32 lines = app->wheel_accum / 120;
+            app->wheel_accum -= lines * 120;
+            app_scroll(app, -lines); // positive = away from the user = towards the top
+        } break;
+        default:
+            break;
+        }
     }
 
     r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
-    app_draw_mode_line(app, r, in, &l, STR8_LIT("-:---  *scratch*"));
+
+    // Only the visible lines are touched. A line is cut at 4 bytes per column (the longest
+    // UTF-8 sequence), so a huge line is never copied whole even when it straddles the gap.
+    i32 draw_cols = (in->width + l.cell_w - 1) / l.cell_w; // the partial last column is clipped by the viewport
+    i64 line_count = buffer_line_count(buf);
+    for (i32 row = 0; row < l.rows && app->top_line + row < line_count; row++) {
+        i64 line = app->top_line + row;
+        i64 start = buffer_line_start(buf, line);
+        i64 end = MIN(buffer_line_end(buf, line), start + (i64)draw_cols * 4);
+        app_draw_line(app, r, row * l.line_h, buffer_text(buf, in->scratch, start, end), draw_cols, COLOR_HEX(THEME_TEXT));
+    }
+
+    const char *flags = buf->read_only ? "%%" : buf->modified ? "**" : "--";
+    String8 mode = str8_fmt(in->scratch, "-:%s-  %S    L%D/%D    %s %s", flags, buf->name, app->top_line + 1, line_count,
+                            app_encoding_name(buf->encoding), app_eol_name(buf->eol));
+    app_draw_mode_line(app, r, in, &l, mode);
     font_draw_text(app->font, r, 0, l.minibuffer_y, str8(app->minibuffer, app->minibuffer_len), COLOR_HEX(THEME_TEXT));
+
+#if TEAL_DEV
+    app->dev_build_us = os_time_us() - t0;
+#endif
     r_end_frame(r);
     return 1;
 }

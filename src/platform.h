@@ -142,14 +142,17 @@ typedef struct Renderer Renderer;
 typedef struct AppConfig {
     f32 dpi_scale;
     FbRenderMode render_mode;
+    String8 file_path; // the first non-flag argument; empty = *scratch*
 #if TEAL_DEV
     b32 sample; // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
+    i64 top_line;     // --top-line N: initial scroll, 0-based
+    b32 top_line_end; // --top-line end
 #endif
 } AppConfig;
 
 App *app_create(Arena *perm, AppConfig *config); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
-i32  app_shutdown(App *app); // font backend references still held, 0 = clean
+i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers), 0 = clean
 
 #if TEAL_DEV
 typedef enum DevProbeKind {
