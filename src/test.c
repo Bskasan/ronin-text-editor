@@ -1294,6 +1294,99 @@ static b32 test_view_valid(Test *t, TestView *tv, const char *when) {
     return 1;
 }
 
+// Driver probes: each bumps the goal column of the cursor it is given, so the counts show
+// which cursors a command ran for.
+static void test_bump_cursor(CommandContext *ctx) { ctx->cursor->goal_col++; }
+static const Command TEST_CMD_EACH = { "test-each", test_bump_cursor, 0 };
+static const Command TEST_CMD_ONCE = { "test-once", test_bump_cursor, COMMAND_ONCE };
+
+// Three cursors, every command through view_run_command.
+static b32 test_multi_cursor(Test *t) {
+    TestView tv;
+    if (!test_view_open(t, &tv, "a|b\nc|d\ne|f", 10, 40)) return 0;
+    View *v = tv.view;
+    TEST_CHECK(t, v->cursor_count == 3, "cursors: %d cursors, expected 3", v->cursor_count);
+    struct { const Command *cmd; u32 codepoint; const char *after; } steps[] = {
+        { &CMD_SELF_INSERT, 'X', "aX|b\ncX|d\neX|f" },
+        { &CMD_DELETE_BACKWARD_CHAR, 0, "a|b\nc|d\ne|f" },
+        { &CMD_DELETE_CHAR, 0, "a|\nc|\ne|" },
+        { &CMD_SELF_INSERT, 0x11F, "a\xC4\x9F|\nc\xC4\x9F|\ne\xC4\x9F|" },
+        { &CMD_BACKWARD_CHAR, 0, "a|\xC4\x9F\nc|\xC4\x9F\ne|\xC4\x9F" },
+        { &CMD_NEWLINE, 0, "a\n|\xC4\x9F\nc\n|\xC4\x9F\ne\n|\xC4\x9F" },
+        { &CMD_DELETE_BACKWARD_CHAR, 0, "a|\xC4\x9F\nc|\xC4\x9F\ne|\xC4\x9F" },
+        { &CMD_FORWARD_CHAR, 0, "a\xC4\x9F|\nc\xC4\x9F|\ne\xC4\x9F|" },
+        { &CMD_DELETE_CHAR, 0, "a\xC4\x9F|c\xC4\x9F|e\xC4\x9F|" },
+    };
+    for (i64 i = 0; i < ARRAY_COUNT(steps); i++) {
+        tv.ctx.codepoint = steps[i].codepoint;
+        test_view_run(&tv, steps[i].cmd);
+        char *got = test_view_marked(t, &tv);
+        TEST_CHECK(t, test_cstr_equal(got, steps[i].after), "cursors: step %D (%s): got \"%s\", expected \"%s\"", i,
+                   steps[i].cmd->name, got, steps[i].after);
+    }
+    // The driver: a per-cursor command runs once for every cursor, a COMMAND_ONCE command once
+    // in all, with the primary cursor.
+    for (i32 k = 0; k < 3; k++) v->cursors[k].goal_col = 0;
+    test_view_run(&tv, &TEST_CMD_EACH);
+    test_view_run(&tv, &TEST_CMD_ONCE);
+    TEST_CHECK(t, v->cursors[0].goal_col == 2 && v->cursors[1].goal_col == 1 && v->cursors[2].goal_col == 1,
+               "cursors: driver ran per-cursor / once commands %D, %D, %D times (expected 2, 1, 1)", v->cursors[0].goal_col,
+               v->cursors[1].goal_col, v->cursors[2].goal_col);
+    TEST_CHECK(t, tv.ctx.last_command == &TEST_CMD_ONCE && tv.ctx.cursor == NULL, "cursors: driver did not update the context");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: three cursors (self-insert, deletes, newline, motion) and the command driver");
+    return 1;
+}
+
+// Read-only buffers refuse every edit with a message; save-buffer messages.
+static b32 test_view_edit_limits(Test *t) {
+    TestView tv;
+    if (!test_view_open(t, &tv, "ab|c\nd", 10, 40)) return 0;
+    tv.buf->read_only = 1;
+    const Command *edits[] = { &CMD_SELF_INSERT, &CMD_NEWLINE, &CMD_DELETE_BACKWARD_CHAR, &CMD_DELETE_CHAR };
+    tv.ctx.codepoint = 'x';
+    for (i64 i = 0; i < ARRAY_COUNT(edits); i++) {
+        test_view_run(&tv, edits[i]);
+        char *got = test_view_marked(t, &tv);
+        String8 msg = str8(tv.echo.text, tv.echo.len);
+        TEST_CHECK(t, test_cstr_equal(got, "ab|c\nd") && !tv.buf->modified && tv.buf->edit_count == 1,
+                   "read-only: %s changed the buffer: \"%s\"", edits[i]->name, got);
+        TEST_CHECK(t, str8_equal(msg, STR8_LIT("Buffer is read-only: test.c")), "read-only: %s said \"%S\"", edits[i]->name, msg);
+    }
+    tv.buf->read_only = 0;
+
+    // Limits of the deletes.
+    view_set_point(tv.view, &tv.view->cursors[0], 0);
+    test_view_run(&tv, &CMD_DELETE_BACKWARD_CHAR);
+    TEST_CHECK(t, str8_equal(str8(tv.echo.text, tv.echo.len), STR8_LIT("Beginning of buffer")), "delete-backward-char at 0: no message");
+    view_set_point(tv.view, &tv.view->cursors[0], buffer_size(tv.buf));
+    test_view_run(&tv, &CMD_DELETE_CHAR);
+    TEST_CHECK(t, str8_equal(str8(tv.echo.text, tv.echo.len), STR8_LIT("End of buffer")), "delete-char at the end: no message");
+    TEST_CHECK(t, !tv.buf->modified, "the refused deletes modified the buffer");
+
+    // save-buffer: nothing to save; no file; a real save.
+    test_view_run(&tv, &CMD_SAVE_BUFFER);
+    TEST_CHECK(t, str8_equal(str8(tv.echo.text, tv.echo.len), STR8_LIT("(No changes need to be saved)")), "save-buffer unmodified: \"%S\"",
+               str8(tv.echo.text, tv.echo.len));
+    tv.ctx.codepoint = 'y';
+    test_view_run(&tv, &CMD_SELF_INSERT);
+    test_view_run(&tv, &CMD_SAVE_BUFFER);
+    TEST_CHECK(t, str8_equal(str8(tv.echo.text, tv.echo.len), STR8_LIT("Cannot save test.c: buffer is not visiting a file")),
+               "save-buffer without a file: \"%S\"", str8(tv.echo.text, tv.echo.len));
+    String8 path = test_path(t, "view_save.txt", "");
+    os_file_delete(path);
+    buffer_set_path(tv.buf, os_full_path(&t->arena, path));
+    test_view_run(&tv, &CMD_SAVE_BUFFER);
+    String8 want = str8_fmt(&t->arena, "Wrote %S", tv.buf->path), written;
+    TEST_CHECK(t, str8_equal(str8(tv.echo.text, tv.echo.len), want), "save-buffer: \"%S\"", str8(tv.echo.text, tv.echo.len));
+    TEST_CHECK(t, !tv.buf->modified && test_read_file(t, path, &written) && str8_equal(written, STR8_LIT("abc\ndy")),
+               "save-buffer: the file does not hold the text");
+    os_file_delete(path);
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: read-only buffer refuses edits with a message; delete limits; save-buffer messages");
+    return 1;
+}
+
 #define TEST_VIEW_FUZZ_OPS 20000
 
 static b32 test_view_fuzz(Test *t, u64 seed) {
@@ -1302,12 +1395,14 @@ static b32 test_view_fuzz(Test *t, u64 seed) {
         "a", "b", "x", "_", "1", " ", " ", " ", "\t", "\n", "\n", "\n\n", "\n  \n", "\xC4\x9F", "\xE2\x82\xAC",
         "\xF0\x9F\x98\x80", "\r", "\x01", "\x7F", "\x80", "\xFF", "\xE2\x82", "word", "longer_identifier",
     };
-    static const Command *motions[] = {
+    static const Command *commands[] = {
         &CMD_FORWARD_CHAR, &CMD_BACKWARD_CHAR, &CMD_NEXT_LINE, &CMD_PREVIOUS_LINE, &CMD_NEXT_LINE, &CMD_PREVIOUS_LINE,
         &CMD_MOVE_BEGINNING_OF_LINE, &CMD_MOVE_END_OF_LINE, &CMD_FORWARD_WORD, &CMD_BACKWARD_WORD,
         &CMD_FORWARD_PARAGRAPH, &CMD_BACKWARD_PARAGRAPH, &CMD_BEGINNING_OF_BUFFER, &CMD_END_OF_BUFFER,
         &CMD_SCROLL_UP_COMMAND, &CMD_SCROLL_DOWN_COMMAND, &CMD_RECENTER_TOP_BOTTOM,
+        &CMD_SELF_INSERT, &CMD_SELF_INSERT, &CMD_NEWLINE, &CMD_DELETE_BACKWARD_CHAR, &CMD_DELETE_CHAR,
     };
+    static const u32 typed[] = { 'a', 'Z', ' ', '\t', '_', 0x11F, 0x20AC, 0x1F600 };
     u8 *text = PUSH_ARRAY(&t->arena, u8, KB(64));
     i64 n = 0;
     while (n < (i64)KB(16)) {
@@ -1321,16 +1416,17 @@ static b32 test_view_fuzz(Test *t, u64 seed) {
     if (!test_view_open(t, &tv, "", 20, 60)) return 0;
     buffer_replace(tv.buf, 0, 0, str8(text, n));
     View *v = tv.view;
-    i64 commands = 0, edits = 0;
+    i64 commands_run = 0, edits = 0;
     for (i32 op = 0; op < TEST_VIEW_FUZZ_OPS; op++) {
         i64 r = test_below(t, 100);
         i64 size = buffer_size(tv.buf);
         const char *what;
         if (r < 60) {
-            const Command *cmd = motions[test_below(t, ARRAY_COUNT(motions))];
+            const Command *cmd = commands[test_below(t, ARRAY_COUNT(commands))];
+            tv.ctx.codepoint = typed[test_below(t, ARRAY_COUNT(typed))];
             test_view_run(&tv, cmd);
             what = cmd->name;
-            commands++;
+            commands_run++;
         } else {
             tv.ctx.last_command = NULL; // as the app does for anything that is not a command
             if (r < 72) { // an edit elsewhere (another view, a program): markers keep up
@@ -1372,7 +1468,7 @@ static b32 test_view_fuzz(Test *t, u64 seed) {
         }
     }
     if (!test_view_close(t, &tv)) return 0;
-    LOG("test: ok: view fuzz, %d ops (%D commands, %D edits), seed 0x%X", TEST_VIEW_FUZZ_OPS, commands, edits, seed);
+    LOG("test: ok: view fuzz, %d ops (%D commands, %D edits), seed 0x%X", TEST_VIEW_FUZZ_OPS, commands_run, edits, seed);
     return 1;
 }
 
@@ -1524,6 +1620,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_motions(&t);
     arena_reset(&t.arena);
     test_scrolling(&t);
+    arena_reset(&t.arena);
+    test_multi_cursor(&t);
+    arena_reset(&t.arena);
+    test_view_edit_limits(&t);
     arena_reset(&t.arena);
     test_view_fuzz(&t, seed);
     arena_reset(&t.arena);
