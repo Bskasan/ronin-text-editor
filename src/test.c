@@ -1491,6 +1491,123 @@ static b32 test_commands(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Keys: kbd notation and chords
+
+static b32 test_chord_is(KeyChord c, const char *expected) {
+    u8 text[KEY_SEQ_TEXT_CAP];
+    i64 n = key_chord_print(c, text, sizeof(text));
+    return str8_equal(str8(text, n), str8_cstr(expected));
+}
+
+static b32 test_kbd(Test *t, u64 seed) {
+    // Parse, then print the canonical form.
+    static const char *canonical[][2] = {
+        { "C-x C-s", "C-x C-s" }, { "M-<", "M-<" }, { "M->", "M->" }, { "C-<home>", "C-<home>" },
+        { "S-C-a", "C-S-a" }, { "C-A", "C-S-a" }, { "M-SPC", "M-SPC" }, { "SPC", "SPC" }, { "C--", "C--" },
+        { "-", "-" }, { "<pageup>", "<prior>" }, { "<pagedown> RET", "<next> RET" }, { "C-x 4 f", "C-x 4 f" },
+        { "M-{", "M-{" }, { "C-\xc5\x9f", "C-\xc5\x9f" }, { "C-\xc5\x9e", "C-S-\xc5\x9f" }, { "TAB DEL ESC", "TAB DEL ESC" },
+        { "<f24>", "<f24>" }, { "  C-x   o ", "C-x o" }, { "C-M-S-<delete>", "C-M-S-<delete>" }, { "<return>", "RET" },
+        { "M-S-<up>", "M-S-<up>" }, { "C-x C-=", "C-x C-=" }, { "C-c ,", "C-c ," }, { "A", "A" }, { "<", "<" },
+        { "C-<", "C-<" }, { "C-h k", "C-h k" }, { "\xce\xa9", "\xce\xa9" }, { "M-\xd0\x96", "M-S-\xd0\xb6" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(canonical); i++) {
+        KeySeq seq;
+        const char *error = NULL;
+        TEST_CHECK(t, key_seq_parse(str8_cstr(canonical[i][0]), &seq, &error), "kbd: '%s' rejected: %s", canonical[i][0], error);
+        u8 text[KEY_SEQ_TEXT_CAP];
+        String8 printed = str8(text, key_seq_print(&seq, text, sizeof(text)));
+        TEST_CHECK(t, str8_equal(printed, str8_cstr(canonical[i][1])), "kbd: '%s' printed as '%S', expected '%s'",
+                   canonical[i][0], printed, canonical[i][1]);
+    }
+    static const char *bad[] = {
+        "", "   ", "C-", "M-", "C-xy", "<foo>", "C-C-x", "a b c d e", "C-S-/", "S-a", "S-1", "C-\x01", "C-\xff",
+        "<>", "M-S-1", "x-", "C-x C-", "\x7f", "C-\xc2\x85",
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(bad); i++) {
+        KeySeq seq;
+        const char *error = NULL;
+        TEST_CHECK(t, !key_seq_parse(str8_cstr(bad[i]), &seq, &error) && error, "kbd: '%s' must be rejected", bad[i]);
+    }
+
+    // Round trip: random sequences print and parse back to the same chords.
+    static const u32 chars[] = { 'a', 'z', 'A', 'Q', '0', '9', '/', '-', '<', '>', '{', ';', ',', '=', '+', '@', ' ',
+                                 0xE7, 0xC7, 0x15F, 0x15E, 0x131, 0x130, 0x3B1, 0x416, 0x6F22, 0x1F600 };
+    t->rng = seed ^ 0x6b62;
+    for (i32 iter = 0; iter < 20000; iter++) {
+        KeySeq seq = { .len = 1 + (i32)test_below(t, KEY_SEQ_MAX) };
+        for (i32 k = 0; k < seq.len; k++) {
+            u32 cm = (test_below(t, 2) ? CHORD_CTRL : 0) | (test_below(t, 2) ? CHORD_META : 0);
+            KeyChord c;
+            if (test_below(t, 3) == 0) {
+                Key key;
+                do key = (Key)test_below(t, KEY_COUNT); while (!key_is_named(key));
+                c = CHORD_NAMED | (u32)key | cm | (test_below(t, 2) ? CHORD_SHIFT : 0);
+            } else {
+                u32 cp = chars[test_below(t, ARRAY_COUNT(chars))];
+                u32 lower = key_letter_lower(cp);
+                if (cm && lower) c = lower | cm | (test_below(t, 2) ? CHORD_SHIFT : 0);
+                else c = cp | cm;
+            }
+            seq.chords[k] = c;
+        }
+        u8 text[KEY_SEQ_TEXT_CAP];
+        String8 printed = str8(text, key_seq_print(&seq, text, sizeof(text)));
+        KeySeq back;
+        const char *error = NULL;
+        TEST_CHECK(t, key_seq_parse(printed, &back, &error), "kbd: round trip: '%S' rejected: %s", printed, error);
+        b32 same = back.len == seq.len;
+        for (i32 k = 0; same && k < seq.len; k++) same = back.chords[k] == seq.chords[k];
+        TEST_CHECK(t, same, "kbd: round trip: '%S' parsed to different chords", printed);
+    }
+    LOG("test: ok: kbd notation, %d canonical forms, %d rejections, 20000 round trips", (i32)ARRAY_COUNT(canonical),
+        (i32)ARRAY_COUNT(bad));
+    return 1;
+}
+
+// Chords from (named key, character, modifiers), as the platform delivers KEY_DOWN.
+static b32 test_chords(Test *t) {
+    static const struct { Key key; u32 cp; u32 mods; const char *chord; } cases[] = {
+        { KEY_A, 'A', MOD_CTRL | MOD_SHIFT, "C-S-a" },   // letters keep Shift
+        { KEY_A, 'a', MOD_CTRL, "C-a" },
+        { KEY_A, 'A', MOD_CTRL, "C-a" },                 // Caps Lock: no Shift held
+        { KEY_A, 'a', MOD_CTRL | MOD_SHIFT, "C-S-a" },   // Caps Lock and Shift
+        { KEY_SLASH, '?', MOD_CTRL | MOD_SHIFT, "C-?" }, // symbols absorb Shift
+        { KEY_7, '/', MOD_CTRL | MOD_SHIFT, "C-/" },     // "/" is Shift+7 on Turkish Q
+        { KEY_2, '@', MOD_CTRL | MOD_SHIFT, "C-@" },
+        { KEY_7, '{', MOD_ALT, "M-{" },                  // AltGr+7 with Left Alt (Turkish Q)
+        { KEY_Q, '@', MOD_CTRL | MOD_ALT, "C-M-@" },     // AltGr+q with Right Ctrl and Left Alt
+        { KEY_SPACE, ' ', MOD_CTRL, "C-SPC" },
+        { KEY_LEFT, 0, MOD_SHIFT, "S-<left>" },          // named keys keep every modifier
+        { KEY_F5, 0, 0, "<f5>" },
+        { KEY_ENTER, 0, MOD_CTRL, "C-RET" },
+        { KEY_TAB, 0, MOD_SHIFT, "S-TAB" },
+        { KEY_BACKSPACE, 0, MOD_ALT, "M-DEL" },
+        { KEY_HOME, 0, MOD_CTRL | MOD_ALT | MOD_SHIFT, "C-M-S-<home>" },
+        { KEY_SEMICOLON, 0x15E, MOD_CTRL | MOD_SHIFT, "C-S-\xc5\x9f" }, // Ş on Turkish Q
+        { KEY_I, 0x130, MOD_CTRL | MOD_SHIFT, "C-S-i" },                // İ: default case mapping
+        { KEY_NONE, 'x', MOD_ALT, "M-x" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        KeyChord c = 0;
+        TEST_CHECK(t, key_chord_from_event(cases[i].key, cases[i].cp, cases[i].mods, &c) && test_chord_is(c, cases[i].chord),
+                   "chords: case %d (expected %s)", i, cases[i].chord);
+    }
+    // Not chords: plain or shifted characters (their text event follows), keys without a character.
+    static const struct { Key key; u32 cp; u32 mods; } none[] = {
+        { KEY_A, 'a', 0 }, { KEY_A, 'A', MOD_SHIFT }, { KEY_SPACE, ' ', 0 }, { KEY_7, '{', 0 },
+        { KEY_OEM_102, 0, MOD_CTRL }, { KEY_NONE, 0, MOD_ALT },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(none); i++) {
+        KeyChord c;
+        TEST_CHECK(t, !key_chord_from_event(none[i].key, none[i].cp, none[i].mods, &c), "chords: case %d must not be a chord", i);
+    }
+    TEST_CHECK(t, test_chord_is(key_chord_from_text('o'), "o") && test_chord_is(key_chord_from_text(' '), "SPC") &&
+                  test_chord_is(key_chord_from_text('O'), "O"), "chords: text events");
+    LOG("test: ok: chords from key events, %d cases", (i32)(ARRAY_COUNT(cases) + ARRAY_COUNT(none)));
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
 #define TEST_BENCH_SIZE MB(100)
@@ -1646,6 +1763,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_view_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_commands(&t);
+    arena_reset(&t.arena);
+    test_kbd(&t, seed);
+    arena_reset(&t.arena);
+    test_chords(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

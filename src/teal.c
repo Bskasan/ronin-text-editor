@@ -9,12 +9,14 @@
 #include "buffer.h"
 #include "command.h"
 #include "view.h"
+#include "keymap.h"
 
 #include "base.c"
 #include "png.c"
 #include "font.c"
 #include "buffer.c"
 #include "view.c"
+#include "keymap.c"
 #include "app.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only
