@@ -75,6 +75,7 @@ struct Renderer {
     b32 capture_requested;
     ID3D11Texture2D *capture_texture;
     i32 capture_width, capture_height;
+    RDevFrameStats stats; // the last r_end_frame
 #endif
 };
 
@@ -436,6 +437,9 @@ void r_atlas_mark_dirty(Renderer *r, i32 x0, i32 y0, i32 x1, i32 y1) {
 static void r_upload_atlas(Renderer *r) {
     if (r->dirty_x0 >= r->dirty_x1 || !r->atlas_texture) return;
     D3D11_BOX box = { (UINT)r->dirty_x0, (UINT)r->dirty_y0, 0, (UINT)r->dirty_x1, (UINT)r->dirty_y1, 1 };
+#if TEAL_DEV
+    r->stats.upload_bytes += (u64)(r->dirty_x1 - r->dirty_x0) * (u64)(r->dirty_y1 - r->dirty_y0) * 4;
+#endif
     u8 *src = r->atlas_pixels + ((i64)r->dirty_y0 * r->atlas_w + r->dirty_x0) * 4;
     ID3D11DeviceContext_UpdateSubresource(r->context, (ID3D11Resource *)r->atlas_texture, 0, &box, src,
                                           (UINT)r->atlas_w * 4, 0);
@@ -543,8 +547,14 @@ void r_push_glyph(Renderer *r, Rect dst, Rect atlas_texels, Color color) {
 
 void r_end_frame(Renderer *r) {
     if (!r->in_frame) return;
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
     r_flush(r);
     r->in_frame = 0;
+#if TEAL_DEV
+    u64 t1 = os_time_us();
+#endif
 
 #if TEAL_DEV
     // FLIP_DISCARD leaves the back buffer undefined after Present, so copy it now.
@@ -575,6 +585,11 @@ void r_end_frame(Renderer *r) {
 #endif
 
     HRESULT hr = IDXGISwapChain1_Present(r->swap_chain, r->present_interval, 0);
+#if TEAL_DEV
+    u64 t2 = os_time_us();
+    r->stats.flush_us = t1 - t0;
+    r->stats.present_us = t2 - t1;
+#endif
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
         r_handle_device_lost(r, hr);
     } else {
@@ -622,5 +637,11 @@ u32 r_dev_message_count(Renderer *r) {
 
 void r_dev_set_present_interval(Renderer *r, u32 interval) {
     r->present_interval = interval;
+}
+
+RDevFrameStats r_dev_take_frame_stats(Renderer *r) {
+    RDevFrameStats s = r->stats;
+    r->stats = (RDevFrameStats){ 0 };
+    return s;
 }
 #endif

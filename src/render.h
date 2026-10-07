@@ -44,6 +44,12 @@ u8  *r_read_capture(Renderer *r, Arena *arena, i32 *width, i32 *height); // tigh
 b32  r_dev_debug_layer_active(Renderer *r);
 u32  r_dev_message_count(Renderer *r); // debug-layer messages of severity WARNING or worse
 void r_dev_set_present_interval(Renderer *r, u32 interval);
+typedef struct RDevFrameStats {
+    u64 upload_bytes; // atlas texels uploaded since the last take, bytes
+    u64 flush_us;     // the last r_end_frame: final flush (atlas upload + instance draw)
+    u64 present_us;   // the last r_end_frame: Present
+} RDevFrameStats;
+RDevFrameStats r_dev_take_frame_stats(Renderer *r); // and resets the counters
 #endif
 
 #endif // RENDER_H
