@@ -52,6 +52,7 @@ typedef struct Platform {
     String8 exe_dir;
     b32 bench_text;
     b32 bench_buffer;
+    b32 bench_view;
     String8 screenshot_path;
     String8 atlas_path;
 #endif
@@ -388,7 +389,7 @@ void os_fatal(String8 message) {
 #if TEAL_DEV
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
-                       g_platform->bench_text || g_platform->bench_buffer)) interactive = 0;
+                       g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -1016,8 +1017,69 @@ static void win32_bench_buffer_frames(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-view: one event per frame through the real app_update_and_render (command + frame
+// build, then flush + Present(0, 0)).
+typedef struct BenchStat {
+    u64 build_sum, build_max, submit_sum, count;
+} BenchStat;
+
+static void win32_bench_view_step(Platform *p, Event e, BenchStat *st) {
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    p->events[0] = e;
+    p->event_count = 1;
+    FrameInput input = win32_frame_input(p);
+    u64 t0 = os_time_us();
+    app_update_and_render(p->app, &input, p->renderer);
+    u64 total = os_time_us() - t0, build = app_dev_build_us(p->app);
+    p->event_count = 0;
+    arena_reset(&p->scratch);
+    st->build_sum += build;
+    st->build_max = MAX(st->build_max, build);
+    st->submit_sum += total - build;
+    st->count++;
+}
+
+static void win32_bench_view_log(const char *what, BenchStat *st) {
+    LOG("bench-view: %s: %U x, command + frame build avg %U us, worst %U us; flush + Present avg %U us", what,
+        st->count, st->build_sum / MAX(st->count, 1), st->build_max, st->submit_sum / MAX(st->count, 1));
+}
+
+static void win32_bench_view(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    LOG("bench-view: %D lines, %dx%d client", app_dev_line_count(p->app), p->width, p->height);
+    Event down = { .kind = EVENT_KEY_DOWN, .key = KEY_DOWN };
+    Event page = { .kind = EVENT_KEY_DOWN, .key = KEY_PAGE_DOWN };
+    Event end = { .kind = EVENT_KEY_DOWN, .key = KEY_END, .mods = MOD_CTRL };
+    Event home = { .kind = EVENT_KEY_DOWN, .key = KEY_HOME, .mods = MOD_CTRL };
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    BenchStat st = { 0 }, st2 = { 0 };
+
+    app_dev_goto_line(p->app, 0);
+    for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, down, &st);
+    win32_bench_view_log("next-line", &st);
+    st = (BenchStat){ 0 };
+    for (i32 i = 0; i < 1000; i++) win32_bench_view_step(p, page, &st);
+    win32_bench_view_log("scroll-up-command (PageDown)", &st);
+    st = (BenchStat){ 0 };
+    for (i32 i = 0; i < 100; i++) {
+        win32_bench_view_step(p, end, &st);
+        win32_bench_view_step(p, home, &st2);
+    }
+    win32_bench_view_log("end-of-buffer (C-End)", &st);
+    win32_bench_view_log("beginning-of-buffer (C-Home)", &st2);
+    st = (BenchStat){ 0 };
+    app_dev_goto_line(p->app, 1000000);
+    for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &st);
+    win32_bench_view_log("self-insert at line 1,000,000", &st);
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->bench_text || p->bench_buffer || p->screenshot_path.len || p->atlas_path.len;
+    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->screenshot_path.len || p->atlas_path.len;
 }
 #endif
 
@@ -1116,6 +1178,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--seed")) && has_value) { p->seed = win32_parse_u64(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--bench-text"))) { p->bench_text = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-view"))) { p->bench_view = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -1150,14 +1213,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         return EXIT_USAGE;
     }
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
-                                   : p->bench_buffer ? "bench-buffer"
+                                   : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer) { // generated before the app opens it; the measurements run after startup
+    if (p->bench_buffer || p->bench_view) { // generated before the app opens it; the measurements run after startup
         p->file_path = test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
     }
 #endif
@@ -1278,6 +1341,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->bench_buffer && !p->quit) {
         test_bench_buffer(p->file_path, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
         win32_bench_buffer_frames(p);
+        p->quit = 1;
+    }
+    if (p->bench_view && !p->quit) {
+        win32_bench_view(p);
         p->quit = 1;
     }
 #endif
