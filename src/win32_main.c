@@ -34,11 +34,18 @@ typedef struct Platform {
 
     i64 frame_count;
     LARGE_INTEGER qpc_start;
+    i32 exit_code;
 
+    // Command-line options.
+    b32 startup_ms;       // --startup-ms: exit after the first Present, exit code = ms since process creation
+    f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
+    FbRenderMode render_mode;
 #if TEAL_DEV
     HANDLE log_file;
     b32 smoke;
+    b32 bench_text;
     String8 screenshot_path;
+    String8 atlas_path;
 #endif
 } Platform;
 
@@ -96,12 +103,21 @@ b32 os_write_file(String8 path, String8 data) {
     return ok;
 }
 
+u64 os_time_us(void) {
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    return (u64)(now.QuadPart / freq.QuadPart * 1000000 + now.QuadPart % freq.QuadPart * 1000000 / freq.QuadPart);
+}
+
 void os_fatal(String8 message) {
     b32 interactive = 1;
 #if TEAL_DEV
     LOG("fatal: %S", message);
-    if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len)) interactive = 0;
+    if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
+                       g_platform->bench_text)) interactive = 0;
 #endif
+    if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
         u16 text[1024];
         win32_utf8_to_wide_fixed(message, text, ARRAY_COUNT(text));
@@ -124,9 +140,7 @@ void os_log_write(String8 text) {
 
 // ---------------------------------------------------------------------------
 // Command line (same splitting rules as CommandLineToArgvW, without linking shell32).
-// Only dev flags exist so far.
 
-#if TEAL_DEV
 static i32 win32_parse_args(Arena *arena, String8 **out_args) {
     u16 *cmd = (u16 *)GetCommandLineW();
     i64 len = 0;
@@ -177,7 +191,6 @@ static i32 win32_parse_args(Arena *arena, String8 **out_args) {
     *out_args = args;
     return count;
 }
-#endif
 
 // ---------------------------------------------------------------------------
 // Frames and events
@@ -186,31 +199,44 @@ static i64 win32_filetime_u64(FILETIME ft) {
     return (i64)(((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
 }
 
+static f32 win32_dpi_scale(Platform *p) {
+    return p->forced_scale > 0 ? p->forced_scale : (f32)p->dpi / 96.0f;
+}
+
+static FrameInput win32_frame_input(Platform *p) {
+    FrameInput input = { p->events, p->event_count, p->width, p->height, win32_dpi_scale(p), &p->scratch };
+    return input;
+}
+
 static void win32_frame(Platform *p) {
     if (p->in_frame || !p->renderer || !p->app) return;
     p->in_frame = 1;
 
-    FrameInput input = { p->events, p->event_count, p->width, p->height, (f32)p->dpi / 96.0f };
+    FrameInput input = win32_frame_input(p);
     if (!app_update_and_render(p->app, &input, p->renderer)) p->quit = 1;
     p->event_count = 0;
     p->redraw = r_wants_redraw(p->renderer);
     arena_reset(&p->scratch);
     p->frame_count++;
 
-#if TEAL_DEV
     if (p->frame_count == 1) {
-        LARGE_INTEGER now, freq;
-        QueryPerformanceCounter(&now);
-        QueryPerformanceFrequency(&freq);
-        i64 us_main = (now.QuadPart - p->qpc_start.QuadPart) * 1000000 / freq.QuadPart;
         FILETIME created, exited, kernel, user, now_ft;
         GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
         GetSystemTimePreciseAsFileTime(&now_ft);
         i64 us_process = (win32_filetime_u64(now_ft) - win32_filetime_u64(created)) / 10;
+        if (p->startup_ms) {
+            p->exit_code = (i32)((us_process + 500) / 1000);
+            p->quit = 1;
+        }
+#if TEAL_DEV
+        LARGE_INTEGER now, freq;
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&freq);
+        i64 us_main = (now.QuadPart - p->qpc_start.QuadPart) * 1000000 / freq.QuadPart;
         LOG("startup: first Present %D.%03D ms after WinMain, %D.%03D ms after process creation",
             us_main / 1000, us_main % 1000, us_process / 1000, us_process % 1000);
-    }
 #endif
+    }
     p->in_frame = 0;
 }
 
@@ -333,6 +359,7 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_DPICHANGED: {
+        if (p->forced_scale > 0) return 0; // --scale: keep the forced scale and size
         p->dpi = HIWORD(wp);
         RECT *suggested = (RECT *)lp;
         SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left,
@@ -479,59 +506,211 @@ enum {
     EXIT_NO_DEBUG_LAYER = 4,
     EXIT_DEBUG_MESSAGES = 5,
     EXIT_LEAK = 6,
-    EXIT_SCREENSHOT = 7,
+    EXIT_OUTPUT_FILE = 7,
+    EXIT_FONT = 8,
 };
 
+static u32 win32_pixel_rgb(u8 *bgra, i32 w, i32 x, i32 y) {
+    u8 *px = bgra + ((i64)y * w + x) * 4;
+    return ((u32)px[2] << 16) | ((u32)px[1] << 8) | px[0];
+}
+
+// Compares the normalized coverage of two channels of `out` without dividing:
+// cov(c) = (out_c - bg_c) / (text_c - bg_c); returns a value with the sign of cov(a) - cov(b).
+// Both denominators are positive for light text on a dark background.
+static i64 win32_coverage_compare(u32 out, u32 bg, u32 text, i32 shift_a, i32 shift_b) {
+    i64 oa = (out >> shift_a) & 0xFF, ob = (out >> shift_b) & 0xFF;
+    i64 ba = (bg >> shift_a) & 0xFF, bb = (bg >> shift_b) & 0xFF;
+    i64 ta = (text >> shift_a) & 0xFF, tb = (text >> shift_b) & 0xFF;
+    return (oa - ba) * (tb - bb) - (ob - bb) * (ta - ba);
+}
+
+static b32 win32_check_probe(DevProbe *pr, u8 *pixels, i32 w, i32 h) {
+    i32 x1 = pr->kind == DEV_PROBE_PIXEL_EQ ? pr->x0 + 1 : pr->x1;
+    i32 y1 = pr->kind == DEV_PROBE_PIXEL_EQ ? pr->y0 + 1 : pr->y1;
+    if (pr->x0 < 0 || pr->y0 < 0 || x1 > w || y1 > h || pr->x0 >= x1 || pr->y0 >= y1) {
+        LOG("smoke: FAIL: '%s': region (%d,%d)-(%d,%d) is outside %dx%d", pr->what, pr->x0, pr->y0, x1, y1, w, h);
+        return 0;
+    }
+    switch (pr->kind) {
+    case DEV_PROBE_PIXEL_EQ:
+    case DEV_PROBE_REGION_EQ:
+        for (i32 y = pr->y0; y < y1; y++) {
+            for (i32 x = pr->x0; x < x1; x++) {
+                u32 got = win32_pixel_rgb(pixels, w, x, y);
+                if (got != pr->rgb) {
+                    LOG("smoke: FAIL: '%s': (%d, %d) is #%06x, expected #%06x", pr->what, x, y, got, pr->rgb);
+                    return 0;
+                }
+            }
+        }
+        LOG("smoke: ok: '%s': (%d,%d)-(%d,%d) all #%06x", pr->what, pr->x0, pr->y0, x1, y1, pr->rgb);
+        return 1;
+    case DEV_PROBE_REGION_DIFFERS:
+        for (i32 y = pr->y0; y < y1; y++) {
+            for (i32 x = pr->x0; x < x1; x++) {
+                u32 got = win32_pixel_rgb(pixels, w, x, y);
+                if (got != pr->rgb) {
+                    LOG("smoke: ok: '%s': (%d, %d) is #%06x, differs from #%06x", pr->what, x, y, got, pr->rgb);
+                    return 1;
+                }
+            }
+        }
+        LOG("smoke: FAIL: '%s': (%d,%d)-(%d,%d) is entirely #%06x", pr->what, pr->x0, pr->y0, x1, y1, pr->rgb);
+        return 0;
+    case DEV_PROBE_CLEARTYPE: {
+        if (pr->geometry == FB_PIXELS_FLAT) {
+            LOG("smoke: skip: '%s': pixel geometry is FLAT, no channel order to check", pr->what);
+            return 1;
+        }
+        i32 y = (pr->y0 + y1) / 2, left = -1, right = -1;
+        for (i32 x = pr->x0; x < x1; x++) {
+            if (win32_pixel_rgb(pixels, w, x, y) != pr->rgb) {
+                if (left < 0) left = x;
+                right = x;
+            }
+        }
+        if (left < 0) {
+            LOG("smoke: FAIL: '%s': no stem found on row %d", pr->what, y);
+            return 0;
+        }
+        u32 lp = win32_pixel_rgb(pixels, w, left, y), rp = win32_pixel_rgb(pixels, w, right, y);
+        // RGB stripe: the left edge of a light stem lights its rightmost subpixel (blue) at least as
+        // much as red; the right edge the other way round. BGR is mirrored.
+        i64 left_ok, right_ok;
+        if (pr->geometry == FB_PIXELS_RGB) {
+            left_ok = win32_coverage_compare(lp, pr->rgb, pr->text_rgb, 0, 16);  // cov(B) - cov(R)
+            right_ok = win32_coverage_compare(rp, pr->rgb, pr->text_rgb, 16, 0); // cov(R) - cov(B)
+        } else {
+            left_ok = win32_coverage_compare(lp, pr->rgb, pr->text_rgb, 16, 0);
+            right_ok = win32_coverage_compare(rp, pr->rgb, pr->text_rgb, 0, 16);
+        }
+        b32 ok = left_ok >= 0 && right_ok >= 0;
+        LOG("smoke: %s: '%s': row %d, left edge x=%d #%06x, right edge x=%d #%06x, geometry %s",
+            ok ? "ok" : "FAIL", pr->what, y, left, lp, right, rp, pr->geometry == FB_PIXELS_RGB ? "RGB" : "BGR");
+        return ok;
+    }
+    }
+    return 0;
+}
+
 // Called right after the captured frame.
-static i32 win32_smoke_check_pixels(Platform *p) {
+static i32 win32_smoke_check_frame(Platform *p) {
     i32 w, h;
     u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
     if (!pixels) {
         LOG("smoke: FAIL: back buffer capture failed");
         return EXIT_PIXEL_MISMATCH;
     }
-    FrameInput input = { NULL, 0, p->width, p->height, (f32)p->dpi / 96.0f };
-    DevProbe probes[8];
+    FrameInput input = win32_frame_input(p);
+    DevProbe probes[16];
     i32 count = app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
     i32 result = EXIT_OK;
     for (i32 i = 0; i < count; i++) {
-        DevProbe *probe = &probes[i];
-        if (probe->x < 0 || probe->y < 0 || probe->x >= w || probe->y >= h) {
-            LOG("smoke: FAIL: probe '%s' at (%d, %d) is outside %dx%d", probe->what, probe->x, probe->y, w, h);
-            result = EXIT_PIXEL_MISMATCH;
-            continue;
+        if (!win32_check_probe(&probes[i], pixels, w, h) && result == EXIT_OK) {
+            result = probes[i].kind == DEV_PROBE_CLEARTYPE ? EXIT_FONT : EXIT_PIXEL_MISMATCH;
         }
-        u8 *px = pixels + ((i64)probe->y * w + probe->x) * 4; // BGRA
-        u32 got = ((u32)px[2] << 16) | ((u32)px[1] << 8) | px[0];
-        b32 ok = (got == probe->rgb);
-        LOG("smoke: %s: probe '%s' at (%d, %d): expected #%06x, got #%06x",
-            ok ? "ok" : "FAIL", probe->what, probe->x, probe->y, probe->rgb, got);
-        if (!ok) result = EXIT_PIXEL_MISMATCH;
     }
+    if (count < 8) {
+        LOG("smoke: FAIL: expected 8 probes, the app produced %d", count);
+        if (result == EXIT_OK) result = EXIT_PIXEL_MISMATCH;
+    }
+    if (!app_dev_atlas_has_coverage(p->app)) {
+        LOG("smoke: FAIL: the glyph atlas has no coverage");
+        if (result == EXIT_OK) result = EXIT_FONT;
+    } else {
+        LOG("smoke: ok: the glyph atlas has coverage");
+    }
+    arena_reset(&p->scratch);
     return result;
 }
 
-static i32 win32_screenshot(Platform *p) {
+static b32 win32_write_png(Platform *p, String8 path, u8 *bgra, i32 w, i32 h) {
+    String8 png = png_encode_bgra(&p->scratch, bgra, w, h, (i64)w * 4);
+    if (!os_write_file(path, png)) {
+        LOG("could not write %S", path);
+        return 0;
+    }
+    LOG("wrote %S (%dx%d, %D bytes)", path, w, h, png.len);
+    return 1;
+}
+
+// --screenshot and --dump-atlas: one frame with the window hidden, then write the files.
+static i32 win32_write_outputs(Platform *p) {
     r_request_capture(p->renderer);
     win32_frame(p);
-    i32 w, h;
-    u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
-    if (!pixels) {
-        LOG("screenshot: back buffer capture failed");
-        return EXIT_SCREENSHOT;
+    i32 result = EXIT_OK;
+    if (p->screenshot_path.len) {
+        i32 w, h;
+        u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
+        if (!pixels || !win32_write_png(p, p->screenshot_path, pixels, w, h)) result = EXIT_OUTPUT_FILE;
     }
-    String8 png = png_encode_bgra(&p->scratch, pixels, w, h, (i64)w * 4);
-    if (!os_write_file(p->screenshot_path, png)) {
-        LOG("screenshot: could not write %S", p->screenshot_path);
-        return EXIT_SCREENSHOT;
+    if (p->atlas_path.len) {
+        i32 size;
+        u8 *rgba = app_dev_atlas(p->app, &size);
+        u8 *bgra = PUSH_ARRAY(&p->scratch, u8, (i64)size * size * 4);
+        for (i64 i = 0; i < (i64)size * size * 4; i += 4) {
+            bgra[i + 0] = rgba[i + 2];
+            bgra[i + 1] = rgba[i + 1];
+            bgra[i + 2] = rgba[i + 0];
+            bgra[i + 3] = 255;
+        }
+        if (!win32_write_png(p, p->atlas_path, bgra, size, size)) result = EXIT_OUTPUT_FILE;
     }
-    LOG("screenshot: wrote %S (%dx%d, %D bytes)", p->screenshot_path, w, h, png.len);
-    return EXIT_OK;
+    arena_reset(&p->scratch);
+    return result;
+}
+
+// --bench-text: 300 frames of a window full of text, presented with Present(0, 0).
+static void win32_bench_text(Platform *p) {
+    enum { FRAMES = 300 };
+    r_dev_set_present_interval(p->renderer, 0);
+    u64 build_sum = 0, build_max = 0, submit_sum = 0, submit_max = 0;
+    i32 glyphs = 0;
+    for (i32 i = 0; i < FRAMES; i++) {
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        p->event_count = 0;
+        FrameInput input = win32_frame_input(p);
+        u64 build_us, submit_us;
+        glyphs = app_dev_bench_frame(p->app, &input, p->renderer, &build_us, &submit_us);
+        arena_reset(&p->scratch);
+        build_sum += build_us;
+        submit_sum += submit_us;
+        build_max = MAX(build_max, build_us);
+        submit_max = MAX(submit_max, submit_us);
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+    LOG("bench-text: %d frames, %dx%d client, %d glyphs per frame", (i32)FRAMES, p->width, p->height, glyphs);
+    LOG("bench-text: build (push calls): avg %U us, worst %U us", build_sum / FRAMES, build_max);
+    LOG("bench-text: flush + Present:    avg %U us, worst %U us", submit_sum / FRAMES, submit_max);
+}
+
+static b32 win32_dev_batch_mode(Platform *p) {
+    return p->smoke || p->bench_text || p->screenshot_path.len || p->atlas_path.len;
 }
 #endif
 
 // ---------------------------------------------------------------------------
 // Entry point
+
+// D3D11CreateDevice is most of the startup time (driver load), so it runs on a worker thread
+// while the main thread creates the window and the font. The worker touches only the Renderer
+// fields r_create_device writes: no logging, no arenas. The main thread joins before any other
+// D3D call; the device stays SINGLETHREADED and is never used by two threads at once.
+static DWORD WINAPI win32_device_thread(LPVOID param) {
+    r_create_device((Renderer *)param);
+    return 0;
+}
+
+static i32 win32_parse_i32(String8 s) {
+    i32 v = 0;
+    for (i64 i = 0; i < s.len && s.data[i] >= '0' && s.data[i] <= '9'; i++) v = v * 10 + (s.data[i] - '0');
+    return v;
+}
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line, int show_cmd) {
     (void)prev_instance;
@@ -547,17 +726,34 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->scratch = arena_create(MB(256));
     p->instance = instance;
     p->qpc_start = qpc_start;
+    p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
     g_platform = p;
-    i32 exit_code = 0;
 
-#if TEAL_DEV
+    Renderer *renderer = r_alloc(&p->perm); // allocated here, before the worker starts
+    HANDLE device_thread = CreateThread(NULL, 0, win32_device_thread, renderer, 0, NULL);
+
     String8 *args;
     i32 arg_count = win32_parse_args(&p->perm, &args);
     for (i32 i = 1; i < arg_count; i++) {
-        if (str8_equal(args[i], STR8_LIT("--smoke"))) p->smoke = 1;
-        else if (str8_equal(args[i], STR8_LIT("--screenshot")) && i + 1 < arg_count) p->screenshot_path = args[++i];
+        String8 a = args[i];
+        if (str8_equal(a, STR8_LIT("--startup-ms"))) p->startup_ms = 1;
+#if TEAL_DEV
+        b32 has_value = i + 1 < arg_count;
+        if (str8_equal(a, STR8_LIT("--smoke"))) p->smoke = 1;
+        else if (str8_equal(a, STR8_LIT("--bench-text"))) p->bench_text = 1;
+        else if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) p->screenshot_path = args[++i];
+        else if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) p->atlas_path = args[++i];
+        else if (str8_equal(a, STR8_LIT("--scale")) && has_value) p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f;
+        else if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
+            String8 mode = args[++i];
+            if (str8_equal(mode, STR8_LIT("classic"))) p->render_mode = FB_RENDER_GDI_CLASSIC;
+            else if (str8_equal(mode, STR8_LIT("natural"))) p->render_mode = FB_RENDER_NATURAL;
+            else p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
+        }
+#endif
     }
 
+#if TEAL_DEV
     // Log next to the executable (build\teal.log), independent of the working directory.
     u16 exe_path[MAX_PATH * 4];
     DWORD exe_len = GetModuleFileNameW(NULL, (WCHAR *)exe_path, ARRAY_COUNT(exe_path));
@@ -567,7 +763,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     String16 log_path16 = str16_from_str8(&p->perm, log_path);
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    LOG("teal dev build, mode: %s", p->smoke ? "smoke" : p->screenshot_path.len ? "screenshot" : "interactive");
+    LOG("teal dev build, mode: %s", p->smoke ? "smoke" : p->bench_text ? "bench-text"
+                                   : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
 #endif
 
     WNDCLASSEXW wc = {
@@ -591,7 +788,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (!p->hwnd) os_fatal(STR8_LIT("CreateWindowExW failed."));
     p->dpi = GetDpiForWindow(p->hwnd);
 
-    RECT rect = { 0, 0, MulDiv(1280, (int)p->dpi, 96), MulDiv(800, (int)p->dpi, 96) };
+    f32 scale = win32_dpi_scale(p);
+    RECT rect = { 0, 0, (LONG)(1280 * scale + 0.5f), (LONG)(800 * scale + 0.5f) };
     AdjustWindowRectExForDpi(&rect, style, FALSE, 0, p->dpi);
     i32 work_w = work.right - work.left, work_h = work.bottom - work.top;
     i32 win_w = MIN(rect.right - rect.left, work_w);
@@ -610,21 +808,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
 
-    p->renderer = r_create(&p->perm, p->hwnd, p->width, p->height);
-    if (!p->renderer) {
+    AppConfig config = { scale, p->render_mode };
+    p->app = app_create(&p->perm, &config);
+    if (!p->app) {
 #if TEAL_DEV
-        if (p->smoke || p->screenshot_path.len) {
+        if (win32_dev_batch_mode(p)) {
+            LOG("font initialization failed");
+            return EXIT_FONT;
+        }
+#endif
+        os_fatal(STR8_LIT("Could not open the font (Consolas or Courier New)."));
+    }
+
+#if TEAL_DEV
+    u64 join_start = os_time_us();
+#endif
+    if (device_thread) {
+        WaitForSingleObject(device_thread, INFINITE);
+        CloseHandle(device_thread);
+    } else {
+        r_create_device(renderer); // no thread: create it here
+    }
+#if TEAL_DEV
+    LOG("startup: device thread %s, main thread waited %U us for it", device_thread ? "used" : "unavailable",
+        os_time_us() - join_start);
+#endif
+    if (!r_finish_create(renderer, p->hwnd, p->width, p->height)) {
+#if TEAL_DEV
+        if (win32_dev_batch_mode(p)) {
             LOG("renderer initialization failed");
             return EXIT_RENDERER_INIT;
         }
 #endif
         os_fatal(STR8_LIT("Could not initialize Direct3D 11."));
     }
-    p->app = app_create(&p->perm);
+    p->renderer = renderer; // from here on WM_SIZE / WM_PAINT may render
 
 #if TEAL_DEV
-    if (p->screenshot_path.len) {
-        exit_code = win32_screenshot(p);
+    if (p->screenshot_path.len || p->atlas_path.len) {
+        p->exit_code = win32_write_outputs(p);
         p->quit = 1;
     }
 #endif
@@ -643,6 +865,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         cloak = FALSE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
     }
+
+#if TEAL_DEV
+    if (p->bench_text && !p->quit) {
+        win32_bench_text(p);
+        p->quit = 1;
+    }
+#endif
 
     while (!p->quit) {
         // Block until there is something to do: 0% CPU when idle.
@@ -669,7 +898,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             if (p->frame_count >= 2) {
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                exit_code = win32_smoke_check_pixels(p);
+                p->exit_code = win32_smoke_check_frame(p);
                 p->quit = 1;
                 break;
             }
@@ -680,27 +909,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
 
     u32 leaks = r_shutdown(p->renderer);
+    i32 font_refs = app_shutdown(p->app);
     DestroyWindow(p->hwnd);
 
 #if TEAL_DEV
+    LOG("font: DirectWrite references still held after close: %d", font_refs);
     if (p->smoke) {
-        if (exit_code == EXIT_OK && !r_dev_debug_layer_active(p->renderer)) {
+        i32 code = p->exit_code;
+        if (code == EXIT_OK && !r_dev_debug_layer_active(p->renderer)) {
             LOG("smoke: FAIL: D3D11 debug layer is not active");
-            exit_code = EXIT_NO_DEBUG_LAYER;
+            code = EXIT_NO_DEBUG_LAYER;
         }
-        if (exit_code == EXIT_OK && r_dev_message_count(p->renderer) != 0) {
+        if (code == EXIT_OK && r_dev_message_count(p->renderer) != 0) {
             LOG("smoke: FAIL: %u debug-layer message(s)", r_dev_message_count(p->renderer));
-            exit_code = EXIT_DEBUG_MESSAGES;
+            code = EXIT_DEBUG_MESSAGES;
         }
-        if (exit_code == EXIT_OK && leaks != 0) {
-            LOG("smoke: FAIL: %u leaked reference(s) / live object(s)", leaks);
-            exit_code = EXIT_LEAK;
+        if (code == EXIT_OK && (leaks != 0 || font_refs != 0)) {
+            LOG("smoke: FAIL: %u leaked D3D reference(s) / live object(s), %d DirectWrite reference(s)", leaks, font_refs);
+            code = EXIT_LEAK;
         }
-        LOG("smoke: %s (exit %d, %D frames)", exit_code == EXIT_OK ? "PASS" : "FAIL", exit_code, p->frame_count);
+        LOG("smoke: %s (exit %d, %D frames)", code == EXIT_OK ? "PASS" : "FAIL", code, p->frame_count);
+        p->exit_code = code;
     }
     if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
 #else
     (void)leaks;
+    (void)font_refs;
 #endif
-    return exit_code;
+    return p->exit_code;
 }
