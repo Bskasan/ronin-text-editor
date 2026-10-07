@@ -142,6 +142,9 @@ typedef struct Renderer Renderer;
 typedef struct AppConfig {
     f32 dpi_scale;
     FbRenderMode render_mode;
+#if TEAL_DEV
+    b32 sample; // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
+#endif
 } AppConfig;
 
 App *app_create(Arena *perm, AppConfig *config); // NULL on failure (logged)

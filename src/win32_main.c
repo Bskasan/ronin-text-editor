@@ -44,6 +44,7 @@ typedef struct Platform {
     HANDLE log_file;
     b32 smoke;
     b32 test;
+    b32 sample;
     u64 seed;
     String8 exe_dir;
     b32 bench_text;
@@ -1013,6 +1014,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) p->smoke = 1;
         else if (str8_equal(a, STR8_LIT("--test"))) p->test = 1;
+        else if (str8_equal(a, STR8_LIT("--sample"))) p->sample = 1;
         else if (str8_equal(a, STR8_LIT("--seed")) && has_value) p->seed = win32_parse_u64(args[++i]);
         else if (str8_equal(a, STR8_LIT("--bench-text"))) p->bench_text = 1;
         else if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) p->screenshot_path = args[++i];
@@ -1093,7 +1095,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
 
-    AppConfig config = { scale, p->render_mode };
+    AppConfig config = { .dpi_scale = scale, .render_mode = p->render_mode };
+#if TEAL_DEV
+    config.sample = p->sample || p->smoke; // the smoke probes check the sample
+#endif
     p->app = app_create(&p->perm, &config);
     if (!p->app) {
 #if TEAL_DEV
