@@ -752,10 +752,7 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// ---------------------------------------------------------------------------
-// Dev tooling
-
-#if TEAL_DEV
+// Exit codes. Most are dev-only (smoke, tests); EXIT_USAGE applies to every build.
 enum {
     EXIT_OK = 0,
     EXIT_FATAL = 1,
@@ -767,8 +764,13 @@ enum {
     EXIT_OUTPUT_FILE = 7,
     EXIT_FONT = 8,
     EXIT_TEST = 9,
+    EXIT_USAGE = 10, // an unrecognized "--" argument
 };
 
+// ---------------------------------------------------------------------------
+// Dev tooling
+
+#if TEAL_DEV
 static u32 win32_pixel_rgb(u8 *bgra, i32 w, i32 x, i32 y) {
     u8 *px = bgra + ((i64)y * w + x) * 4;
     return ((u32)px[2] << 16) | ((u32)px[1] << 8) | px[0];
@@ -1053,34 +1055,46 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
     String8 *args;
     i32 arg_count = win32_parse_args(&p->perm, &args);
-    for (i32 i = 1; i < arg_count; i++) {
+    // Any "--" argument that is not recognized (or lacks its value) ends the process right
+    // here: a stale or wrong executable never opens a window.
+    String8 bad_arg = { 0 };
+    for (i32 i = 1; i < arg_count && !bad_arg.len; i++) {
         String8 a = args[i];
-        if (str8_equal(a, STR8_LIT("--startup-ms"))) p->startup_ms = 1;
-        else if (!p->file_path.len && !(a.len >= 2 && a.data[0] == '-' && a.data[1] == '-')) p->file_path = a;
+        if (!(a.len >= 2 && a.data[0] == '-' && a.data[1] == '-')) {
+            if (!p->file_path.len) p->file_path = a;
+            continue;
+        }
+        if (str8_equal(a, STR8_LIT("--startup-ms"))) { p->startup_ms = 1; continue; }
 #if TEAL_DEV
         b32 has_value = i + 1 < arg_count;
-        if (str8_equal(a, STR8_LIT("--smoke"))) p->smoke = 1;
-        else if (str8_equal(a, STR8_LIT("--test"))) p->test = 1;
-        else if (str8_equal(a, STR8_LIT("--sample"))) p->sample = 1;
-        else if (str8_equal(a, STR8_LIT("--top-line")) && has_value) {
+        if (str8_equal(a, STR8_LIT("--smoke"))) { p->smoke = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--test"))) { p->test = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--sample"))) { p->sample = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--top-line")) && has_value) {
             String8 v = args[++i];
             if (str8_equal(v, STR8_LIT("end"))) p->top_line_end = 1;
             else p->top_line = (i64)win32_parse_u64(v);
+            continue;
         }
-        else if (str8_equal(a, STR8_LIT("--seed")) && has_value) p->seed = win32_parse_u64(args[++i]);
-        else if (str8_equal(a, STR8_LIT("--bench-text"))) p->bench_text = 1;
-        else if (str8_equal(a, STR8_LIT("--bench-buffer"))) p->bench_buffer = 1;
-        else if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) p->screenshot_path = args[++i];
-        else if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) p->atlas_path = args[++i];
-        else if (str8_equal(a, STR8_LIT("--scale")) && has_value) p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f;
-        else if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
+        if (str8_equal(a, STR8_LIT("--seed")) && has_value) { p->seed = win32_parse_u64(args[++i]); continue; }
+        if (str8_equal(a, STR8_LIT("--bench-text"))) { p->bench_text = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
+        if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
             if (str8_equal(mode, STR8_LIT("classic"))) p->render_mode = FB_RENDER_GDI_CLASSIC;
             else if (str8_equal(mode, STR8_LIT("natural"))) p->render_mode = FB_RENDER_NATURAL;
             else p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
+            continue;
         }
 #endif
+        bad_arg = a;
     }
+#if !TEAL_DEV
+    if (bad_arg.len) return EXIT_USAGE;
+#endif
 
 #if TEAL_DEV
     // Log next to the executable (build\teal.log), independent of the working directory.
@@ -1093,6 +1107,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     p->exe_dir = exe_dir;
+    if (bad_arg.len) {
+        LOG("unknown argument '%S' (or missing value), exiting with %d", bad_arg, (i32)EXIT_USAGE);
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return EXIT_USAGE;
+    }
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
