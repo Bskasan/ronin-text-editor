@@ -967,7 +967,7 @@ static void win32_bench_buffer_frames(Platform *p) {
     i64 tops[3] = { 0, lines / 2, -1 };
     const char *names[3] = { "top", "middle", "end" };
     for (i32 k = 0; k < 3; k++) {
-        app_dev_set_top_line(p->app, tops[k]);
+        app_dev_goto_line(p->app, tops[k]);
         u64 build_sum = 0, build_max = 0, submit_sum = 0, submit_max = 0;
         for (i32 i = 0; i < FRAMES; i++) {
             MSG msg;
