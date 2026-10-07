@@ -42,5 +42,63 @@ b32 key_chord_parse(String8 token, KeyChord *out, const char **error);
 b32 key_seq_parse(String8 text, KeySeq *out, const char **error);
 i64 key_chord_print(KeyChord chord, u8 *out, i64 cap); // canonical (C-M-S- order); returns the length
 i64 key_seq_print(KeySeq *seq, u8 *out, i64 cap);
+b32 key_seq_equal(KeySeq *a, KeySeq *b);
+
+// ---------------------------------------------------------------------------
+// Keymaps: named, a flat array of bindings searched linearly (a few dozen entries).
+
+#define KEYMAP_CAP 512
+
+typedef struct KeyBinding {
+    KeySeq seq;
+    const Command *command;
+} KeyBinding;
+
+typedef struct Keymap {
+    const char *name; // "global"; context maps (minibuffer, isearch) come in Phases 7 and 9
+    KeyBinding bindings[KEYMAP_CAP];
+    i32 count;
+} Keymap;
+
+// Binds `seq` (replacing its old binding); command NULL removes it. Older bindings that conflict,
+// one being a proper prefix of the other, are removed: the later binding wins, as in Emacs. Returns
+// how many were removed that way, or -1 when the keymap is full.
+i32            keymap_bind(Keymap *map, KeySeq *seq, const Command *command);
+const Command *keymap_get(Keymap *map, KeySeq *seq);        // exact match, or NULL
+b32            keymap_has_prefix(Keymap *map, KeySeq *seq); // seq is a proper prefix of some binding
+
+// ---------------------------------------------------------------------------
+// The key sequence state machine. Keymaps are searched as a stack (context maps first, then
+// "global") with prefixes merged across maps, as in Emacs: the first map with an exact match for
+// the sequence runs it; otherwise the sequence waits if it is a proper prefix in any map;
+// otherwise it is undefined. A chord with Shift and no binding is looked up again without Shift
+// (Emacs' shift-translation). No allocation.
+
+typedef enum KeyResultKind {
+    KEY_RESULT_IGNORED,     // not for the keymap: a plain character key (its text event follows), mouse, ...
+    KEY_RESULT_DROPPED,     // text produced by a KEY_DOWN that was consumed
+    KEY_RESULT_PREFIX,      // a proper prefix: waiting for more (seq so far)
+    KEY_RESULT_COMMAND,     // run `command`
+    KEY_RESULT_SELF_INSERT, // an unbound plain character outside a prefix: self-insert-command
+    KEY_RESULT_UNDEFINED,   // "<seq> is undefined"; the state is reset
+    KEY_RESULT_QUIT,        // keyboard-quit pressed while a prefix was pending: cancelled
+    KEY_RESULT_DESCRIBE,    // describe-key: `command` is what seq runs (NULL = undefined); not run
+} KeyResultKind;
+
+typedef struct KeyResult {
+    KeyResultKind kind;
+    const Command *command;
+    KeySeq seq;           // as typed (before shift-translation)
+    u32 codepoint;        // the character of the last chord (TAB gives a tab), 0 for other named keys
+    b32 shift_translated; // the binding was found by dropping Shift from the last chord
+} KeyResult;
+
+typedef struct KeyInput {
+    KeySeq pending; // the proper prefix typed so far
+    b32 drop_text;  // the last KEY_DOWN was consumed: drop text events until the next KEY_DOWN
+    b32 describe;   // describe-key: describe the next complete sequence instead of running it
+} KeyInput;
+
+void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult *out);
 
 #endif // KEYMAP_H

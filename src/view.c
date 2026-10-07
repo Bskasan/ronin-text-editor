@@ -378,6 +378,11 @@ static void cmd_delete_char(CommandContext *ctx) {
 // ---------------------------------------------------------------------------
 // Commands on the whole View (COMMAND_ONCE)
 
+// The keymap also uses it to cancel a pending prefix (KEY_RESULT_QUIT).
+static void cmd_keyboard_quit(CommandContext *ctx) {
+    echo_message(ctx->echo, "Quit");
+}
+
 static void cmd_save_buffer(CommandContext *ctx) {
     Buffer *buf = ctx->view->buffer;
     if (!buf->modified) {
@@ -437,3 +442,4 @@ const Command CMD_NEWLINE                = { "newline", cmd_newline, 0 };
 const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, 0 };
 const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, 0 };
 const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
+const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE };
