@@ -332,6 +332,7 @@ App *app_create(Arena *perm, AppConfig *config) {
 
 i32 app_shutdown(App *app) {
     i32 leaks = font_shutdown(app->font);
+    leaks += (i32)app->buffer->marker_live;
     if (!buffer_destroy(app->buffer)) leaks++;
     return leaks;
 }

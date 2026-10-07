@@ -152,7 +152,7 @@ typedef struct AppConfig {
 
 App *app_create(Arena *perm, AppConfig *config); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
-i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers), 0 = clean
+i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
 #if TEAL_DEV
 typedef enum DevProbeKind {
