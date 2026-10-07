@@ -103,6 +103,250 @@ b32 os_write_file(String8 path, String8 data) {
     return ok;
 }
 
+b32 os_release(void *ptr) {
+    return VirtualFree(ptr, 0, MEM_RELEASE) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// Files
+
+static i64 win32_filetime_u64(FILETIME ft) {
+    return (i64)(((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
+}
+
+static OsFileStatus win32_file_status(DWORD error) {
+    switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:     return OS_FILE_NOT_FOUND;
+    case ERROR_ACCESS_DENIED:      return OS_FILE_ACCESS_DENIED;
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:     return OS_FILE_SHARING_VIOLATION;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:   return OS_FILE_DISK_FULL;
+    case ERROR_WRITE_PROTECT:      return OS_FILE_READ_ONLY;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY:        return OS_FILE_OUT_OF_MEMORY;
+    case ERROR_INVALID_NAME:
+    case ERROR_BAD_PATHNAME:
+    case ERROR_FILENAME_EXCED_RANGE:
+    case ERROR_INVALID_DRIVE:
+    case ERROR_BAD_NETPATH:
+    case ERROR_BAD_NET_NAME:
+    case ERROR_DIRECTORY:          return OS_FILE_BAD_PATH;
+    default:                       return OS_FILE_IO_ERROR;
+    }
+}
+
+static OsFileStatus win32_last_file_status(void) {
+    return win32_file_status(GetLastError());
+}
+
+// Wide, NUL-terminated copy of a path in the scratch arena; the caller pops it.
+static WCHAR *win32_path16(String8 path) {
+    return (WCHAR *)str16_from_str8(&g_platform->scratch, path).data;
+}
+
+String8 os_full_path(Arena *arena, String8 path) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    String8 result = { 0 };
+    WCHAR *path16 = win32_path16(path);
+    DWORD cap = GetFullPathNameW(path16, 0, NULL, NULL);
+    if (path.len && cap) {
+        WCHAR *full = PUSH_ARRAY(scratch, WCHAR, cap);
+        DWORD len = GetFullPathNameW(path16, cap, full, NULL);
+        if (len && len < cap) result = str8_from_str16(scratch, (u16 *)full, len);
+    }
+    if (arena != scratch) {
+        String8 copy = result.len ? str8_copy(arena, result) : result;
+        arena_pop_to(scratch, mark);
+        result = copy;
+    }
+    return result;
+}
+
+static void win32_fill_info(OsFileInfo *info, BY_HANDLE_FILE_INFORMATION *bhfi) {
+    info->exists = 1;
+    info->is_dir = (bhfi->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    info->read_only = (bhfi->dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+    info->size = (i64)(((u64)bhfi->nFileSizeHigh << 32) | bhfi->nFileSizeLow);
+    info->write_time = (u64)win32_filetime_u64(bhfi->ftLastWriteTime);
+}
+
+OsFileStatus os_file_info(String8 path, OsFileInfo *info) {
+    memset(info, 0, sizeof(*info));
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    WCHAR *path16 = win32_path16(path);
+    OsFileStatus status = OS_FILE_OK;
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(path16, GetFileExInfoStandard, &data)) {
+        status = win32_last_file_status();
+    } else {
+        info->exists = 1;
+        info->is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        info->read_only = (data.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+        info->size = (i64)(((u64)data.nFileSizeHigh << 32) | data.nFileSizeLow);
+        info->write_time = (u64)win32_filetime_u64(data.ftLastWriteTime);
+        info->swap_ok = !(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
+        if (info->swap_ok && !info->is_dir) {
+            // Replacing a file that has other hard links would detach them.
+            HANDLE h = CreateFileW(path16, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            BY_HANDLE_FILE_INFORMATION bhfi;
+            if (h != INVALID_HANDLE_VALUE) {
+                if (GetFileInformationByHandle(h, &bhfi) && bhfi.nNumberOfLinks > 1) info->swap_ok = 0;
+                CloseHandle(h);
+            }
+        }
+    }
+    arena_pop_to(scratch, mark);
+    return status;
+}
+
+OsFileStatus os_file_open_read(String8 path, OsFile *file, OsFileInfo *info) {
+    memset(info, 0, sizeof(*info));
+    file->handle = NULL;
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    WCHAR *path16 = win32_path16(path);
+    DWORD attrs = GetFileAttributesW(path16);
+    OsFileStatus status = OS_FILE_OK;
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        status = OS_FILE_IS_DIRECTORY;
+    } else {
+        HANDLE h = CreateFileW(path16, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        BY_HANDLE_FILE_INFORMATION bhfi;
+        if (h == INVALID_HANDLE_VALUE) {
+            status = win32_last_file_status();
+        } else if (!GetFileInformationByHandle(h, &bhfi)) {
+            status = win32_last_file_status();
+            CloseHandle(h);
+        } else {
+            win32_fill_info(info, &bhfi);
+            file->handle = h;
+        }
+    }
+    arena_pop_to(scratch, mark);
+    return status;
+}
+
+OsFileStatus os_file_read(OsFile file, void *dst, i64 size) {
+    u8 *p = (u8 *)dst;
+    while (size > 0) {
+        DWORD chunk = (DWORD)MIN(size, (i64)MB(256));
+        DWORD got = 0;
+        if (!ReadFile((HANDLE)file.handle, p, chunk, &got, NULL)) return win32_last_file_status();
+        if (got == 0) return OS_FILE_IO_ERROR; // the file shrank while we read it
+        p += got;
+        size -= got;
+    }
+    return OS_FILE_OK;
+}
+
+OsFileStatus os_file_create_temp(String8 target, Arena *arena, OsFile *file, String8 *temp_path) {
+    file->handle = NULL;
+    *temp_path = str8(NULL, 0);
+    Arena *scratch = &g_platform->scratch;
+    for (u32 n = 1; n < 100; n++) {
+        u64 mark = arena_pos(scratch);
+        String8 name = str8_fmt(scratch, "%S.teal~%u", target, n);
+        HANDLE h = CreateFileW(win32_path16(name), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD error = GetLastError();
+        if (h != INVALID_HANDLE_VALUE) {
+            String8 copy = str8_copy(arena, name);
+            if (arena != scratch) arena_pop_to(scratch, mark);
+            file->handle = h;
+            *temp_path = copy;
+            return OS_FILE_OK;
+        }
+        arena_pop_to(scratch, mark);
+        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) return win32_file_status(error);
+    }
+    return OS_FILE_IO_ERROR;
+}
+
+OsFileStatus os_file_open_overwrite(String8 path, OsFile *file) {
+    file->handle = NULL;
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    // OPEN_ALWAYS + SetEndOfFile instead of CREATE_ALWAYS, which refuses hidden and system files.
+    HANDLE h = CreateFileW(win32_path16(path), GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    arena_pop_to(scratch, mark);
+    if (h == INVALID_HANDLE_VALUE) return win32_last_file_status();
+    if (!SetEndOfFile(h)) {
+        OsFileStatus status = win32_last_file_status();
+        CloseHandle(h);
+        return status;
+    }
+    file->handle = h;
+    return OS_FILE_OK;
+}
+
+OsFileStatus os_file_write(OsFile file, void *data, i64 size) {
+    u8 *p = (u8 *)data;
+    while (size > 0) {
+        DWORD chunk = (DWORD)MIN(size, (i64)MB(256));
+        DWORD written = 0;
+        if (!WriteFile((HANDLE)file.handle, p, chunk, &written, NULL)) return win32_last_file_status();
+        if (written == 0) return OS_FILE_IO_ERROR;
+        p += written;
+        size -= written;
+    }
+    return OS_FILE_OK;
+}
+
+OsFileStatus os_file_flush(OsFile file) {
+    return FlushFileBuffers((HANDLE)file.handle) ? OS_FILE_OK : win32_last_file_status();
+}
+
+void os_file_close(OsFile file) {
+    if (file.handle) CloseHandle((HANDLE)file.handle);
+}
+
+OsFileStatus os_file_replace(String8 target, String8 temp) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    WCHAR *target16 = win32_path16(target);
+    WCHAR *temp16 = win32_path16(temp);
+    BOOL ok;
+    if (GetFileAttributesW(target16) == INVALID_FILE_ATTRIBUTES) {
+        ok = MoveFileExW(temp16, target16, MOVEFILE_WRITE_THROUGH);
+    } else {
+        // Keeps the target's attributes, ACLs, creation time and short name. On failure the
+        // target is still there under its own name (we pass no backup file).
+        ok = ReplaceFileW(target16, temp16, NULL, REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS,
+                          NULL, NULL);
+    }
+    OsFileStatus status = ok ? OS_FILE_OK : win32_last_file_status();
+    arena_pop_to(scratch, mark);
+    return status;
+}
+
+void os_file_delete(String8 path) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    DeleteFileW(win32_path16(path));
+    arena_pop_to(scratch, mark);
+}
+
+#if TEAL_DEV
+b32 os_dev_set_read_only(String8 path, b32 read_only) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    WCHAR *path16 = win32_path16(path);
+    DWORD attrs = GetFileAttributesW(path16);
+    b32 ok = 0;
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+        attrs = read_only ? (attrs | FILE_ATTRIBUTE_READONLY) : (attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+        ok = SetFileAttributesW(path16, attrs) != 0;
+    }
+    arena_pop_to(scratch, mark);
+    return ok;
+}
+#endif
+
 u64 os_time_us(void) {
     LARGE_INTEGER now, freq;
     QueryPerformanceCounter(&now);
@@ -194,10 +438,6 @@ static i32 win32_parse_args(Arena *arena, String8 **out_args) {
 
 // ---------------------------------------------------------------------------
 // Frames and events
-
-static i64 win32_filetime_u64(FILETIME ft) {
-    return (i64)(((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
-}
 
 static f32 win32_dpi_scale(Platform *p) {
     return p->forced_scale > 0 ? p->forced_scale : (f32)p->dpi / 96.0f;
