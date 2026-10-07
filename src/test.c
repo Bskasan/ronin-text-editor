@@ -920,6 +920,96 @@ static b32 test_language(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// View: column mapping
+
+// Reference columns of one line, decoded the naive way from a flat copy: the start offset and
+// start column of every character, plus the end of the line as a final entry.
+typedef struct TestColumns {
+    i64 count; // characters; entry [count] is the end of the line
+    i64 *offset;
+    i64 *col;
+} TestColumns;
+
+static TestColumns test_line_columns(Test *t, u8 *s, i64 len, i64 base) {
+    TestColumns c = { 0, PUSH_ARRAY(&t->arena, i64, len + 1), PUSH_ARRAY(&t->arena, i64, len + 1) };
+    i64 col = 0;
+    for (i64 i = 0; i < len;) {
+        c.offset[c.count] = base + i;
+        c.col[c.count] = col;
+        c.count++;
+        u8 b = s[i];
+        i64 advance = 1;
+        if (b >= 0x80) utf8_decode(s + i, len - i, &advance);
+        if (b == '\t') col = (col / 4 + 1) * 4;
+        else if ((b < 0x20 && b != '\n') || b == 0x7F) col += 2;
+        else col += 1;
+        i += advance;
+    }
+    c.offset[c.count] = base + len;
+    c.col[c.count] = col;
+    return c;
+}
+
+static b32 test_columns(Test *t, u64 seed) {
+    t->rng = seed ^ 0x636f6cull;
+    static const char *pieces[] = {
+        "a", "b", " ", "\t", "\t", "\xC4\x9F", "\xE2\x82\xAC", "\xF0\x9F\x98\x80", "\x01", "\r", "\x7F", "\x00",
+        "\x80", "\xFF", "\xE2\x82", "\xC3", // invalid
+    };
+    static const u8 piece_len[] = { 1, 1, 1, 1, 1, 2, 3, 4, 1, 1, 1, 1, 1, 1, 2, 1 };
+    Buffer *buf = buffer_create(STR8_LIT("columns"));
+    TEST_CHECK(t, buf, "columns: buffer_create failed");
+    u8 *line = PUSH_ARRAY(&t->arena, u8, 1024);
+    i64 checks = 0;
+    for (i32 iter = 0; iter < 3000; iter++) {
+        u64 mark = arena_pos(&t->arena);
+        // One line, between two others, with the gap somewhere inside it most of the time.
+        i64 n = 0, want = test_below(t, 80);
+        while (n < want) {
+            i64 k = test_below(t, ARRAY_COUNT(pieces));
+            memcpy(line + n, pieces[k], piece_len[k]);
+            n += piece_len[k];
+        }
+        buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("first\n"));
+        buffer_replace(buf, 6, 6, str8(line, n));
+        buffer_replace(buf, 6 + n, 6 + n, STR8_LIT("\nlast"));
+        i64 gap_at = 6 + test_below(t, n + 1);
+        buffer_replace(buf, gap_at, gap_at, STR8_LIT("z")); // moves the gap there
+        buffer_replace(buf, gap_at, gap_at + 1, STR8_LIT(""));
+        TestColumns c = test_line_columns(t, line, n, 6);
+        i64 width = c.col[c.count];
+
+        for (i64 k = 0; k <= c.count; k++) {
+            i64 got = view_column_of(buf, c.offset[k]);
+            TEST_CHECK(t, got == c.col[k], "columns iter %d (seed 0x%X): column_of(%D) = %D, expected %D", iter, seed,
+                       c.offset[k], got, c.col[k]);
+            i64 back = view_offset_at_column(buf, 1, c.col[k]);
+            TEST_CHECK(t, back == c.offset[k], "columns iter %d (seed 0x%X): offset_at_column(%D) = %D, expected %D", iter,
+                       seed, c.col[k], back, c.offset[k]);
+            checks += 2;
+        }
+        for (i64 col = 0; col <= width + 3; col++) {
+            i64 k = 0; // the character covering col, or the end
+            while (k < c.count && c.col[k + 1] <= col) k++;
+            i64 expect = k == c.count ? c.offset[k] : 2 * (col - c.col[k]) <= c.col[k + 1] - c.col[k] ? c.offset[k] : c.offset[k + 1];
+            i64 got = view_offset_at_column(buf, 1, col);
+            TEST_CHECK(t, got == expect, "columns iter %d (seed 0x%X): offset_at_column(col %D) = %D, expected %D", iter,
+                       seed, col, got, expect);
+            // The drawing walk: the first character that ends past col.
+            i64 wc = 0;
+            i64 walked = view_walk(buf, 6, 6 + n, &wc, col);
+            TEST_CHECK(t, walked == c.offset[k] && wc == c.col[k], "columns iter %d (seed 0x%X): walk to %D stopped at %D col %D, expected %D col %D",
+                       iter, seed, col, walked, wc, c.offset[k], c.col[k]);
+            checks += 2;
+        }
+        arena_pop_to(&t->arena, mark);
+    }
+    buffer_destroy(buf);
+    LOG("test: ok: column mapping, 3000 fuzzed lines, %D checks", checks);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
 #define TEST_BENCH_SIZE MB(100)
@@ -1061,6 +1151,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_failures(&t);
     arena_reset(&t.arena);
     test_language(&t);
+    arena_reset(&t.arena);
+    test_columns(&t, seed);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
