@@ -983,98 +983,122 @@ static void win32_bench_text(Platform *p) {
     LOG("bench-text: flush + Present:    avg %U us, worst %U us", submit_sum / FRAMES, submit_max);
 }
 
+// Per-frame timings of the bench loops: the app's frame build (from app_dev_build_us) and,
+// from the renderer, the final flush, the Present and the atlas bytes uploaded.
+typedef struct BenchStat {
+    u64 count, build_sum, build_max, flush_sum, present_sum, present_max, slow, upload_bytes;
+} BenchStat;
+
+#define BENCH_SLOW_US 5000 // a Present this long waited for a vertical blank
+
+static void win32_bench_record(Platform *p, BenchStat *st) {
+    RDevFrameStats fs = r_dev_take_frame_stats(p->renderer);
+    u64 build = app_dev_build_us(p->app);
+    st->count++;
+    st->build_sum += build;
+    st->build_max = MAX(st->build_max, build);
+    st->flush_sum += fs.flush_us;
+    st->present_sum += fs.present_us;
+    st->present_max = MAX(st->present_max, fs.present_us);
+    st->slow += fs.present_us >= BENCH_SLOW_US;
+    st->upload_bytes += fs.upload_bytes;
+}
+
+static void win32_bench_log(const char *bench, const char *what, BenchStat *st) {
+    u64 n = MAX(st->count, 1);
+    LOG("%s: %s: %U frames, build avg %U us, worst %U us; flush avg %U us; Present avg %U us, worst %U us, %U >= 5 ms; "
+        "atlas upload %U bytes", bench, what, st->count, st->build_sum / n, st->build_max, st->flush_sum / n,
+        st->present_sum / n, st->present_max, st->slow, st->upload_bytes);
+}
+
+// The refresh rate of the window's monitor: a Present that blocks on a vertical blank takes up to 1/rate.
+static void win32_bench_log_display(Platform *p) {
+    MONITORINFOEXW mi = { .cbSize = sizeof(mi) };
+    DEVMODEW dm = { .dmSize = sizeof(dm) };
+    if (GetMonitorInfoW(MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST), (MONITORINFO *)&mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
+        LOG("bench: display %ux%u at %u Hz (one refresh = %u us), client %dx%d", (u32)dm.dmPelsWidth,
+            (u32)dm.dmPelsHeight, (u32)dm.dmDisplayFrequency, 1000000u / MAX((u32)dm.dmDisplayFrequency, 1u),
+            p->width, p->height);
+    }
+}
+
+static void win32_bench_pump(void) {
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
 // --bench-buffer, frame part: the real app_update_and_render with the 100 MB file at its top,
 // middle and end, presented with Present(0, 0).
 static void win32_bench_buffer_frames(Platform *p) {
     enum { FRAMES = 100 };
     r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
     i64 lines = app_dev_line_count(p->app);
     i64 tops[3] = { 0, lines / 2, -1 };
-    const char *names[3] = { "top", "middle", "end" };
+    const char *names[3] = { "frame at the top", "frame at the middle", "frame at the end" };
     for (i32 k = 0; k < 3; k++) {
         app_dev_goto_line(p->app, tops[k]);
-        u64 build_sum = 0, build_max = 0, submit_sum = 0, submit_max = 0;
+        BenchStat st = { 0 };
+        r_dev_take_frame_stats(p->renderer);
         for (i32 i = 0; i < FRAMES; i++) {
-            MSG msg;
-            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+            win32_bench_pump();
             p->event_count = 0;
             FrameInput input = win32_frame_input(p);
-            u64 t0 = os_time_us();
             app_update_and_render(p->app, &input, p->renderer);
-            u64 total = os_time_us() - t0, build = app_dev_build_us(p->app);
             arena_reset(&p->scratch);
-            build_sum += build;
-            build_max = MAX(build_max, build);
-            submit_sum += total - build;
-            submit_max = MAX(submit_max, total - build);
+            win32_bench_record(p, &st);
         }
-        LOG("bench-buffer: frame at the %s (%D lines): build avg %U us, worst %U us; flush + Present avg %U us, worst %U us",
-            names[k], lines, build_sum / FRAMES, build_max, submit_sum / FRAMES, submit_max);
+        win32_bench_log("bench-buffer", names[k], &st);
     }
     r_dev_set_present_interval(p->renderer, 1);
 }
 
 // --bench-view: one event per frame through the real app_update_and_render (command + frame
 // build, then flush + Present(0, 0)).
-typedef struct BenchStat {
-    u64 build_sum, build_max, submit_sum, count;
-} BenchStat;
-
 static void win32_bench_view_step(Platform *p, Event e, BenchStat *st) {
-    MSG msg;
-    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    win32_bench_pump();
     p->events[0] = e;
     p->event_count = 1;
     FrameInput input = win32_frame_input(p);
-    u64 t0 = os_time_us();
     app_update_and_render(p->app, &input, p->renderer);
-    u64 total = os_time_us() - t0, build = app_dev_build_us(p->app);
     p->event_count = 0;
     arena_reset(&p->scratch);
-    st->build_sum += build;
-    st->build_max = MAX(st->build_max, build);
-    st->submit_sum += total - build;
-    st->count++;
-}
-
-static void win32_bench_view_log(const char *what, BenchStat *st) {
-    LOG("bench-view: %s: %U x, command + frame build avg %U us, worst %U us; flush + Present avg %U us", what,
-        st->count, st->build_sum / MAX(st->count, 1), st->build_max, st->submit_sum / MAX(st->count, 1));
+    win32_bench_record(p, st);
 }
 
 static void win32_bench_view(Platform *p) {
     r_dev_set_present_interval(p->renderer, 0);
-    LOG("bench-view: %D lines, %dx%d client", app_dev_line_count(p->app), p->width, p->height);
+    win32_bench_log_display(p);
+    LOG("bench-view: %D lines; build = command + frame build", app_dev_line_count(p->app));
     Event down = { .kind = EVENT_KEY_DOWN, .key = KEY_DOWN };
     Event page = { .kind = EVENT_KEY_DOWN, .key = KEY_PAGE_DOWN };
     Event end = { .kind = EVENT_KEY_DOWN, .key = KEY_END, .mods = MOD_CTRL };
     Event home = { .kind = EVENT_KEY_DOWN, .key = KEY_HOME, .mods = MOD_CTRL };
     Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
     BenchStat st = { 0 }, st2 = { 0 };
+    r_dev_take_frame_stats(p->renderer);
 
     app_dev_goto_line(p->app, 0);
     for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, down, &st);
-    win32_bench_view_log("next-line", &st);
+    win32_bench_log("bench-view", "next-line", &st);
     st = (BenchStat){ 0 };
     for (i32 i = 0; i < 1000; i++) win32_bench_view_step(p, page, &st);
-    win32_bench_view_log("scroll-up-command (PageDown)", &st);
+    win32_bench_log("bench-view", "scroll-up-command (PageDown)", &st);
     st = (BenchStat){ 0 };
     for (i32 i = 0; i < 100; i++) {
         win32_bench_view_step(p, end, &st);
         win32_bench_view_step(p, home, &st2);
     }
-    win32_bench_view_log("end-of-buffer (C-End)", &st);
-    win32_bench_view_log("beginning-of-buffer (C-Home)", &st2);
+    win32_bench_log("bench-view", "end-of-buffer (C-End)", &st);
+    win32_bench_log("bench-view", "beginning-of-buffer (C-Home)", &st2);
     st = (BenchStat){ 0 };
     app_dev_goto_line(p->app, 1000000);
     for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &st);
-    win32_bench_view_log("self-insert at line 1,000,000", &st);
+    win32_bench_log("bench-view", "self-insert at line 1,000,000", &st);
     r_dev_set_present_interval(p->renderer, 1);
 }
 
