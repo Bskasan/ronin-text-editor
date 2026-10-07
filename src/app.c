@@ -1023,6 +1023,25 @@ void app_dev_smoke_buffer_view(App *app) {
     app->force_focus = 0;
 }
 
+void app_dev_use_config(App *app, String8 path) {
+    os_unwatch(app->config_watch);
+    app->config_watch = 0;
+    app->config_path = path;
+    app->config_source = (ConfigSource){ .path = path };
+    app_watch_config(app);
+    app_reload_config(app, 1);
+}
+
+b32 app_dev_visit(App *app, String8 path) {
+    Buffer *buf = app_find_file(app, path);
+    if (buf) view_switch_buffer(app_active_view(app), &app->buffers, buf);
+    return buf != NULL;
+}
+
+i32 app_dev_font_setups(App *app) {
+    return app->font->setup_count;
+}
+
 void app_dev_force_focus(App *app, i32 focused) {
     app->force_focus = focused;
 }

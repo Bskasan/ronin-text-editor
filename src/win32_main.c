@@ -1039,6 +1039,62 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
     return result;
 }
 
+// Smoke, after the probe frames: the font was set up once; a config with another background is
+// loaded (as C-c r) and the pixel probed; a file is edited and saved through --keys input and its
+// bytes compared. The color stage is the last frame's capture.
+static i32 win32_smoke_config_and_keys(Platform *p) {
+    i32 result = EXIT_OK;
+    i32 setups = app_dev_font_setups(p->app);
+    LOG("smoke: %s: font set up %d time(s) at startup, expected 1", setups == 1 ? "ok" : "FAIL", setups);
+    if (setups != 1) result = EXIT_FONT;
+
+    String8 tmp = str8_fmt(&p->perm, "%S\\tmp", p->exe_dir);
+    String8 text_path = str8_fmt(&p->perm, "%S\\smoke_keys.txt", tmp);
+    if (!os_write_file(text_path, STR8_LIT("abc\n")) || !app_dev_visit(p->app, text_path)) {
+        LOG("smoke: FAIL: cannot set up %S", text_path);
+        return EXIT_OUTPUT_FILE;
+    }
+    Event events[32];
+    i32 n = app_dev_key_events(p->app, STR8_LIT("M-> RET h i C-x C-s"), events, ARRAY_COUNT(events));
+    for (i32 i = 0; i < n; i++) win32_push_event(p, events[i]);
+    win32_frame(p);
+    OsFile f;
+    OsFileInfo info;
+    u8 bytes[64];
+    i64 len = 0;
+    if (os_file_open_read(text_path, &f, &info) == OS_FILE_OK) {
+        len = MIN(info.size, (i64)sizeof(bytes));
+        if (os_file_read(f, bytes, len) != OS_FILE_OK) len = -1;
+        os_file_close(f);
+    }
+    b32 saved = len >= 0 && str8_equal(str8(bytes, MAX(len, 0)), STR8_LIT("abc\n\nhi"));
+    LOG("smoke: %s: --keys \"M-> RET h i C-x C-s\" saved '%S' (%D bytes), expected 'abc\\n\\nhi'", saved ? "ok" : "FAIL",
+        str8(bytes, MAX(len, 0)), len);
+    if (!saved && result == EXIT_OK) result = EXIT_TEST;
+
+    String8 conf = str8_fmt(&p->perm, "%S\\smoke.conf", tmp);
+    if (!os_write_file(conf, STR8_LIT("[colors]\nbackground = #102030\n"))) {
+        LOG("smoke: FAIL: cannot write %S", conf);
+        return EXIT_OUTPUT_FILE;
+    }
+    app_dev_use_config(p->app, conf);
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    i32 w, h;
+    u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
+    DevProbe probe = { .kind = DEV_PROBE_PIXEL_EQ, .x0 = w - 1, .y0 = h - 1, .rgb = 0x102030,
+                       .what = "background after loading a config with background = #102030" };
+    if (!pixels || !win32_check_probe(&probe, pixels, w, h)) {
+        if (!pixels) LOG("smoke: FAIL: back buffer capture failed");
+        if (result == EXIT_OK) result = EXIT_PIXEL_MISMATCH;
+    }
+    setups = app_dev_font_setups(p->app);
+    LOG("smoke: %s: a color-only config change keeps the font (%d set-up(s))", setups == 1 ? "ok" : "FAIL", setups);
+    if (setups != 1 && result == EXIT_OK) result = EXIT_FONT;
+    arena_reset(&p->scratch);
+    return result;
+}
+
 // The title shows the buffer name and was set exactly once over all the smoke frames.
 static i32 win32_smoke_check_title(Platform *p) {
     WCHAR text[256];
@@ -1578,7 +1634,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 win32_frame(p);
                 i32 code3 = win32_smoke_check_frame(p, 1);
                 i32 code4 = win32_smoke_check_title(p);
-                p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3 != EXIT_OK ? code3 : code4;
+                i32 code5 = win32_smoke_config_and_keys(p);
+                p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3 != EXIT_OK ? code3
+                             : code4 != EXIT_OK ? code4 : code5;
                 p->quit = 1;
                 break;
             }
