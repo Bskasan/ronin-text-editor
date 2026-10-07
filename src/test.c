@@ -1839,7 +1839,12 @@ static b32 test_config(Test *t, u64 seed) {
     TEST_CHECK(t, test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER && test_binding(c, "M-<") == &CMD_BEGINNING_OF_BUFFER &&
                   test_binding(c, "C-m") == &CMD_NEWLINE && test_binding(c, "C-j") == &CMD_NEWLINE &&
                   test_binding(c, "ESC") == &CMD_KEYBOARD_QUIT && test_binding(c, "TAB") == &CMD_SELF_INSERT &&
-                  test_binding(c, "<next>") == &CMD_SCROLL_UP_COMMAND, "config: default bindings");
+                  test_binding(c, "<next>") == &CMD_SCROLL_UP_COMMAND && test_binding(c, "C-x C-c") == &CMD_SAVE_BUFFERS_KILL_TERMINAL &&
+                  test_binding(c, "C-x <right>") == &CMD_NEXT_BUFFER && test_binding(c, "C-x <left>") == &CMD_PREVIOUS_BUFFER &&
+                  test_binding(c, "C-x C-+") == &CMD_TEXT_SCALE_INCREASE && test_binding(c, "C-x C-=") == &CMD_TEXT_SCALE_INCREASE &&
+                  test_binding(c, "C-x C--") == &CMD_TEXT_SCALE_DECREASE && test_binding(c, "C-x C-0") == &CMD_TEXT_SCALE_RESET &&
+                  test_binding(c, "C-h k") == &CMD_DESCRIBE_KEY && test_binding(c, "C-c ,") == &CMD_OPEN_CONFIG &&
+                  test_binding(c, "C-c r") == &CMD_RELOAD_CONFIG, "config: default bindings");
 
     // A valid user file on top: only what it names changes.
     config_parse(c, &t->arena, STR8_LIT("# mine\n\n[settings]\nfont_size = 10.5\ntab_width=8\n  underscore_is_word = true  \r\n"

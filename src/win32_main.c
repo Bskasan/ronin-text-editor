@@ -420,6 +420,14 @@ String8 os_get_env(Arena *arena, String8 name) {
     return result;
 }
 
+b32 os_make_dir(String8 path) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    b32 ok = CreateDirectoryW(win32_path16(path), NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+    arena_pop_to(scratch, mark);
+    return ok;
+}
+
 void os_fatal(String8 message) {
     b32 interactive = 1;
 #if TEAL_DEV

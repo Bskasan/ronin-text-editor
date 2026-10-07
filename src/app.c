@@ -92,6 +92,9 @@ struct App {
     String8 config_path;         // the user's teal.conf; empty = built-in defaults only
     i32 forced_render_mode;      // dev --render-mode, -1 = from the config
     i32 text_scale;              // text-scale-increase / decrease steps, session only
+    i32 wheel_scale_accum;       // Ctrl + wheel units not yet turned into text scale steps
+    Renderer *renderer;          // during a frame: commands that change the font rebind the atlas at once
+    b32 quit;
     b32 focused;                 // the window has keyboard focus
     i32 wheel_accum;             // wheel units * APP_WHEEL_LINES not yet turned into lines
     u8 title[256];               // the window title last set
@@ -457,7 +460,7 @@ static FontParams app_font_params(App *app) {
 
 // Reads and parses the config into the other arena and switches to it. Returns the status of
 // reading the user's file.
-static OsFileStatus app_read_config(App *app) {
+static OsFileStatus app_read_config(App *app, b32 keep_old_on_error) {
 #if TEAL_DEV
     u64 t0 = os_time_us();
 #endif
@@ -466,6 +469,7 @@ static OsFileStatus app_read_config(App *app) {
     Config *c = PUSH_STRUCT(&app->config_arenas[slot], Config);
     OsFileInfo info;
     OsFileStatus status = config_load(c, &app->config_arenas[slot], app->config_path, &info);
+    if (keep_old_on_error && status != OS_FILE_OK && status != OS_FILE_NOT_FOUND) return status;
     app->config = c;
     app->config_slot = slot;
     LOG("config: %S: %s, %D bytes; parsed with the defaults in %U us, %d error(s), %d warning(s)",
@@ -579,7 +583,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->config_arenas[0] = arena_create(APP_CONFIG_RESERVE);
     app->config_arenas[1] = arena_create(APP_CONFIG_RESERVE);
     app->config_path = app_config_path(perm, args);
-    OsFileStatus config_status = app_read_config(app);
+    OsFileStatus config_status = app_read_config(app, 0);
     FontParams fp = app_font_params(app);
     app->font = font_create(perm, &fp, args->dpi_scale);
     if (!app->font) return NULL;
@@ -644,8 +648,18 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y) {
     app->ctx.last_command = NULL;
 }
 
-// The wheel scrolls the view under the mouse; point is dragged along to stay visible.
-static void app_wheel(App *app, i32 x, i32 y, i32 wheel) {
+extern const Command CMD_SAVE_BUFFERS_KILL_TERMINAL, CMD_TEXT_SCALE_INCREASE, CMD_TEXT_SCALE_DECREASE;
+static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated);
+
+// The wheel scrolls the view under the mouse; point is dragged along to stay visible. With Ctrl it
+// changes the text scale, one step per notch.
+static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
+    if (mods & MOD_CTRL) {
+        app->wheel_scale_accum += wheel;
+        for (; app->wheel_scale_accum >= 120; app->wheel_scale_accum -= 120) app_run_command(app, &CMD_TEXT_SCALE_INCREASE, 0, 0);
+        for (; app->wheel_scale_accum <= -120; app->wheel_scale_accum += 120) app_run_command(app, &CMD_TEXT_SCALE_DECREASE, 0, 0);
+        return;
+    }
     app->wheel_accum += wheel * APP_WHEEL_LINES;
     i32 lines = app->wheel_accum / 120;
     app->wheel_accum -= lines * 120;
@@ -665,6 +679,115 @@ static void app_update_title(App *app, Arena *scratch) {
     app->title_len = (i32)title.len;
     os_set_window_title(title);
 }
+
+// ---------------------------------------------------------------------------
+// App commands (COMMAND_ONCE)
+
+// Reads the config again and applies it; a file that cannot be read leaves the config as it was.
+static void app_reload_config(App *app) {
+    OsFileStatus status = app_read_config(app, 1);
+    app_apply_config(app, app->renderer, 0);
+    app_report_config(app, status, 1);
+}
+
+// Refuses once while file buffers are modified (real prompts come with the minibuffer, Phase 7);
+// an immediate repeat quits. The window's close button takes the same path.
+static void cmd_save_buffers_kill_terminal(CommandContext *ctx) {
+    App *app = ctx->app;
+    u8 names[256];
+    i64 n = 0;
+    i32 count = 0;
+    for (i32 i = 0; i < app->buffers.count; i++) {
+        Buffer *b = app->buffers.entries[i].buffer;
+        if (!b->modified || !b->path.len) continue;
+        n += fmt_buf(names + n, (i64)sizeof(names) - n, count ? ", %S" : "%S", b->name);
+        count++;
+    }
+    if (count && ctx->last_command != &CMD_SAVE_BUFFERS_KILL_TERMINAL) {
+        echo_message(ctx->echo, "Modified buffer%s: %S; repeat to quit without saving", count == 1 ? "" : "s", str8(names, n));
+        return;
+    }
+    app->quit = 1;
+}
+
+static void app_cycle_buffer(CommandContext *ctx, i32 dir) {
+    App *app = ctx->app;
+    i32 n = app->buffers.count;
+    i32 i = buffer_list_index(&app->buffers, ctx->view->buffer);
+    if (n < 2 || i < 0) return;
+    view_switch_buffer(ctx->view, &app->buffers, app->buffers.entries[((i + dir) % n + n) % n].buffer);
+    ctx->cursor = &ctx->view->cursors[0];
+}
+
+static void cmd_next_buffer(CommandContext *ctx) { app_cycle_buffer(ctx, 1); }
+static void cmd_previous_buffer(CommandContext *ctx) { app_cycle_buffer(ctx, -1); }
+
+// Visits the user's teal.conf, creating it from the built-in defaults when it does not exist.
+static void cmd_open_config(CommandContext *ctx) {
+    App *app = ctx->app;
+    String8 path = app->config_path;
+    if (!path.len) {
+        echo_message(ctx->echo, "No place for teal.conf: APPDATA is not set");
+        return;
+    }
+    OsFileInfo info;
+    b32 created = 0;
+    if (os_file_info(path, &info) == OS_FILE_NOT_FOUND) {
+        String8 dir = str8(path.data, path.len - config_file_name(path).len - 1);
+        if (!os_make_dir(dir) || !os_write_file(path, config_default_text())) {
+            echo_message(ctx->echo, "Cannot create %S", path);
+            return;
+        }
+        created = 1;
+    }
+    Buffer *buf = app_find_file(app, path);
+    if (!buf) return;
+    view_switch_buffer(ctx->view, &app->buffers, buf);
+    ctx->cursor = &ctx->view->cursors[0];
+    if (created) echo_message(ctx->echo, "Created %S from the built-in defaults", path);
+}
+
+static void cmd_reload_config(CommandContext *ctx) {
+    app_reload_config(ctx->app);
+}
+
+// step 0 resets. 1.2 times per step (Emacs' text-scale-mode-step); the size stays within 4..96 pt.
+static void app_text_scale(CommandContext *ctx, i32 step) {
+    App *app = ctx->app;
+    i32 old = app->text_scale;
+    f32 old_size = app_font_params(app).size_pt;
+    app->text_scale = step ? app->text_scale + step : 0;
+    FontParams fp = app_font_params(app);
+    if (step && fp.size_pt == old_size) {
+        app->text_scale = old;
+        echo_message(ctx->echo, "Text size limit reached");
+        return;
+    }
+    font_reconfigure(app->font, app->renderer, &fp);
+    i32 pt = (i32)(fp.size_pt + 0.5f);
+    if (app->text_scale) echo_message(ctx->echo, "Text scale %s%d (%d pt)", app->text_scale > 0 ? "+" : "", app->text_scale, pt);
+    else echo_message(ctx->echo, "Text scale reset (%d pt)", pt);
+}
+
+static void cmd_text_scale_increase(CommandContext *ctx) { app_text_scale(ctx, 1); }
+static void cmd_text_scale_decrease(CommandContext *ctx) { app_text_scale(ctx, -1); }
+static void cmd_text_scale_reset(CommandContext *ctx) { app_text_scale(ctx, 0); }
+
+// Reads one key sequence and describes it instead of running it (the keymap's describe state).
+static void cmd_describe_key(CommandContext *ctx) {
+    ctx->app->keys.describe = 1;
+    echo_set(ctx->echo, STR8_LIT("Describe key: "));
+}
+
+const Command CMD_SAVE_BUFFERS_KILL_TERMINAL = { "save-buffers-kill-terminal", cmd_save_buffers_kill_terminal, COMMAND_ONCE };
+const Command CMD_NEXT_BUFFER                = { "next-buffer", cmd_next_buffer, COMMAND_ONCE };
+const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", cmd_previous_buffer, COMMAND_ONCE };
+const Command CMD_OPEN_CONFIG                = { "open-config", cmd_open_config, COMMAND_ONCE };
+const Command CMD_RELOAD_CONFIG              = { "reload-config", cmd_reload_config, COMMAND_ONCE };
+const Command CMD_TEXT_SCALE_INCREASE        = { "text-scale-increase", cmd_text_scale_increase, COMMAND_ONCE };
+const Command CMD_TEXT_SCALE_DECREASE        = { "text-scale-decrease", cmd_text_scale_decrease, COMMAND_ONCE };
+const Command CMD_TEXT_SCALE_RESET           = { "text-scale-reset", cmd_text_scale_reset, COMMAND_ONCE };
+const Command CMD_DESCRIBE_KEY               = { "describe-key", cmd_describe_key, COMMAND_ONCE };
 
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
     app->ctx.view = app->views[app->active_view];
@@ -709,6 +832,7 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
 #if TEAL_DEV
     u64 t0 = os_time_us();
 #endif
+    app->renderer = r;
     font_frame_begin(app->font, r, in->dpi_scale);
     AppLayout l = app_layout(app, in);
 #if TEAL_DEV
@@ -724,8 +848,9 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
         switch (e->kind) {
-        case EVENT_CLOSE:
-            return 0;
+        case EVENT_CLOSE: // the window's close button, Alt+F4: as C-x C-c
+            app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
+            break;
         case EVENT_FOCUS:
             app->focused = e->focused;
             break;
@@ -737,12 +862,18 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
             if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y);
             break;
         case EVENT_MOUSE_WHEEL:
-            app_wheel(app, e->x, e->y, e->wheel);
+            app_wheel(app, e->x, e->y, e->wheel, e->mods);
             break;
         default:
             break;
         }
     }
+    app->renderer = NULL;
+    if (app->quit) return 0;
+    // A command may have changed the font (text scale, config): lay out again.
+    l = app_layout(app, in);
+    app_layout_views(app, in, &l);
+    for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]);
 
     app_update_title(app, in->scratch);
 

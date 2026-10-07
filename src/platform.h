@@ -17,6 +17,7 @@ void  os_set_window_title(String8 title);
 void  os_set_caption_color(u32 rgb); // the title bar (Windows 11; ignored elsewhere)
 String8 os_exe_dir(Arena *arena);                  // the directory of the executable, no trailing separator
 String8 os_get_env(Arena *arena, String8 name);    // empty when not set
+b32   os_make_dir(String8 path);                   // true if it exists afterwards (the parent must exist)
 #if TEAL_DEV
 void  os_log_write(String8 text);
 #endif
