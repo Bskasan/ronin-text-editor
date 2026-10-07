@@ -639,6 +639,25 @@ void r_dev_set_present_interval(Renderer *r, u32 interval) {
     r->present_interval = interval;
 }
 
+// DWM composes the swap chain, or shows it directly (a hardware overlay plane / independent
+// flip). Shown directly, the buffer on screen stays held until the next vertical blank, so with
+// two buffers Present(0, 0) waits for that blank.
+const char *r_dev_presentation_mode(Renderer *r) {
+    IDXGISwapChainMedia *media = NULL;
+    if (FAILED(IDXGISwapChain1_QueryInterface(r->swap_chain, &IID_IDXGISwapChainMedia, (void **)&media))) return "unknown";
+    DXGI_FRAME_STATISTICS_MEDIA stats;
+    HRESULT hr = IDXGISwapChainMedia_GetFrameStatisticsMedia(media, &stats);
+    R_RELEASE(media);
+    if (FAILED(hr)) return "unknown (no statistics yet)";
+    switch (stats.CompositionMode) {
+    case DXGI_FRAME_PRESENTATION_MODE_COMPOSED:            return "composed by DWM";
+    case DXGI_FRAME_PRESENTATION_MODE_OVERLAY:             return "overlay (shown directly)";
+    case DXGI_FRAME_PRESENTATION_MODE_NONE:                return "none";
+    case DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE: return "composition failure";
+    }
+    return "?";
+}
+
 RDevFrameStats r_dev_take_frame_stats(Renderer *r) {
     RDevFrameStats s = r->stats;
     r->stats = (RDevFrameStats){ 0 };

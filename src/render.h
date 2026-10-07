@@ -50,6 +50,7 @@ typedef struct RDevFrameStats {
     u64 present_us;   // the last r_end_frame: Present
 } RDevFrameStats;
 RDevFrameStats r_dev_take_frame_stats(Renderer *r); // and resets the counters
+const char *r_dev_presentation_mode(Renderer *r);   // how DWM shows the swap chain now: "composed", "overlay", ...
 #endif
 
 #endif // RENDER_H

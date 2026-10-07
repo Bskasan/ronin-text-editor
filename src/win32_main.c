@@ -1207,11 +1207,11 @@ static void win32_bench_record(Platform *p, BenchStat *st) {
     st->upload_bytes += fs.upload_bytes;
 }
 
-static void win32_bench_log(const char *bench, const char *what, BenchStat *st) {
+static void win32_bench_log(Platform *p, const char *bench, const char *what, BenchStat *st) {
     u64 n = MAX(st->count, 1);
     LOG("%s: %s: %U frames, build avg %U us, worst %U us; flush avg %U us; Present avg %U us, worst %U us, %U >= 5 ms; "
-        "atlas upload %U bytes", bench, what, st->count, st->build_sum / n, st->build_max, st->flush_sum / n,
-        st->present_sum / n, st->present_max, st->slow, st->upload_bytes);
+        "atlas upload %U bytes; presentation: %s", bench, what, st->count, st->build_sum / n, st->build_max, st->flush_sum / n,
+        st->present_sum / n, st->present_max, st->slow, st->upload_bytes, r_dev_presentation_mode(p->renderer));
 }
 
 // The refresh rate of the window's monitor: a Present that blocks on a vertical blank takes up to 1/rate.
@@ -1255,7 +1255,7 @@ static void win32_bench_buffer_frames(Platform *p) {
             arena_reset(&p->scratch);
             win32_bench_record(p, &st);
         }
-        win32_bench_log("bench-buffer", names[k], &st);
+        win32_bench_log(p, "bench-buffer", names[k], &st);
     }
     r_dev_set_present_interval(p->renderer, 1);
 }
@@ -1288,22 +1288,22 @@ static void win32_bench_view(Platform *p) {
 
     app_dev_goto_line(p->app, 0);
     for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, down, &st);
-    win32_bench_log("bench-view", "next-line", &st);
+    win32_bench_log(p, "bench-view", "next-line", &st);
     st = (BenchStat){ 0 };
     for (i32 i = 0; i < 1000; i++) win32_bench_view_step(p, page, &st);
-    win32_bench_log("bench-view", "scroll-up-command (PageDown)", &st);
+    win32_bench_log(p, "bench-view", "scroll-up-command (PageDown)", &st);
     st = (BenchStat){ 0 };
     for (i32 i = 0; i < 100; i++) {
         win32_bench_view_step(p, end, &st);
         win32_bench_view_step(p, home, &st2);
     }
-    win32_bench_log("bench-view", "end-of-buffer (C-End)", &st);
-    win32_bench_log("bench-view", "beginning-of-buffer (C-Home)", &st2);
+    win32_bench_log(p, "bench-view", "end-of-buffer (C-End)", &st);
+    win32_bench_log(p, "bench-view", "beginning-of-buffer (C-Home)", &st2);
     st = (BenchStat){ 0 };
     app_dev_goto_line(p->app, 1000000);
     win32_bench_view_step(p, plain, &st2);
     for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &st);
-    win32_bench_log("bench-view", "self-insert at line 1,000,000", &st);
+    win32_bench_log(p, "bench-view", "self-insert at line 1,000,000", &st);
     r_dev_set_present_interval(p->renderer, 1);
 }
 
