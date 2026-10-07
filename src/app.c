@@ -93,6 +93,8 @@ struct App {
     CommandContext ctx;          // keeps last_command between events
     b32 focused;                 // the window has keyboard focus
     i32 wheel_accum;             // wheel units * APP_WHEEL_LINES not yet turned into lines
+    u8 title[256];               // the window title last set
+    i32 title_len;
     i64 initial_line;            // 0-based line to visit on the first frame, -1 = none
     i64 initial_col;
 #if TEAL_DEV
@@ -535,6 +537,16 @@ static void app_wheel(App *app, i32 x, i32 y, i32 wheel) {
     app->ctx.last_command = NULL;
 }
 
+// "<buffer name> - teal" for the active view; the platform is called only when it changes.
+static void app_update_title(App *app, Arena *scratch) {
+    String8 title = str8_fmt(scratch, "%S - teal", app->views[app->active_view]->buffer->name);
+    title.len = MIN(title.len, (i64)sizeof(app->title));
+    if (str8_equal(title, str8(app->title, app->title_len))) return;
+    memcpy(app->title, title.data, (size_t)title.len);
+    app->title_len = (i32)title.len;
+    os_set_window_title(title);
+}
+
 static void app_run_command(App *app, const Command *cmd, u32 codepoint) {
     app->ctx.view = app->views[app->active_view];
     app->ctx.codepoint = codepoint;
@@ -586,6 +598,8 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
             break;
         }
     }
+
+    app_update_title(app, in->scratch);
 
     r_begin_frame(r, COLOR_HEX(THEME_BACKGROUND));
     for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view);
