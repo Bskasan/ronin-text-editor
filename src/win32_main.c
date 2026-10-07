@@ -9,6 +9,7 @@
 
 #define EVENT_CAPACITY 256
 #define EVENT_RESERVE 4 // free slots required before taking another message off the queue
+#define WIN32_MAX_WATCHES 8
 
 typedef struct Platform {
     HINSTANCE instance;
@@ -20,6 +21,7 @@ typedef struct Platform {
 
     Event events[EVENT_CAPACITY];
     i32 event_count;
+    HANDLE watches[WIN32_MAX_WATCHES]; // change notifications; OsWatch = index + 1, NULL = free
 
     i32 width, height; // client area, pixels
     u32 dpi;
@@ -343,7 +345,67 @@ void os_file_delete(String8 path) {
     arena_pop_to(scratch, mark);
 }
 
+// ---------------------------------------------------------------------------
+// Directory watches
+
+OsWatch os_watch_dir(String8 dir) {
+    Platform *p = g_platform;
+    i32 slot = 0;
+    while (slot < WIN32_MAX_WATCHES && p->watches[slot]) slot++;
+    if (slot == WIN32_MAX_WATCHES) return 0;
+    u64 mark = arena_pos(&p->scratch);
+    HANDLE h = FindFirstChangeNotificationW(win32_path16(dir), FALSE,
+                                            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
+    arena_pop_to(&p->scratch, mark);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    p->watches[slot] = h;
+    return (OsWatch)(slot + 1);
+}
+
+void os_unwatch(OsWatch watch) {
+    Platform *p = g_platform;
+    if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1]) return;
+    FindCloseChangeNotification(p->watches[watch - 1]);
+    p->watches[watch - 1] = NULL;
+}
+
+static void win32_push_event(Platform *p, Event e);
+
+// Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it.
+static void win32_poll_watches(Platform *p) {
+    for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) {
+        if (!p->watches[i] || WaitForSingleObject(p->watches[i], 0) != WAIT_OBJECT_0) continue;
+        FindNextChangeNotification(p->watches[i]);
+        Event e = { .kind = EVENT_DIR_CHANGED, .watch = (OsWatch)(i + 1) };
+        win32_push_event(p, e);
+        p->redraw = 1;
+    }
+}
+
 #if TEAL_DEV
+b32 os_dev_watch_wait(OsWatch watch, u32 timeout_ms) {
+    Platform *p = g_platform;
+    if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1]) return 0;
+    if (WaitForSingleObject(p->watches[watch - 1], timeout_ms) != WAIT_OBJECT_0) return 0;
+    FindNextChangeNotification(p->watches[watch - 1]);
+    return 1;
+}
+
+i32 os_dev_watch_count(void) {
+    i32 n = 0;
+    for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) n += g_platform->watches[i] != NULL;
+    return n;
+}
+
+OsFileStatus os_dev_lock_file(String8 path, OsFile *file) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    HANDLE h = CreateFileW(win32_path16(path), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    arena_pop_to(scratch, mark);
+    file->handle = h == INVALID_HANDLE_VALUE ? NULL : h;
+    return file->handle ? OS_FILE_OK : win32_last_file_status();
+}
+
 b32 os_dev_set_read_only(String8 path, b32 read_only) {
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
@@ -1464,8 +1526,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
 
     while (!p->quit) {
-        // Block until there is something to do: 0% CPU when idle.
-        if (!p->redraw) MsgWaitForMultipleObjectsEx(0, NULL, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        // Block until there is something to do: 0% CPU when idle. The directory watches are part of
+        // the wait; a timeout only while the app asks for one (a config read to retry).
+        if (!p->redraw) {
+            HANDLE handles[WIN32_MAX_WATCHES];
+            DWORD count = 0;
+            for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) if (p->watches[i]) handles[count++] = p->watches[i];
+            DWORD timeout = app_wait_ms(p->app);
+            if (MsgWaitForMultipleObjectsEx(count, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_TIMEOUT) {
+                Event e = { .kind = EVENT_WAKEUP };
+                win32_push_event(p, e);
+                p->redraw = 1;
+            }
+        }
+        win32_poll_watches(p);
 
         MSG msg;
         for (;;) {
@@ -1517,6 +1591,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     u32 leaks = r_shutdown(p->renderer);
     i32 font_refs = app_shutdown(p->app); // DirectWrite references + unreleased buffers
     DestroyWindow(p->hwnd);
+#if TEAL_DEV
+    if (os_dev_watch_count()) {
+        LOG("app: %d directory watch(es) still open after close", os_dev_watch_count());
+        font_refs += os_dev_watch_count();
+    }
+#endif
 
 #if TEAL_DEV
     LOG("app: resources still held after close (DirectWrite references, buffers): %d", font_refs);

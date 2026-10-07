@@ -50,4 +50,37 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
 OsFileStatus config_read_file(Arena *arena, String8 path, String8 *text, OsFileInfo *info);
 String8 config_file_name(String8 path); // the last path component
 
+// ---------------------------------------------------------------------------
+// Reloading. Driven by directory change notifications, never by a timer: on a notification the
+// file is read again only if its size or write time differ from the version last loaded. A file
+// that is missing for a moment (editors that save through a temporary file and a rename) counts
+// as unchanged. A sharing violation (another program still writing) is retried every
+// CONFIG_RETRY_MS, at most CONFIG_RETRY_ATTEMPTS reads in all; the caller waits with that timeout
+// only while a retry is pending.
+
+#define CONFIG_RETRY_MS 100
+#define CONFIG_RETRY_ATTEMPTS 5
+#define CONFIG_WAIT_INFINITE 0xFFFFFFFFu
+
+typedef enum ConfigPoll {
+    CONFIG_POLL_UNCHANGED, // nothing to load (or a pending retry is not due yet)
+    CONFIG_POLL_LOADED,    // `out` holds the new config
+    CONFIG_POLL_RETRY,     // a sharing violation: try again in CONFIG_RETRY_MS (`out` has the defaults only)
+    CONFIG_POLL_FAILED,    // the file could not be read (status says why); keep the old config
+} ConfigPoll;
+
+typedef struct ConfigSource {
+    String8 path;        // the user's teal.conf; empty = built-in defaults only
+    b32 loaded_file;     // the version last loaded came from the file; its size and write time:
+    i64 size;
+    u64 write_time;
+    i32 attempts;        // failed reads in a row; > 0 = a retry is pending
+    u64 retry_at_us;
+    OsFileStatus status; // of the last read
+} ConfigSource;
+
+// force: read now (startup, reload-config). Otherwise only a changed file or a due retry is read.
+ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, u64 now_us);
+u32        config_wait_ms(ConfigSource *src, u64 now_us); // until the pending retry, else CONFIG_WAIT_INFINITE
+
 #endif // CONFIG_H

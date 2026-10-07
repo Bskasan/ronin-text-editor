@@ -328,3 +328,33 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
     if (status == OS_FILE_OK) config_parse(c, arena, text, config_file_name(path));
     return status;
 }
+
+// ---------------------------------------------------------------------------
+// Reloading
+
+ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, u64 now_us) {
+    if (src->attempts > 0) {
+        if (!force && now_us < src->retry_at_us) return CONFIG_POLL_UNCHANGED;
+    } else if (!force) {
+        OsFileInfo now;
+        if (!src->path.len || os_file_info(src->path, &now) != OS_FILE_OK) return CONFIG_POLL_UNCHANGED; // missing for now
+        if (src->loaded_file && now.size == src->size && now.write_time == src->write_time) return CONFIG_POLL_UNCHANGED;
+    }
+    OsFileInfo info;
+    src->status = config_load(out, arena, src->path, &info);
+    if (src->status == OS_FILE_SHARING_VIOLATION && ++src->attempts < CONFIG_RETRY_ATTEMPTS) {
+        src->retry_at_us = now_us + (u64)CONFIG_RETRY_MS * 1000;
+        return CONFIG_POLL_RETRY;
+    }
+    src->attempts = 0;
+    if (src->status != OS_FILE_OK && src->status != OS_FILE_NOT_FOUND) return CONFIG_POLL_FAILED;
+    src->loaded_file = src->status == OS_FILE_OK;
+    src->size = info.size;
+    src->write_time = info.write_time;
+    return CONFIG_POLL_LOADED;
+}
+
+u32 config_wait_ms(ConfigSource *src, u64 now_us) {
+    if (src->attempts == 0) return CONFIG_WAIT_INFINITE;
+    return now_us >= src->retry_at_us ? 0 : (u32)((src->retry_at_us - now_us + 999) / 1000);
+}

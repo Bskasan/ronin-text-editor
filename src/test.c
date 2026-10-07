@@ -1747,6 +1747,88 @@ static b32 test_key_input(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Hot reload: a real directory watch in build\tmp\watch, config_poll with the time passed in
+
+static b32 test_write(Test *t, String8 path, const char *text) {
+    TEST_CHECK(t, os_write_file(path, str8_cstr(text)), "reload: cannot write %S", path);
+    return 1;
+}
+
+static b32 test_hot_reload(Test *t) {
+    String8 dir = str8_fmt(&t->arena, "%S\\watch", t->tmp_dir);
+    String8 path = str8_fmt(&t->arena, "%S\\teal.conf", dir);
+    String8 temp = str8_fmt(&t->arena, "%S\\teal.conf.tmp", dir);
+    String8 other = str8_fmt(&t->arena, "%S\\other.txt", dir);
+    TEST_CHECK(t, os_make_dir(dir), "reload: cannot create %S", dir);
+    if (!test_write(t, path, "[settings]\ntab_width = 5\n")) return 0;
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+    ConfigSource src = { .path = path };
+    u64 now = 1000000;
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 1, now) == CONFIG_POLL_LOADED && c->settings.tab_width == 5 &&
+                  config_wait_ms(&src, now) == CONFIG_WAIT_INFINITE, "reload: first load");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_UNCHANGED, "reload: an unchanged file is not read again");
+
+    OsWatch w = os_watch_dir(dir);
+    TEST_CHECK(t, w, "reload: cannot watch %S", dir);
+    while (os_dev_watch_wait(w, 50)) {} // nothing pending
+    // Written in place.
+    if (!test_write(t, path, "[settings]\ntab_width = 12\n")) return 0;
+    TEST_CHECK(t, os_dev_watch_wait(w, 2000), "reload: no notification after a write");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_LOADED && c->settings.tab_width == 12,
+               "reload: the new value after a write (tab_width %d)", c->settings.tab_width);
+    // Another file in the directory: a notification, but nothing to load.
+    while (os_dev_watch_wait(w, 50)) {}
+    if (!test_write(t, other, "x")) return 0;
+    TEST_CHECK(t, os_dev_watch_wait(w, 2000) && config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_UNCHANGED,
+               "reload: another file changing does not reload");
+    // Saved through a temporary file and a rename; while the file is gone, nothing changes.
+    while (os_dev_watch_wait(w, 50)) {}
+    if (!test_write(t, temp, "[settings]\ntab_width = 7\n# saved by rename\n")) return 0;
+    os_file_delete(path);
+    TEST_CHECK(t, os_dev_watch_wait(w, 2000) && config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_UNCHANGED,
+               "reload: a missing file (mid-rename) counts as unchanged");
+    TEST_CHECK(t, os_file_replace(path, temp) == OS_FILE_OK, "reload: rename failed");
+    TEST_CHECK(t, os_dev_watch_wait(w, 2000), "reload: no notification after the rename");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_LOADED && c->settings.tab_width == 7,
+               "reload: the new value after a save by rename (tab_width %d)", c->settings.tab_width);
+
+    // A sharing violation is retried every 100 ms; it loads once the file is released.
+    while (os_dev_watch_wait(w, 50)) {}
+    if (!test_write(t, path, "[settings]\ntab_width = 9\n")) return 0;
+    OsFile lock;
+    TEST_CHECK(t, os_dev_lock_file(path, &lock) == OS_FILE_OK, "reload: cannot lock %S", path);
+    TEST_CHECK(t, os_dev_watch_wait(w, 2000), "reload: no notification before the locked read");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_RETRY && src.status == OS_FILE_SHARING_VIOLATION &&
+                  config_wait_ms(&src, now) == CONFIG_RETRY_MS, "reload: locked: a retry in 100 ms");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now + 50000) == CONFIG_POLL_UNCHANGED && config_wait_ms(&src, now + 50000) == 50,
+               "reload: the retry is not due after 50 ms");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now + 100000) == CONFIG_POLL_RETRY && src.attempts == 2,
+               "reload: still locked at the second attempt");
+    os_file_close(lock);
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now + 200000) == CONFIG_POLL_LOADED && c->settings.tab_width == 9 &&
+                  config_wait_ms(&src, now + 200000) == CONFIG_WAIT_INFINITE, "reload: loaded once released, no more waiting");
+    // Locked for good: 5 attempts in all, then a failure, and the wait is infinite again.
+    if (!test_write(t, path, "[settings]\ntab_width = 3\n# a different size\n")) return 0;
+    TEST_CHECK(t, os_dev_lock_file(path, &lock) == OS_FILE_OK, "reload: cannot lock %S", path);
+    ConfigPoll r = CONFIG_POLL_UNCHANGED;
+    i32 reads = 0;
+    for (i32 i = 0; i < 10 && r != CONFIG_POLL_FAILED; i++) {
+        r = config_poll(&src, c, &t->arena, 0, now + (u64)i * CONFIG_RETRY_MS * 1000);
+        reads += r != CONFIG_POLL_UNCHANGED;
+    }
+    TEST_CHECK(t, r == CONFIG_POLL_FAILED && reads == CONFIG_RETRY_ATTEMPTS && src.status == OS_FILE_SHARING_VIOLATION &&
+                  config_wait_ms(&src, now) == CONFIG_WAIT_INFINITE, "reload: gave up after %d reads (expected %d)", reads,
+               (i32)CONFIG_RETRY_ATTEMPTS);
+    os_file_close(lock);
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_LOADED && c->settings.tab_width == 3,
+               "reload: the next poll after the failure loads the file");
+    os_unwatch(w);
+    TEST_CHECK(t, os_dev_watch_count() == 0, "reload: the watch was not released");
+    LOG("test: ok: hot reload: write, other file, save by rename, sharing violation retried and given up");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // The buffer list and *Messages*
 
 static b32 test_buffer_list(Test *t) {
@@ -2146,6 +2228,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_config(&t, seed);
     arena_reset(&t.arena);
     test_buffer_list(&t);
+    arena_reset(&t.arena);
+    test_hot_reload(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
