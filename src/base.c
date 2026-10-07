@@ -250,6 +250,10 @@ String8 str8_fmt(Arena *arena, const char *fmt, ...) {
 // Dev log
 
 #if TEAL_DEV
+void assert_log(const char *file, int line, const char *expr) {
+    log_fmt("ASSERT failed: %s(%d): %s", file, (i32)line, expr);
+}
+
 void log_fmt(const char *fmt, ...) {
     u8 buffer[2048];
     va_list args;
