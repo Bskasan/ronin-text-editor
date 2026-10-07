@@ -81,4 +81,10 @@ void    buffer_segments(Buffer *buf, String8 *before, String8 *after); // the te
 i64 buffer_next_char(Buffer *buf, i64 offset);
 i64 buffer_prev_char(Buffer *buf, i64 offset);
 
+// Files. Loading needs an empty buffer; on failure it stays empty and the status says why.
+// Opening a missing file gives OS_FILE_NOT_FOUND; the caller may then visit the path as a new file.
+OsFileStatus buffer_load_file(Buffer *buf, String8 path);
+void         buffer_set_path(Buffer *buf, String8 full_path); // also sets the name
+const char  *buffer_status_text(OsFileStatus status);           // "access denied", ...
+
 #endif // BUFFER_H
