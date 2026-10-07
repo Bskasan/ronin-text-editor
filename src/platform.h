@@ -118,7 +118,9 @@ typedef struct Event {
     Key key;           // EVENT_KEY_DOWN
     u32 scancode;      // EVENT_KEY_DOWN, extended keys have bit 8 set
     b32 repeat;        // EVENT_KEY_DOWN
-    u32 codepoint;     // EVENT_TEXT
+    // EVENT_TEXT: the character typed. EVENT_KEY_DOWN: the character the key produces with the
+    // current Shift / AltGr state, Ctrl and Alt ignored (a dead key gives its spacing accent); 0 if none.
+    u32 codepoint;
     MouseButton button;// EVENT_MOUSE_DOWN / UP
     i32 x, y;          // mouse events, client pixels
     i32 wheel;         // EVENT_MOUSE_WHEEL, 120 per notch, positive = away from user
