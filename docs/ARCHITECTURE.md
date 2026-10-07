@@ -11,19 +11,22 @@
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
 | `src/font.h/.c` | metrics, CPU glyph atlas (shelf packer), glyph cache, `font_draw_text` |
-| `src/app.c` | editor core (Phase 2: placeholder sample text, mode line, minibuffer echo, cursor) |
+| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, file load (encodings, line endings) and save |
+| `src/app.c` | editor core (Phase 3: throwaway one-buffer display, scrolling, mode line, minibuffer message; dev: the Phase 2 sample behind `--sample`) |
+| `src/test.c` | dev only: `--test` (buffer fuzz, file round trips, failures) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
 | `src/win32_main.c` | wWinMain, window, message loop, input translation, os_* implementation, dev flags |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `font.c`, later buffer/view/commands) includes only `platform.h` and `render.h`;
+Core (`app.c`, `font.c`, `buffer.c`, `test.c`, later view/commands) includes only `platform.h` and `render.h`;
 `font.c` additionally calls `font_backend.h`.
 
 ## Startup and frame loop
 
-1. `wWinMain` allocates the Renderer and immediately starts a worker thread that runs only
+1. `wWinMain` parses the command line (`--test` runs headless here and exits), then allocates
+   the Renderer and immediately starts a worker thread that runs only
    `D3D11CreateDevice` (`r_create_device`: no logging, no arenas, results go into Renderer
    fields). Meanwhile the main thread creates the window hidden on the monitor under the
    mouse, sizes it for that monitor's DPI (clamped to the work area) and creates the app,
@@ -61,11 +64,28 @@ Meta (WM_SYSKEY* handled, WM_SYSCHAR swallowed, SC_KEYMENU swallowed); Alt+F4 st
 Numpad: Enter arrives as KEY_ENTER, NumLock-off navigation keys as the ordinary ones, digits
 as text events.
 
+## Measurements (Phase 3)
+
+`build\teal_bench.exe` (/O2, dev flags, no debug layer), 1280x800 client, Consolas 16 px.
+`--bench-buffer` on a generated 104,857,642-byte file with 1,963,818 lines (warm file cache):
+
+| what | time |
+|---|---|
+| load (read straight into the buffer + SSE2 index pass) | 35-40 ms (~2.9 GB/s) |
+| 10,000 single-character inserts at one spot | first 5.0 ms (gap moves to the middle), then 37 ns avg, 1 us worst |
+| 1,000 inserts at random positions (each moves the gap) | 2.3 ms avg, 7.8 ms worst |
+| 1,000,000 `buffer_line_of` | 73 ns avg |
+| save-as, flushed / not flushed | 72 ms / 58 ms |
+| frame build (`app_update_and_render` to `r_end_frame`) at top / middle / end | 10 / 10 / 9 us avg |
+
+Startup with the 100 MB file on the command line: first Present ~190 ms, same as with no file
+(the load overlaps the device creation). `--bench-text` (5,680 glyphs): build 33 us avg.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
 - [x] 2. Font: DirectWrite-rasterized glyph atlas, text drawing
-- [ ] 3. Text buffer: gap buffer, line index, UTF-8, file load/save
+- [x] 3. Text buffer: gap buffer, line index, UTF-8, file load/save
 - [ ] 4. View: cursors (stored as an array from day one), scrolling, layout
 - [ ] 5. Commands, keymap with prefix keys, config file, hot reload
 - [ ] 6. Editing: mark/region, kill ring, undo/redo, auto-indent
