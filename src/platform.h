@@ -63,6 +63,7 @@ OsFileStatus os_file_replace(String8 target, String8 temp);
 void         os_file_delete(String8 path);
 #if TEAL_DEV
 b32          os_dev_set_read_only(String8 path, b32 read_only);
+b32          os_dev_hard_link(String8 existing, String8 link);
 #endif
 
 // ---------------------------------------------------------------------------
@@ -167,7 +168,7 @@ typedef struct DevProbe {
 i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap);
 b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
-i32  test_run(u64 seed); // --test: headless buffer and file tests; failures, details in the log
+i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
 i32  app_dev_bench_frame(App *app, FrameInput *input, Renderer *r, u64 *build_us, u64 *submit_us); // returns glyphs drawn
 #endif
 

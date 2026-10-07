@@ -11,6 +11,7 @@ typedef struct Test {
     Arena arena; // test data; reset between tests
     u64 rng;
     i32 failures;
+    String8 tmp_dir; // build	mp: round-trip inputs stay there for inspection
 } Test;
 
 static u64 test_rand(Test *t) { // splitmix64
@@ -375,10 +376,397 @@ static b32 test_read_only(Test *t) {
 
 // ---------------------------------------------------------------------------
 
-i32 test_run(u64 seed) {
+// ---------------------------------------------------------------------------
+// Files
+
+static String8 test_path(Test *t, const char *name, const char *suffix) {
+    return str8_fmt(&t->arena, "%S\\rt_%s%s", t->tmp_dir, name, suffix);
+}
+
+static b32 test_read_file(Test *t, String8 path, String8 *out) {
+    OsFile file;
+    OsFileInfo info;
+    if (os_file_open_read(path, &file, &info) != OS_FILE_OK) return 0;
+    u8 *data = PUSH_ARRAY(&t->arena, u8, info.size);
+    OsFileStatus status = os_file_read(file, data, info.size);
+    os_file_close(file);
+    *out = str8(data, info.size);
+    return status == OS_FILE_OK;
+}
+
+static b32 test_file_absent(String8 path) {
+    OsFileInfo info;
+    return os_file_info(path, &info) == OS_FILE_NOT_FOUND;
+}
+
+typedef struct TestExpect {
+    BufferEncoding encoding;
+    BufferEol eol;
+    String8 text;
+} TestExpect;
+
+// What loading `bytes` must produce, computed the naive way: whole-array conversion, then
+// classification and CR stripping on the converted text.
+static TestExpect test_expect_load(Test *t, String8 b) {
+    TestExpect e = { BUFFER_UTF8, BUFFER_EOL_LF, { 0 } };
+    u8 *out = PUSH_ARRAY(&t->arena, u8, b.len * 2 + 4);
+    i64 n = 0;
+    b32 even = (b.len & 1) == 0;
+    if (b.len >= 3 && b.data[0] == 0xEF && b.data[1] == 0xBB && b.data[2] == 0xBF) e.encoding = BUFFER_UTF8_BOM;
+    else if (b.len >= 2 && even && b.data[0] == 0xFF && b.data[1] == 0xFE) e.encoding = BUFFER_UTF16LE;
+    else if (b.len >= 2 && even && b.data[0] == 0xFE && b.data[1] == 0xFF) e.encoding = BUFFER_UTF16BE;
+    if (e.encoding == BUFFER_UTF16LE || e.encoding == BUFFER_UTF16BE) {
+        b32 big = e.encoding == BUFFER_UTF16BE;
+        i64 units = b.len / 2 - 1;
+        u8 *u8s = b.data + 2;
+        for (i64 i = 0; i < units; i++) {
+            u32 u = big ? ((u32)u8s[2 * i] << 8 | u8s[2 * i + 1]) : ((u32)u8s[2 * i + 1] << 8 | u8s[2 * i]);
+            u32 next = 0;
+            if (i + 1 < units) next = big ? ((u32)u8s[2 * i + 2] << 8 | u8s[2 * i + 3]) : ((u32)u8s[2 * i + 3] << 8 | u8s[2 * i + 2]);
+            if (u >= 0xD800 && u <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) {
+                n += utf8_encode(0x10000 + ((u - 0xD800) << 10) + (next - 0xDC00), out + n);
+                i++;
+            } else if (u >= 0xD800 && u <= 0xDFFF) { // WTF-8
+                out[n++] = (u8)(0xE0 | (u >> 12));
+                out[n++] = (u8)(0x80 | ((u >> 6) & 0x3F));
+                out[n++] = (u8)(0x80 | (u & 0x3F));
+            } else {
+                n += utf8_encode(u, out + n);
+            }
+        }
+    } else {
+        i64 skip = e.encoding == BUFFER_UTF8_BOM ? 3 : 0;
+        memcpy(out, b.data + skip, (size_t)(b.len - skip));
+        n = b.len - skip;
+    }
+    i64 crlf = 0, bare = 0;
+    for (i64 i = 0; i < n; i++) {
+        if (out[i] == '\n') {
+            if (i > 0 && out[i - 1] == '\r') crlf++;
+            else bare++;
+        }
+    }
+    e.eol = crlf && bare ? BUFFER_EOL_MIXED : crlf ? BUFFER_EOL_CRLF : BUFFER_EOL_LF;
+    if (e.eol == BUFFER_EOL_CRLF) {
+        i64 w = 0;
+        for (i64 i = 0; i < n; i++) {
+            if (out[i] == '\r' && i + 1 < n && out[i + 1] == '\n') continue;
+            out[w++] = out[i];
+        }
+        n = w;
+    }
+    e.text = str8(out, n);
+    return e;
+}
+
+static const char *test_encoding_name(BufferEncoding e) {
+    return e == BUFFER_UTF8 ? "UTF-8" : e == BUFFER_UTF8_BOM ? "UTF-8 BOM" : e == BUFFER_UTF16LE ? "UTF-16LE" : "UTF-16BE";
+}
+
+static const char *test_eol_name(BufferEol e) {
+    return e == BUFFER_EOL_LF ? "LF" : e == BUFFER_EOL_CRLF ? "CRLF" : "mixed";
+}
+
+// Writes `bytes`, loads them, checks encoding, line endings, text and line index against the
+// expectation, then saves (as a new file, and in place over the original) and requires the
+// written bytes to equal the input. `want_*` < 0: take the reference's word for it.
+static b32 test_round_trip(Test *t, const char *name, String8 bytes, i32 want_encoding, i32 want_eol, b32 flush) {
+    u64 mark = arena_pos(&t->arena);
+    String8 path = test_path(t, name, "");
+    String8 out_path = test_path(t, name, ".out");
+    TEST_CHECK(t, os_write_file(path, bytes), "%s: could not write the input file", name);
+    TestExpect e = test_expect_load(t, bytes);
+    if (want_encoding >= 0) TEST_CHECK(t, e.encoding == (BufferEncoding)want_encoding, "%s: reference says %s", name, test_encoding_name(e.encoding));
+    if (want_eol >= 0) TEST_CHECK(t, e.eol == (BufferEol)want_eol, "%s: reference says %s", name, test_eol_name(e.eol));
+
+    Buffer *buf = buffer_create(STR8_LIT("rt"));
+    TEST_CHECK(t, buf, "%s: buffer_create failed", name);
+    OsFileStatus status = buffer_load_file(buf, path);
+    b32 ok = status == OS_FILE_OK;
+    if (!ok) LOG("test: FAIL: %s: load: %s", name, buffer_status_text(status));
+    if (ok && (buf->encoding != e.encoding || buf->eol != e.eol)) {
+        LOG("test: FAIL: %s: loaded as %s %s, expected %s %s", name, test_encoding_name(buf->encoding), test_eol_name(buf->eol),
+            test_encoding_name(e.encoding), test_eol_name(e.eol));
+        ok = 0;
+    }
+    if (ok && (buf->modified || buf->edit_count != 0 || buf->file_size != bytes.len)) {
+        LOG("test: FAIL: %s: after load modified %d, edit_count %U, file_size %D", name, buf->modified, buf->edit_count, buf->file_size);
+        ok = 0;
+    }
+    if (ok) {
+        TestRef ref = { e.text.data, e.text.len, e.text.len, test_count_newlines(e.text.data, e.text.len) };
+        char when[96];
+        test_cstr(when, sizeof(when), "%s: loaded text", name);
+        ok = test_compare_full(t, buf, &ref, when);
+        if (!ok) t->failures--; // counted again below
+    }
+    if (ok) {
+        status = buffer_save_as_opt(buf, out_path, flush);
+        String8 written;
+        if (status != OS_FILE_OK) {
+            LOG("test: FAIL: %s: save-as: %s", name, buffer_status_text(status));
+            ok = 0;
+        } else if (!test_read_file(t, out_path, &written) || written.len != bytes.len || !test_equal(written.data, bytes.data, bytes.len)) {
+            LOG("test: FAIL: %s: save-as wrote %D bytes that differ from the %D input bytes", name, written.len, bytes.len);
+            ok = 0;
+        } else if (!str8_equal(buffer_file_name(buf->path), buffer_file_name(out_path)) || !str8_equal(buf->name, buffer_file_name(out_path))) {
+            LOG("test: FAIL: %s: save-as did not visit the new path (%S)", name, buf->path);
+            ok = 0;
+        }
+        os_file_delete(out_path);
+    }
+    if (ok && flush) {
+        // In place over the original: the ReplaceFileW path.
+        buffer_save_as_opt(buf, path, 1);
+        String8 written;
+        if (!test_read_file(t, path, &written) || written.len != bytes.len || !test_equal(written.data, bytes.data, bytes.len)) {
+            LOG("test: FAIL: %s: saving over the original changed its bytes", name);
+            ok = 0;
+        } else if (!test_file_absent(str8_fmt(&t->arena, "%S.teal~1", path))) {
+            LOG("test: FAIL: %s: a temp file was left behind", name);
+            ok = 0;
+        }
+    }
+    TEST_CHECK(t, buffer_destroy(buf), "%s: buffer memory not released", name);
+    if (ok && !flush) os_file_delete(path); // the boundary sweeps: hundreds of files, kept only on failure
+    arena_pop_to(&t->arena, mark);
+    if (!ok) t->failures++;
+    return ok;
+}
+
+// Bytes from a C literal, embedded NULs included.
+#define TEST_BYTES(s) str8((u8 *)(s), (i64)sizeof(s) - 1)
+
+static String8 test_utf16(Test *t, const u16 *units, i64 count, b32 big) {
+    u8 *b = PUSH_ARRAY(&t->arena, u8, count * 2 + 2);
+    u16 bom = 0xFEFF;
+    for (i64 i = -1; i < count; i++) {
+        u16 u = i < 0 ? bom : units[i];
+        b[2 * (i + 1)] = (u8)(big ? u >> 8 : u);
+        b[2 * (i + 1) + 1] = (u8)(big ? u : u >> 8);
+    }
+    return str8(b, count * 2 + 2);
+}
+
+static void test_files(Test *t) {
+    i32 before = t->failures;
+    enum { ANY = -1 };
+    const i32 U8 = BUFFER_UTF8, BOM = BUFFER_UTF8_BOM, LE = BUFFER_UTF16LE, BE = BUFFER_UTF16BE;
+    const i32 LF = BUFFER_EOL_LF, CRLF = BUFFER_EOL_CRLF, MIXED = BUFFER_EOL_MIXED;
+
+    test_round_trip(t, "lf.c", TEST_BYTES("int main(void) {\n\treturn 0;\n}\n"), U8, LF, 1);
+    test_round_trip(t, "crlf.c", TEST_BYTES("// CRLF file\r\nint main(void) {\r\n\treturn 0;\r\n}\r\n"), U8, CRLF, 1);
+    test_round_trip(t, "mixed.txt", TEST_BYTES("crlf\r\nlf\ncrlf again\r\nlf\n"), U8, MIXED, 1);
+    test_round_trip(t, "lone_cr.txt", TEST_BYTES("a\rb\r\nc\r\n"), U8, CRLF, 1);
+    test_round_trip(t, "cr_cr_lf.txt", TEST_BYTES("x\r\r\ny\r\n"), U8, CRLF, 1);
+    test_round_trip(t, "bom.txt", TEST_BYTES("\xEF\xBB\xBFh\xC3\xA9llo, BOM\n"), BOM, LF, 1);
+    test_round_trip(t, "bom_crlf.txt", TEST_BYTES("\xEF\xBB\xBF" "a\r\nb\r\n"), BOM, CRLF, 1);
+    test_round_trip(t, "bom_only.txt", TEST_BYTES("\xEF\xBB\xBF"), BOM, LF, 1);
+    test_round_trip(t, "invalid.txt", TEST_BYTES("valid: \xC4\x9F\xE2\x82\xAC\n"
+                                                 "stray continuation: \x80 never valid: \xFF \xFE\n"
+                                                 "truncated: \xE2\x82 overlong: \xC0\xAF surrogate: \xED\xA0\x80 end\n"), U8, LF, 1);
+    test_round_trip(t, "nul.txt", TEST_BYTES("a\0b\0\0c\n\0\n"), U8, LF, 1);
+    test_round_trip(t, "empty.txt", TEST_BYTES(""), U8, LF, 1);
+    test_round_trip(t, "no_final_newline.txt", TEST_BYTES("line 1\nline 2"), U8, LF, 1);
+    test_round_trip(t, "only_lf.txt", TEST_BYTES("\n\n\n\n\n"), U8, LF, 1);
+    test_round_trip(t, "only_crlf.txt", TEST_BYTES("\r\n\r\n\r\n"), U8, CRLF, 1);
+    test_round_trip(t, "odd_ff_fe.txt", TEST_BYTES("\xFF\xFE\x41"), U8, LF, 1);
+    test_round_trip(t, "last_cr.txt", TEST_BYTES("\r"), U8, LF, 1);
+    test_round_trip(t, "last_cr_lf.txt", TEST_BYTES("a\nb\r"), U8, LF, 1);
+    test_round_trip(t, "last_cr_crlf.txt", TEST_BYTES("a\r\nb\r"), U8, CRLF, 1);
+    test_round_trip(t, "last_cr_cr_crlf.txt", TEST_BYTES("a\r\nb\r\r"), U8, CRLF, 1);
+
+    {   // One 10 MB line.
+        i64 n = MB(10);
+        u8 *b = PUSH_ARRAY(&t->arena, u8, n);
+        for (i64 i = 0; i < n; i++) b[i] = (u8)('a' + i % 26);
+        test_round_trip(t, "long_line.txt", str8(b, n), U8, LF, 1);
+    }
+    {   // ~4 MB of CRLF lines whose very last newline is a bare LF: the whole file is restored.
+        i64 lines = 100000, n = 0;
+        u8 *b = PUSH_ARRAY(&t->arena, u8, lines * 48 + 3);
+        for (i32 bom = 0; bom < 2; bom++) {
+            memcpy(b, "\xEF\xBB\xBF", 3);
+            n = bom ? 3 : 0;
+            for (i64 l = 0; l < lines; l++) {
+                i64 len = 10 + l % 30;
+                for (i64 i = 0; i < len; i++) b[n++] = (u8)('a' + (l + i) % 26);
+                if (l + 1 < lines) b[n++] = '\r';
+                b[n++] = '\n';
+            }
+            test_round_trip(t, bom ? "rollback_bom.txt" : "rollback.txt", str8(b, n), bom ? BOM : U8, MIXED, 1);
+        }
+    }
+    {   // CR and LF on either side of every 16-byte SSE block boundary, while stripping and while
+        // rolling back, without and with a BOM (which shifts the file offsets by 3).
+        u8 b[128];
+        char name[64];
+        for (i32 k = 0; k <= 48; k++) {
+            for (i32 variant = 0; variant < 4; variant++) {
+                i64 n = 0;
+                if (variant == 3) { memcpy(b, "\xEF\xBB\xBF", 3); n = 3; }
+                for (i32 i = 0; i < k; i++) b[n++] = 'a';
+                b[n++] = '\r';
+                b[n++] = '\n';
+                if (variant == 1) { // a bare LF after the pair: rollback
+                    for (i32 i = 0; i < k % 7; i++) b[n++] = 'b';
+                    b[n++] = '\n';
+                } else if (variant == 2) { // a CRLF pair first, then the bare LF at offset k
+                    n = 0;
+                    memcpy(b, "x\r\n", 3);
+                    n = 3;
+                    for (i32 i = 3; i < k; i++) b[n++] = 'c';
+                    b[n++] = '\n';
+                } else {
+                    memcpy(b + n, "end\r\n", 5);
+                    n += 5;
+                }
+                test_cstr(name, sizeof(name), "sse_%d_%d.txt", k, variant);
+                test_round_trip(t, name, str8(b, n), ANY, ANY, 0);
+            }
+        }
+    }
+
+    {   // UTF-16, both byte orders.
+        static const u16 text[] = { 'H', 'i', '\r', '\n', 0x011F, 0xD83D, 0xDE00, '\r', '\n' }; // ğ 😀
+        static const u16 lone[] = { 'a', 0xD800, 'b', 0xDC00, 0xD83D, 0xDE00, '\n', 0xD83D };  // unpaired surrogates
+        static const u16 mixed[] = { 'a', '\r', '\n', 'b', '\n' };
+        for (i32 big = 0; big < 2; big++) {
+            test_round_trip(t, big ? "utf16be.txt" : "utf16le.txt", test_utf16(t, text, ARRAY_COUNT(text), big), big ? BE : LE, CRLF, 1);
+            test_round_trip(t, big ? "utf16be_lone.txt" : "utf16le_lone.txt", test_utf16(t, lone, ARRAY_COUNT(lone), big), big ? BE : LE, LF, 1);
+            test_round_trip(t, big ? "utf16be_mixed.txt" : "utf16le_mixed.txt", test_utf16(t, mixed, ARRAY_COUNT(mixed), big), big ? BE : LE, MIXED, 1);
+            test_round_trip(t, big ? "utf16be_empty.txt" : "utf16le_empty.txt", test_utf16(t, NULL, 0, big), big ? BE : LE, LF, 1);
+        }
+    }
+    {   // UTF-16 64 KB chunk boundaries (32768 units), all alignments within +-2 units of the
+        // first two boundaries: a pair split across, CR | LF, an unpaired high surrogate, a
+        // final CR.
+        i64 cap = 65536 + 8;
+        u16 *u = PUSH_ARRAY(&t->arena, u16, cap);
+        char name[64];
+        for (i32 boundary = 1; boundary <= 2; boundary++) {
+            for (i32 d = -2; d <= 2; d++) {
+                i64 p = 32768 * boundary + d; // index of the unit after the boundary
+                for (i32 kind = 0; kind < 4; kind++) {
+                    i64 count = p + 4;
+                    for (i64 i = 0; i < count; i++) u[i] = (u16)(i % 50 == 49 ? '\n' : 'a' + i % 26);
+                    for (i64 i = 0; i < count; i++) if (u[i] == '\n') u[i - 1] = '\r'; // all CRLF
+                    if (kind == 0) { u[p - 1] = 0xD83D; u[p] = 0xDE00; }
+                    if (kind == 1) { u[p - 1] = '\r'; u[p] = '\n'; }
+                    if (kind == 2) { u[p - 1] = 0xD800; u[p] = 'x'; }
+                    if (kind == 3) { count = p; u[p - 1] = '\r'; }
+                    if (u[p - 2] == '\r' && kind != 1) u[p - 2] = 'y'; // keep every CR paired with its LF
+                    for (i32 big = 0; big < 2; big++) {
+                        test_cstr(name, sizeof(name), "utf16_chunk_%d_%d_%d_%s.txt", boundary, d, kind, big ? "be" : "le");
+                        test_round_trip(t, name, test_utf16(t, u, count, big), big ? BE : LE, ANY, 0);
+                    }
+                }
+            }
+        }
+    }
+    if (t->failures == before) LOG("test: ok: file round trips");
+}
+
+// Load, edit, save, compare with the expected bytes, reload, compare the text.
+static b32 test_edit_save(Test *t, const char *name, String8 bytes, i64 at, String8 insert, String8 want) {
+    u64 mark = arena_pos(&t->arena);
+    String8 path = test_path(t, name, "");
+    TEST_CHECK(t, os_write_file(path, bytes), "%s: could not write the input file", name);
+    Buffer *buf = buffer_create(STR8_LIT("edit"));
+    TEST_CHECK(t, buffer_load_file(buf, path) == OS_FILE_OK, "%s: load failed", name);
+    TEST_CHECK(t, buffer_replace(buf, at, at, insert), "%s: edit refused", name);
+    TEST_CHECK(t, buf->modified, "%s: not modified after an edit", name);
+    TEST_CHECK(t, buffer_save(buf) == OS_FILE_OK, "%s: save failed", name);
+    TEST_CHECK(t, !buf->modified, "%s: still modified after saving", name);
+    String8 written;
+    TEST_CHECK(t, test_read_file(t, path, &written) && written.len == want.len && test_equal(written.data, want.data, want.len),
+               "%s: saved %D bytes, not the expected %D", name, written.len, want.len);
+    i64 size = buffer_size(buf);
+    u8 *text = PUSH_ARRAY(&t->arena, u8, size);
+    buffer_copy(buf, 0, size, text);
+    BufferEncoding encoding = buf->encoding;
+    BufferEol eol = buf->eol;
+    buffer_destroy(buf);
+
+    buf = buffer_create(STR8_LIT("reload"));
+    TEST_CHECK(t, buffer_load_file(buf, path) == OS_FILE_OK, "%s: reload failed", name);
+    TestRef ref = { text, size, size, test_count_newlines(text, size) };
+    TEST_CHECK(t, buf->encoding == encoding && buf->eol == eol, "%s: reloaded as %s %s", name,
+               test_encoding_name(buf->encoding), test_eol_name(buf->eol));
+    if (!test_compare_full(t, buf, &ref, name)) return 0;
+    buffer_destroy(buf);
+    arena_pop_to(&t->arena, mark);
+    return 1;
+}
+
+static void test_edits(Test *t) {
+    i32 before = t->failures;
+    test_edit_save(t, "edit_crlf.txt", TEST_BYTES("one\r\ntwo\r\n"), 4, TEST_BYTES("new\nline "),
+                   TEST_BYTES("one\r\nnew\r\nline two\r\n"));
+    test_edit_save(t, "edit_mixed.txt", TEST_BYTES("a\r\nb\n"), 3, TEST_BYTES("x\n"), TEST_BYTES("a\r\nx\nb\n"));
+    test_edit_save(t, "edit_bom.txt", TEST_BYTES("\xEF\xBB\xBF" "ab"), 1, TEST_BYTES("\xC4\x9F\n"),
+                   TEST_BYTES("\xEF\xBB\xBF" "a\xC4\x9F\nb"));
+    static const u16 before16[] = { 'a', 'b', '\r', '\n' };
+    static const u16 after16[] = { 0x011F, '\r', '\n', 0xD83D, 0xDE00, 'a', 'b', '\r', '\n' };
+    for (i32 big = 0; big < 2; big++) {
+        test_edit_save(t, big ? "edit_utf16be.txt" : "edit_utf16le.txt", test_utf16(t, before16, 4, big), 0,
+                       TEST_BYTES("\xC4\x9F\n\xF0\x9F\x98\x80"), test_utf16(t, after16, ARRAY_COUNT(after16), big));
+    }
+    if (t->failures == before) LOG("test: ok: load, edit, save, reload");
+}
+
+static b32 test_failures(Test *t) {
+    String8 path = test_path(t, "readonly.txt", "");
+    String8 original = TEST_BYTES("original\r\n");
+    os_dev_set_read_only(path, 0);
+    TEST_CHECK(t, os_write_file(path, original), "save failure: could not write the input file");
+    Buffer *buf = buffer_create(STR8_LIT("ro"));
+    TEST_CHECK(t, buffer_load_file(buf, path) == OS_FILE_OK, "save failure: load failed");
+    TEST_CHECK(t, buffer_replace(buf, 0, 0, STR8_LIT("changed ")), "save failure: edit refused");
+    TEST_CHECK(t, os_dev_set_read_only(path, 1), "save failure: could not make the file read-only");
+    OsFileStatus status = buffer_save(buf);
+    os_dev_set_read_only(path, 0);
+    String8 now;
+    TEST_CHECK(t, status == OS_FILE_READ_ONLY, "save failure: saving over a read-only file returned '%s'", buffer_status_text(status));
+    TEST_CHECK(t, test_read_file(t, path, &now) && now.len == original.len && test_equal(now.data, original.data, now.len),
+               "save failure: the read-only original changed");
+    TEST_CHECK(t, buf->modified, "save failure: the buffer is no longer modified");
+    TEST_CHECK(t, test_file_absent(str8_fmt(&t->arena, "%S.teal~1", path)), "save failure: a temp file was left behind");
+
+    String8 old_path = buf->path;
+    status = buffer_save_as(buf, str8_fmt(&t->arena, "%S\\no_such_dir\\x.txt", t->tmp_dir));
+    TEST_CHECK(t, status == OS_FILE_NOT_FOUND, "save failure: save-as into a missing directory returned '%s'", buffer_status_text(status));
+    TEST_CHECK(t, str8_equal(buf->path, old_path), "save failure: a failed save-as changed the path");
+    buffer_destroy(buf);
+
+    buf = buffer_create(STR8_LIT("missing"));
+    status = buffer_load_file(buf, test_path(t, "does_not_exist.txt", ""));
+    TEST_CHECK(t, status == OS_FILE_NOT_FOUND && buffer_size(buf) == 0, "load failure: a missing file gave '%s'", buffer_status_text(status));
+    status = buffer_load_file(buf, t->tmp_dir);
+    TEST_CHECK(t, status == OS_FILE_IS_DIRECTORY && buffer_size(buf) == 0, "load failure: a directory gave '%s'", buffer_status_text(status));
+    buffer_destroy(buf);
+
+    // A file with two hard links: the save must go in place so both names see the new text.
+    String8 a = test_path(t, "link_a.txt", ""), b = test_path(t, "link_b.txt", "");
+    os_file_delete(b);
+    TEST_CHECK(t, os_write_file(a, TEST_BYTES("linked\n")) && os_dev_hard_link(a, b), "hard link: setup failed");
+    buf = buffer_create(STR8_LIT("link"));
+    TEST_CHECK(t, buffer_load_file(buf, a) == OS_FILE_OK, "hard link: load failed");
+    buffer_replace(buf, 0, 0, STR8_LIT("still "));
+    TEST_CHECK(t, buffer_save(buf) == OS_FILE_OK, "hard link: save failed");
+    TEST_CHECK(t, test_read_file(t, b, &now) && str8_equal(now, STR8_LIT("still linked\n")),
+               "hard link: the other name does not see the saved text (link broken by a swap?)");
+    buffer_destroy(buf);
+    os_file_delete(b);
+    LOG("test: ok: save to a read-only file refused, original untouched; load / save-as failures; hard links kept");
+    return 1;
+}
+
+i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
-    LOG("test: seed 0x%X (override with --seed)", seed);
+    t.tmp_dir = tmp_dir;
+    LOG("test: seed 0x%X (override with --seed), files in %S", seed, tmp_dir);
     u64 t0 = os_time_us();
 
     test_fuzz(&t, seed);
@@ -386,6 +774,12 @@ i32 test_run(u64 seed) {
     test_capacity(&t);
     arena_reset(&t.arena);
     test_read_only(&t);
+    arena_reset(&t.arena);
+    test_files(&t);
+    arena_reset(&t.arena);
+    test_edits(&t);
+    arena_reset(&t.arena);
+    test_failures(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

@@ -350,6 +350,16 @@ b32 os_dev_set_read_only(String8 path, b32 read_only) {
 }
 #endif
 
+#if TEAL_DEV
+b32 os_dev_hard_link(String8 existing, String8 link) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    b32 ok = CreateHardLinkW(win32_path16(link), win32_path16(existing), NULL) != 0;
+    arena_pop_to(scratch, mark);
+    return ok;
+}
+#endif
+
 u64 os_time_us(void) {
     LARGE_INTEGER now, freq;
     QueryPerformanceCounter(&now);
@@ -1031,7 +1041,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     if (p->test) { // headless: no window, no device, no font
-        i32 failures = test_run(p->seed);
+        i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
