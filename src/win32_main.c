@@ -853,7 +853,8 @@ static b32 win32_check_probe(DevProbe *pr, u8 *pixels, i32 w, i32 h) {
 }
 
 // Called right after the captured frame.
-static i32 win32_smoke_check_frame(Platform *p) {
+// `buffer_view`: the frame shows the smoke buffer (app_dev_buffer_probes) instead of the sample.
+static i32 win32_smoke_check_frame(Platform *p, b32 buffer_view) {
     i32 w, h;
     u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
     if (!pixels) {
@@ -862,16 +863,23 @@ static i32 win32_smoke_check_frame(Platform *p) {
     }
     FrameInput input = win32_frame_input(p);
     DevProbe probes[16];
-    i32 count = app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
+    i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes))
+                            : app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
+    i32 expected = buffer_view ? 6 : 8;
     i32 result = EXIT_OK;
+    LOG("smoke: checking the %s frame", buffer_view ? "buffer view" : "sample");
     for (i32 i = 0; i < count; i++) {
         if (!win32_check_probe(&probes[i], pixels, w, h) && result == EXIT_OK) {
             result = probes[i].kind == DEV_PROBE_CLEARTYPE ? EXIT_FONT : EXIT_PIXEL_MISMATCH;
         }
     }
-    if (count < 8) {
-        LOG("smoke: FAIL: expected 8 probes, the app produced %d", count);
+    if (count < expected) {
+        LOG("smoke: FAIL: expected %d probes, the app produced %d", expected, count);
         if (result == EXIT_OK) result = EXIT_PIXEL_MISMATCH;
+    }
+    if (buffer_view) {
+        arena_reset(&p->scratch);
+        return result;
     }
     if (!app_dev_atlas_has_coverage(p->app)) {
         LOG("smoke: FAIL: the glyph atlas has no coverage");
@@ -1195,11 +1203,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
 #if TEAL_DEV
         if (p->smoke) {
-            // Two plain frames, then a third one whose back buffer is read back and checked.
+            // Two plain frames, then a third one (the sample) and a fourth one (a known buffer)
+            // whose back buffers are read back and checked.
             if (p->frame_count >= 2) {
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                p->exit_code = win32_smoke_check_frame(p);
+                i32 code = win32_smoke_check_frame(p, 0);
+                app_dev_smoke_buffer_view(p->app);
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                i32 code2 = win32_smoke_check_frame(p, 1);
+                p->exit_code = code != EXIT_OK ? code : code2;
                 p->quit = 1;
                 break;
             }

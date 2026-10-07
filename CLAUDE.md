@@ -89,7 +89,10 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
 and checks the probes from app_dev_probes: exact background / mode line / cursor pixels, a
 text cell that is not background, a space cell that is exactly background, '_' inked only
 in its lower part (catches upside-down bitmaps), and the ClearType channel order on a white
-'|' (normalized coverage; pixel geometry from the rendering params). It also requires a
+'|' (normalized coverage; pixel geometry from the rendering params). Then it switches to the
+buffer view with a known buffer and checks a fourth frame (app_dev_buffer_probes): a text
+cell drawn, an empty cell exactly background, a tab leaving columns 0-3 empty with the next
+character at column 4, the mode line present. It also requires a
 non-empty atlas, the D3D11 debug layer active with zero WARNING+ messages, and no leaks
 (device refcount 0, empty DXGI live-object report, DirectWrite references 0).
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer

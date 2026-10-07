@@ -171,7 +171,9 @@ typedef struct DevProbe {
     const char *what;
 } DevProbe;
 
-i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap);
+i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap); // the --sample frame
+void app_dev_smoke_buffer_view(App *app); // leaves the sample and shows a known buffer
+i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap); // that buffer's frame
 b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
