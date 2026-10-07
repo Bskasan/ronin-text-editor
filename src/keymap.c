@@ -210,3 +210,135 @@ i64 key_seq_print(KeySeq *seq, u8 *out, i64 cap) {
     }
     return n;
 }
+
+b32 key_seq_equal(KeySeq *a, KeySeq *b) {
+    if (a->len != b->len) return 0;
+    for (i32 i = 0; i < a->len; i++) if (a->chords[i] != b->chords[i]) return 0;
+    return 1;
+}
+
+// a is a proper prefix of b.
+static b32 key_seq_is_prefix(KeySeq *a, KeySeq *b) {
+    if (a->len >= b->len) return 0;
+    for (i32 i = 0; i < a->len; i++) if (a->chords[i] != b->chords[i]) return 0;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Keymaps
+
+i32 keymap_bind(Keymap *map, KeySeq *seq, const Command *command) {
+    i32 removed = 0, w = 0;
+    b32 found = 0;
+    for (i32 r = 0; r < map->count; r++) {
+        KeyBinding b = map->bindings[r];
+        if (key_seq_equal(&b.seq, seq)) {
+            if (!command) continue;
+            b.command = command;
+            found = 1;
+        } else if (command && (key_seq_is_prefix(&b.seq, seq) || key_seq_is_prefix(seq, &b.seq))) {
+            removed++;
+            continue;
+        }
+        map->bindings[w++] = b;
+    }
+    map->count = w;
+    if (command && !found) {
+        if (map->count == KEYMAP_CAP) return -1;
+        map->bindings[map->count++] = (KeyBinding){ *seq, command };
+    }
+    return removed;
+}
+
+const Command *keymap_get(Keymap *map, KeySeq *seq) {
+    for (i32 i = 0; i < map->count; i++) {
+        if (key_seq_equal(&map->bindings[i].seq, seq)) return map->bindings[i].command;
+    }
+    return NULL;
+}
+
+b32 keymap_has_prefix(Keymap *map, KeySeq *seq) {
+    for (i32 i = 0; i < map->count; i++) {
+        if (key_seq_is_prefix(seq, &map->bindings[i].seq)) return 1;
+    }
+    return 0;
+}
+
+// The first exact match in stack order; failing that, whether seq is a prefix in any map.
+static const Command *key_lookup(Keymap **stack, i32 count, KeySeq *seq, b32 *prefix) {
+    *prefix = 0;
+    for (i32 i = 0; i < count; i++) {
+        const Command *c = keymap_get(stack[i], seq);
+        if (c) return c;
+    }
+    for (i32 i = 0; i < count && !*prefix; i++) *prefix = keymap_has_prefix(stack[i], seq);
+    return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// The state machine
+
+void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult *out) {
+    memset(out, 0, sizeof(*out));
+    KeyChord chord;
+    if (e->kind == EVENT_KEY_DOWN) {
+        in->drop_text = 0;
+        if (!key_chord_from_event(e->key, e->codepoint, e->mods, &chord)) {
+            out->kind = KEY_RESULT_IGNORED;
+            return;
+        }
+        in->drop_text = 1; // its text events (if any) belong to this chord
+    } else if (e->kind == EVENT_TEXT) {
+        if (in->drop_text) {
+            out->kind = KEY_RESULT_DROPPED;
+            return;
+        }
+        chord = key_chord_from_text(e->codepoint);
+    } else {
+        out->kind = KEY_RESULT_IGNORED;
+        return;
+    }
+
+    KeySeq seq = in->pending;
+    if (seq.len == KEY_SEQ_MAX) seq.len = 0; // cannot happen: a prefix is shorter than its binding
+    seq.chords[seq.len++] = chord;
+    out->seq = seq;
+    u32 code = chord & CHORD_CODE_MASK;
+    out->codepoint = !(chord & CHORD_NAMED) ? code : code == KEY_TAB ? '\t' : 0;
+
+    b32 prefix;
+    const Command *command = key_lookup(stack, count, &seq, &prefix);
+    KeySeq used = seq;
+    if (!command && !prefix && (chord & CHORD_SHIFT)) {
+        used.chords[used.len - 1] &= ~CHORD_SHIFT;
+        command = key_lookup(stack, count, &used, &prefix);
+        out->shift_translated = command || prefix;
+    }
+    if (prefix) {
+        in->pending = used;
+        out->kind = KEY_RESULT_PREFIX;
+        return;
+    }
+    b32 had_prefix = in->pending.len > 0;
+    in->pending.len = 0;
+    b32 describe = in->describe;
+    in->describe = 0;
+    if (!command && had_prefix) {
+        // keyboard-quit (C-g, ESC) cancels a pending prefix.
+        KeySeq single = { { chord & ~CHORD_SHIFT }, 1 };
+        b32 unused;
+        if (key_lookup(stack, count, &single, &unused) == &CMD_KEYBOARD_QUIT) {
+            out->kind = KEY_RESULT_QUIT;
+            out->command = &CMD_KEYBOARD_QUIT;
+            return;
+        }
+    }
+    b32 plain = !(chord & (CHORD_NAMED | CHORD_CTRL | CHORD_META | CHORD_SHIFT));
+    if (!command && !had_prefix && plain) {
+        out->command = &CMD_SELF_INSERT; // an unbound plain character
+        out->kind = describe ? KEY_RESULT_DESCRIBE : KEY_RESULT_SELF_INSERT;
+        return;
+    }
+    out->command = command;
+    out->kind = describe ? KEY_RESULT_DESCRIBE : command ? KEY_RESULT_COMMAND : KEY_RESULT_UNDEFINED;
+}

@@ -1608,6 +1608,141 @@ static b32 test_chords(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Keys: keymaps and the sequence state machine
+
+static i32 test_bind(Keymap *map, const char *keys, const Command *command) {
+    KeySeq seq;
+    const char *error;
+    if (!key_seq_parse(str8_cstr(keys), &seq, &error)) return -100;
+    return keymap_bind(map, &seq, command);
+}
+
+typedef struct TestKeys {
+    KeyInput in;
+    Keymap *stack[2];
+    i32 count;
+    KeyResult r;
+} TestKeys;
+
+static KeyResultKind test_key(TestKeys *k, Key key, u32 cp, u32 mods) {
+    Event e = { .kind = EVENT_KEY_DOWN, .key = key, .codepoint = cp, .mods = mods };
+    key_input_feed(&k->in, k->stack, k->count, &e, &k->r);
+    return k->r.kind;
+}
+
+static KeyResultKind test_text(TestKeys *k, u32 cp) {
+    Event e = { .kind = EVENT_TEXT, .codepoint = cp };
+    key_input_feed(&k->in, k->stack, k->count, &e, &k->r);
+    return k->r.kind;
+}
+
+// A plain character typed: its KEY_DOWN (ignored by the keymap), then its text.
+static KeyResultKind test_type(TestKeys *k, u32 cp) {
+    if (test_key(k, KEY_NONE, cp, 0) != KEY_RESULT_IGNORED) return k->r.kind;
+    return test_text(k, cp);
+}
+
+static b32 test_seq_is(KeySeq *seq, const char *expected) {
+    u8 text[KEY_SEQ_TEXT_CAP];
+    return str8_equal(str8(text, key_seq_print(seq, text, sizeof(text))), str8_cstr(expected));
+}
+
+static b32 test_key_input(Test *t) {
+    Keymap *global = PUSH_STRUCT(&t->arena, Keymap);
+    Keymap *context = PUSH_STRUCT(&t->arena, Keymap);
+    global->name = "global";
+    context->name = "context";
+    i32 binds = test_bind(global, "C-f", &CMD_FORWARD_CHAR) + test_bind(global, "<left>", &CMD_BACKWARD_CHAR) +
+                test_bind(global, "C-x C-s", &CMD_SAVE_BUFFER) + test_bind(global, "C-x o", &CMD_NEXT_LINE) +
+                test_bind(global, "C-g", &CMD_KEYBOARD_QUIT) + test_bind(global, "ESC", &CMD_KEYBOARD_QUIT) +
+                test_bind(global, "TAB", &CMD_SELF_INSERT) + test_bind(global, "C-S-a", &CMD_BEGINNING_OF_BUFFER) +
+                test_bind(global, "C-a", &CMD_MOVE_BEGINNING_OF_LINE);
+    TEST_CHECK(t, binds == 0 && global->count == 9, "keys: binding the test map (%d, %d)", binds, global->count);
+    TestKeys k = { .stack = { global }, .count = 1 };
+
+    // Prefix, then completion; the pending prefix is the sequence so far.
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_seq_is(&k.r.seq, "C-x"), "keys: C-x is a prefix");
+    TEST_CHECK(t, test_key(&k, KEY_S, 's', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_SAVE_BUFFER &&
+                  k.in.pending.len == 0, "keys: C-x C-s runs save-buffer");
+    // Undefined resets the state.
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX, "keys: C-x again");
+    TEST_CHECK(t, test_key(&k, KEY_Q, 'q', MOD_CTRL) == KEY_RESULT_UNDEFINED && test_seq_is(&k.r.seq, "C-x C-q") &&
+                  k.in.pending.len == 0, "keys: C-x C-q is undefined");
+    TEST_CHECK(t, test_key(&k, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_FORWARD_CHAR,
+               "keys: C-f after an undefined sequence");
+    // keyboard-quit cancels a prefix; alone it is a command.
+    test_key(&k, KEY_X, 'x', MOD_CTRL);
+    TEST_CHECK(t, test_key(&k, KEY_G, 'g', MOD_CTRL) == KEY_RESULT_QUIT && k.in.pending.len == 0, "keys: C-x C-g quits");
+    test_key(&k, KEY_X, 'x', MOD_CTRL);
+    TEST_CHECK(t, test_key(&k, KEY_ESCAPE, 0, 0) == KEY_RESULT_QUIT, "keys: C-x ESC quits");
+    TEST_CHECK(t, test_key(&k, KEY_G, 'g', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_KEYBOARD_QUIT,
+               "keys: C-g alone runs keyboard-quit");
+    // Shift-translation: an unbound chord with Shift is looked up without it.
+    TEST_CHECK(t, test_key(&k, KEY_LEFT, 0, MOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_BACKWARD_CHAR &&
+                  k.r.shift_translated, "keys: S-<left> is shift-translated to backward-char");
+    TEST_CHECK(t, test_key(&k, KEY_F, 'F', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_FORWARD_CHAR &&
+                  k.r.shift_translated, "keys: C-S-f is shift-translated to forward-char");
+    TEST_CHECK(t, test_key(&k, KEY_LEFT, 0, 0) == KEY_RESULT_COMMAND && !k.r.shift_translated, "keys: <left> is not translated");
+    TEST_CHECK(t, test_key(&k, KEY_A, 'A', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_BEGINNING_OF_BUFFER &&
+                  !k.r.shift_translated, "keys: a bound C-S-a is not translated");
+    TEST_CHECK(t, test_key(&k, KEY_X, 'X', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_PREFIX && k.r.shift_translated &&
+                  test_key(&k, KEY_S, 's', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_SAVE_BUFFER,
+               "keys: C-S-x is translated to the C-x prefix");
+    TEST_CHECK(t, test_key(&k, KEY_Q, 'Q', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_UNDEFINED && test_seq_is(&k.r.seq, "C-S-q"),
+               "keys: C-S-q is undefined, reported as typed");
+    // Text from a consumed KEY_DOWN is dropped up to the next KEY_DOWN.
+    TEST_CHECK(t, test_key(&k, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND && test_text(&k, 'f') == KEY_RESULT_DROPPED &&
+                  test_text(&k, 'g') == KEY_RESULT_DROPPED, "keys: text after a consumed KEY_DOWN is dropped");
+    TEST_CHECK(t, test_key(&k, KEY_A, 'a', 0) == KEY_RESULT_IGNORED && test_text(&k, 'a') == KEY_RESULT_SELF_INSERT &&
+                  k.r.command == &CMD_SELF_INSERT && k.r.codepoint == 'a', "keys: a plain character self-inserts");
+    TEST_CHECK(t, test_text(&k, 0x15F) == KEY_RESULT_SELF_INSERT && k.r.codepoint == 0x15F,
+               "keys: composed text without a KEY_DOWN (dead keys, IME) self-inserts");
+    // A plain character as the second key.
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k, 'o') == KEY_RESULT_COMMAND &&
+                  k.r.command == &CMD_NEXT_LINE, "keys: C-x o through a text event");
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k, 'z') == KEY_RESULT_UNDEFINED &&
+                  test_seq_is(&k.r.seq, "C-x z"), "keys: C-x z is undefined");
+    // TAB bound to self-insert-command carries a tab.
+    TEST_CHECK(t, test_key(&k, KEY_TAB, 0, 0) == KEY_RESULT_COMMAND && k.r.command == &CMD_SELF_INSERT && k.r.codepoint == '\t',
+               "keys: TAB inserts a tab");
+    // describe-key: the next complete sequence is described, not run.
+    k.in.describe = 1;
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k, KEY_S, 's', MOD_CTRL) == KEY_RESULT_DESCRIBE &&
+                  k.r.command == &CMD_SAVE_BUFFER && !k.in.describe, "keys: describe C-x C-s");
+    k.in.describe = 1;
+    TEST_CHECK(t, test_key(&k, KEY_Q, 'q', MOD_CTRL) == KEY_RESULT_DESCRIBE && !k.r.command, "keys: describe an undefined C-q");
+    k.in.describe = 1;
+    TEST_CHECK(t, test_type(&k, 'a') == KEY_RESULT_DESCRIBE && k.r.command == &CMD_SELF_INSERT, "keys: describe a");
+    TEST_CHECK(t, test_key(&k, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND, "keys: describe ends after one sequence");
+
+    // Two maps sharing a prefix: prefixes merge across maps, the first exact match wins.
+    TEST_CHECK(t, test_bind(context, "C-x k", &CMD_END_OF_BUFFER) == 0 && test_bind(context, "C-f", &CMD_NEXT_LINE) == 0 &&
+                  test_bind(context, "C-c x", &CMD_PREVIOUS_LINE) == 0, "keys: binding the context map");
+    TestKeys k2 = { .stack = { context, global }, .count = 2 };
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k2, KEY_K, 'k', 0) == KEY_RESULT_IGNORED &&
+                  test_text(&k2, 'k') == KEY_RESULT_COMMAND && k2.r.command == &CMD_END_OF_BUFFER, "keys: C-x k from the context map");
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k2, KEY_S, 's', MOD_CTRL) == KEY_RESULT_COMMAND &&
+                  k2.r.command == &CMD_SAVE_BUFFER, "keys: C-x C-s from the global map is not hidden by the context's C-x k");
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'o') == KEY_RESULT_COMMAND &&
+                  k2.r.command == &CMD_NEXT_LINE, "keys: C-x o from the global map");
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'q') == KEY_RESULT_UNDEFINED,
+               "keys: C-x q is undefined in both maps");
+    TEST_CHECK(t, test_key(&k2, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND && k2.r.command == &CMD_NEXT_LINE,
+               "keys: C-f bound in both maps: the context map wins");
+    TEST_CHECK(t, test_key(&k2, KEY_C, 'c', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'x') == KEY_RESULT_COMMAND &&
+                  k2.r.command == &CMD_PREVIOUS_LINE, "keys: a prefix that exists only in the context map");
+
+    // Binding conflicts: a binding removes the bindings it is a prefix of, or that are its prefix.
+    TEST_CHECK(t, test_bind(global, "C-x", &CMD_END_OF_BUFFER) == 2 && global->count == 8, "keys: C-x replaces C-x C-s and C-x o");
+    TEST_CHECK(t, test_bind(global, "C-x C-s", &CMD_SAVE_BUFFER) == 1 && global->count == 8, "keys: C-x C-s replaces C-x");
+    TEST_CHECK(t, test_bind(global, "C-x C-s", &CMD_FORWARD_CHAR) == 0 && global->count == 8, "keys: rebinding replaces in place");
+    TEST_CHECK(t, test_bind(global, "C-x C-s", NULL) == 0 && global->count == 7, "keys: none removes");
+    TEST_CHECK(t, test_bind(global, "C-x C-s", NULL) == 0 && global->count == 7, "keys: removing an unbound sequence");
+    LOG("test: ok: keymaps and the key sequence state machine");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
 #define TEST_BENCH_SIZE MB(100)
@@ -1767,6 +1902,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_kbd(&t, seed);
     arena_reset(&t.arena);
     test_chords(&t);
+    arena_reset(&t.arena);
+    test_key_input(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
