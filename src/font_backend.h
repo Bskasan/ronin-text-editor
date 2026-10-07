@@ -23,6 +23,7 @@ typedef enum FbPixelGeometry {
 typedef struct FbMetrics {
     f32 ascent, descent, line_gap; // pixels
     f32 advance;                   // pixels, of '0' (the font is monospace)
+    b32 used_fallback;             // the family was not found; the fallback family was opened
 } FbMetrics;
 
 // A rasterized glyph: white-on-black ClearType coverage, BGRX bytes, top-down.

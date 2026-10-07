@@ -7,8 +7,8 @@ b32 view_is_control(u8 b) {
     return (b < 0x20 && b != '\t' && b != '\n') || b == 0x7F;
 }
 
-i64 view_char_width(u8 first_byte, i64 col) {
-    if (first_byte == '\t') return VIEW_TAB_WIDTH - col % VIEW_TAB_WIDTH;
+i64 view_char_width(u8 first_byte, i64 col, i64 tab_width) {
+    if (first_byte == '\t') return tab_width - col % tab_width;
     return view_is_control(first_byte) ? 2 : 1;
 }
 
@@ -37,7 +37,7 @@ i64 view_walk(Buffer *buf, i64 pos, i64 end, i64 *io_col, i64 stop_col) {
                 pos += advance;
                 continue;
             }
-            i64 w = view_char_width(b, col);
+            i64 w = view_char_width(b, col, buf->tab_width);
             if (col + w > stop_col) goto done;
             col += w;
             pos++;
@@ -60,7 +60,7 @@ i64 view_offset_at_column(Buffer *buf, i64 line, i64 col) {
     i64 pos = view_walk(buf, buffer_line_start(buf, line), end, &c, col);
     if (pos == end) return end;
     // The character at pos covers [c, c + w) and col is inside it.
-    i64 w = view_char_width(buffer_byte(buf, pos), c);
+    i64 w = view_char_width(buffer_byte(buf, pos), c, buf->tab_width);
     return 2 * (col - c) <= w ? pos : buffer_next_char(buf, pos);
 }
 
@@ -73,6 +73,11 @@ void echo_message(Echo *e, const char *fmt, ...) {
     i64 n = fmt_v(e->text, ECHO_CAP, fmt, args);
     va_end(args);
     e->len = (i32)MIN(n, (i64)ECHO_CAP);
+}
+
+void echo_set(Echo *e, String8 text) {
+    e->len = (i32)MIN(text.len, (i64)ECHO_CAP);
+    memcpy(e->text, text.data, (size_t)e->len);
 }
 
 void echo_clear(Echo *e) {
@@ -257,25 +262,28 @@ static void cmd_move_end_of_line(CommandContext *ctx) {
     cmd_goto(ctx, buffer_line_end(buf, buffer_line_of(buf, cmd_point(ctx))));
 }
 
-// Letters and digits; every byte >= 0x80 counts as a letter, so the bytes of a multi-byte
-// character are all word bytes and a bytewise scan always stops on a character boundary.
-static b32 view_is_word_byte(u8 b) {
-    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80;
+// Letters and digits (and '_' with underscore_is_word); every byte >= 0x80 counts as a letter,
+// so the bytes of a multi-byte character are all word bytes and a bytewise scan always stops on
+// a character boundary.
+static b32 view_is_word_byte(u8 b, b32 underscore) {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80 || (b == '_' && underscore);
 }
 
 static void cmd_forward_word(CommandContext *ctx) {
     Buffer *buf = ctx->view->buffer;
+    b32 u = ctx->settings->underscore_is_word;
     i64 size = buffer_size(buf), p = cmd_point(ctx);
-    while (p < size && !view_is_word_byte(buffer_byte(buf, p))) p++;
-    while (p < size && view_is_word_byte(buffer_byte(buf, p))) p++;
+    while (p < size && !view_is_word_byte(buffer_byte(buf, p), u)) p++;
+    while (p < size && view_is_word_byte(buffer_byte(buf, p), u)) p++;
     cmd_goto(ctx, p);
 }
 
 static void cmd_backward_word(CommandContext *ctx) {
     Buffer *buf = ctx->view->buffer;
+    b32 u = ctx->settings->underscore_is_word;
     i64 p = cmd_point(ctx);
-    while (p > 0 && !view_is_word_byte(buffer_byte(buf, p - 1))) p--;
-    while (p > 0 && view_is_word_byte(buffer_byte(buf, p - 1))) p--;
+    while (p > 0 && !view_is_word_byte(buffer_byte(buf, p - 1), u)) p--;
+    while (p > 0 && view_is_word_byte(buffer_byte(buf, p - 1), u)) p--;
     cmd_goto(ctx, p);
 }
 
@@ -351,6 +359,7 @@ static void cmd_insert(CommandContext *ctx, String8 text) {
 }
 
 static void cmd_self_insert(CommandContext *ctx) {
+    if (!ctx->codepoint) return; // bound to a key without a character
     u8 bytes[4];
     i64 n = utf8_encode(ctx->codepoint, bytes);
     cmd_insert(ctx, str8(bytes, n));
@@ -389,7 +398,7 @@ static void cmd_save_buffer(CommandContext *ctx) {
         echo_message(ctx->echo, "(No changes need to be saved)");
         return;
     }
-    OsFileStatus status = buffer_save(buf);
+    OsFileStatus status = buffer_save_opt(buf, ctx->settings->fsync_on_save);
     if (status == OS_FILE_OK) echo_message(ctx->echo, "Wrote %S", buf->path);
     else echo_message(ctx->echo, "Cannot save %S: %s", buf->name, buffer_status_text(status));
 }

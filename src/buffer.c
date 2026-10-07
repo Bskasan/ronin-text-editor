@@ -33,6 +33,7 @@ Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
     buf->markers = markers;
     buf->marker_reserved = (i64)(BUFFER_MARKER_RESERVE / sizeof(BufferMarkerSlot));
     buf->name = str8_copy(&buf->meta, name);
+    buf->tab_width = BUFFER_DEFAULT_TAB_WIDTH;
     return buf;
 }
 
@@ -790,8 +791,12 @@ OsFileStatus buffer_save_as(Buffer *buf, String8 path) {
 }
 
 OsFileStatus buffer_save(Buffer *buf) {
+    return buffer_save_opt(buf, 1);
+}
+
+OsFileStatus buffer_save_opt(Buffer *buf, b32 flush) {
     if (!buf->path.len) return OS_FILE_NO_PATH;
-    return buffer_save_as_opt(buf, buf->path, 1);
+    return buffer_save_as_opt(buf, buf->path, flush);
 }
 
 const char *buffer_status_text(OsFileStatus status) {

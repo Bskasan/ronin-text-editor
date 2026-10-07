@@ -1012,6 +1012,9 @@ static b32 test_columns(Test *t, u64 seed) {
 // ---------------------------------------------------------------------------
 // View: commands, scrolling, fuzz
 
+// The built-in defaults that matter to view commands (word bytes, fsync on save).
+static const Settings test_settings = { .font_size = 12, .line_height = 100, .tab_width = 4, .fsync_on_save = 1 };
+
 typedef struct TestView {
     Buffer *buf;
     View *view;
@@ -1040,6 +1043,7 @@ static b32 test_view_open(Test *t, TestView *tv, const char *marked, i32 rows, i
     for (i64 k = 1; k < count; k++) view_add_cursor(tv->view, cursors[k]);
     tv->ctx.view = tv->view;
     tv->ctx.echo = &tv->echo;
+    tv->ctx.settings = &test_settings;
     view_ensure_visible(tv->view);
     return 1;
 }
@@ -1743,6 +1747,170 @@ static b32 test_key_input(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Config
+
+static const Command *test_binding(Config *c, const char *keys) {
+    KeySeq seq;
+    const char *error;
+    if (!key_seq_parse(str8_cstr(keys), &seq, &error)) return NULL;
+    return keymap_get(&c->global, &seq);
+}
+
+static b32 test_config(Test *t, u64 seed) {
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+
+    // The built-in defaults: clean, and the CLAUDE.md theme.
+    config_init(c);
+    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    Settings *s = &c->settings;
+    Theme *th = &c->theme;
+    TEST_CHECK(t, c->errors == 0 && c->warnings == 0, "config: defaults: %d errors, %d warnings", c->errors, c->warnings);
+    TEST_CHECK(t, str8_equal(str8(s->font, s->font_len), STR8_LIT("Consolas")) && s->font_size == 12.0f &&
+                  s->line_height == 100 && s->render_mode == FB_RENDER_NATURAL_SYMMETRIC && s->tab_width == 4 &&
+                  !s->underscore_is_word && s->fsync_on_save, "config: default settings");
+    TEST_CHECK(t, th->background == 0x072626 && th->text == 0xd3b58d && th->cursor == 0x90ee90 && th->selection == 0x0000ff &&
+                  th->comment == 0x3fdf1f && th->string == 0x0fdfaf && th->keyword == 0xffffff && th->number == 0x7ad0c6 &&
+                  th->type == 0x8cde94 && th->variable == 0xc1d1e3, "config: default colors (the CLAUDE.md theme)");
+    TEST_CHECK(t, test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER && test_binding(c, "M-<") == &CMD_BEGINNING_OF_BUFFER &&
+                  test_binding(c, "C-m") == &CMD_NEWLINE && test_binding(c, "C-j") == &CMD_NEWLINE &&
+                  test_binding(c, "ESC") == &CMD_KEYBOARD_QUIT && test_binding(c, "TAB") == &CMD_SELF_INSERT &&
+                  test_binding(c, "<next>") == &CMD_SCROLL_UP_COMMAND, "config: default bindings");
+
+    // A valid user file on top: only what it names changes.
+    config_parse(c, &t->arena, STR8_LIT("# mine\n\n[settings]\nfont_size = 10.5\ntab_width=8\n  underscore_is_word = true  \r\n"
+                                        "font = Courier New\n[colors]\nbackground = #102030\n[keys]\n"
+                                        "C-x C-s   forward-char\n=  newline\nC-f none\nC-q C-q C-q C-q backward-char\n"),
+                 STR8_LIT("user.conf"));
+    TEST_CHECK(t, c->errors == 0 && c->warnings == 0, "config: valid user file: %d errors, %d warnings", c->errors, c->warnings);
+    TEST_CHECK(t, s->font_size == 10.5f && s->tab_width == 8 && s->underscore_is_word && s->fsync_on_save &&
+                  s->line_height == 100 && str8_equal(str8(s->font, s->font_len), STR8_LIT("Courier New")),
+               "config: user settings over the defaults");
+    TEST_CHECK(t, th->background == 0x102030 && th->text == 0xd3b58d, "config: user color over the defaults");
+    TEST_CHECK(t, test_binding(c, "C-x C-s") == &CMD_FORWARD_CHAR && test_binding(c, "=") == &CMD_NEWLINE &&
+                  !test_binding(c, "C-f") && test_binding(c, "C-b") == &CMD_BACKWARD_CHAR &&
+                  test_binding(c, "C-q C-q C-q C-q") == &CMD_BACKWARD_CHAR, "config: user bindings, none, the defaults kept");
+
+    // Every kind of error and warning, with its line number.
+    config_init(c);
+    String8 bad = STR8_LIT(
+        "stray line\n"                        // 1
+        "[settings]\n"                        // 2
+        "font_size = big\n"                   // 3
+        "nosuch = 1\n"                        // 4
+        "tab_width\n"                         // 5
+        "[colors]\n"                          // 6
+        "background = 123456\n"               // 7
+        "purple = #ffffff\n"                  // 8
+        "[keys]\n"                            // 9
+        "C-xy forward-char\n"                 // 10
+        "C-x C-q no-such-command\n"           // 11
+        "C-x\n"                               // 12
+        "[bogus]\n"                           // 13
+        "skipped silently\n"                  // 14
+        "[keys\n"                             // 15
+        "[settings]\n"                        // 16
+        "line_height = 50\n"                  // 17
+        "font_size = 200\n"                   // 18
+        "render_mode = fancy\n"               // 19
+        "tab_width = 0\n"                     // 20
+        "fsync_on_save = yes\n"               // 21
+        "[keys]\n"                            // 22
+        "C-c q forward-char\n"                // 23
+        "C-c q x backward-char\n"             // 24
+        "font = x\n");                        // 25: a key sequence "font =", command "x"
+    config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
+    static const char *expected[] = {
+        "t.conf:1: line outside a section ([settings], [colors] or [keys])",
+        "t.conf:3: font_size: 'big' is not a number",
+        "t.conf:4: unknown setting 'nosuch'",
+        "t.conf:5: expected name = value",
+        "t.conf:7: background: '123456' is not a color (#rrggbb)",
+        "t.conf:8: unknown color 'purple'",
+        "t.conf:10: bad key sequence 'C-xy': more than one character (separate chords with spaces)",
+        "t.conf:11: unknown command 'no-such-command'",
+        "t.conf:12: expected a key sequence and a command",
+        "t.conf:13: unknown section [bogus]",
+        "t.conf:15: bad section header (expected [settings], [colors] or [keys])",
+        "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
+        "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
+        "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",
+        "t.conf:20: warning: tab_width 0 is out of range (1 to 16), using 1",
+        "t.conf:21: fsync_on_save: 'yes' is not true or false",
+        "t.conf:24: warning: C-c q x removed 1 binding it conflicts with (one sequence is a prefix of the other)",
+        "t.conf:25: bad key sequence 'font =': more than one character (separate chords with spaces)",
+    };
+    i32 k = 0;
+    for (ConfigDiag *d = c->first_diag; d; d = d->next, k++) {
+        TEST_CHECK(t, k < ARRAY_COUNT(expected) && str8_equal(d->text, str8_cstr(expected[k])),
+                   "config: diagnostic %d is '%S', expected '%s'", k, d->text, k < ARRAY_COUNT(expected) ? expected[k] : "(none)");
+    }
+    TEST_CHECK(t, k == ARRAY_COUNT(expected) && c->errors == 14 && c->warnings == 4,
+               "config: %d diagnostics (%d errors, %d warnings), expected %d", k, c->errors, c->warnings, (i32)ARRAY_COUNT(expected));
+    TEST_CHECK(t, c->settings.line_height == 80 && c->settings.font_size == 96.0f && c->settings.tab_width == 1,
+               "config: clamped values are applied");
+    TEST_CHECK(t, !test_binding(c, "C-c q") && test_binding(c, "C-c q x") == &CMD_BACKWARD_CHAR, "config: the later binding wins");
+
+    // Files: the user file layered over the defaults; a missing file leaves the defaults.
+    String8 path = str8_fmt(&t->arena, "%S\\cfg_user.conf", t->tmp_dir);
+    String8 user = STR8_LIT("[keys]\nC-x C-s none\n[colors]\ncursor = #ff0000\n");
+    TEST_CHECK(t, os_write_file(path, user), "config: writing %S", path);
+    OsFileInfo info;
+    TEST_CHECK(t, config_load(c, &t->arena, path, &info) == OS_FILE_OK && info.size == user.len && c->errors == 0 &&
+                  !test_binding(c, "C-x C-s") && test_binding(c, "C-f") == &CMD_FORWARD_CHAR && c->theme.cursor == 0xff0000 &&
+                  c->theme.background == 0x072626 && c->settings.font_size == 12.0f, "config: load layers the user file over the defaults");
+    String8 missing = str8_fmt(&t->arena, "%S\\cfg_missing.conf", t->tmp_dir);
+    os_file_delete(missing);
+    TEST_CHECK(t, config_load(c, &t->arena, missing, &info) == OS_FILE_NOT_FOUND && test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER &&
+                  config_load(c, &t->arena, str8(NULL, 0), &info) == OS_FILE_NOT_FOUND && c->errors == 0,
+               "config: no user file gives the defaults");
+    TEST_CHECK(t, str8_equal(config_file_name(STR8_LIT("C:\\a\\b\\teal.conf")), STR8_LIT("teal.conf")), "config: file name");
+
+    // Random bytes never crash the parser; diagnostics stay bounded.
+    static const u8 alphabet[] = "[]=#\n\n\n \t\r-<>abcxyzCMS0123456789settingscolorskeysfont_size#rrggbb";
+    t->rng = seed ^ 0xc0f1;
+    u8 *junk = PUSH_ARRAY(&t->arena, u8, 4096);
+    i64 diags = 0;
+    for (i32 iter = 0; iter < 10000; iter++) {
+        i64 len = test_below(t, 400);
+        for (i64 i = 0; i < len; i++) {
+            junk[i] = test_below(t, 4) ? alphabet[test_below(t, (i64)sizeof(alphabet) - 1)] : (u8)test_below(t, 256);
+        }
+        if (iter == 9999) { // and one long line of section headers
+            len = 4096;
+            for (i64 i = 0; i < len; i++) junk[i] = "[keys]\n"[i % 7];
+        }
+        u64 mark = arena_pos(&t->arena);
+        config_init(c);
+        config_parse(c, &t->arena, str8(junk, len), STR8_LIT("junk.conf"));
+        i64 stored = 0;
+        for (ConfigDiag *d = c->first_diag; d; d = d->next) stored++;
+        TEST_CHECK(t, stored == MIN((i64)(c->errors + c->warnings), (i64)CONFIG_DIAG_CAP) && c->global.count <= KEYMAP_CAP,
+                   "config: fuzz iteration %d: %D diagnostics stored of %d", iter, stored, c->errors + c->warnings);
+        diags += c->errors + c->warnings;
+        arena_pop_to(&t->arena, mark);
+    }
+
+    // The settings reach the view: '_' in words, the tab width.
+    Settings u = test_settings;
+    u.underscore_is_word = 1;
+    TestView tv;
+    if (!test_view_open(t, &tv, "|foo_bar baz", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_FORWARD_WORD);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "foo|_bar baz"), "config: '_' separates words by default");
+    tv.ctx.settings = &u;
+    test_view_run(&tv, &CMD_BACKWARD_WORD);
+    test_view_run(&tv, &CMD_FORWARD_WORD);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "foo_bar| baz"), "config: underscore_is_word = true");
+    tv.buf->tab_width = 8;
+    buffer_replace(tv.buf, 0, 0, STR8_LIT("\t"));
+    TEST_CHECK(t, view_column_of(tv.buf, 1) == 8 && view_column_of(tv.buf, 2) == 9, "config: tab_width 8");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: config: defaults, layering, %d diagnostics, files, 10000 random inputs (%D diagnostics), settings in the view",
+        (i32)ARRAY_COUNT(expected), diags);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
 #define TEST_BENCH_SIZE MB(100)
@@ -1904,6 +2072,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_chords(&t);
     arena_reset(&t.arena);
     test_key_input(&t);
+    arena_reset(&t.arena);
+    test_config(&t, seed);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

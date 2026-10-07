@@ -49,7 +49,8 @@ extern "C" void fb_close(FontBackend *fb) {
 }
 
 // Finds the family in the system collection and creates a regular / normal / normal face.
-static IDWriteFontFace *fb_create_face(FontBackend *fb, IDWriteFactory *factory, const u16 *family, const u16 *fallback) {
+static IDWriteFontFace *fb_create_face(FontBackend *fb, IDWriteFactory *factory, const u16 *family, const u16 *fallback,
+                                       b32 *used_fallback) {
     IDWriteFontCollection *collection = NULL;
     IDWriteFontFamily *font_family = NULL;
     IDWriteFont *font = NULL;
@@ -60,7 +61,8 @@ static IDWriteFontFace *fb_create_face(FontBackend *fb, IDWriteFactory *factory,
 
     UINT32 index = 0;
     BOOL exists = FALSE;
-    collection->FindFamilyName((const WCHAR *)family, &index, &exists);
+    if (family[0]) collection->FindFamilyName((const WCHAR *)family, &index, &exists);
+    *used_fallback = !exists;
     if (!exists && fallback) collection->FindFamilyName((const WCHAR *)fallback, &index, &exists);
 
     if (exists && SUCCEEDED(collection->GetFontFamily(index, &font_family))) {
@@ -88,7 +90,8 @@ extern "C" b32 fb_open(FontBackend *fb, const u16 *family, const u16 *fallback_f
     fb->live_refs++;
     fb->factory = factory;
 
-    IDWriteFontFace *face = fb_create_face(fb, factory, family, fallback_family);
+    out->used_fallback = 0;
+    IDWriteFontFace *face = fb_create_face(fb, factory, family, fallback_family, &out->used_fallback);
     if (!face) return 0;
     fb->face = face;
 

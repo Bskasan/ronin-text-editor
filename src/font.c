@@ -109,13 +109,32 @@ static void font_reset_cache(Font *f, Renderer *r) {
 // Opens the font at the current DPI scale and (re)allocates the atlas and cache.
 static b32 font_setup(Font *f) {
     arena_reset(&f->arena);
-    f->pixel_size = (f32)FONT_SIZE_PT * 96.0f / 72.0f * f->dpi_scale;
+    f->pixel_size = f->size_pt * 96.0f / 72.0f * f->dpi_scale;
+    f->setup_count++;
 
 #if TEAL_DEV
     u64 t0 = os_time_us();
 #endif
+    // The family as NUL-terminated UTF-16 (FONT_FAMILY_CAP bytes never need more units than that).
+    u16 family[FONT_FAMILY_CAP + 1];
+    i64 n = 0;
+    for (i64 i = 0; i < f->family_len && n < FONT_FAMILY_CAP - 1;) {
+        i64 advance;
+        u32 cp = utf8_decode(f->family + i, f->family_len - i, &advance);
+        i += advance;
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            family[n++] = (u16)(0xD800 + (cp >> 10));
+            family[n++] = (u16)(0xDC00 + (cp & 0x3FF));
+        } else {
+            family[n++] = (u16)cp;
+        }
+    }
+    family[n] = 0;
     FbMetrics m;
-    if (!fb_open(&f->backend, (const u16 *)FONT_FAMILY, (const u16 *)FONT_FAMILY_FALLBACK, f->pixel_size, f->mode, &m)) {
+    b32 opened = fb_open(&f->backend, family, (const u16 *)L"Consolas", f->pixel_size, f->mode, &m);
+    f->used_fallback = !opened || m.used_fallback;
+    if (!opened && !fb_open(&f->backend, (const u16 *)L"Courier New", NULL, f->pixel_size, f->mode, &m)) {
         LOG("font: fb_open failed");
         return 0;
     }
@@ -124,7 +143,7 @@ static b32 font_setup(Font *f) {
 #endif
 
     f->cell_w = MAX((i32)(m.advance + 0.5f), 1);
-    f32 height = (m.ascent + m.descent + m.line_gap) * (f32)FONT_LINE_HEIGHT_PERCENT / 100.0f;
+    f32 height = (m.ascent + m.descent + m.line_gap) * (f32)f->line_height_percent / 100.0f;
     // The baseline below centers the glyphs, so extra height splits evenly above and below.
     f->line_h = MAX((i32)height + ((f32)(i32)height < height ? 1 : 0), 1);
     f->baseline = (i32)(m.ascent + (f->line_h - (m.ascent + m.descent)) * 0.5f + 0.5f);
@@ -149,24 +168,53 @@ static b32 font_setup(Font *f) {
 
 #if TEAL_DEV
     u64 t2 = os_time_us();
-    LOG("font: %s %d px (scale %d%%, mode %d): cell %dx%d, baseline %d, atlas %dx%d, %u hash slots",
-        "Consolas", (i32)(f->pixel_size + 0.5f), (i32)(f->dpi_scale * 100.0f + 0.5f), (i32)f->mode,
+    LOG("font: %S%s %d px (scale %d%%, mode %d): cell %dx%d, baseline %d, atlas %dx%d, %u hash slots",
+        str8(f->family, f->family_len), f->used_fallback ? " (not found, fallback)" : "", (i32)(f->pixel_size + 0.5f), (i32)(f->dpi_scale * 100.0f + 0.5f), (i32)f->mode,
         f->cell_w, f->line_h, f->baseline, size, size, 1u << f->slot_bits);
     LOG("font: DirectWrite init %D us, ASCII pre-rasterization %D us", (i64)(t1 - t0), (i64)(t2 - t1));
 #endif
     return 1;
 }
 
-Font *font_create(Arena *perm, f32 dpi_scale, FbRenderMode mode) {
+static void font_set_params(Font *f, FontParams *params) {
+    f->family_len = (i32)MIN(params->family.len, (i64)FONT_FAMILY_CAP);
+    memcpy(f->family, params->family.data, (size_t)f->family_len);
+    f->size_pt = params->size_pt;
+    f->line_height_percent = params->line_height_percent;
+    f->mode = params->mode;
+}
+
+Font *font_create(Arena *perm, FontParams *params, f32 dpi_scale) {
     Font *f = PUSH_STRUCT(perm, Font);
     f->arena = arena_create(FONT_ARENA_RESERVE);
     f->dpi_scale = dpi_scale;
-    f->mode = mode;
+    font_set_params(f, params);
     if (!font_setup(f)) {
         fb_close(&f->backend);
         return NULL;
     }
     return f;
+}
+
+b32 font_reconfigure(Font *f, Renderer *r, FontParams *params) {
+    if (str8_equal(str8(f->family, f->family_len), params->family) && f->size_pt == params->size_pt &&
+        f->line_height_percent == params->line_height_percent && f->mode == params->mode) return 0;
+    Font old = *f;
+    font_set_params(f, params);
+    if (!font_setup(f)) {
+        // Back to what worked (its setup succeeded before, so it succeeds again).
+        u8 family[FONT_FAMILY_CAP];
+        memcpy(family, old.family, sizeof(family));
+        FontParams back = { str8(family, old.family_len), old.size_pt, old.line_height_percent, old.mode };
+        font_set_params(f, &back);
+        if (!font_setup(f)) os_fatal(STR8_LIT("Could not open the font again."));
+        return 0;
+    }
+    if (r) {
+        r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_size);
+        f->needs_bind = 0;
+    }
+    return 1;
 }
 
 i32 font_shutdown(Font *f) {

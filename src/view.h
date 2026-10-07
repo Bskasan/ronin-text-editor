@@ -4,14 +4,12 @@
 #ifndef VIEW_H
 #define VIEW_H
 
-#define VIEW_TAB_WIDTH 4 // columns per tab stop (a setting later)
-
 // ---------------------------------------------------------------------------
-// Visual columns: a tab advances to the next multiple of VIEW_TAB_WIDTH, an ASCII control
-// character (drawn as ^X) takes 2 cells, anything else (multi-byte, invalid byte) takes 1.
+// Visual columns: a tab advances to the next multiple of the buffer's tab width, an ASCII
+// control character (drawn as ^X) takes 2 cells, anything else (multi-byte, invalid byte) takes 1.
 
 b32 view_is_control(u8 b); // 0x00-0x1F except tab and newline, and 0x7F
-i64 view_char_width(u8 first_byte, i64 col); // cells of the character starting with first_byte at col
+i64 view_char_width(u8 first_byte, i64 col, i64 tab_width); // cells of the character starting with first_byte at col
 
 // Walks characters from `pos` (at column *col) towards `end`, stopping before the first one
 // that would end past `stop_col`; *col becomes the column of the returned position. Scans
@@ -35,6 +33,7 @@ struct Echo {
 };
 
 void echo_message(Echo *e, const char *fmt, ...); // the base.h formatter
+void echo_set(Echo *e, String8 text);              // shown, not a message (a key prefix such as "C-x-")
 void echo_clear(Echo *e);
 
 // ---------------------------------------------------------------------------
