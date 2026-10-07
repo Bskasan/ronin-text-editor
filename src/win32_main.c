@@ -40,14 +40,13 @@ typedef struct Platform {
     b32 startup_ms;       // --startup-ms: exit after the first Present, exit code = ms since process creation
     f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
     String8 file_path;    // the first argument that is not a flag
+    i64 goto_line, goto_col; // +LINE[:COLUMN], 1-based; 0 = not given
     FbRenderMode render_mode;
 #if TEAL_DEV
     HANDLE log_file;
     b32 smoke;
     b32 test;
     b32 sample;
-    i64 top_line;
-    b32 top_line_end;
     u64 seed;
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
@@ -1038,6 +1037,24 @@ static i32 win32_parse_i32(String8 s) {
     return v;
 }
 
+// "+LINE" or "+LINE:COLUMN" (Emacs): decimal, 1-based. False when `a` is not of that form, so
+// it is a file name.
+static b32 win32_parse_goto(String8 a, i64 *line, i64 *col) {
+    if (a.len < 2 || a.data[0] != '+') return 0;
+    i64 i = 1, l = 0, c = 0, start = 1;
+    for (; i < a.len && a.data[i] >= '0' && a.data[i] <= '9'; i++) l = MIN(l * 10 + (a.data[i] - '0'), (i64)1 << 50);
+    if (i == start) return 0;
+    if (i < a.len) {
+        if (a.data[i] != ':') return 0;
+        start = ++i;
+        for (; i < a.len && a.data[i] >= '0' && a.data[i] <= '9'; i++) c = MIN(c * 10 + (a.data[i] - '0'), (i64)1 << 50);
+        if (i == start || i < a.len) return 0;
+    }
+    *line = MAX(l, 1);
+    *col = c;
+    return 1;
+}
+
 #if TEAL_DEV
 // Decimal, or hexadecimal with 0x.
 static u64 win32_parse_u64(String8 s) {
@@ -1083,6 +1100,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     String8 bad_arg = { 0 };
     for (i32 i = 1; i < arg_count && !bad_arg.len; i++) {
         String8 a = args[i];
+        if (win32_parse_goto(a, &p->goto_line, &p->goto_col)) continue;
         if (!(a.len >= 2 && a.data[0] == '-' && a.data[1] == '-')) {
             if (!p->file_path.len) p->file_path = a;
             continue;
@@ -1093,12 +1111,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--smoke"))) { p->smoke = 1; continue; }
         if (str8_equal(a, STR8_LIT("--test"))) { p->test = 1; continue; }
         if (str8_equal(a, STR8_LIT("--sample"))) { p->sample = 1; continue; }
-        if (str8_equal(a, STR8_LIT("--top-line")) && has_value) {
-            String8 v = args[++i];
-            if (str8_equal(v, STR8_LIT("end"))) p->top_line_end = 1;
-            else p->top_line = (i64)win32_parse_u64(v);
-            continue;
-        }
         if (str8_equal(a, STR8_LIT("--seed")) && has_value) { p->seed = win32_parse_u64(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--bench-text"))) { p->bench_text = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
@@ -1194,11 +1206,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
 
-    AppConfig config = { .dpi_scale = scale, .render_mode = p->render_mode, .file_path = p->file_path };
+    AppConfig config = { .dpi_scale = scale, .render_mode = p->render_mode, .file_path = p->file_path,
+                         .goto_line = p->goto_line, .goto_col = p->goto_col };
 #if TEAL_DEV
     config.sample = p->sample || p->smoke; // the smoke probes check the sample
-    config.top_line = p->top_line;
-    config.top_line_end = p->top_line_end;
 #endif
     p->app = app_create(&p->perm, &config);
     if (!p->app) {

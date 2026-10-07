@@ -144,10 +144,10 @@ typedef struct AppConfig {
     f32 dpi_scale;
     FbRenderMode render_mode;
     String8 file_path; // the first non-flag argument; empty = *scratch*
+    i64 goto_line;     // +LINE[:COLUMN], 1-based as in Emacs; 0 = not given
+    i64 goto_col;      // visual column, 1-based; 0 = not given
 #if TEAL_DEV
     b32 sample; // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
-    i64 top_line;     // --top-line N: initial scroll, 0-based
-    b32 top_line_end; // --top-line end
 #endif
 } AppConfig;
 

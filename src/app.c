@@ -453,12 +453,12 @@ App *app_create(Arena *perm, AppConfig *config) {
     app->views[0] = view_create(perm, app->buffer);
     app->view_count = 1;
     app->ctx.echo = &app->echo;
-    app->initial_line = -1;
+    // +LINE:COLUMN, 1-based on the command line as in Emacs (move-to-column (1- COLUMN)).
+    app->initial_line = config->goto_line > 0 ? config->goto_line - 1 : -1;
+    app->initial_col = MAX(config->goto_col - 1, 0);
 #if TEAL_DEV
     app->sample = config->sample;
     app->force_focus = -1;
-    if (config->top_line_end) app->initial_line = I64_MAX; // clamped to the last line
-    else if (config->top_line) app->initial_line = config->top_line;
 #endif
     return app;
 }
