@@ -7,6 +7,7 @@
 #include "render.h"
 #include "font.h"
 #include "buffer.h"
+#include "command.h"
 #include "view.h"
 
 #include "base.c"
@@ -15,6 +16,7 @@
 #include "buffer.c"
 #include "view.c"
 #include "app.c"
+#include "command.c"
 #include "test.c" // TEAL_DEV only
 
 #include "render_d3d11.c"
