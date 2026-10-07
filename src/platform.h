@@ -167,6 +167,7 @@ typedef struct DevProbe {
 i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap);
 b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
+i32  test_run(u64 seed); // --test: headless buffer and file tests; failures, details in the log
 i32  app_dev_bench_frame(App *app, FrameInput *input, Renderer *r, u64 *build_us, u64 *submit_us); // returns glyphs drawn
 #endif
 

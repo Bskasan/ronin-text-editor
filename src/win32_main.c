@@ -43,6 +43,9 @@ typedef struct Platform {
 #if TEAL_DEV
     HANDLE log_file;
     b32 smoke;
+    b32 test;
+    u64 seed;
+    String8 exe_dir;
     b32 bench_text;
     String8 screenshot_path;
     String8 atlas_path;
@@ -748,6 +751,7 @@ enum {
     EXIT_LEAK = 6,
     EXIT_OUTPUT_FILE = 7,
     EXIT_FONT = 8,
+    EXIT_TEST = 9,
 };
 
 static u32 win32_pixel_rgb(u8 *bgra, i32 w, i32 x, i32 y) {
@@ -952,6 +956,24 @@ static i32 win32_parse_i32(String8 s) {
     return v;
 }
 
+#if TEAL_DEV
+// Decimal, or hexadecimal with 0x.
+static u64 win32_parse_u64(String8 s) {
+    u64 v = 0;
+    if (s.len > 2 && s.data[0] == '0' && (s.data[1] == 'x' || s.data[1] == 'X')) {
+        for (i64 i = 2; i < s.len; i++) {
+            u8 c = s.data[i];
+            u32 d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 16;
+            if (d == 16) break;
+            v = v * 16 + d;
+        }
+    } else {
+        for (i64 i = 0; i < s.len && s.data[i] >= '0' && s.data[i] <= '9'; i++) v = v * 10 + (s.data[i] - '0');
+    }
+    return v;
+}
+#endif
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line, int show_cmd) {
     (void)prev_instance;
     (void)cmd_line;
@@ -967,10 +989,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->instance = instance;
     p->qpc_start = qpc_start;
     p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
+#if TEAL_DEV
+    p->seed = 0x7ea1;
+#endif
     g_platform = p;
-
-    Renderer *renderer = r_alloc(&p->perm); // allocated here, before the worker starts
-    HANDLE device_thread = CreateThread(NULL, 0, win32_device_thread, renderer, 0, NULL);
 
     String8 *args;
     i32 arg_count = win32_parse_args(&p->perm, &args);
@@ -980,6 +1002,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) p->smoke = 1;
+        else if (str8_equal(a, STR8_LIT("--test"))) p->test = 1;
+        else if (str8_equal(a, STR8_LIT("--seed")) && has_value) p->seed = win32_parse_u64(args[++i]);
         else if (str8_equal(a, STR8_LIT("--bench-text"))) p->bench_text = 1;
         else if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) p->screenshot_path = args[++i];
         else if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) p->atlas_path = args[++i];
@@ -1003,9 +1027,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     String16 log_path16 = str16_from_str8(&p->perm, log_path);
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    LOG("teal dev build, mode: %s", p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    p->exe_dir = exe_dir;
+    LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
+    if (p->test) { // headless: no window, no device, no font
+        i32 failures = test_run(p->seed);
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return failures ? EXIT_TEST : EXIT_OK;
+    }
 #endif
+
+    // Argument parsing above takes microseconds; the device thread starts right after it.
+    Renderer *renderer = r_alloc(&p->perm); // allocated here, before the worker starts
+    HANDLE device_thread = CreateThread(NULL, 0, win32_device_thread, renderer, 0, NULL);
+
 
     WNDCLASSEXW wc = {
         .cbSize = sizeof(wc),

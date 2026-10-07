@@ -13,6 +13,7 @@
 #include "font.c"
 #include "buffer.c"
 #include "app.c"
+#include "test.c" // TEAL_DEV only
 
 #include "render_d3d11.c"
 #include "win32_main.c"
