@@ -528,6 +528,20 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
     return n;
 }
 
+void app_dev_set_top_line(App *app, i64 line) {
+    app->top_line = 0;
+    if (line < 0) app->top_line_end = 1; // the last screen, resolved by the next frame
+    else app_scroll(app, line);
+}
+
+i64 app_dev_line_count(App *app) {
+    return buffer_line_count(app->buffer);
+}
+
+u64 app_dev_build_us(App *app) {
+    return app->dev_build_us;
+}
+
 b32 app_dev_atlas_has_coverage(App *app) {
     return font_dev_atlas_has_coverage(app->font);
 }

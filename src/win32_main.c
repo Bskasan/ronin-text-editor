@@ -51,6 +51,7 @@ typedef struct Platform {
     u64 seed;
     String8 exe_dir;
     b32 bench_text;
+    b32 bench_buffer;
     String8 screenshot_path;
     String8 atlas_path;
 #endif
@@ -376,7 +377,7 @@ void os_fatal(String8 message) {
 #if TEAL_DEV
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
-                       g_platform->bench_text)) interactive = 0;
+                       g_platform->bench_text || g_platform->bench_buffer)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -955,8 +956,42 @@ static void win32_bench_text(Platform *p) {
     LOG("bench-text: flush + Present:    avg %U us, worst %U us", submit_sum / FRAMES, submit_max);
 }
 
+// --bench-buffer, frame part: the real app_update_and_render with the 100 MB file at its top,
+// middle and end, presented with Present(0, 0).
+static void win32_bench_buffer_frames(Platform *p) {
+    enum { FRAMES = 100 };
+    r_dev_set_present_interval(p->renderer, 0);
+    i64 lines = app_dev_line_count(p->app);
+    i64 tops[3] = { 0, lines / 2, -1 };
+    const char *names[3] = { "top", "middle", "end" };
+    for (i32 k = 0; k < 3; k++) {
+        app_dev_set_top_line(p->app, tops[k]);
+        u64 build_sum = 0, build_max = 0, submit_sum = 0, submit_max = 0;
+        for (i32 i = 0; i < FRAMES; i++) {
+            MSG msg;
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            p->event_count = 0;
+            FrameInput input = win32_frame_input(p);
+            u64 t0 = os_time_us();
+            app_update_and_render(p->app, &input, p->renderer);
+            u64 total = os_time_us() - t0, build = app_dev_build_us(p->app);
+            arena_reset(&p->scratch);
+            build_sum += build;
+            build_max = MAX(build_max, build);
+            submit_sum += total - build;
+            submit_max = MAX(submit_max, total - build);
+        }
+        LOG("bench-buffer: frame at the %s (%D lines): build avg %U us, worst %U us; flush + Present avg %U us, worst %U us",
+            names[k], lines, build_sum / FRAMES, build_max, submit_sum / FRAMES, submit_max);
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->bench_text || p->screenshot_path.len || p->atlas_path.len;
+    return p->smoke || p->bench_text || p->bench_buffer || p->screenshot_path.len || p->atlas_path.len;
 }
 #endif
 
@@ -1034,6 +1069,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         }
         else if (str8_equal(a, STR8_LIT("--seed")) && has_value) p->seed = win32_parse_u64(args[++i]);
         else if (str8_equal(a, STR8_LIT("--bench-text"))) p->bench_text = 1;
+        else if (str8_equal(a, STR8_LIT("--bench-buffer"))) p->bench_buffer = 1;
         else if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) p->screenshot_path = args[++i];
         else if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) p->atlas_path = args[++i];
         else if (str8_equal(a, STR8_LIT("--scale")) && has_value) p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f;
@@ -1058,11 +1094,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     p->exe_dir = exe_dir;
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+                                   : p->bench_buffer ? "bench-buffer"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
+    }
+    if (p->bench_buffer) { // generated before the app opens it; the measurements run after startup
+        p->file_path = test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
     }
 #endif
 
@@ -1178,6 +1218,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     if (p->bench_text && !p->quit) {
         win32_bench_text(p);
+        p->quit = 1;
+    }
+    if (p->bench_buffer && !p->quit) {
+        test_bench_buffer(p->file_path, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
+        win32_bench_buffer_frames(p);
         p->quit = 1;
     }
 #endif
