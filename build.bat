@@ -1,6 +1,6 @@
 @echo off
 rem teal build.  "build.bat" -> build\teal_debug.exe   "build.bat release" -> build\teal.exe
-rem From Git Bash: cmd //c build.bat [release]
+rem From Git Bash: cmd //c ".\build.bat" [release]
 setlocal
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
@@ -36,21 +36,29 @@ if errorlevel 1 exit /b 1
 fxc /nologo /WX /O3 /T ps_4_0 /E ps_main /Vn quad_ps_bytes /Fh build\gen\quad_ps.h src\shaders\quad.hlsl >nul
 if errorlevel 1 exit /b 1
 
-rem --- C ---------------------------------------------------------------------
-set CFLAGS=/nologo /std:c11 /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0 /Ibuild\gen
+rem --- C (unity build) + the one C++ file (DirectWrite: dwrite.h is C++ only) ---
+set COMMON=/nologo /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0
+set CFLAGS=%COMMON% /std:c11 /Ibuild\gen
+rem C-style C++: no exceptions (no /EH), no RTTI.
+set CPPFLAGS=%COMMON% /GR- /c
 set LFLAGS=/SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:res\teal.manifest
-set LIBS=kernel32.lib user32.lib d3d11.lib dxgi.lib dwmapi.lib dxguid.lib
+set LIBS=kernel32.lib user32.lib gdi32.lib d3d11.lib dxgi.lib dwmapi.lib dwrite.lib dxguid.lib
 
 if "%MODE%"=="release" (
-    set OUT=build\teal.exe
-    cl %CFLAGS% /O2 /GL /Gw /Gy /GS- /MT /DTEAL_DEV=0 src\teal.c /Fobuild\teal.obj /Febuild\teal.exe /link %LFLAGS% /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO %LIBS%
+    set NAME=teal
+    set OPT=/O2 /GL /Gw /Gy /GS- /MT /DTEAL_DEV=0
+    set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
 ) else (
-    set OUT=build\teal_debug.exe
-    cl %CFLAGS% /Od /Zi /MTd /DTEAL_DEV=1 src\teal.c /Fobuild\teal_debug.obj /Fdbuild\teal_debug_cl.pdb /Febuild\teal_debug.exe /link %LFLAGS% /DEBUG /INCREMENTAL:NO %LIBS%
+    set NAME=teal_debug
+    set OPT=/Od /Zi /MTd /DTEAL_DEV=1
+    set LINKOPT=/DEBUG /INCREMENTAL:NO
 )
+cl %CPPFLAGS% %OPT% src\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
+if errorlevel 1 exit /b 1
+cl %CFLAGS% %OPT% src\teal.c build\%NAME%_dwrite.obj /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
 if errorlevel 1 exit /b 1
 
-for %%F in ("%OUT%") do echo %OUT%: %%~zF bytes
+for %%F in ("build\%NAME%.exe") do echo build\%NAME%.exe: %%~zF bytes
 exit /b 0
 
 :no_msvc

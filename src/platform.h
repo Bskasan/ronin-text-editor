@@ -11,6 +11,7 @@ void *os_reserve(u64 size);
 b32   os_commit(void *ptr, u64 size);
 b32   os_write_file(String8 path, String8 data);
 void  os_fatal(String8 message); // does not return
+u64   os_time_us(void);              // monotonic microseconds
 #if TEAL_DEV
 void  os_log_write(String8 text);
 #endif
@@ -79,6 +80,7 @@ typedef struct FrameInput {
     i32 event_count;
     i32 width, height; // client area in pixels
     f32 dpi_scale;     // 1.0 at 96 DPI
+    Arena *scratch;    // reset after every frame
 } FrameInput;
 
 // ---------------------------------------------------------------------------
@@ -87,16 +89,36 @@ typedef struct FrameInput {
 typedef struct App App;
 typedef struct Renderer Renderer;
 
-App *app_create(Arena *perm);
+typedef struct AppConfig {
+    f32 dpi_scale;
+    FbRenderMode render_mode;
+} AppConfig;
+
+App *app_create(Arena *perm, AppConfig *config); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
+i32  app_shutdown(App *app); // font backend references still held, 0 = clean
 
 #if TEAL_DEV
+typedef enum DevProbeKind {
+    DEV_PROBE_PIXEL_EQ,       // pixel (x0, y0) == rgb
+    DEV_PROBE_REGION_EQ,      // every pixel in [x0, x1) x [y0, y1) == rgb
+    DEV_PROBE_REGION_DIFFERS, // at least one pixel in the region != rgb
+    DEV_PROBE_CLEARTYPE,      // vertical stem in the region: edge coverage order matches `geometry`
+} DevProbeKind;
+
 typedef struct DevProbe {
-    i32 x, y;
-    u32 rgb; // 0xRRGGBB expected at (x, y)
+    DevProbeKind kind;
+    i32 x0, y0, x1, y1;
+    u32 rgb;      // expected / background color, 0xRRGGBB
+    u32 text_rgb; // DEV_PROBE_CLEARTYPE: the stem's color
+    FbPixelGeometry geometry;
     const char *what;
 } DevProbe;
-i32 app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap);
+
+i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap);
+b32  app_dev_atlas_has_coverage(App *app);
+u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
+i32  app_dev_bench_frame(App *app, FrameInput *input, Renderer *r, u64 *build_us, u64 *submit_us); // returns glyphs drawn
 #endif
 
 #endif // PLATFORM_H

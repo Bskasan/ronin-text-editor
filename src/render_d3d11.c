@@ -1,4 +1,5 @@
-// render_d3d11.c — D3D11 renderer: one instanced-quad pipeline, flip-model swap chain.
+// render_d3d11.c — D3D11 renderer: one instanced-quad pipeline, flip-model swap chain,
+// glyph atlas with ClearType through dual-source blending.
 
 #define COBJMACROS
 #define UNICODE
@@ -26,7 +27,7 @@ typedef struct RInstance {
 
 _Static_assert(sizeof(RInstance) == 40, "instance layout must match the input layout");
 
-enum { R_KIND_SOLID = 0 };
+enum { R_KIND_SOLID = 0, R_KIND_GLYPH = 1 };
 
 struct Renderer {
     HWND hwnd;
@@ -35,6 +36,16 @@ struct Renderer {
     b32 occluded;
     b32 wants_redraw;
     b32 in_frame;
+    u32 present_interval;
+
+    // Results of r_create_device. It may run on a worker thread, where it must not log, so the
+    // main thread reports these afterwards.
+    HRESULT create_hr_debug; // the debug-layer attempt (dev builds)
+    HRESULT create_hr;       // the final attempt
+    b32 create_warp;
+    b32 debug_layer;
+    D3D_FEATURE_LEVEL feature_level;
+    i64 create_us;
 
     ID3D11Device *device;
     ID3D11DeviceContext *context;
@@ -51,8 +62,14 @@ struct Renderer {
     RInstance *instances; // CPU staging, R_MAX_INSTANCES
     i32 instance_count;
 
+    // Glyph atlas. The CPU copy belongs to the font module.
+    u8 *atlas_pixels;
+    i32 atlas_w, atlas_h;
+    ID3D11Texture2D *atlas_texture;
+    ID3D11ShaderResourceView *atlas_srv;
+    i32 dirty_x0, dirty_y0, dirty_x1, dirty_y1; // empty when x0 >= x1
+
 #if TEAL_DEV
-    b32 debug_layer;
     ID3D11InfoQueue *info_queue;
     u32 message_count;
     b32 capture_requested;
@@ -93,32 +110,41 @@ static void r_drain_messages(Renderer *r) {
 // ---------------------------------------------------------------------------
 // Creation / destruction
 
-static b32 r_create_device(Renderer *r) {
+Renderer *r_alloc(Arena *perm) {
+    Renderer *r = PUSH_STRUCT(perm, Renderer);
+    r->instances = PUSH_ARRAY(perm, RInstance, R_MAX_INSTANCES);
+    r->present_interval = 1;
+    return r;
+}
+
+// May run on a worker thread: no logging, no arenas, no os_*; results go into r only.
+b32 r_create_device(Renderer *r) {
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
+
     D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_SINGLETHREADED;
-    D3D_FEATURE_LEVEL level = 0;
     HRESULT hr = E_FAIL;
+    r->create_hr_debug = S_OK;
+    r->create_warp = 0;
+    r->debug_layer = 0;
 
 #if TEAL_DEV
     hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags | D3D11_CREATE_DEVICE_DEBUG,
-                           levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &level, &r->context);
+                           levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
+    r->create_hr_debug = hr;
     r->debug_layer = SUCCEEDED(hr);
-    if (FAILED(hr)) LOG("d3d11: debug device creation failed (0x%x), retrying without debug layer", (u32)hr);
 #endif
     if (FAILED(hr)) {
         hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
-                               levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &level, &r->context);
+                               levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     }
     if (FAILED(hr)) {
-        LOG("d3d11: hardware device creation failed (0x%x), falling back to WARP", (u32)hr);
+        r->create_warp = 1;
         hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_WARP, NULL, flags,
-                               levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &level, &r->context);
+                               levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     }
-    if (FAILED(hr)) {
-        LOG("d3d11: device creation failed (0x%x)", (u32)hr);
-        return 0;
-    }
-    LOG("d3d11: device created, feature level 0x%x, debug layer %s", (u32)level, TEAL_DEV && r->debug_layer ? "on" : "off");
+    r->create_hr = hr;
 
 #if TEAL_DEV
     if (r->debug_layer &&
@@ -131,7 +157,28 @@ static b32 r_create_device(Renderer *r) {
         }
     }
 #endif
-    return 1;
+
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    r->create_us = (t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart;
+    return SUCCEEDED(hr);
+}
+
+static void r_log_device_result(Renderer *r) {
+#if TEAL_DEV
+    if (FAILED(r->create_hr_debug)) {
+        LOG("d3d11: debug device creation failed (0x%x), retried without debug layer", (u32)r->create_hr_debug);
+    }
+    if (r->create_warp) LOG("d3d11: hardware device creation failed, fell back to WARP");
+    if (FAILED(r->create_hr)) {
+        LOG("d3d11: device creation failed (0x%x)", (u32)r->create_hr);
+    } else {
+        LOG("d3d11: device created in %D us, feature level 0x%x, debug layer %s", r->create_us,
+            (u32)r->feature_level, r->debug_layer ? "on" : "off");
+    }
+#else
+    (void)r;
+#endif
 }
 
 static b32 r_create_swap_chain(Renderer *r) {
@@ -181,15 +228,17 @@ static b32 r_create_target(Renderer *r) {
     return SUCCEEDED(hr);
 }
 
-// Straight alpha. Isolated because Phase 2 revisits it for ClearType.
+// Dual-source blending: the pixel shader outputs the color in SV_Target0 and per-channel
+// weights in SV_Target1 (alpha for solid quads, coverage.rgb * alpha for glyphs), so
+// ClearType blends each channel separately: out = color * w + dst * (1 - w).
 static b32 r_create_blend_state(Renderer *r) {
     D3D11_BLEND_DESC desc = {0};
     desc.RenderTarget[0].BlendEnable = TRUE;
-    desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-    desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC1_COLOR;
+    desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC1_COLOR;
     desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-    desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_SRC1_ALPHA;
+    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC1_ALPHA;
     desc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     return SUCCEEDED(ID3D11Device_CreateBlendState(r->device, &desc, &r->blend));
@@ -234,8 +283,39 @@ static b32 r_create_pipeline(Renderer *r) {
     return 1;
 }
 
-static b32 r_create_all(Renderer *r) {
-    return r_create_device(r) && r_create_swap_chain(r) && r_create_target(r) && r_create_pipeline(r);
+// (Re)creates the atlas texture for the bound CPU copy and schedules a full upload.
+static b32 r_create_atlas_texture(Renderer *r) {
+    R_RELEASE(r->atlas_srv);
+    R_RELEASE(r->atlas_texture);
+    if (!r->atlas_pixels) return 1;
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = (UINT)r->atlas_w,
+        .Height = (UINT)r->atlas_h,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .SampleDesc = { 1, 0 },
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE,
+    };
+    if (FAILED(ID3D11Device_CreateTexture2D(r->device, &desc, NULL, &r->atlas_texture))) return 0;
+    if (FAILED(ID3D11Device_CreateShaderResourceView(r->device, (ID3D11Resource *)r->atlas_texture, NULL, &r->atlas_srv))) return 0;
+    r_atlas_mark_dirty(r, 0, 0, r->atlas_w, r->atlas_h);
+    return 1;
+}
+
+// Everything after the device: swap chain, render target, pipeline, atlas texture.
+static b32 r_create_device_resources(Renderer *r) {
+    return r_create_swap_chain(r) && r_create_target(r) && r_create_pipeline(r) && r_create_atlas_texture(r);
+}
+
+b32 r_finish_create(Renderer *r, void *native_window, i32 width, i32 height) {
+    r->hwnd = (HWND)native_window;
+    r->width = width;
+    r->height = height;
+    r_log_device_result(r);
+    if (!r->device || !r_create_device_resources(r)) return 0;
+    return 1;
 }
 
 // Releases everything except the device and its debug interfaces.
@@ -247,6 +327,8 @@ static void r_release_resources(Renderer *r) {
 #if TEAL_DEV
     R_RELEASE(r->capture_texture);
 #endif
+    R_RELEASE(r->atlas_srv);
+    R_RELEASE(r->atlas_texture);
     R_RELEASE(r->raster);
     R_RELEASE(r->blend);
     R_RELEASE(r->constant_buffer);
@@ -272,19 +354,6 @@ static ULONG r_release_all(Renderer *r) {
         r->device = NULL;
     }
     return refs;
-}
-
-Renderer *r_create(Arena *perm, void *native_window, i32 width, i32 height) {
-    Renderer *r = PUSH_STRUCT(perm, Renderer);
-    r->hwnd = (HWND)native_window;
-    r->width = width;
-    r->height = height;
-    r->instances = PUSH_ARRAY(perm, RInstance, R_MAX_INSTANCES);
-    if (!r_create_all(r)) {
-        r_release_all(r);
-        return NULL;
-    }
-    return r;
 }
 
 u32 r_shutdown(Renderer *r) {
@@ -330,8 +399,47 @@ static void r_handle_device_lost(Renderer *r, HRESULT hr) {
     LOG("d3d11: device lost (0x%x, reason 0x%x), recreating", (u32)hr,
         r->device ? (u32)ID3D11Device_GetDeviceRemovedReason(r->device) : 0u);
     r_release_all(r);
-    if (!r_create_all(r)) os_fatal(STR8_LIT("Could not recreate the Direct3D device after it was lost."));
+    r_create_device(r);
+    r_log_device_result(r);
+    if (!r->device || !r_create_device_resources(r)) {
+        os_fatal(STR8_LIT("Could not recreate the Direct3D device after it was lost."));
+    }
     r->wants_redraw = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Atlas
+
+void r_atlas_bind(Renderer *r, u8 *pixels, i32 width, i32 height) {
+    r->atlas_pixels = pixels;
+    r->atlas_w = width;
+    r->atlas_h = height;
+    r->dirty_x0 = r->dirty_x1 = 0;
+    if (!r_create_atlas_texture(r)) os_fatal(STR8_LIT("Could not create the glyph atlas texture."));
+}
+
+void r_atlas_mark_dirty(Renderer *r, i32 x0, i32 y0, i32 x1, i32 y1) {
+    if (x0 >= x1 || y0 >= y1) return;
+    if (r->dirty_x0 >= r->dirty_x1) {
+        r->dirty_x0 = x0;
+        r->dirty_y0 = y0;
+        r->dirty_x1 = x1;
+        r->dirty_y1 = y1;
+    } else {
+        r->dirty_x0 = MIN(r->dirty_x0, x0);
+        r->dirty_y0 = MIN(r->dirty_y0, y0);
+        r->dirty_x1 = MAX(r->dirty_x1, x1);
+        r->dirty_y1 = MAX(r->dirty_y1, y1);
+    }
+}
+
+static void r_upload_atlas(Renderer *r) {
+    if (r->dirty_x0 >= r->dirty_x1 || !r->atlas_texture) return;
+    D3D11_BOX box = { (UINT)r->dirty_x0, (UINT)r->dirty_y0, 0, (UINT)r->dirty_x1, (UINT)r->dirty_y1, 1 };
+    u8 *src = r->atlas_pixels + ((i64)r->dirty_y0 * r->atlas_w + r->dirty_x0) * 4;
+    ID3D11DeviceContext_UpdateSubresource(r->context, (ID3D11Resource *)r->atlas_texture, 0, &box, src,
+                                          (UINT)r->atlas_w * 4, 0);
+    r->dirty_x0 = r->dirty_x1 = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,13 +490,18 @@ void r_begin_frame(Renderer *r, Color clear) {
     ID3D11DeviceContext_VSSetShader(c, r->vs, NULL, 0);
     ID3D11DeviceContext_VSSetConstantBuffers(c, 0, 1, &r->constant_buffer);
     ID3D11DeviceContext_PSSetShader(c, r->ps, NULL, 0);
+    ID3D11DeviceContext_PSSetShaderResources(c, 0, 1, &r->atlas_srv);
 
     f32 rgba[4] = { clear.r / 255.0f, clear.g / 255.0f, clear.b / 255.0f, clear.a / 255.0f };
     ID3D11DeviceContext_ClearRenderTargetView(c, r->rtv, rgba);
 }
 
-static void r_flush(Renderer *r) {
-    if (r->instance_count == 0) return;
+void r_flush(Renderer *r) {
+    r_upload_atlas(r);
+    if (r->instance_count == 0 || !r->in_frame) {
+        r->instance_count = 0;
+        return;
+    }
     D3D11_MAPPED_SUBRESOURCE mapped;
     if (SUCCEEDED(ID3D11DeviceContext_Map(r->context, (ID3D11Resource *)r->instance_buffer, 0,
                                           D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -412,10 +525,26 @@ void r_push_rect(Renderer *r, Rect rect, Color color) {
     inst->kind = R_KIND_SOLID;
 }
 
+void r_push_glyph(Renderer *r, Rect dst, Rect atlas_texels, Color color) {
+    if (!r->in_frame) return;
+    if (r->instance_count == R_MAX_INSTANCES) r_flush(r);
+    RInstance *inst = &r->instances[r->instance_count++];
+    inst->rect[0] = dst.x0;
+    inst->rect[1] = dst.y0;
+    inst->rect[2] = dst.x1;
+    inst->rect[3] = dst.y1;
+    inst->uv[0] = atlas_texels.x0;
+    inst->uv[1] = atlas_texels.y0;
+    inst->uv[2] = atlas_texels.x1;
+    inst->uv[3] = atlas_texels.y1;
+    inst->color = color;
+    inst->kind = R_KIND_GLYPH;
+}
+
 void r_end_frame(Renderer *r) {
     if (!r->in_frame) return;
-    r->in_frame = 0;
     r_flush(r);
+    r->in_frame = 0;
 
 #if TEAL_DEV
     // FLIP_DISCARD leaves the back buffer undefined after Present, so copy it now.
@@ -445,7 +574,7 @@ void r_end_frame(Renderer *r) {
     }
 #endif
 
-    HRESULT hr = IDXGISwapChain1_Present(r->swap_chain, 1, 0);
+    HRESULT hr = IDXGISwapChain1_Present(r->swap_chain, r->present_interval, 0);
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
         r_handle_device_lost(r, hr);
     } else {
@@ -489,5 +618,9 @@ b32 r_dev_debug_layer_active(Renderer *r) {
 
 u32 r_dev_message_count(Renderer *r) {
     return r->message_count;
+}
+
+void r_dev_set_present_interval(Renderer *r, u32 interval) {
+    r->present_interval = interval;
 }
 #endif
