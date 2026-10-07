@@ -13,6 +13,7 @@ b32   os_release(void *ptr); // a whole os_reserve range
 b32   os_write_file(String8 path, String8 data);
 void  os_fatal(String8 message); // does not return
 u64   os_time_us(void);              // monotonic microseconds
+void  os_set_window_title(String8 title);
 #if TEAL_DEV
 void  os_log_write(String8 text);
 #endif

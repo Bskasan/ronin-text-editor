@@ -49,6 +49,7 @@ typedef struct Platform {
     i64 top_line;
     b32 top_line_end;
     u64 seed;
+    i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
     b32 bench_text;
     b32 bench_buffer;
@@ -370,6 +371,17 @@ u64 os_time_us(void) {
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&freq);
     return (u64)(now.QuadPart / freq.QuadPart * 1000000 + now.QuadPart % freq.QuadPart * 1000000 / freq.QuadPart);
+}
+
+void os_set_window_title(String8 title) {
+    Platform *p = g_platform;
+    if (!p || !p->hwnd) return;
+    u64 mark = arena_pos(&p->scratch);
+    SetWindowTextW(p->hwnd, (WCHAR *)str16_from_str8(&p->scratch, title).data);
+    arena_pop_to(&p->scratch, mark);
+#if TEAL_DEV
+    p->title_sets++;
+#endif
 }
 
 void os_fatal(String8 message) {
@@ -894,6 +906,17 @@ static i32 win32_smoke_check_frame(Platform *p, b32 buffer_view) {
     return result;
 }
 
+// The title shows the buffer name and was set exactly once over all the smoke frames.
+static i32 win32_smoke_check_title(Platform *p) {
+    WCHAR text[256];
+    i32 len = GetWindowTextW(p->hwnd, text, ARRAY_COUNT(text));
+    String8 title = str8_from_str16(&p->scratch, (u16 *)text, len);
+    b32 ok = str8_equal(title, STR8_LIT("*scratch* - teal")) && p->title_sets == 1;
+    LOG("smoke: %s: window title '%S', set %d time(s); expected '*scratch* - teal', once", ok ? "ok" : "FAIL", title, p->title_sets);
+    arena_reset(&p->scratch);
+    return ok ? EXIT_OK : EXIT_PIXEL_MISMATCH;
+}
+
 static b32 win32_write_png(Platform *p, String8 path, u8 *bgra, i32 w, i32 h) {
     String8 png = png_encode_bgra(&p->scratch, bgra, w, h, (i64)w * 4);
     if (!os_write_file(path, png)) {
@@ -1277,7 +1300,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 r_request_capture(p->renderer);
                 win32_frame(p);
                 i32 code2 = win32_smoke_check_frame(p, 1);
-                p->exit_code = code != EXIT_OK ? code : code2;
+                i32 code3 = win32_smoke_check_title(p);
+                p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3;
                 p->quit = 1;
                 break;
             }
