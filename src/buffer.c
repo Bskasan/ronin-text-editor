@@ -1,5 +1,9 @@
 // buffer.c — see buffer.h.
 
+#include <emmintrin.h> // SSE2 newline scan (compiler intrinsics, not the CRT)
+#include <intrin.h>    // _BitScanForward
+
+#define BUFFER_CHUNK KB(64) // fixed buffer for converting reads and writes
 #define BUFFER_COMMIT_GRANULARITY KB(64)
 #define BUFFER_GAP_MIN KB(64)
 #define BUFFER_GAP_MAX MB(64)
@@ -276,4 +280,235 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
     buf->modified = 1;
     buf->edit_count++;
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+
+static b32 buffer_push_newline(Buffer *buf, i64 pos) {
+    if (buf->nl_front == buf->nl_back && !buffer_reserve_nl_gap(buf, MAX(buf->nl_front / 4, 1))) return 0;
+    buf->nl[buf->nl_front++] = (u32)pos;
+    return 1;
+}
+
+// Index of the first '\n' in t[from, n), or n. 16 bytes at a time.
+static i64 buffer_find_newline(u8 *t, i64 from, i64 n) {
+    __m128i newline = _mm_set1_epi8('\n');
+    i64 i = from;
+    for (; i + 16 <= n; i += 16) {
+        int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(t + i)), newline));
+        if (mask) {
+            unsigned long bit;
+            _BitScanForward(&bit, (unsigned long)mask);
+            return i + (i64)bit;
+        }
+    }
+    for (; i < n; i++) {
+        if (t[i] == '\n') return i;
+    }
+    return n;
+}
+
+// One pass over the freshly loaded text[0, n): builds the newline index and decides the
+// line-ending mode. CRs before LFs are stripped in place while every LF so far was a CRLF; the
+// first bare LF after that restores the processed prefix. Returns the final length, or -1 when
+// the index does not fit.
+static i64 buffer_scan_loaded(Buffer *buf, i64 n) {
+    u8 *t = buf->text;
+    enum { UNDECIDED, STRIP, KEEP } mode = UNDECIDED;
+    i64 r = 0, w = 0; // read and write positions; w < r only while stripping
+    i64 crlf = 0, bare = 0;
+    for (;;) {
+        i64 i = buffer_find_newline(t, r, n);
+        if (i == n) break;
+        // t[i - 1] is still original while stripping: writes stay below w, and w <= r <= i.
+        b32 cr = i > 0 && t[i - 1] == '\r';
+        crlf += cr;
+        bare += !cr;
+        if (mode == UNDECIDED) mode = cr ? STRIP : KEEP;
+        if (mode == STRIP && !cr) {
+            // Mixed: put the stripped CRs back. Walk the recorded newlines from the last one,
+            // moving each segment right by the number of CRs before it.
+            i64 src_end = w, dst_end = r;
+            for (i64 j = buf->nl_front - 1; j >= 0; j--) {
+                i64 p = buf->nl[j]; // compacted position of the '\n'
+                i64 len = src_end - (p + 1);
+                memmove(t + dst_end - len, t + p + 1, (size_t)len);
+                dst_end -= len;
+                t[--dst_end] = '\n';
+                t[--dst_end] = '\r';
+                buf->nl[j] = (u32)(dst_end + 1);
+                src_end = p;
+            }
+            ASSERT(dst_end == src_end);
+            w = r;
+            mode = KEEP;
+        }
+        if (mode == STRIP) {
+            i64 len = i - 1 - r; // the line without its CR
+            memmove(t + w, t + r, (size_t)len);
+            w += len;
+            t[w] = '\n';
+            if (!buffer_push_newline(buf, w)) return -1;
+            w++;
+        } else {
+            if (!buffer_push_newline(buf, i)) return -1;
+            w = i + 1;
+        }
+        r = i + 1;
+    }
+    if (mode == STRIP) {
+        memmove(t + w, t + r, (size_t)(n - r));
+        n = w + (n - r);
+    }
+    buf->eol = crlf && bare ? BUFFER_EOL_MIXED : crlf ? BUFFER_EOL_CRLF : BUFFER_EOL_LF;
+    return n;
+}
+
+// UTF-8 for any 16-bit unit, lone surrogates included (3-byte WTF-8, which utf8_encode refuses).
+static i64 buffer_encode_unit(u32 cp, u8 *out) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) {
+        out[0] = (u8)(0xE0 | (cp >> 12));
+        out[1] = (u8)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (u8)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    return utf8_encode(cp, out);
+}
+
+// Streams UTF-16 into the buffer as UTF-8 through a fixed chunk: `prefix` (the even number of
+// bytes already read after the BOM), then `bytes` more from the file. The text grows at
+// gap_start. A pair split by a chunk boundary is joined; unpaired surrogates stay as WTF-8.
+static OsFileStatus buffer_load_utf16(Buffer *buf, OsFile file, u8 *prefix, i64 prefix_len, i64 bytes, b32 big_endian) {
+    u8 chunk[BUFFER_CHUNK];
+    u32 high = 0; // pending high surrogate
+    memcpy(chunk, prefix, (size_t)prefix_len);
+    i64 have = prefix_len;
+    while (have + bytes > 0) {
+        i64 c = MIN(bytes, (i64)sizeof(chunk) - have); // keeps the chunk even: everything is
+        OsFileStatus status = os_file_read(file, chunk + have, c);
+        if (status != OS_FILE_OK) return status;
+        bytes -= c;
+        c += have;
+        have = 0;
+        // At most 3 bytes per unit, plus a flushed pending surrogate.
+        if (!buffer_reserve_gap(buf, c / 2 * 3 + 3)) return OS_FILE_OUT_OF_MEMORY;
+        u8 *out = buf->text + buf->gap_start;
+        for (i64 i = 0; i < c; i += 2) {
+            u32 u = big_endian ? ((u32)chunk[i] << 8 | chunk[i + 1]) : ((u32)chunk[i + 1] << 8 | chunk[i]);
+            if (high) {
+                if (u >= 0xDC00 && u <= 0xDFFF) {
+                    out += utf8_encode(0x10000 + ((high - 0xD800) << 10) + (u - 0xDC00), out);
+                    high = 0;
+                    continue;
+                }
+                out += buffer_encode_unit(high, out);
+                high = 0;
+            }
+            if (u >= 0xD800 && u <= 0xDBFF) high = u;
+            else out += buffer_encode_unit(u, out);
+        }
+        buf->gap_start = out - buf->text;
+    }
+    if (high) {
+        if (!buffer_reserve_gap(buf, 3)) return OS_FILE_OUT_OF_MEMORY;
+        buf->gap_start += buffer_encode_unit(high, buf->text + buf->gap_start);
+    }
+    return OS_FILE_OK;
+}
+
+static String8 buffer_file_name(String8 path) {
+    i64 i = path.len;
+    while (i > 0 && path.data[i - 1] != '\\' && path.data[i - 1] != '/') i--;
+    return str8(path.data + i, path.len - i);
+}
+
+void buffer_set_path(Buffer *buf, String8 full_path) {
+    buf->path = str8_copy(&buf->meta, full_path);
+    buf->name = buffer_file_name(buf->path);
+}
+
+OsFileStatus buffer_load_file(Buffer *buf, String8 path) {
+    ASSERT(buffer_size(buf) == 0 && buffer_nl_count(buf) == 0);
+    u64 meta_mark = arena_pos(&buf->meta);
+    String8 full = os_full_path(&buf->meta, path);
+    if (!full.len) return OS_FILE_BAD_PATH;
+
+    OsFile file;
+    OsFileInfo info;
+    OsFileStatus status = os_file_open_read(full, &file, &info);
+    if (status != OS_FILE_OK) {
+        arena_pop_to(&buf->meta, meta_mark);
+        return status;
+    }
+    if (info.size > (i64)BUFFER_MAX_FILE_SIZE) status = OS_FILE_TOO_LARGE;
+
+    u8 head[4] = { 0 };
+    i64 head_len = MIN(info.size, 4);
+    if (status == OS_FILE_OK) status = os_file_read(file, head, head_len);
+    if (status == OS_FILE_OK) {
+        b32 even = (info.size & 1) == 0;
+        if (head_len >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF) buf->encoding = BUFFER_UTF8_BOM;
+        else if (head_len >= 2 && even && head[0] == 0xFF && head[1] == 0xFE) buf->encoding = BUFFER_UTF16LE;
+        else if (head_len >= 2 && even && head[0] == 0xFE && head[1] == 0xFF) buf->encoding = BUFFER_UTF16BE;
+        else buf->encoding = BUFFER_UTF8;
+
+        if (buf->encoding == BUFFER_UTF8 || buf->encoding == BUFFER_UTF8_BOM) {
+            // Straight into buffer memory: the head bytes after the BOM, then the rest of the file.
+            i64 skip = buf->encoding == BUFFER_UTF8_BOM ? 3 : 0;
+            i64 n = info.size - skip;
+            if (!buffer_reserve_gap(buf, n)) {
+                status = OS_FILE_OUT_OF_MEMORY;
+            } else {
+                memcpy(buf->text, head + skip, (size_t)(head_len - skip));
+                status = os_file_read(file, buf->text + head_len - skip, info.size - head_len);
+                buf->gap_start = n;
+            }
+        } else {
+            status = buffer_load_utf16(buf, file, head + 2, head_len - 2, info.size - head_len,
+                                       buf->encoding == BUFFER_UTF16BE);
+        }
+    }
+    os_file_close(file);
+
+    if (status == OS_FILE_OK) {
+        i64 n = buffer_scan_loaded(buf, buf->gap_start);
+        if (n < 0) status = OS_FILE_OUT_OF_MEMORY;
+        else buf->gap_start = n;
+    }
+    if (status != OS_FILE_OK) {
+        // Back to an empty buffer; committed memory stays for reuse.
+        buf->gap_start = 0;
+        buf->gap_end = buf->text_cap;
+        buf->nl_front = 0;
+        buf->nl_back = buf->nl_cap;
+        buf->encoding = BUFFER_UTF8;
+        buf->eol = BUFFER_EOL_LF;
+        arena_pop_to(&buf->meta, meta_mark);
+        return status;
+    }
+    buffer_set_path(buf, full);
+    buf->read_only = info.read_only;
+    buf->modified = 0;
+    buf->file_size = info.size;
+    buf->file_time = info.write_time;
+    return OS_FILE_OK;
+}
+
+const char *buffer_status_text(OsFileStatus status) {
+    switch (status) {
+    case OS_FILE_OK:                return "ok";
+    case OS_FILE_NOT_FOUND:         return "no such file or directory";
+    case OS_FILE_ACCESS_DENIED:     return "access denied";
+    case OS_FILE_SHARING_VIOLATION: return "in use by another program";
+    case OS_FILE_TOO_LARGE:         return "larger than 1024 MB";
+    case OS_FILE_DISK_FULL:         return "disk full";
+    case OS_FILE_IS_DIRECTORY:      return "is a directory";
+    case OS_FILE_BAD_PATH:          return "invalid path";
+    case OS_FILE_READ_ONLY:         return "file is read-only";
+    case OS_FILE_OUT_OF_MEMORY:     return "out of memory";
+    case OS_FILE_NO_PATH:           return "buffer is not visiting a file";
+    case OS_FILE_IO_ERROR:          return "I/O error";
+    }
+    return "unknown error";
 }
