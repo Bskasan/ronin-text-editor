@@ -327,7 +327,67 @@ static void cmd_end_of_buffer(CommandContext *ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Editing commands (one cursor each). Other cursors and the top of the window follow
+// through their markers.
+
+static b32 cmd_writable(CommandContext *ctx) {
+    Buffer *buf = ctx->view->buffer;
+    if (buf->read_only && !buf->inhibit_read_only) {
+        echo_message(ctx->echo, "Buffer is read-only: %S", buf->name);
+        return 0;
+    }
+    return 1;
+}
+
+static void cmd_replace(CommandContext *ctx, i64 start, i64 end, String8 text) {
+    Buffer *buf = ctx->view->buffer;
+    if (!buffer_replace(buf, start, end, text)) echo_message(ctx->echo, "Buffer is full: %S", buf->name);
+}
+
+static void cmd_insert(CommandContext *ctx, String8 text) {
+    if (!cmd_writable(ctx)) return;
+    i64 p = cmd_point(ctx);
+    cmd_replace(ctx, p, p, text); // point advances over it
+}
+
+static void cmd_self_insert(CommandContext *ctx) {
+    u8 bytes[4];
+    i64 n = utf8_encode(ctx->codepoint, bytes);
+    cmd_insert(ctx, str8(bytes, n));
+}
+
+static void cmd_newline(CommandContext *ctx) {
+    cmd_insert(ctx, STR8_LIT("\n"));
+}
+
+static void cmd_delete_backward_char(CommandContext *ctx) {
+    if (!cmd_writable(ctx)) return;
+    i64 p = cmd_point(ctx);
+    if (p <= 0) echo_message(ctx->echo, "Beginning of buffer");
+    else cmd_replace(ctx, buffer_prev_char(ctx->view->buffer, p), p, STR8_LIT(""));
+}
+
+static void cmd_delete_char(CommandContext *ctx) {
+    if (!cmd_writable(ctx)) return;
+    Buffer *buf = ctx->view->buffer;
+    i64 p = cmd_point(ctx);
+    if (p >= buffer_size(buf)) echo_message(ctx->echo, "End of buffer");
+    else cmd_replace(ctx, p, buffer_next_char(buf, p), STR8_LIT(""));
+}
+
+// ---------------------------------------------------------------------------
 // Commands on the whole View (COMMAND_ONCE)
+
+static void cmd_save_buffer(CommandContext *ctx) {
+    Buffer *buf = ctx->view->buffer;
+    if (!buf->modified) {
+        echo_message(ctx->echo, "(No changes need to be saved)");
+        return;
+    }
+    OsFileStatus status = buffer_save(buf);
+    if (status == OS_FILE_OK) echo_message(ctx->echo, "Wrote %S", buf->path);
+    else echo_message(ctx->echo, "Cannot save %S: %s", buf->name, buffer_status_text(status));
+}
 
 static void cmd_scroll_up_command(CommandContext *ctx) {
     View *v = ctx->view;
@@ -372,3 +432,8 @@ const Command CMD_END_OF_BUFFER          = { "end-of-buffer", cmd_end_of_buffer,
 const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_command, COMMAND_ONCE };
 const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE };
 const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
+const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, 0 };
+const Command CMD_NEWLINE                = { "newline", cmd_newline, 0 };
+const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, 0 };
+const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, 0 };
+const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
