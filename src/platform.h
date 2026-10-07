@@ -9,11 +9,60 @@
 
 void *os_reserve(u64 size);
 b32   os_commit(void *ptr, u64 size);
+b32   os_release(void *ptr); // a whole os_reserve range
 b32   os_write_file(String8 path, String8 data);
 void  os_fatal(String8 message); // does not return
 u64   os_time_us(void);              // monotonic microseconds
 #if TEAL_DEV
 void  os_log_write(String8 text);
+#endif
+
+// ---------------------------------------------------------------------------
+// Files. Every failure is reported as a status the caller can show; nothing asserts.
+
+typedef enum OsFileStatus {
+    OS_FILE_OK,
+    OS_FILE_NOT_FOUND,         // file or directory
+    OS_FILE_ACCESS_DENIED,
+    OS_FILE_SHARING_VIOLATION, // open elsewhere without sharing
+    OS_FILE_TOO_LARGE,
+    OS_FILE_DISK_FULL,
+    OS_FILE_IS_DIRECTORY,
+    OS_FILE_BAD_PATH,
+    OS_FILE_READ_ONLY,
+    OS_FILE_OUT_OF_MEMORY,
+    OS_FILE_NO_PATH,           // the buffer is not visiting a file
+    OS_FILE_IO_ERROR,          // anything else
+} OsFileStatus;
+
+typedef struct OsFile {
+    void *handle;
+} OsFile;
+
+typedef struct OsFileInfo {
+    b32 exists;
+    b32 is_dir;
+    b32 read_only;
+    b32 swap_ok;    // replacing the file by another one keeps it intact: not a symlink, one hard link
+    i64 size;
+    u64 write_time; // FILETIME ticks
+} OsFileInfo;
+
+String8      os_full_path(Arena *arena, String8 path); // absolute, normalized; empty on failure
+OsFileStatus os_file_info(String8 path, OsFileInfo *info);
+OsFileStatus os_file_open_read(String8 path, OsFile *file, OsFileInfo *info); // shares read, write, delete
+OsFileStatus os_file_read(OsFile file, void *dst, i64 size); // exactly size bytes
+// A new, empty file next to `target` (same directory, so it can replace it); its path goes into `arena`.
+OsFileStatus os_file_create_temp(String8 target, Arena *arena, OsFile *file, String8 *temp_path);
+OsFileStatus os_file_open_overwrite(String8 path, OsFile *file); // opened (or created) and truncated
+OsFileStatus os_file_write(OsFile file, void *data, i64 size);
+OsFileStatus os_file_flush(OsFile file); // to the disk, not just the cache
+void         os_file_close(OsFile file);
+// Swaps `temp` in as `target`, keeping the target's attributes; a plain move when target does not exist.
+OsFileStatus os_file_replace(String8 target, String8 temp);
+void         os_file_delete(String8 path);
+#if TEAL_DEV
+b32          os_dev_set_read_only(String8 path, b32 read_only);
 #endif
 
 // ---------------------------------------------------------------------------
