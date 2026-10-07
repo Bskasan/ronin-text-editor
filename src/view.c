@@ -73,6 +73,23 @@ void echo_message(Echo *e, const char *fmt, ...) {
     i64 n = fmt_v(e->text, ECHO_CAP, fmt, args);
     va_end(args);
     e->len = (i32)MIN(n, (i64)ECHO_CAP);
+    echo_log(e, str8(e->text, e->len));
+}
+
+void echo_log(Echo *e, String8 text) {
+    Buffer *b = e->log;
+    if (!b) return;
+    u8 line[ECHO_CAP + 1];
+    i64 n = MIN(text.len, (i64)ECHO_CAP);
+    memcpy(line, text.data, (size_t)n);
+    line[n++] = '\n';
+    b32 inhibit = b->inhibit_read_only;
+    b->inhibit_read_only = 1;
+    buffer_replace(b, buffer_size(b), buffer_size(b), str8(line, n));
+    i64 lines = buffer_line_count(b) - 1; // every message ends with a newline
+    if (lines > ECHO_LOG_LINES) buffer_replace(b, 0, buffer_line_start(b, lines - ECHO_LOG_LINES), STR8_LIT(""));
+    b->inhibit_read_only = inhibit;
+    b->modified = 0;
 }
 
 void echo_set(Echo *e, String8 text) {
@@ -186,6 +203,86 @@ void view_set_point_at(View *v, i64 row, i64 col) {
 void view_goto_line_column(View *v, i64 line, i64 col) {
     line = CLAMP(line, 0, buffer_line_count(v->buffer) - 1);
     view_set_point(v, &v->cursors[0], view_offset_at_column(v->buffer, line, MAX(col, 0)));
+}
+
+// ---------------------------------------------------------------------------
+// The buffer list
+
+void buffer_list_init(BufferList *list) {
+    memset(list, 0, sizeof(*list));
+    list->arena = arena_create(BUFFER_LIST_RESERVE);
+    list->entries = (BufferEntry *)list->arena.base;
+}
+
+i32 buffer_list_destroy(BufferList *list) {
+    i32 leaks = 0;
+    for (i32 i = 0; i < list->count; i++) {
+        BufferEntry *e = &list->entries[i];
+        buffer_marker_destroy(e->buffer, e->point);
+        buffer_marker_destroy(e->buffer, e->top);
+        leaks += (i32)e->buffer->marker_live;
+        if (!buffer_destroy(e->buffer)) leaks++;
+    }
+    os_release(list->arena.base);
+    list->count = 0;
+    return leaks;
+}
+
+BufferEntry *buffer_list_add(BufferList *list, Buffer *buf) {
+    BufferEntry *e = PUSH_STRUCT(&list->arena, BufferEntry);
+    ASSERT(e == list->entries + list->count);
+    e->buffer = buf;
+    e->point = buffer_marker_create(buf, 0, 1);
+    e->top = buffer_marker_create(buf, 0, 0);
+    list->count++;
+    return e;
+}
+
+i32 buffer_list_index(BufferList *list, Buffer *buf) {
+    for (i32 i = 0; i < list->count; i++) if (list->entries[i].buffer == buf) return i;
+    return -1;
+}
+
+static u8 view_ascii_lower(u8 c) {
+    return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c;
+}
+
+Buffer *buffer_list_find_path(BufferList *list, String8 full_path) {
+    for (i32 i = 0; i < list->count; i++) {
+        String8 p = list->entries[i].buffer->path;
+        if (!p.len || p.len != full_path.len) continue;
+        i64 k = 0;
+        while (k < p.len && view_ascii_lower(p.data[k]) == view_ascii_lower(full_path.data[k])) k++;
+        if (k == p.len) return list->entries[i].buffer;
+    }
+    return NULL;
+}
+
+void view_switch_buffer(View *v, BufferList *list, Buffer *buf) {
+    if (v->buffer == buf) return;
+    i32 old = buffer_list_index(list, v->buffer);
+    if (old >= 0) {
+        BufferEntry *e = &list->entries[old];
+        buffer_marker_set(v->buffer, e->point, view_point(v, &v->cursors[0]));
+        buffer_marker_set(v->buffer, e->top, buffer_marker_get(v->buffer, v->top));
+        e->left_col = v->left_col;
+    }
+    for (i32 i = 0; i < v->cursor_count; i++) {
+        buffer_marker_destroy(v->buffer, v->cursors[i].point);
+        buffer_marker_destroy(v->buffer, v->cursors[i].mark);
+    }
+    buffer_marker_destroy(v->buffer, v->top);
+    arena_reset(&v->cursor_arena);
+    v->cursor_count = 0;
+
+    i32 now = buffer_list_index(list, buf);
+    BufferEntry *e = now >= 0 ? &list->entries[now] : NULL;
+    v->buffer = buf;
+    v->top = buffer_marker_create(buf, e ? buffer_marker_get(buf, e->top) : 0, 0);
+    view_add_cursor(v, e ? buffer_marker_get(buf, e->point) : 0);
+    v->left_col = e ? e->left_col : 0;
+    v->recenter_step = 0;
+    v->recenter_row = -1;
 }
 
 void view_run_command(CommandContext *ctx, const Command *cmd) {

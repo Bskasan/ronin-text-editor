@@ -246,6 +246,14 @@ String8 str8_fmt(Arena *arena, const char *fmt, ...) {
     return s;
 }
 
+i64 fmt_buf(u8 *out, i64 cap, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    i64 n = fmt_v(out, cap, fmt, args);
+    va_end(args);
+    return MIN(n, cap);
+}
+
 // ---------------------------------------------------------------------------
 // Dev log
 

@@ -23,17 +23,21 @@ i64 view_column_of(Buffer *buf, i64 offset); // visual column of offset in its l
 i64 view_offset_at_column(Buffer *buf, i64 line, i64 col);
 
 // ---------------------------------------------------------------------------
-// Echo area messages. A message stays until the next key event (the app clears it).
+// Echo area messages. A message stays until the next key event (the app clears it). Every
+// message is also appended to the log buffer (*Messages*), which keeps the last ECHO_LOG_LINES.
 
 #define ECHO_CAP 1024
+#define ECHO_LOG_LINES 1000
 
 struct Echo {
     u8 text[ECHO_CAP];
     i32 len;
+    Buffer *log; // *Messages*, read-only, written through inhibit_read_only; NULL = not logged
 };
 
-void echo_message(Echo *e, const char *fmt, ...); // the base.h formatter
-void echo_set(Echo *e, String8 text);              // shown, not a message (a key prefix such as "C-x-")
+void echo_message(Echo *e, const char *fmt, ...); // shown and logged (the base.h formatter)
+void echo_set(Echo *e, String8 text);              // shown only (a key prefix such as "C-x-")
+void echo_log(Echo *e, String8 text);              // logged only (config diagnostics)
 void echo_clear(Echo *e);
 
 // ---------------------------------------------------------------------------
@@ -75,6 +79,36 @@ void view_ensure_visible(View *view);
 void view_scroll_lines(View *view, i64 lines);             // the wheel: moves the top, drags point along
 void view_set_point_at(View *view, i64 row, i64 col);      // a click: text row and absolute visual column
 void view_goto_line_column(View *view, i64 line, i64 col); // 0-based; the line is clamped
+
+// ---------------------------------------------------------------------------
+// The buffer list. Each entry remembers where its buffer was last shown, so switching a view
+// away and back restores point and the scroll position (Emacs keeps a point per buffer).
+
+#define BUFFER_LIST_RESERVE MB(16) // address space for the entries
+
+typedef struct BufferEntry {
+    Buffer *buffer;
+    BufferMarker point, top; // saved when a view switches away from the buffer
+    i64 left_col;
+} BufferEntry;
+
+typedef struct BufferList {
+    Arena arena; // holds only `entries`, so the array stays contiguous
+    BufferEntry *entries;
+    i32 count;
+} BufferList;
+
+void         buffer_list_init(BufferList *list);
+// Releases its markers, then destroys every buffer and the array. Returns what leaked: markers
+// still live (views must be destroyed first) and buffers whose memory could not be released.
+i32          buffer_list_destroy(BufferList *list);
+BufferEntry *buffer_list_add(BufferList *list, Buffer *buf);
+i32          buffer_list_index(BufferList *list, Buffer *buf); // -1 if not listed
+// The buffer visiting `full_path` (compared case-insensitively for ASCII, as Windows does), or NULL.
+Buffer      *buffer_list_find_path(BufferList *list, String8 full_path);
+// Shows `buf` in the view: saves where the view was in its old buffer, then restores where `buf`
+// was last shown (the start for a new one). One cursor afterwards.
+void         view_switch_buffer(View *view, BufferList *list, Buffer *buf);
 
 // ---------------------------------------------------------------------------
 // Commands (command.h). view_run_command is the single place that loops over the cursors
