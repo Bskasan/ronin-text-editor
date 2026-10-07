@@ -896,6 +896,29 @@ static b32 test_failures(Test *t) {
     return 1;
 }
 
+// The language from the extension, through buffer_set_path.
+static b32 test_language(Test *t) {
+    static const struct { const char *path; BufferLanguage language; } cases[] = {
+        { "C:\\x\\a.jai", BUFFER_LANG_JAI }, { "a.c", BUFFER_LANG_C }, { "A.H", BUFFER_LANG_C },
+        { "a.cpp", BUFFER_LANG_CPP }, { "a.hpp", BUFFER_LANG_CPP }, { "a.cc", BUFFER_LANG_CPP },
+        { "a.cxx", BUFFER_LANG_CPP }, { "a.hh", BUFFER_LANG_CPP }, { "a.cs", BUFFER_LANG_CSHARP },
+        { "a.js", BUFFER_LANG_JAVASCRIPT }, { "a.mjs", BUFFER_LANG_JAVASCRIPT }, { "a.cjs", BUFFER_LANG_JAVASCRIPT },
+        { "a.jsx", BUFFER_LANG_JAVASCRIPT }, { "a.ts", BUFFER_LANG_TYPESCRIPT }, { "a.Tsx", BUFFER_LANG_TYPESCRIPT },
+        { "a.txt", BUFFER_LANG_FUNDAMENTAL }, { "Makefile", BUFFER_LANG_FUNDAMENTAL }, { "a.c.bak", BUFFER_LANG_FUNDAMENTAL },
+        { "dir.c\\file", BUFFER_LANG_FUNDAMENTAL }, { "a.", BUFFER_LANG_FUNDAMENTAL },
+    };
+    Buffer *buf = buffer_create(STR8_LIT("lang"));
+    TEST_CHECK(t, buf, "language: buffer_create failed");
+    for (i64 i = 0; i < ARRAY_COUNT(cases); i++) {
+        buffer_set_path(buf, str8_cstr(cases[i].path));
+        TEST_CHECK(t, buf->language == cases[i].language, "language: %s gave %s, expected %s", cases[i].path,
+                   buffer_language_name(buf->language), buffer_language_name(cases[i].language));
+    }
+    buffer_destroy(buf);
+    LOG("test: ok: language from the file extension");
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // --bench-buffer (the frame part runs in the platform layer, through the real app path)
 
@@ -1036,6 +1059,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_edits(&t);
     arena_reset(&t.arena);
     test_failures(&t);
+    arena_reset(&t.arena);
+    test_language(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

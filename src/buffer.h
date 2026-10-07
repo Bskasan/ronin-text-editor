@@ -25,6 +25,16 @@ typedef enum BufferEol {
     BUFFER_EOL_MIXED, // stored and written byte for byte
 } BufferEol;
 
+typedef enum BufferLanguage {
+    BUFFER_LANG_FUNDAMENTAL,
+    BUFFER_LANG_JAI,
+    BUFFER_LANG_C,
+    BUFFER_LANG_CPP,
+    BUFFER_LANG_CSHARP,
+    BUFFER_LANG_JAVASCRIPT,
+    BUFFER_LANG_TYPESCRIPT,
+} BufferLanguage;
+
 // A position that survives edits: buffer_replace adjusts every live marker. Handle = slot + 1.
 typedef u32 BufferMarker;
 
@@ -69,6 +79,7 @@ typedef struct Buffer {
     String8 name;
     BufferEncoding encoding;
     BufferEol eol;
+    BufferLanguage language; // from the file extension, set with the path
     b32 modified;
     b32 read_only;
     b32 inhibit_read_only; // set around program-made edits of read-only buffers (build output)
@@ -117,7 +128,8 @@ void         buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos); // clamped
 // Files. Loading needs an empty buffer; on failure it stays empty and the status says why.
 // Opening a missing file gives OS_FILE_NOT_FOUND; the caller may then visit the path as a new file.
 OsFileStatus buffer_load_file(Buffer *buf, String8 path);
-void         buffer_set_path(Buffer *buf, String8 full_path); // also sets the name
+void         buffer_set_path(Buffer *buf, String8 full_path); // also sets the name and the language
+const char  *buffer_language_name(BufferLanguage language);    // "C", "C++", "Fundamental", ...
 // Saving writes a temp file next to the target, flushes it to disk and swaps it in with
 // ReplaceFileW, or writes in place when a swap is not possible. Encoding and line-ending mode
 // are the buffer's. A read-only target is refused untouched. Save-as visits the new path.
