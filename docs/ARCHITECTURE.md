@@ -11,16 +11,17 @@
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
 | `src/font.h/.c` | metrics, CPU glyph atlas (shelf packer), glyph cache, `font_draw_text` |
-| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, file load (encodings, line endings) and save |
-| `src/app.c` | editor core (Phase 3: throwaway one-buffer display, scrolling, mode line, minibuffer message; dev: the Phase 2 sample behind `--sample`) |
-| `src/test.c` | dev only: `--test` (buffer fuzz, file round trips, failures) and the `--bench-buffer` core |
+| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, markers, language from the extension, file load (encodings, line endings) and save |
+| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), `view_run_command`, motion and editing commands, echo messages |
+| `src/app.c` | editor core: layout of views and echo area, drawing of text / cursors / mode lines, window title, temporary key bindings, mouse; dev: the Phase 2 sample behind `--sample`, smoke probes |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view tests, file round trips, failures) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
 | `src/win32_main.c` | wWinMain, window, message loop, input translation, os_* implementation, dev flags |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `font.c`, `buffer.c`, `test.c`, later view/commands) includes only `platform.h` and `render.h`;
+Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `test.c`) includes only `platform.h` and `render.h`;
 `font.c` additionally calls `font_backend.h`.
 
 ## Startup and frame loop
@@ -80,6 +81,22 @@ as text events.
 
 Startup with the 100 MB file on the command line: first Present ~190 ms, same as with no file
 (the load overlaps the device creation). `--bench-text` (5,680 glyphs): build 33 us avg.
+
+## Measurements (Phase 4)
+
+`build\teal_bench.exe`, same machine and file. `--bench-view`, one event per frame through
+`app_update_and_render` (command + frame build; flush + Present(0, 0) separately, ~0.1 ms):
+
+| what | command + frame build |
+|---|---|
+| 10,000 next-line from the top | 12 us avg, 246 us worst |
+| 1,000 PageDown | 15 us avg, 75 us worst |
+| 100 C-End / 100 C-Home | 11 / 12 us avg, 47 / 42 us worst |
+| 10,000 self-inserts at line 1,000,000 | 25 us avg; worst 5.0 ms = the first insert moving the gap to the middle |
+
+`--bench-buffer` frames (now with cursor and mode line): 13 / 35 / 15 us avg at top / middle /
+end. Release exe 156,672 bytes (132,608 before Phase 4), same six imports. Startup ~187 ms,
+with or without the 100 MB file.
 
 ## Roadmap
 
@@ -236,6 +253,18 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
   visual column); the mode line shows the column 0-based. Any unrecognized argument starting
   with "--" exits immediately with code 10, before a window exists.
 - The window title is "<buffer name> - teal", set only when it changes.
+- Motions follow Emacs: next-line on the last line goes to the end of the buffer ("End of
+  buffer"), previous-line on the first to the beginning; C-f / C-b / C-d / DEL at a limit show
+  the message and do nothing; word and paragraph motions stop silently. A paragraph separator
+  is a line of spaces and tabs; backward-paragraph at the start of a line right after an empty
+  line stops on that line (Emacs' special case). scroll-up/down-command move by the window
+  height minus 2 and refuse at the limits with a message; recenter-top-bottom cycles center,
+  top, bottom; end-of-buffer does Emacs' (recenter -3) when the end is not visible.
+- Mode line: ` -:**-  name  NN%  Lline Ccol  (Language)  encoding eol`, the name padded to 12
+  cells (Emacs %12b), position Top / Bot / All / NN% (of the top of the window), line 1-based,
+  column 0-based. Text areas have a 4 px (DPI-scaled) left padding.
+- The mouse: a left click activates the view and sets point; the wheel scrolls the view under
+  the mouse, 3 lines per notch.
 
 ## Later
 

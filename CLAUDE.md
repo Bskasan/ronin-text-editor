@@ -70,42 +70,56 @@ build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
 src/shaders/*.hlsl with fxc into build\gen\*.h, compiles win32_dwrite.cpp, then the unity
 build, and prints the exe size.
 
+Command line, every build: `teal [+LINE[:COLUMN]] [file]` (1-based, as in Emacs). Any
+unrecognized argument starting with `--` (or a flag missing its value) exits at once with
+code 10, before a window exists.
+
 `--startup-ms` works in both builds: it exits right after the first Present with exit code =
 ms since process creation. Git Bash `$?` truncates exit codes to 8 bits, so read it from
 PowerShell: `(Start-Process build\teal.exe -ArgumentList --startup-ms -PassThru -Wait).ExitCode`.
 
 Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
 
-    build/teal_debug.exe --test [--seed N]                # headless buffer/file tests, exit 0 = pass
+    build/teal_debug.exe --test [--seed N]                # headless buffer/file/view tests, exit 0 = pass
     build/teal_debug.exe --smoke                          # exit 0 = pass
     build/teal_debug.exe --screenshot build/shots/x.png   # window hidden, one frame
     build/teal_debug.exe --sample ...                     # the Phase 2 colored sample (smoke implies it)
-    build/teal_debug.exe <file> --top-line N|end ...      # open a file, initial scroll (for screenshots)
+    build/teal_debug.exe +LINE:COL <file> --screenshot .. # open a file at a position (cursor drawn focused)
     build/teal_debug.exe --dump-atlas build/shots/a.png   # the CPU glyph atlas
     build/teal_debug.exe --render-mode classic|natural|symmetric   (default symmetric)
     build/teal_debug.exe --scale 150                      # force the DPI scale (percent)
     build/teal_debug.exe --bench-text                     # 300 frames, Present(0, 0)
     build/teal_bench.exe --bench-buffer                   # 100 MB file (build\tmp): load, inserts,
                                                           # lookups, save, frames at top/middle/end
+    build/teal_bench.exe --bench-view                     # same file, key/text events through the app:
+                                                          # next-line, PageDown, C-End/C-Home, typing
 
 `--smoke` shows the window without activating it, renders 3 frames, reads back the third
 and checks the probes from app_dev_probes: exact background / mode line / cursor pixels, a
 text cell that is not background, a space cell that is exactly background, '_' inked only
 in its lower part (catches upside-down bitmaps), and the ClearType channel order on a white
 '|' (normalized coverage; pixel geometry from the rendering params). Then it switches to the
-buffer view with a known buffer and checks a fourth frame (app_dev_buffer_probes): a text
-cell drawn, an empty cell exactly background, a tab leaving columns 0-3 empty with the next
-character at column 4, the mode line present. It also requires a
-non-empty atlas, the D3D11 debug layer active with zero WARNING+ messages, and no leaks
+buffer view with a known buffer and checks a fourth frame without focus (app_dev_buffer_probes
+stage 0): a text cell drawn, an empty cell exactly background, a tab leaving columns 0-3 empty
+with the next character at column 4, ^A taking two cells, a hollow cursor (edges in the
+cursor color, inside background), the mode line with the buffer name and nothing after its
+text. A synthetic click on a character with focus forced on gives a fifth frame (stage 1): a
+filled cursor there with the glyph drawn over it, the old cursor cell cleared. The window
+title must be "*scratch* - teal", set exactly once. It also requires a non-empty atlas, the D3D11 debug layer active with zero WARNING+ messages, and no leaks
 (device refcount 0, empty DXGI live-object report, DirectWrite references 0).
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer
-messages, 6 leak, 7 output file, 8 font / ClearType, 9 test failure (--test).
+messages, 6 leak (D3D, DirectWrite, buffers, live markers), 7 output file, 8 font / ClearType,
+9 test failure (--test), 10 unknown argument (every build).
 
 `--test` runs without a window or device: a differential fuzz of `buffer_replace` against a
 flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
 overrides; decimal or 0x hex), capacity and read-only checks, byte-for-byte file round trips
 (encodings, line endings, block and chunk boundaries; inputs stay in build\tmp\rt_*),
-load-edit-save-reload, and save / load failures. A failed dev ASSERT logs its
+load-edit-save-reload, save / load failures, a marker differential fuzz (300 markers, both
+insertion types), the language table, a column-mapping round trip on fuzzed lines, a table of
+motion cases with their messages, scrolling and recentering, three cursors through the
+command driver, read-only refusals and save messages, and a view fuzz (point always on a
+boundary and visible, valid scroll position). A failed dev ASSERT logs its
 file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
