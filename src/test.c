@@ -1747,6 +1747,71 @@ static b32 test_key_input(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// The buffer list and *Messages*
+
+static b32 test_buffer_list(Test *t) {
+    BufferList list;
+    buffer_list_init(&list);
+    Buffer *a = buffer_create(STR8_LIT("a.c")), *b = buffer_create(STR8_LIT("b.c"));
+    TEST_CHECK(t, a && b, "buffer list: buffer_create failed");
+    buffer_set_path(a, STR8_LIT("C:\\Work\\a.c"));
+    buffer_set_path(b, STR8_LIT("C:\\Work\\b.c"));
+    // 200 numbered lines in each, loaded before they are listed (as files are).
+    for (i32 i = 0; i < 200; i++) {
+        u8 line[16];
+        i64 n = fmt_buf(line, sizeof(line), "line %d\n", i);
+        buffer_replace(a, buffer_size(a), buffer_size(a), str8(line, n));
+        buffer_replace(b, buffer_size(b), buffer_size(b), str8(line, n));
+    }
+    buffer_list_add(&list, a);
+    buffer_list_add(&list, b);
+    TEST_CHECK(t, buffer_list_find_path(&list, STR8_LIT("c:\\work\\B.C")) == b && !buffer_list_find_path(&list, STR8_LIT("C:\\Work\\c.c")) &&
+                  buffer_list_index(&list, b) == 1, "buffer list: lookup by path, case-insensitive");
+
+    Arena arena = arena_create(MB(1));
+    View *v = view_create(&arena, a);
+    v->rows = 20;
+    v->cols = 40;
+    view_goto_line_column(v, 150, 3);
+    view_ensure_visible(v);
+    i64 point = view_point(v, &v->cursors[0]), top = view_top_line(v);
+    view_add_cursor(v, 5); // a second cursor collapses on a switch
+    view_switch_buffer(v, &list, b);
+    TEST_CHECK(t, v->buffer == b && view_point(v, &v->cursors[0]) == 0 && view_top_line(v) == 0 && v->cursor_count == 1,
+               "buffer list: a buffer never shown starts at the top");
+    view_goto_line_column(v, 40, 0);
+    view_ensure_visible(v);
+    i64 point_b = view_point(v, &v->cursors[0]);
+    // An edit in a, while it is not shown, moves its saved point like any marker.
+    buffer_replace(a, 0, 0, STR8_LIT("xyz"));
+    view_switch_buffer(v, &list, a);
+    TEST_CHECK(t, view_point(v, &v->cursors[0]) == point + 3 && view_top_line(v) == top && v->cursor_count == 1,
+               "buffer list: switching back restores point and scroll (point %D, expected %D)", view_point(v, &v->cursors[0]), point + 3);
+    view_switch_buffer(v, &list, b);
+    TEST_CHECK(t, view_point(v, &v->cursors[0]) == point_b, "buffer list: and again for b");
+    view_destroy(v);
+    os_release(arena.base);
+    TEST_CHECK(t, buffer_list_destroy(&list) == 0, "buffer list: markers or buffers leaked");
+
+    // *Messages*: read-only, appended through inhibit_read_only, capped at ECHO_LOG_LINES.
+    Buffer *log = buffer_create(STR8_LIT("*Messages*"));
+    TEST_CHECK(t, log, "messages: buffer_create failed");
+    log->read_only = 1;
+    Echo echo = { .log = log };
+    for (i32 i = 0; i < ECHO_LOG_LINES + 500; i++) echo_message(&echo, "message %d", i);
+    echo_set(&echo, STR8_LIT("C-x-"));
+    String8 first = buffer_line(log, &t->arena, 0), last = buffer_line(log, &t->arena, ECHO_LOG_LINES - 1);
+    TEST_CHECK(t, buffer_line_count(log) == ECHO_LOG_LINES + 1 && str8_equal(first, STR8_LIT("message 500")) &&
+                  str8_equal(last, STR8_LIT("message 1499")) && buffer_line_end(log, ECHO_LOG_LINES) == buffer_size(log),
+               "messages: %D lines, first '%S', last '%S'", buffer_line_count(log), first, last);
+    TEST_CHECK(t, log->read_only && !log->inhibit_read_only && !log->modified && !buffer_replace(log, 0, 0, STR8_LIT("x")),
+               "messages: stays read-only");
+    TEST_CHECK(t, buffer_destroy(log), "messages: buffer_destroy failed");
+    LOG("test: ok: buffer list (restore point and scroll, lookup by path), *Messages* capped at %d lines", (i32)ECHO_LOG_LINES);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Config
 
 static const Command *test_binding(Config *c, const char *keys) {
@@ -2074,6 +2139,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_key_input(&t);
     arena_reset(&t.arena);
     test_config(&t, seed);
+    arena_reset(&t.arena);
+    test_buffer_list(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

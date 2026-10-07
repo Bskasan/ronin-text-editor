@@ -76,7 +76,8 @@ static const char *app_sample[] = {
 
 struct App {
     Font *font;
-    Buffer *buffer;              // the only buffer until buffer switching (Phase 9)
+    BufferList buffers;          // every buffer, in creation order
+    Buffer *messages;            // *Messages*: the echo area's log
     View *views[APP_MAX_VIEWS];  // laid out side by side
     i32 view_count;
     i32 active_view;
@@ -476,7 +477,8 @@ static OsFileStatus app_read_config(App *app) {
     return status;
 }
 
-// Reports a load in the echo area: the first error (and how many more), or a failed read.
+// Reports a load: every diagnostic goes to *Messages*; the echo area shows the first error and
+// how many more, a failed read, or "Reloaded".
 static void app_report_config(App *app, OsFileStatus status, b32 reload) {
     String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("teal.conf");
     if (status != OS_FILE_OK && status != OS_FILE_NOT_FOUND) {
@@ -484,17 +486,23 @@ static void app_report_config(App *app, OsFileStatus status, b32 reload) {
         return;
     }
     Config *c = app->config;
-    if (c->errors) {
-        for (ConfigDiag *d = c->first_diag; d; d = d->next) {
-            if (d->warning) continue;
-            if (c->errors == 1) echo_message(&app->echo, "%S", d->text);
-            else echo_message(&app->echo, "%S (and %d more)", d->text, c->errors - 1);
-            return;
-        }
-        echo_message(&app->echo, "%S: %d errors", name, c->errors);
+    i32 stored = 0;
+    for (ConfigDiag *d = c->first_diag; d; d = d->next, stored++) echo_log(&app->echo, d->text);
+    if (stored < c->errors + c->warnings) {
+        u8 text[128];
+        i64 n = fmt_buf(text, sizeof(text), "%S: %d more not listed", name, c->errors + c->warnings - stored);
+        echo_log(&app->echo, str8(text, n));
+    }
+    for (ConfigDiag *d = c->first_diag; c->errors && d; d = d->next) {
+        if (d->warning) continue;
+        u8 text[ECHO_CAP];
+        i64 n = c->errors == 1 ? fmt_buf(text, sizeof(text), "%S", d->text)
+                               : fmt_buf(text, sizeof(text), "%S (and %d more)", d->text, c->errors - 1);
+        echo_set(&app->echo, str8(text, n)); // the errors themselves are logged above
         return;
     }
-    if (reload) echo_message(&app->echo, "Reloaded %S", name);
+    if (c->errors) echo_message(&app->echo, "%S: %d errors", name, c->errors);
+    else if (reload) echo_message(&app->echo, "Reloaded %S", name);
 }
 
 // Applies the current config: font, caption color, tab width, keys, settings.
@@ -505,7 +513,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
         font_reconfigure(app->font, r, &fp);
     }
     os_set_caption_color(c->theme.background);
-    app->buffer->tab_width = c->settings.tab_width;
+    for (i32 i = 0; i < app->buffers.count; i++) app->buffers.entries[i].buffer->tab_width = c->settings.tab_width;
     app->keymaps[0] = &c->global;
     app->keymap_count = 1;
     app->keys.pending.len = 0;
@@ -513,36 +521,56 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
 }
 
 // ---------------------------------------------------------------------------
-// Startup
+// Buffers
 
-// Opens args->file_path, or *scratch* without one or when it cannot be opened.
-static void app_open_initial_buffer(App *app, AppArgs *args) {
-    if (args->file_path.len) {
-        Buffer *buf = buffer_create(STR8_LIT(""));
-        if (buf) {
-#if TEAL_DEV
-            u64 t0 = os_time_us();
-#endif
-            OsFileStatus status = buffer_load_file(buf, args->file_path);
-            if (status == OS_FILE_OK) {
-                app->buffer = buf;
-                LOG("app: loaded %S: %D bytes, %D lines, %s %s, %U us", buf->path, buffer_size(buf), buffer_line_count(buf),
-                    app_encoding_name(buf->encoding), app_eol_name(buf->eol), os_time_us() - t0);
-            } else if (status == OS_FILE_NOT_FOUND) {
-                // As in Emacs: visit the path as a new file.
-                String8 full = os_full_path(&buf->meta, args->file_path);
-                buffer_set_path(buf, full.len ? full : args->file_path);
-                app->buffer = buf;
-                echo_message(&app->echo, "(New file)");
-            } else {
-                echo_message(&app->echo, "Cannot open %S: %s", args->file_path, buffer_status_text(status));
-                buffer_destroy(buf);
-            }
-        }
-    }
-    if (!app->buffer) app->buffer = buffer_create(STR8_LIT("*scratch*"));
-    if (!app->buffer) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
+static Buffer *app_new_buffer(App *app, String8 name) {
+    Buffer *buf = buffer_create(name);
+    if (!buf) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
+    buf->tab_width = app->config->settings.tab_width;
+    buffer_list_add(&app->buffers, buf);
+    return buf;
 }
+
+// The buffer visiting `path`: the one already open, a newly loaded one, or a new empty one
+// visiting a path that does not exist (Emacs). NULL, with a message, when it cannot be opened.
+static Buffer *app_find_file(App *app, String8 path) {
+    Buffer *buf = buffer_create(STR8_LIT(""));
+    if (!buf) {
+        echo_message(&app->echo, "Cannot open %S: out of address space", path);
+        return NULL;
+    }
+    String8 full = os_full_path(&buf->meta, path);
+    Buffer *open = buffer_list_find_path(&app->buffers, full.len ? full : path);
+    if (open) {
+        buffer_destroy(buf);
+        return open;
+    }
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
+    OsFileStatus status = buffer_load_file(buf, path);
+    if (status == OS_FILE_OK) {
+        LOG("app: loaded %S: %D bytes, %D lines, %s %s, %U us", buf->path, buffer_size(buf), buffer_line_count(buf),
+            app_encoding_name(buf->encoding), app_eol_name(buf->eol), os_time_us() - t0);
+    } else if (status == OS_FILE_NOT_FOUND) {
+        buffer_set_path(buf, full.len ? full : path); // as in Emacs: visit the path as a new file
+        echo_message(&app->echo, "(New file)");
+    } else {
+        echo_message(&app->echo, "Cannot open %S: %s", path, buffer_status_text(status));
+        buffer_destroy(buf);
+        return NULL;
+    }
+    buf->tab_width = app->config->settings.tab_width;
+    buffer_list_add(&app->buffers, buf);
+    return buf;
+}
+
+static View *app_active_view(App *app) {
+    return app->views[app->active_view];
+}
+
+// ---------------------------------------------------------------------------
+// Startup
 
 // The config is read before the font, so the font is set up exactly once, as configured.
 App *app_create(Arena *perm, AppArgs *args) {
@@ -555,14 +583,26 @@ App *app_create(Arena *perm, AppArgs *args) {
     FontParams fp = app_font_params(app);
     app->font = font_create(perm, &fp, args->dpi_scale);
     if (!app->font) return NULL;
-    app_open_initial_buffer(app, args);
-    app->views[0] = view_create(perm, app->buffer);
+
+    buffer_list_init(&app->buffers);
+    app->messages = buffer_create(STR8_LIT("*Messages*")); // first, so everything below is logged
+    if (!app->messages) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
+    app->messages->read_only = 1;
+    app->echo.log = app->messages;
+    Buffer *initial = args->file_path.len ? app_find_file(app, args->file_path) : NULL;
+    if (!initial) initial = app_new_buffer(app, STR8_LIT("*scratch*"));
+    app->messages->tab_width = app->config->settings.tab_width;
+    buffer_list_add(&app->buffers, app->messages);
+
+    app->views[0] = view_create(perm, initial);
     app->view_count = 1;
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
     app_apply_config(app, NULL, 1);
     app_report_config(app, config_status, 0);
-    if (app->font->used_fallback) echo_message(&app->echo, "Font '%S' not found, using %s", str8(app->font->family, app->font->family_len), "Consolas");
+    if (app->font->used_fallback) {
+        echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
+    }
     // +LINE:COLUMN, 1-based on the command line as in Emacs (move-to-column (1- COLUMN)).
     app->initial_line = args->goto_line > 0 ? args->goto_line - 1 : -1;
     app->initial_col = MAX(args->goto_col - 1, 0);
@@ -576,8 +616,7 @@ App *app_create(Arena *perm, AppArgs *args) {
 i32 app_shutdown(App *app) {
     i32 leaks = font_shutdown(app->font);
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
-    leaks += (i32)app->buffer->marker_live;
-    if (!buffer_destroy(app->buffer)) leaks++;
+    leaks += buffer_list_destroy(&app->buffers);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
     return leaks;
 }
@@ -816,7 +855,7 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
 // platform clicks the 'x' of line 0 and forces focus): a filled cursor on that 'x'.
 void app_dev_smoke_buffer_view(App *app) {
     app->sample = 0;
-    Buffer *buf = app->buffer;
+    Buffer *buf = app->views[0]->buffer;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\na\x01" "b\n"));
     View *v = app->views[0];
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
@@ -896,7 +935,7 @@ void app_dev_goto_line(App *app, i64 line) {
 }
 
 i64 app_dev_line_count(App *app) {
-    return buffer_line_count(app->buffer);
+    return buffer_line_count(app->views[0]->buffer);
 }
 
 u64 app_dev_build_us(App *app) {

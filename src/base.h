@@ -104,6 +104,7 @@ String8  str8_from_str16(Arena *arena, u16 *s, i64 len);
 i64     fmt_v(u8 *out, i64 cap, const char *fmt, va_list args); // returns full length
 String8 str8_fmtv(Arena *arena, const char *fmt, va_list args);
 String8 str8_fmt(Arena *arena, const char *fmt, ...);
+i64     fmt_buf(u8 *out, i64 cap, const char *fmt, ...); // into a fixed buffer, truncated; returns the length written
 
 // ---------------------------------------------------------------------------
 // Dev-only log: OutputDebugString + build\teal.log.
