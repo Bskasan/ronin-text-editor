@@ -75,6 +75,7 @@ PowerShell: `(Start-Process build\teal.exe -ArgumentList --startup-ms -PassThru 
 
 Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
 
+    build/teal_debug.exe --test [--seed N]                # headless buffer/file tests, exit 0 = pass
     build/teal_debug.exe --smoke                          # exit 0 = pass
     build/teal_debug.exe --screenshot build/shots/x.png   # window hidden, one frame
     build/teal_debug.exe --dump-atlas build/shots/a.png   # the CPU glyph atlas
@@ -90,7 +91,12 @@ in its lower part (catches upside-down bitmaps), and the ClearType channel order
 non-empty atlas, the D3D11 debug layer active with zero WARNING+ messages, and no leaks
 (device refcount 0, empty DXGI live-object report, DirectWrite references 0).
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer
-messages, 6 leak, 7 output file, 8 font / ClearType.
+messages, 6 leak, 7 output file, 8 font / ClearType, 9 test failure (--test).
+
+`--test` runs without a window or device: a differential fuzz of `buffer_replace` against a
+flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
+overrides; decimal or 0x hex), capacity and read-only checks. A failed dev ASSERT logs its
+file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
 check exact colors with an independent decoder, e.g. PowerShell `System.Drawing.Bitmap`.
