@@ -85,6 +85,12 @@ i64 buffer_prev_char(Buffer *buf, i64 offset);
 // Opening a missing file gives OS_FILE_NOT_FOUND; the caller may then visit the path as a new file.
 OsFileStatus buffer_load_file(Buffer *buf, String8 path);
 void         buffer_set_path(Buffer *buf, String8 full_path); // also sets the name
+// Saving writes a temp file next to the target, flushes it to disk and swaps it in with
+// ReplaceFileW, or writes in place when a swap is not possible. Encoding and line-ending mode
+// are the buffer's. A read-only target is refused untouched. Save-as visits the new path.
+OsFileStatus buffer_save(Buffer *buf);
+OsFileStatus buffer_save_as(Buffer *buf, String8 path);
+OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush); // flush = 0 only for benchmarks (setting in Phase 5)
 const char  *buffer_status_text(OsFileStatus status);           // "access denied", ...
 
 #endif // BUFFER_H
