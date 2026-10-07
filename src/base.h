@@ -24,6 +24,10 @@ typedef double   f64;
 #ifndef TEAL_DEV
 #define TEAL_DEV 0
 #endif
+// The D3D11 debug layer; off in the optimized dev build (build.bat bench) so it does not skew timings.
+#ifndef TEAL_D3D_DEBUG
+#define TEAL_D3D_DEBUG TEAL_DEV
+#endif
 
 #define ARRAY_COUNT(a) ((i64)(sizeof(a) / sizeof((a)[0])))
 #define KB(n) ((u64)(n) << 10)

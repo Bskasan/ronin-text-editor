@@ -129,7 +129,7 @@ b32 r_create_device(Renderer *r) {
     r->create_warp = 0;
     r->debug_layer = 0;
 
-#if TEAL_DEV
+#if TEAL_D3D_DEBUG
     hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags | D3D11_CREATE_DEVICE_DEBUG,
                            levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     r->create_hr_debug = hr;

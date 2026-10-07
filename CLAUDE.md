@@ -60,6 +60,10 @@ the explicit `.\`):
 
     cmd //c ".\build.bat"            # build\teal_debug.exe  (/Od /Zi /MTd, TEAL_DEV=1)
     cmd //c ".\build.bat release"    # build\teal.exe        (/O2 /GL ..., TEAL_DEV=0)
+    cmd //c ".\build.bat bench"      # build\teal_bench.exe  (/O2 /MT, TEAL_DEV=1, no D3D debug layer)
+
+Report benchmark numbers from teal_bench.exe (dev flags, optimized code). Its smoke run skips
+the debug-layer check; the smoke acceptance criterion is the debug build.
 
 build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
 src/shaders/*.hlsl with fxc into build\gen\*.h, compiles win32_dwrite.cpp, then the unity

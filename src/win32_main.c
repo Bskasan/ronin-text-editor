@@ -916,10 +916,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("font: DirectWrite references still held after close: %d", font_refs);
     if (p->smoke) {
         i32 code = p->exit_code;
+#if TEAL_D3D_DEBUG
         if (code == EXIT_OK && !r_dev_debug_layer_active(p->renderer)) {
             LOG("smoke: FAIL: D3D11 debug layer is not active");
             code = EXIT_NO_DEBUG_LAYER;
         }
+#else
+        LOG("smoke: skip: the D3D11 debug layer is off in this build");
+#endif
         if (code == EXIT_OK && r_dev_message_count(p->renderer) != 0) {
             LOG("smoke: FAIL: %u debug-layer message(s)", r_dev_message_count(p->renderer));
             code = EXIT_DEBUG_MESSAGES;
