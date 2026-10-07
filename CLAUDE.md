@@ -102,7 +102,9 @@ messages, 6 leak, 7 output file, 8 font / ClearType, 9 test failure (--test).
 
 `--test` runs without a window or device: a differential fuzz of `buffer_replace` against a
 flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
-overrides; decimal or 0x hex), capacity and read-only checks. A failed dev ASSERT logs its
+overrides; decimal or 0x hex), capacity and read-only checks, byte-for-byte file round trips
+(encodings, line endings, block and chunk boundaries; inputs stay in build\tmp\rt_*),
+load-edit-save-reload, and save / load failures. A failed dev ASSERT logs its
 file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
