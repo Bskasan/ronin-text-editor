@@ -7,6 +7,7 @@ cd /d "%ROOT%"
 
 set MODE=debug
 if /i "%~1"=="release" set MODE=release
+if /i "%~1"=="bench" set MODE=bench
 
 rem --- toolchain -------------------------------------------------------------
 where cl >nul 2>nul
@@ -48,6 +49,10 @@ if "%MODE%"=="release" (
     set NAME=teal
     set OPT=/O2 /GL /Gw /Gy /GS- /MT /DTEAL_DEV=0
     set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
+) else if "%MODE%"=="bench" (
+    set NAME=teal_bench
+    set OPT=/O2 /Zi /MT /DTEAL_DEV=1 /DTEAL_D3D_DEBUG=0
+    set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO
 ) else (
     set NAME=teal_debug
     set OPT=/Od /Zi /MTd /DTEAL_DEV=1
