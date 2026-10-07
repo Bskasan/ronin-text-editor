@@ -10,6 +10,7 @@
 #define BUFFER_TEXT_RESERVE GB(2) // text capacity; the line index reserves 4 bytes per text byte
 #define BUFFER_META_RESERVE MB(1) // the Buffer struct, path and name
 #define BUFFER_MAX_FILE_SIZE GB(1)
+#define BUFFER_MARKER_RESERVE MB(64) // marker slots, 16 bytes each
 
 typedef enum BufferEncoding {
     BUFFER_UTF8,
@@ -23,6 +24,20 @@ typedef enum BufferEol {
     BUFFER_EOL_CRLF,  // stored as LF, written as CRLF
     BUFFER_EOL_MIXED, // stored and written byte for byte
 } BufferEol;
+
+// A position that survives edits: buffer_replace adjusts every live marker. Handle = slot + 1.
+typedef u32 BufferMarker;
+
+enum {
+    BUFFER_MARKER_LIVE    = 1 << 0,
+    BUFFER_MARKER_ADVANCE = 1 << 1, // insertion type: text inserted exactly at the marker goes before it
+};
+
+typedef struct BufferMarkerSlot {
+    i64 pos;
+    u32 flags;
+    u32 next_free; // free list: next free slot + 1, 0 = end
+} BufferMarkerSlot;
 
 typedef struct Buffer {
     Arena meta; // holds this struct, path and name
@@ -41,6 +56,14 @@ typedef struct Buffer {
     i64 nl_reserved; // entries
     i64 nl_cap;      // committed entries
     i64 nl_front, nl_back;
+
+    // Markers: a flat slot array in its own reservation; freed slots are reused.
+    BufferMarkerSlot *markers;
+    i64 marker_reserved; // slots
+    i64 marker_cap;      // committed slots
+    i64 marker_count;    // slots ever used (live or free)
+    u32 marker_free;     // first free slot + 1, 0 = none
+    i64 marker_live;
 
     String8 path; // full, normalized; empty when not visiting a file
     String8 name;
@@ -80,6 +103,16 @@ void    buffer_segments(Buffer *buf, String8 *before, String8 *after); // the te
 // Character boundaries: a valid UTF-8 sequence or a single invalid byte is one unit.
 i64 buffer_next_char(Buffer *buf, i64 offset);
 i64 buffer_prev_char(Buffer *buf, i64 offset);
+i64 buffer_snap_char(Buffer *buf, i64 offset); // the boundary at or before offset (clamped to the buffer)
+
+// Markers. In buffer_replace(start, end, text) a marker before start stays; after end it
+// shifts; exactly at end (of a non-empty range) it goes to start + text.len; inside the range
+// or at start it goes to start, or to start + text.len if it advances. Markers near the edit
+// are then snapped to a character boundary (joined invalid bytes can form a valid character).
+BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance); // pos clamped and snapped
+void         buffer_marker_destroy(Buffer *buf, BufferMarker m);
+i64          buffer_marker_get(Buffer *buf, BufferMarker m);
+void         buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos); // clamped and snapped
 
 // Files. Loading needs an empty buffer; on failure it stays empty and the status says why.
 // Opening a missing file gives OS_FILE_NOT_FOUND; the caller may then visit the path as a new file.

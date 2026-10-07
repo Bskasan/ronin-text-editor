@@ -16,9 +16,11 @@ Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
     ASSERT(text_reserve <= (i64)BUFFER_TEXT_RESERVE); // line index entries are u32
     u8 *text = (u8 *)os_reserve((u64)text_reserve);
     u32 *nl = (u32 *)os_reserve((u64)text_reserve * sizeof(u32));
-    if (!text || !nl) {
+    BufferMarkerSlot *markers = (BufferMarkerSlot *)os_reserve(BUFFER_MARKER_RESERVE);
+    if (!text || !nl || !markers) {
         if (text) os_release(text);
         if (nl) os_release(nl);
+        if (markers) os_release(markers);
         return NULL;
     }
     Arena meta = arena_create(BUFFER_META_RESERVE);
@@ -28,6 +30,8 @@ Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
     buf->text_reserved = text_reserve;
     buf->nl = nl;
     buf->nl_reserved = text_reserve; // at most one newline per byte
+    buf->markers = markers;
+    buf->marker_reserved = (i64)(BUFFER_MARKER_RESERVE / sizeof(BufferMarkerSlot));
     buf->name = str8_copy(&buf->meta, name);
     return buf;
 }
@@ -40,6 +44,7 @@ b32 buffer_destroy(Buffer *buf) {
     Arena meta = buf->meta; // buf lives in it
     b32 ok = os_release(buf->text);
     ok &= os_release(buf->nl);
+    ok &= os_release(buf->markers);
     ok &= os_release(meta.base);
     return ok;
 }
@@ -172,6 +177,93 @@ i64 buffer_prev_char(Buffer *buf, i64 offset) {
     return offset - 1;
 }
 
+i64 buffer_snap_char(Buffer *buf, i64 offset) {
+    i64 size = buffer_size(buf);
+    if (offset <= 0) return 0;
+    if (offset >= size) return size;
+    if ((buffer_byte(buf, offset) & 0xC0) != 0x80) return offset; // only continuation bytes can be inside a character
+    // The nearest non-continuation byte within 3 bytes starts a unit; offset is inside it only
+    // if it decodes as a valid sequence reaching past offset.
+    for (i64 k = 1; k <= 3 && offset - k >= 0; k++) {
+        if ((buffer_byte(buf, offset - k) & 0xC0) == 0x80) continue;
+        u8 bytes[4];
+        i64 n = buffer_peek4(buf, offset - k, bytes);
+        i64 advance;
+        utf8_decode(bytes, n, &advance);
+        return advance > k ? offset - k : offset;
+    }
+    return offset; // a stray continuation byte is its own unit
+}
+
+// ---------------------------------------------------------------------------
+// Markers
+
+static BufferMarkerSlot *buffer_marker_slot(Buffer *buf, BufferMarker m) {
+    ASSERT(m > 0 && (i64)m <= buf->marker_count && (buf->markers[m - 1].flags & BUFFER_MARKER_LIVE));
+    return &buf->markers[m - 1];
+}
+
+BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance) {
+    u32 slot;
+    if (buf->marker_free) {
+        slot = buf->marker_free - 1;
+        buf->marker_free = buf->markers[slot].next_free;
+    } else {
+        if (buf->marker_count == buf->marker_cap) {
+            i64 per_commit = (i64)(BUFFER_COMMIT_GRANULARITY / sizeof(BufferMarkerSlot));
+            if (buf->marker_cap + per_commit > buf->marker_reserved ||
+                !os_commit(buf->markers + buf->marker_cap, BUFFER_COMMIT_GRANULARITY)) {
+                os_fatal(STR8_LIT("Out of memory (markers)."));
+            }
+            buf->marker_cap += per_commit;
+        }
+        slot = (u32)buf->marker_count++;
+    }
+    BufferMarkerSlot *s = &buf->markers[slot];
+    s->pos = buffer_snap_char(buf, pos);
+    s->flags = BUFFER_MARKER_LIVE | (advance ? BUFFER_MARKER_ADVANCE : 0);
+    s->next_free = 0;
+    buf->marker_live++;
+    return slot + 1;
+}
+
+void buffer_marker_destroy(Buffer *buf, BufferMarker m) {
+    BufferMarkerSlot *s = buffer_marker_slot(buf, m);
+    s->flags = 0;
+    s->next_free = buf->marker_free;
+    buf->marker_free = m;
+    buf->marker_live--;
+}
+
+i64 buffer_marker_get(Buffer *buf, BufferMarker m) {
+    return buffer_marker_slot(buf, m)->pos;
+}
+
+void buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos) {
+    buffer_marker_slot(buf, m)->pos = buffer_snap_char(buf, pos);
+}
+
+// After [start, end) became `len` bytes. See buffer.h for the rules.
+static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
+    i64 delta = len - (end - start);
+    i64 snap_lo = start - 3, snap_hi = start + len + 3; // where a boundary can have disappeared
+    for (i64 i = 0; i < buf->marker_count; i++) {
+        BufferMarkerSlot *m = &buf->markers[i];
+        if (!(m->flags & BUFFER_MARKER_LIVE)) continue;
+        i64 pos = m->pos;
+        if (pos < start) {
+        } else if (pos > end) {
+            pos += delta;
+        } else if (pos == end && end > start) {
+            pos = start + len;
+        } else {
+            pos = (m->flags & BUFFER_MARKER_ADVANCE) ? start + len : start;
+        }
+        if (pos >= snap_lo && pos <= snap_hi) pos = buffer_snap_char(buf, pos);
+        m->pos = pos;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Gap management
 
@@ -276,6 +368,7 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
         if (text.data[i] == '\n') buf->nl[buf->nl_front++] = (u32)(start + i);
     }
     buf->gap_start += text.len;
+    if (buf->marker_live) buffer_adjust_markers(buf, start, end, text.len);
 
     buf->modified = 1;
     buf->edit_count++;
