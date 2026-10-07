@@ -1928,6 +1928,18 @@ static b32 test_config(Test *t, u64 seed) {
                   test_binding(c, "C-h k") == &CMD_DESCRIBE_KEY && test_binding(c, "C-c ,") == &CMD_OPEN_CONFIG &&
                   test_binding(c, "C-c r") == &CMD_RELOAD_CONFIG, "config: default bindings");
 
+    // Parse time of the built-in config (about as large as a full user file), for the log.
+    u64 t0 = os_time_us();
+    for (i32 i = 0; i < 1000; i++) {
+        u64 mark = arena_pos(&t->arena);
+        Config *tmp = PUSH_STRUCT(&t->arena, Config);
+        config_init(tmp);
+        config_parse(tmp, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+        arena_pop_to(&t->arena, mark);
+    }
+    LOG("test: config: parsing the built-in config (%D bytes, %d bindings) takes %U ns", config_default_text().len,
+        c->global.count, (os_time_us() - t0));
+
     // A valid user file on top: only what it names changes.
     config_parse(c, &t->arena, STR8_LIT("# mine\n\n[settings]\nfont_size = 10.5\ntab_width=8\n  underscore_is_word = true  \r\n"
                                         "font = Courier New\n[colors]\nbackground = #102030\n[keys]\n"
