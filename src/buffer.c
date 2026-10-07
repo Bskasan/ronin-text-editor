@@ -516,9 +516,52 @@ static String8 buffer_file_name(String8 path) {
     return str8(path.data + i, path.len - i);
 }
 
+// The language of a file name, by its extension (ASCII case-insensitive).
+static BufferLanguage buffer_language_of(String8 name) {
+    static const struct { const char *ext; BufferLanguage language; } table[] = {
+        { "jai", BUFFER_LANG_JAI },
+        { "c", BUFFER_LANG_C }, { "h", BUFFER_LANG_C },
+        { "cpp", BUFFER_LANG_CPP }, { "hpp", BUFFER_LANG_CPP }, { "cc", BUFFER_LANG_CPP },
+        { "cxx", BUFFER_LANG_CPP }, { "hh", BUFFER_LANG_CPP },
+        { "cs", BUFFER_LANG_CSHARP },
+        { "js", BUFFER_LANG_JAVASCRIPT }, { "mjs", BUFFER_LANG_JAVASCRIPT },
+        { "cjs", BUFFER_LANG_JAVASCRIPT }, { "jsx", BUFFER_LANG_JAVASCRIPT },
+        { "ts", BUFFER_LANG_TYPESCRIPT }, { "tsx", BUFFER_LANG_TYPESCRIPT },
+    };
+    i64 dot = name.len;
+    while (dot > 0 && name.data[dot - 1] != '.') dot--;
+    if (dot == 0) return BUFFER_LANG_FUNDAMENTAL;
+    String8 ext = str8(name.data + dot, name.len - dot);
+    for (i64 k = 0; k < ARRAY_COUNT(table); k++) {
+        String8 e = str8_cstr(table[k].ext);
+        b32 same = e.len == ext.len;
+        for (i64 i = 0; same && i < e.len; i++) {
+            u8 c = ext.data[i];
+            if (c >= 'A' && c <= 'Z') c = (u8)(c + 32);
+            same = c == e.data[i];
+        }
+        if (same) return table[k].language;
+    }
+    return BUFFER_LANG_FUNDAMENTAL;
+}
+
+const char *buffer_language_name(BufferLanguage language) {
+    switch (language) {
+    case BUFFER_LANG_FUNDAMENTAL: return "Fundamental";
+    case BUFFER_LANG_JAI:         return "Jai";
+    case BUFFER_LANG_C:           return "C";
+    case BUFFER_LANG_CPP:         return "C++";
+    case BUFFER_LANG_CSHARP:      return "C#";
+    case BUFFER_LANG_JAVASCRIPT:  return "JavaScript";
+    case BUFFER_LANG_TYPESCRIPT:  return "TypeScript";
+    }
+    return "?";
+}
+
 void buffer_set_path(Buffer *buf, String8 full_path) {
     buf->path = str8_copy(&buf->meta, full_path);
     buf->name = buffer_file_name(buf->path);
+    buf->language = buffer_language_of(buf->name);
 }
 
 OsFileStatus buffer_load_file(Buffer *buf, String8 path) {
@@ -732,6 +775,7 @@ OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
     } else {
         buf->path = full; // keeps the copy made by os_full_path
         buf->name = buffer_file_name(full);
+        buf->language = buffer_language_of(buf->name);
     }
     buf->modified = 0;
     if (os_file_info(buf->path, &info) == OS_FILE_OK) {
