@@ -199,7 +199,7 @@ typedef struct AppArgs {
     i64 goto_line;     // +LINE[:COLUMN], 1-based as in Emacs; 0 = not given
     i64 goto_col;      // visual column, 1-based; 0 = not given
 #if TEAL_DEV
-    b32 sample;          // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
+
     String8 config_path; // --config: this file instead of the user's teal.conf
     b32 user_config;     // read the user's teal.conf (off in the smoke and the benches: defaults only)
     b32 headless;        // --test: no font, no window; driven through app_dev_feed
@@ -230,8 +230,10 @@ typedef struct DevProbe {
     const char *what;
 } DevProbe;
 
-i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap); // the --sample frame
-void app_dev_smoke_buffer_view(App *app); // leaves the sample and shows a known buffer, focus forced off
+void app_dev_smoke_syntax(App *app, i32 language); // *scratch*: a known text in `language` (a BufferLanguage), focus forced on
+// The probes of that frame: syntax colors and paren_match; with `rendering`, the rendering checks too.
+i32  app_dev_syntax_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, b32 rendering);
+void app_dev_smoke_buffer_view(App *app); // *scratch*: a known text, Fundamental, focus forced off
 void app_dev_smoke_region(App *app);      // stage 2: an active region over lines 0-1
 i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list
 void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
