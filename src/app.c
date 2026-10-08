@@ -79,6 +79,7 @@ struct App {
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
     i64 dev_work_budget; // search positions per frame instead of the clock (deterministic tests); 0 = the clock
+    b32 dev_log_keys;    // --log-keys: every key and text event's result goes to the log
 #endif
 };
 
@@ -1209,6 +1210,67 @@ static u32 app_replace_answer(KeyResult *k) {
     return a == 'y' || a == 'n' || a == 'q' || a == ' ' || a == '!' || a == '.' ? a : 0;
 }
 
+#if TEAL_DEV
+// --log-keys: what the keymap made of a key or text event, numbered as the platform's line for it.
+static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 replacing) {
+    u8 ev[64], seq[KEY_SEQ_TEXT_CAP];
+    i64 en = 0;
+    u8 mods[8];
+    i32 mn = 0;
+    if (e->mods & MOD_CTRL) mods[mn++] = 'C';
+    if (e->mods & MOD_ALT) mods[mn++] = 'M';
+    if (e->mods & MOD_SHIFT) mods[mn++] = 'S';
+    if (!mn) mods[mn++] = '-';
+    if (e->kind == EVENT_KEY_DOWN) {
+        u8 name[16];
+        i64 nn = 0;
+        if (e->key >= KEY_A && e->key <= KEY_Z) name[nn++] = (u8)('a' + (e->key - KEY_A));
+        else if (e->key >= KEY_0 && e->key <= KEY_9) name[nn++] = (u8)('0' + (e->key - KEY_0));
+        else if (key_is_named(e->key)) key_put(name, sizeof(name), &nn, str8_cstr(key_names[e->key]));
+        else nn = fmt_buf(name, sizeof(name), "key %d", (i32)e->key);
+        en = fmt_buf(ev, sizeof(ev), "KEY_DOWN %S mods %S char U+%04x", str8(name, nn), str8(mods, mn), e->codepoint);
+    } else {
+        en = fmt_buf(ev, sizeof(ev), "TEXT U+%04x mods %S", e->codepoint, str8(mods, mn));
+    }
+    i64 sn = key_seq_print(&k->seq, seq, sizeof(seq));
+    const char *where = app->mini.active ? " [minibuffer]" : replacing ? " [query-replace]" : isearch ? " [isearch]" : "";
+    switch (k->kind) {
+    case KEY_RESULT_IGNORED:
+        LOG("keys: app #%u: %S%s -> no chord (%s)", e->dev_seq, str8(ev, en), where,
+            e->kind != EVENT_KEY_DOWN ? "not a key event"
+            : !(e->mods & (MOD_CTRL | MOD_ALT)) ? "no Ctrl or Alt: its text event, if any, is the chord"
+            : "Ctrl or Alt held but the key gives no character");
+        break;
+    case KEY_RESULT_DROPPED:
+        LOG("keys: app #%u: %S%s -> dropped (the text of a key that already was a chord)", e->dev_seq, str8(ev, en), where);
+        break;
+    case KEY_RESULT_PREFIX:
+        LOG("keys: app #%u: %S%s -> chord sequence %S: a prefix, waiting", e->dev_seq, str8(ev, en), where, str8(seq, sn));
+        break;
+    case KEY_RESULT_COMMAND:
+    case KEY_RESULT_SELF_INSERT:
+    case KEY_RESULT_QUIT:
+        LOG("keys: app #%u: %S%s -> %S runs %s%s", e->dev_seq, str8(ev, en), where, str8(seq, sn), k->command->name,
+            k->shift_translated ? " (shift-translated)" : "");
+        break;
+    case KEY_RESULT_UNDEFINED:
+        LOG("keys: app #%u: %S%s -> %S is undefined", e->dev_seq, str8(ev, en), where, str8(seq, sn));
+        break;
+    case KEY_RESULT_DESCRIBE:
+        LOG("keys: app #%u: %S%s -> describe-key: %S %s %s", e->dev_seq, str8(ev, en), where, str8(seq, sn),
+            k->command ? "runs" : "is", k->command ? k->command->name : "undefined");
+        break;
+    case KEY_RESULT_QUOTED:
+        LOG("keys: app #%u: %S%s -> quoted-insert %S: U+%04x", e->dev_seq, str8(ev, en), where, str8(seq, sn), k->codepoint);
+        break;
+    }
+}
+
+void app_dev_log_keys(App *app, b32 on) {
+    app->dev_log_keys = on;
+}
+#endif
+
 // A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
 // is active, [isearch, global] while an isearch is, else [global]. A single-key prompt takes the key
 // itself, after the keymap has said what the key is bound to, so the quit keys still abort it.
@@ -1222,6 +1284,9 @@ static void app_key_event(App *app, Event *e) {
     stack[count++] = &app->config->global;
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);
+#if TEAL_DEV
+    if (app->dev_log_keys) app_dev_log_key(app, e, &k, isearch, replacing);
+#endif
     b32 ended = 0; // the key ended a search session: its message ("Mark saved ...") stays while the key runs
     if (replacing) {
         if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED) return;

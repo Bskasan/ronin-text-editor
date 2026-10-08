@@ -178,6 +178,9 @@ typedef struct Event {
     i32 width, height; // EVENT_RESIZE, client pixels
     b32 focused;       // EVENT_FOCUS
     OsWatch watch;     // EVENT_DIR_CHANGED
+#if TEAL_DEV
+    u32 dev_seq;       // --log-keys: the number of a key or text event, shared by the platform's and the app's lines
+#endif
 } Event;
 
 typedef struct FrameInput {
@@ -277,6 +280,7 @@ void app_dev_append(App *app, String8 text);                  // --bench-search:
 void app_dev_show_scratch(App *app, String8 text);            // --bench-search: *scratch* with this text, point at 0
 i64  app_dev_point(App *app);                                 // the active view's point
 b32  app_dev_isearch_failing(App *app);                        // an isearch is active, done, and failing
+void app_dev_log_keys(App *app, b32 on);                      // --log-keys: log every key and text event's result
 i64  app_dev_size(App *app);                                  // the size of its buffer
 #endif
 
