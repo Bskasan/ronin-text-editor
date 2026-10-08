@@ -609,8 +609,10 @@ App *app_create(Arena *perm, AppArgs *args) {
     if (!app->messages) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     app->messages->read_only = 1;
     app->echo.log = app->messages;
+    // As in Emacs: the file (if any), *scratch* (always), *Messages*.
     Buffer *initial = args->file_path.len ? app_find_file(app, args->file_path) : NULL;
-    if (!initial) initial = app_new_buffer(app, STR8_LIT("*scratch*"));
+    Buffer *scratch = app_new_buffer(app, STR8_LIT("*scratch*"));
+    if (!initial) initial = scratch;
     app->messages->tab_width = app->config->settings.tab_width;
     buffer_list_add(&app->buffers, app->messages);
 
