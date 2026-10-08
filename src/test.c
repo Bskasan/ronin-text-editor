@@ -4252,6 +4252,13 @@ static void test_app_wheel(Test *t, App *app, i32 notches) {
     app_dev_feed_events(app, &e, 1, &t->arena);
 }
 
+// Every event of `keys` in a single frame (typed ahead, or --keys).
+static void test_app_feed_batch(Test *t, App *app, const char *keys) {
+    Event events[256];
+    i32 n = app_dev_key_events(app, str8_cstr(keys), events, ARRAY_COUNT(events));
+    app_dev_feed_events(app, events, n, &t->arena);
+}
+
 // Frames without events until no search is pending; returns how many.
 static i32 test_app_pump(Test *t, App *app) {
     i32 frames = 0;
@@ -4333,6 +4340,10 @@ static b32 test_isearch(Test *t) {
     app_dev_feed(app, "C-s b a z ESC", &t->arena);
     TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 15 && buffer_marker_get(v->buffer, c->mark) == 0,
                "isearch: ESC ends at the match and sets the mark");
+    // Typed ahead (all the keys in one frame, as --keys delivers them): RET still ends at the match.
+    view_set_point(v, c, 0);
+    test_app_feed_batch(t, app, "C-s b a z RET");
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 15, "isearch: typed ahead, RET ends at the match (%D)", test_app_point(app));
     // C-s C-s: the last string; M-p / M-n walk the history around.
     view_set_point(v, c, 0);
     app_dev_feed(app, "C-s C-s", &t->arena);
@@ -4523,6 +4534,12 @@ static b32 test_replace(Test *t) {
     app_dev_feed(app, "M-% RET C-f", &t->arena); // another key ends the session, then runs
     TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 5 && test_app_echo_is(app, "Replaced 0 occurrences"),
                "replace: C-f ends the session at the match, then runs (%D)", test_app_point(app));
+    // Typed ahead: the answers in the same frame as the prompt's RET are not lost.
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("foo foo foo\n"));
+    view_set_point(v, &v->cursors[0], 0);
+    test_app_feed_batch(t, app, "M-% f o o RET b a r RET y n y");
+    TEST_CHECK(t, rp->state == REPLACE_OFF, "replace: typed ahead, the session ran to its end");
+    if (!test_replace_text(t, app, "typed ahead", "bar foo bar\n")) return 0;
     // A change from outside while asking (a revert): the answer does not replace a stale range; the match
     // is searched again and asked about.
     buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("ab foo\n"));
