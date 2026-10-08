@@ -171,7 +171,7 @@ with or without the 100 MB file.
 - [x] 3. Text buffer: gap buffer, line index, UTF-8, file load/save
 - [x] 4. View: cursors (stored as an array from day one), scrolling, layout
 - [x] 5. Commands, keymap with prefix keys, config file, hot reload
-- [ ] 6. Editing: mark/region, kill ring, undo/redo, auto-indent
+- [x] 6. Editing: mark/region, kill ring, undo/redo, auto-indent
 - [ ] 7. Theme file, mode line, minibuffer prompts
 - [ ] 8. Lexers and incremental highlighting
 - [ ] 9. isearch, query-replace, goto-line, buffer switching
