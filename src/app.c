@@ -1275,6 +1275,25 @@ u64 app_dev_build_us(App *app) {
     return app->dev_build_us;
 }
 
+AppDevMemory app_dev_memory(App *app) {
+    Buffer *buf = app_active_view(app)->buffer;
+    AppDevMemory m = { 0 };
+    m.undo = buffer_undo_memory(buf);
+    KillRing *k = &app->kills;
+    m.kill_ring = k->small_committed;
+    for (i32 i = 0; i < k->count; i++) {
+        KillEntry *e = &k->entries[(k->head - i + KILL_RING_CAP) % KILL_RING_CAP];
+        if (e->large) m.kill_ring += e->committed;
+    }
+    m.meta = buf->meta.committed;
+    m.text = (u64)buf->text_cap;
+    m.line_index = (u64)buf->nl_cap * sizeof(u32);
+    m.markers = (u64)buf->marker_cap * sizeof(BufferMarkerSlot);
+    m.undo_log = m.undo;
+    m.buffer = m.meta + m.text + m.line_index + m.markers + m.undo_log;
+    return m;
+}
+
 b32 app_dev_atlas_has_coverage(App *app) {
     return font_dev_atlas_has_coverage(app->font);
 }
