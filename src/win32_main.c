@@ -1269,7 +1269,7 @@ static b32 win32_check_probe(DevProbe *pr, u8 *pixels, i32 w, i32 h) {
 
 // Called right after the captured frame. `stage`: -1 a highlighted buffer with the rendering checks,
 // -2 a highlighted buffer (app_dev_syntax_probes); 0 / 1 the smoke buffer with a hollow / filled
-// cursor, 2 a region, 3 the M-x list (app_dev_buffer_probes).
+// cursor, 2 a region, 3 the M-x list, 4 an isearch (app_dev_buffer_probes).
 static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language) {
     b32 buffer_view = stage >= 0;
     i32 w, h;
@@ -1282,10 +1282,11 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
     DevProbe probes[16];
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
-    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == -1 ? 12 : 4;
+    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == -1 ? 12 : 4;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
                                          : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
+                                         : stage == 4 ? "isearch (current match, lazy highlight)"
                                          : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
         language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
@@ -2243,6 +2244,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 win32_frame(p);
                 if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 3, NULL);
                 win32_smoke_feed(p, "C-g");
+                app_dev_smoke_isearch(p->app); // stage 4: an isearch with its current match and a lazy highlight
+                win32_smoke_feed_no_frame(p, "C-s f o o C-s");
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 4, NULL);
+                win32_smoke_feed(p, "RET");
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);

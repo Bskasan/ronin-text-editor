@@ -1584,6 +1584,18 @@ void app_dev_smoke_region(App *app) {
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
 }
 
+// Smoke stage 4: "foo bar foo" from column 0, point 0, focus on; the smoke then types C-s f o o C-s, so
+// the current match is the second foo (columns 8-10) and the first one (0-2) is lazily highlighted.
+void app_dev_smoke_isearch(App *app) {
+    View *v = app->views[0];
+    Buffer *buf = v->buffer;
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("foo bar foo\n"));
+    view_deactivate_mark(v);
+    view_set_point(v, &v->cursors[0], 0);
+    buffer_marker_set(buf, v->top, 0);
+    app->force_focus = 1;
+}
+
 void app_dev_set_language(App *app, i32 language) {
     Buffer *buf = app_active_view(app)->buffer;
     buf->language = (BufferLanguage)language;
@@ -1662,6 +1674,22 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
                        .what = "minibuffer: the calling view's hollow cursor, left edge");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + t, .y0 = 2 * lh + t, .x1 = x + cw - t, .y1 = 3 * lh - t, .rgb = th->background,
                        .what = "minibuffer: the calling view's hollow cursor, inside");
+    } else if (stage == 4) {
+        // app_dev_smoke_isearch after C-s f o o C-s: the current match at columns 8-10, a lazy highlight at
+        // 0-2, the spaces at 3 and 7 untouched (their middle thirds, away from the neighbors' fringes).
+        Theme *th = &app->config->theme;
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x + 8 * cw, .y0 = 0, .x1 = x + 11 * cw, .y1 = lh, .rgb = th->isearch,
+                       .what = "isearch: the current match's background");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x + 8 * cw, .y0 = 0, .x1 = x + 11 * cw, .y1 = lh, .rgb = th->isearch_text,
+                       .what = "isearch: the current match's text in isearch_text");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = 0, .x1 = x + 3 * cw, .y1 = lh, .rgb = th->lazy_highlight,
+                       .what = "isearch: the other match's lazy_highlight background");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 3 * cw + cw / 3, .y0 = 0, .x1 = x + 3 * cw + 2 * cw / 3, .y1 = lh,
+                       .rgb = th->background, .what = "isearch: the space at column 3 is not highlighted");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 7 * cw + cw / 3, .y0 = 0, .x1 = x + 7 * cw + 2 * cw / 3, .y1 = lh,
+                       .rgb = th->background, .what = "isearch: the space at column 7 is not highlighted");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = l.minibuffer_y, .x1 = x + 9 * cw, .y1 = l.minibuffer_y + lh,
+                       .rgb = th->prompt, .what = "isearch: 'I-search:' in the prompt color");
     } else if (stage == 2) {
         // The region of app_dev_smoke_region: line 0 from column 5 with its newline, all of line 1.
         Theme *th = &app->config->theme;
