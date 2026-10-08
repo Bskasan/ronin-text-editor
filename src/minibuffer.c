@@ -151,6 +151,9 @@ void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, 
 
 // Filters and ranks the candidates for the current input; the first match is selected.
 static void minibuffer_filter(Minibuffer *mb) {
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
     arena_reset(&mb->match_arena);
     mb->seen_edits = mb->buffer->edit_count;
     mb->match_count = 0;
@@ -162,6 +165,10 @@ static void minibuffer_filter(Minibuffer *mb) {
     mb->query = match_query(&mb->match_arena, str8(input.data + mb->match_from, input.len - mb->match_from));
     mb->matches = PUSH_ARRAY(&mb->match_arena, i32, mb->cand_count);
     mb->match_count = match_rank(&mb->query, mb->cands, mb->cand_count, mb->matches);
+#if TEAL_DEV
+    mb->dev_filter_us = os_time_us() - t0;
+    mb->dev_filters++;
+#endif
 }
 
 b32 minibuffer_read(CommandContext *ctx, MiniRequest *req) {

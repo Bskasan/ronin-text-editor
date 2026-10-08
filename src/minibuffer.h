@@ -167,6 +167,11 @@ struct Minibuffer {
 
     String8 cand_key;         // what the candidates were built for (find-file: the directory); in text_arena
 
+#if TEAL_DEV
+    u64 dev_filter_us;        // the last filter (--bench-complete)
+    u64 dev_filters;          // filters so far
+#endif
+
     MiniHistory histories[MINI_HISTORY_COUNT];
     Arena history_arena;      // the history's strings; dead ones compacted away
     u64 history_live;         // bytes of live strings in it
