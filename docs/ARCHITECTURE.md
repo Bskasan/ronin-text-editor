@@ -297,7 +297,7 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client.
   replaces bracket counting. A line that starts with a closer takes the indentation of the line
   holding its matching opener; a line after one that leaves any bracket open gets one level more,
   however many it opened (fixes `f((x) => {` giving two levels).
-- [ ] 9. isearch and query-replace
+- [x] 9. isearch and query-replace
 - [ ] 10. Window splitting
 - [ ] 11. Project + fuzzy file open
 - [ ] 12. Project-wide search
