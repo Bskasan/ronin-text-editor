@@ -6,6 +6,10 @@
 #define NOMINMAX
 #include <windows.h>
 #include <dwmapi.h>
+#if TEAL_DEV
+#define PSAPI_VERSION 2 // K32GetProcessMemoryInfo, exported by kernel32: no psapi.lib
+#include <psapi.h>
+#endif
 
 #define EVENT_CAPACITY 256
 #define EVENT_RESERVE 4 // free slots required before taking another message off the queue
@@ -67,6 +71,7 @@ typedef struct Platform {
     b32 bench_text;
     b32 bench_buffer;
     b32 bench_view;
+    b32 bench_edit;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -609,7 +614,8 @@ void os_fatal(String8 message) {
 #if TEAL_DEV
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
-                       g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view)) interactive = 0;
+                       g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
+                       g_platform->bench_edit)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -1451,8 +1457,83 @@ static void win32_bench_view(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+u64 os_dev_private_bytes(void) {
+    PROCESS_MEMORY_COUNTERS_EX pmc = { .cb = sizeof(pmc) };
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) return 0;
+    return (u64)pmc.PrivateUsage;
+}
+
+// Runs one key token (or several) through the app, one frame, and returns the frame's command +
+// build time.
+static u64 win32_bench_keys(Platform *p, const char *keys) {
+    Event events[64];
+    i32 n = app_dev_key_events(p->app, str8_cstr(keys), events, ARRAY_COUNT(events));
+    win32_bench_pump();
+    for (i32 i = 0; i < n; i++) p->events[i] = events[i];
+    p->event_count = n;
+    FrameInput input = win32_frame_input(p);
+    app_update_and_render(p->app, &input, p->renderer);
+    p->event_count = 0;
+    arena_reset(&p->scratch);
+    return app_dev_build_us(p->app);
+}
+
+// --bench-edit: typing with undo on, kill / yank / undo of a 50 MB region, and memory: the undo
+// log, the kill ring, and the committed bytes each extra open buffer costs.
+static void win32_bench_edit(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    i64 lines = app_dev_line_count(p->app);
+    LOG("bench-edit: %D lines, private bytes after loading %U KB", lines, os_dev_private_bytes() / 1024);
+    // 10,000 self-inserts at line 1,000,000, undo on (merged into groups of 20).
+    app_dev_goto_line(p->app, 1000000);
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    BenchStat st = { 0 };
+    r_dev_take_frame_stats(p->renderer);
+    win32_bench_view_step(p, plain, &st);
+    st = (BenchStat){ 0 };
+    for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &st);
+    win32_bench_log(p, "bench-edit", "self-insert at line 1,000,000 (undo on)", &st);
+    AppDevMemory m = app_dev_memory(p->app);
+    LOG("bench-edit: undo log after 10,000 inserts: %U KB committed", m.undo / 1024);
+    // A 50 MB region: the second half of the file.
+    app_dev_goto_line(p->app, lines / 2);
+    win32_bench_keys(p, "C-SPC");
+    win32_bench_keys(p, "M->");
+    u64 before = os_dev_private_bytes();
+    u64 kill = win32_bench_keys(p, "C-w");
+    m = app_dev_memory(p->app);
+    LOG("bench-edit: kill-region of ~50 MB: %U ms (command + frame), %D lines left; undo log %U MB, kill ring %U MB committed, "
+        "private bytes +%U MB (the fake clipboard holds it once more, as UTF-16)", kill / 1000, app_dev_line_count(p->app),
+        m.undo >> 20, m.kill_ring >> 20, (os_dev_private_bytes() - before) >> 20);
+    u64 undo_kill = win32_bench_keys(p, "C-/");
+    LOG("bench-edit: undo of the kill: %U ms, %D lines", undo_kill / 1000, app_dev_line_count(p->app));
+    win32_bench_keys(p, "M->");
+    u64 yank = win32_bench_keys(p, "C-y");
+    LOG("bench-edit: yank of the 50 MB at the end: %U ms, %D lines", yank / 1000, app_dev_line_count(p->app));
+    u64 undo_yank = win32_bench_keys(p, "C-/");
+    m = app_dev_memory(p->app);
+    LOG("bench-edit: undo of the yank: %U ms, %D lines; undo log %U MB committed (limit 64 MB: older groups dropped, the last "
+        "one kept)", undo_yank / 1000, app_dev_line_count(p->app), m.undo >> 20);
+    // The committed bytes of an extra open buffer: 20 small files.
+    String8 tmp = str8_fmt(&p->perm, "%S\\tmp", p->exe_dir);
+    u8 text[2048];
+    for (i32 i = 0; i < (i32)sizeof(text); i++) text[i] = i % 64 == 63 ? '\n' : (u8)('a' + i % 26);
+    for (i32 i = 0; i < 20; i++) os_write_file(str8_fmt(&p->perm, "%S\\bench_small_%02d.c", tmp, i), str8(text, sizeof(text)));
+    before = os_dev_private_bytes();
+    for (i32 i = 0; i < 20; i++) app_dev_visit(p->app, str8_fmt(&p->perm, "%S\\bench_small_%02d.c", tmp, i));
+    u64 after = os_dev_private_bytes();
+    m = app_dev_memory(p->app);
+    LOG("bench-edit: 20 extra buffers of 2 KB: private bytes +%U KB, %U KB per buffer; one buffer's own commit %U KB: meta %U, "
+        "text %U, line index %U, markers %U, undo %U KB", (after - before) / 1024, (after - before) / 20 / 1024, m.buffer / 1024,
+        m.meta / 1024, m.text / 1024, m.line_index / 1024, m.markers / 1024, m.undo_log / 1024);
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->screenshot_path.len || p->atlas_path.len;
+    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->screenshot_path.len ||
+           p->atlas_path.len;
 }
 #endif
 
@@ -1552,6 +1633,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-text"))) { p->bench_text = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-view"))) { p->bench_view = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -1586,7 +1668,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         return EXIT_USAGE;
     }
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
-                                   : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view"
+                                   : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -1595,7 +1677,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer || p->bench_view) { // generated before the app opens it; the measurements run after startup
+    if (p->bench_buffer || p->bench_view || p->bench_edit) { // generated before the app opens it; measured after startup
         p->file_path = test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
     }
 #endif
@@ -1649,7 +1731,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     app_args.sample = p->sample || p->smoke; // the smoke probes check the sample
     app_args.config_path = p->config_path;
-    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view); // deterministic: defaults
+    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit); // defaults
 #endif
     p->app = app_create(&p->perm, &app_args);
     if (!p->app) {
@@ -1719,6 +1801,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->bench_buffer && !p->quit) {
         test_bench_buffer(p->file_path, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
         win32_bench_buffer_frames(p);
+        p->quit = 1;
+    }
+    if (p->bench_edit && !p->quit) {
+        win32_bench_edit(p);
         p->quit = 1;
     }
     if (p->bench_view && !p->quit) {
