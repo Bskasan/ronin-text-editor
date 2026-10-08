@@ -211,7 +211,7 @@ memory, startup and size.
 - [x] 4. View: cursors (stored as an array from day one), scrolling, layout
 - [x] 5. Commands, keymap with prefix keys, config file, hot reload
 - [x] 6. Editing: mark/region, kill ring, undo/redo, auto-indent
-- [ ] 7. Minibuffer, prompts, file and buffer commands (goto-line and buffer switching from 9)
+- [x] 7. Minibuffer, prompts, file and buffer commands (goto-line and buffer switching from 9)
 - [ ] 8. Lexers and incremental highlighting; token-aware indentation: bracket matching on tokens
   replaces bracket counting. A line that starts with a closer takes the indentation of the line
   holding its matching opener; a line after one that leaves any bracket open gets one level more,
