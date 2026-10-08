@@ -5978,7 +5978,8 @@ static b32 test_manual_editing(Test *t) {
     return 1;
 }
 
-// G4 G10: "/*" typed on line 1 makes the rest a comment and "*/" ends it; set-language Jai.
+// G1 G4 G10: the colors of the token kinds; "/*" typed on line 1 makes the rest a comment and "*/" ends it;
+// set-language Jai.
 static b32 test_manual_syntax(Test *t) {
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "manual syntax: app_create failed");
@@ -5998,8 +5999,19 @@ static b32 test_manual_syntax(Test *t) {
     TEST_CHECK(t, kinds[0] == SYN_COMMENT && kinds[1] == SYN_TYPE, "manual G4: line 3 after '/*' %d, after '*/' %d", kinds[0], kinds[1]);
     app_dev_feed(app, "M-x s e t - l a n g u a g e RET J a i RET", &t->arena);
     TEST_CHECK(t, test_echo_has(app, "Language: Jai") && buf->language == BUFFER_LANG_JAI, "manual G10: '%S'", test_echo(app));
+    // G1: each token kind is drawn in its theme role, with the default theme's colors.
+    static const struct { SyntaxKind kind; u32 rgb; } roles[] = {
+        { SYN_TEXT, 0xd3b58d }, { SYN_COMMENT, 0x3fdf1f }, { SYN_STRING, 0x0fdfaf }, { SYN_NUMBER, 0x7ad0c6 }, { SYN_KEYWORD, 0xffffff },
+        { SYN_TYPE, 0x8cde94 }, { SYN_CONSTANT, 0x7ad0c6 }, { SYN_DIRECTIVE, 0x8cde94 }, { SYN_FUNCTION, 0xffffff },
+        { SYN_VARIABLE, 0xc1d1e3 }, { SYN_PUNCTUATION, 0xd3b58d },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(roles); i++) {
+        u32 got = app_kind_color(&app->config->theme, roles[i].kind);
+        TEST_CHECK(t, got == roles[i].rgb, "manual G1: kind %d drawn in %06x, expected %06x", (i32)roles[i].kind, got, roles[i].rgb);
+    }
     if (!test_app_destroy(t, app, "manual syntax")) return 0;
-    LOG("test: ok: manual G4 G10 ('/*' typed comments out the rest and '*/' restores it; set-language Jai)");
+    LOG("test: ok: manual G1 G4 G10 (every token kind in its theme color; '/*' typed comments out the rest and '*/' restores it; "
+        "set-language Jai)");
     return 1;
 }
 
