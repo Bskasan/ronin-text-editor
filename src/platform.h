@@ -281,6 +281,11 @@ void app_dev_show_scratch(App *app, String8 text);            // --bench-search:
 i64  app_dev_point(App *app);                                 // the active view's point
 b32  app_dev_isearch_failing(App *app);                        // an isearch is active, done, and failing
 void app_dev_log_keys(App *app, b32 on);                      // --log-keys: log every key and text event's result
+String8 app_dev_echo(App *app);                               // the echo area's text
+String8 app_dev_text(App *app, Arena *arena);                 // the active view's buffer text
+// The index-th binding of a keymap (0 [keys], 1 [keys minibuffer], 2 [keys isearch]) in kbd notation,
+// its command's name in *command; empty past the last one.
+String8 app_dev_binding(App *app, Arena *arena, i32 keymap, i32 index, const char **command);
 i64  app_dev_size(App *app);                                  // the size of its buffer
 #endif
 
