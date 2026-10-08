@@ -75,6 +75,11 @@ static const char *app_sample[] = {
 #define APP_HEADLESS_CELL_W 8  // the cell of a headless app (dev: --test), which has no font
 #define APP_HEADLESS_LINE_H 16
 
+typedef struct AppWatch {
+    String8 dir;
+    OsWatch watch; // 0: the directory could not be watched (not tried again while it is displayed)
+} AppWatch;
+
 struct App {
     Font *font;
     BufferList buffers;          // every buffer, in creation order
@@ -88,6 +93,12 @@ struct App {
     KeyInput keys;               // the key sequence state
     Minibuffer mini;             // prompts; while active its keymap comes before the global one
     Arena files_arena;           // files.c: paths being built; reset by each use
+    AppWatch watches[APP_MAX_VIEWS]; // the directories of the displayed file buffers
+    i32 watch_count;
+    Arena watch_arena;           // their names; rebuilt when the set changes
+    b32 disk_pending;            // a change notification came: check the displayed buffers at disk_due_us
+    u64 disk_due_us;
+    i32 disk_attempts;           // reloads that met a sharing violation, in a row
     Config *config;              // in config_arenas[config_slot]
     Arena config_arenas[2];      // a load parses into the other arena, then switches
     i32 config_slot;
@@ -293,13 +304,14 @@ static String8 app_mode_line_text(View *v, Arena *arena) {
     i64 name_cells = 0;
     for (i64 i = 0; i < buf->name.len; i++) name_cells += (buf->name.data[i] & 0xC0) != 0x80;
     String8 pad = str8((u8 *)"            ", MAX(12 - name_cells, 0)); // Emacs pads the name to 12 (%12b)
+    const char *disk = buf->disk_state == BUFFER_DISK_CHANGED ? "  [changed on disk]" : buf->disk_state == BUFFER_DISK_DELETED ? "  [deleted on disk]" : "";
     i64 top_pos = buffer_marker_get(buf, v->top);
     i64 top = buffer_line_of(buf, top_pos);
     b32 bottom = top + v->rows >= buffer_line_count(buf);
     String8 where = top == 0 && bottom ? STR8_LIT("All") : top == 0 ? STR8_LIT("Top") : bottom ? STR8_LIT("Bot")
                   : str8_fmt(arena, "%D%%", top_pos * 100 / MAX(buffer_size(buf), 1));
     i64 p = view_point(v, &v->cursors[0]);
-    return str8_fmt(arena, " -:%s-  %S%S    %S   L%D C%D    (%s)    %s %s", flags, buf->name, pad, where,
+    return str8_fmt(arena, " -:%s-  %S%s%S    %S   L%D C%D    (%s)    %s %s", flags, buf->name, disk, pad, where,
                     buffer_line_of(buf, p) + 1, view_column_of(buf, p), buffer_language_name(buf->language),
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol));
 }
@@ -778,6 +790,14 @@ static View *app_active_view(App *app) {
     return app->views[app->active_view];
 }
 
+// files.c: files changed outside the editor.
+static void files_check_all(App *app);
+static void files_notify(App *app, OsWatch watch);
+static void files_poll(App *app);
+static void files_update_watches(App *app);
+static void files_unwatch_all(App *app);
+static u32  files_wait_ms(App *app);
+
 // ---------------------------------------------------------------------------
 // Startup
 
@@ -819,6 +839,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);
     app->files_arena = arena_create(GB(1));
+    app->watch_arena = arena_create(MB(16));
     app->ctx.mini = &app->mini;
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
@@ -845,6 +866,8 @@ i32 app_shutdown(App *app) {
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += minibuffer_destroy(&app->mini);
     os_release(app->files_arena.base);
+    files_unwatch_all(app);
+    os_release(app->watch_arena.base);
     leaks += buffer_list_destroy(&app->buffers);
     kill_destroy(&app->kills);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
@@ -1125,7 +1148,7 @@ static void app_key_event(App *app, Event *e) {
 }
 
 u32 app_wait_ms(App *app) {
-    return config_wait_ms(&app->config_source, os_time_us());
+    return MIN(config_wait_ms(&app->config_source, os_time_us()), files_wait_ms(app));
 }
 
 // Events, commands and layout: everything but drawing (no font or renderer calls, so a headless app
@@ -1150,7 +1173,8 @@ static b32 app_update(App *app, FrameInput *in) {
             minibuffer_abort(&app->mini);
             app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
             break;
-        case EVENT_FOCUS:
+        case EVENT_FOCUS: // activation: every file buffer is checked against its file
+            if (e->focused && !app->focused) files_check_all(app);
             app->focused = e->focused;
             break;
         case EVENT_KEY_DOWN:
@@ -1171,12 +1195,14 @@ static b32 app_update(App *app, FrameInput *in) {
             break;
         case EVENT_DIR_CHANGED:
             if (e->watch == app->config_watch) config_notify(&app->config_source, os_time_us());
+            else if (app->focused) files_notify(app, e->watch); // without focus, the activation check covers it
             break;
         default:
             break;
         }
     }
     if (config_pending(&app->config_source)) app_reload_config(app, 0); // a settle delay or retry may be due (EVENT_WAKEUP)
+    files_poll(app);
     if (app->quit) return 0;
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
@@ -1188,6 +1214,7 @@ static b32 app_update(App *app, FrameInput *in) {
     app->laid_cell_w = l.cell_w;
     app->laid_line_h = l.line_h;
     app_update_title(app, in->scratch);
+    files_update_watches(app);
     return 1;
 }
 

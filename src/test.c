@@ -3800,6 +3800,128 @@ static b32 test_revert(Test *t) {
     return 1;
 }
 
+static void test_focus(App *app, b32 focused, Arena *scratch) {
+    Event e = { .kind = EVENT_FOCUS, .focused = focused };
+    app_dev_feed_events(app, &e, 1, scratch);
+}
+
+static b32 test_mode_line_has(Test *t, App *app, const char *what) {
+    String8 mode = app_mode_line_text(app->views[0], &t->arena), w = str8_cstr(what);
+    for (i64 i = 0; i + w.len <= mode.len; i++) if (memcmp(mode.data + i, w.data, (size_t)w.len) == 0) return 1;
+    return 0;
+}
+
+// Files changed outside the editor: activation checks, watches, auto-revert, the save guard.
+static b32 test_disk(Test *t) {
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p7disk", t->tmp_dir));
+    os_make_dir(root);
+    String8 path = str8_fmt(&t->arena, "%S\\d.txt", root), other = str8_fmt(&t->arena, "%S\\e.txt", root);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("line1\nline2\nline3\n")) && os_write_file(other, STR8_LIT("e\n")), "disk: cannot write");
+    i32 watches_before = os_dev_watch_count();
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "disk: app_create failed");
+    View *v = app->views[0];
+    test_focus(app, 1, &t->arena);
+    app_dev_visit(app, other);
+    app_dev_visit(app, path);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    Buffer *b = test_current(app), *e = buffer_list_find_name(&app->buffers, STR8_LIT("e.txt"));
+    TEST_CHECK(t, app->watch_count == 1 && app->watches[0].watch && str8_equal(app->watches[0].dir, root), "disk: the directory is watched");
+
+    // Unmodified: reloaded on activation, point kept by the markers.
+    app_dev_feed(app, "C-n C-n", &t->arena);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("LINE ONE\nline2\nline3\n")) && os_write_file(other, STR8_LIT("E\n")), "disk: change");
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("LINE ONE\nline2\nline3\n")) && view_point(v, &v->cursors[0]) == 15 && !b->modified &&
+                  b->disk_state == BUFFER_DISK_OK && test_text_is(t, e, STR8_LIT("E\n")), "disk: reloaded, point %D",
+               view_point(v, &v->cursors[0]));
+    // Our own save is not a change.
+    app_dev_feed(app, "x C-x C-s", &t->arena);
+    TEST_CHECK(t, !app->mini.active && test_file_is(t, path, "LINE ONE\nline2\nxline3\n"), "disk: saved");
+    echo_clear(&app->echo);
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, app->echo.len == 0 && b->disk_state == BUFFER_DISK_OK, "disk: our own save reported '%S'", str8(app->echo.text, app->echo.len));
+
+    // A watch notification while focused: the displayed buffer reloads after the settle delay.
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("watched\n")), "disk: change");
+    Event dir = { .kind = EVENT_DIR_CHANGED, .watch = app->watches[0].watch }, wake = { .kind = EVENT_WAKEUP };
+    app_dev_feed_events(app, &dir, 1, &t->arena);
+    TEST_CHECK(t, app->disk_pending && test_text_is(t, b, STR8_LIT("LINE ONE\nline2\nxline3\n")) && app_wait_ms(app) <= CONFIG_SETTLE_MS,
+               "disk: not before the settle delay");
+    app->disk_due_us = 0;
+    app_dev_feed_events(app, &wake, 1, &t->arena);
+    TEST_CHECK(t, !app->disk_pending && test_text_is(t, b, STR8_LIT("watched\n")) && test_echo_has(app, "Reverted d.txt"),
+               "disk: reloaded by the watch");
+    // Undo brings back the text before the reload, as a modified buffer; undo-redo the file's.
+    app_dev_feed(app, "C-/", &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("LINE ONE\nline2\nxline3\n")) && b->modified, "disk: undo of a reload");
+    app_dev_feed(app, "C-?", &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("watched\n")) && !b->modified, "disk: undo-redo of a reload");
+    // Without focus a notification is left to the activation check.
+    test_focus(app, 0, &t->arena);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("unfocused\n")), "disk: change");
+    app_dev_feed_events(app, &dir, 1, &t->arena);
+    TEST_CHECK(t, !app->disk_pending && test_text_is(t, b, STR8_LIT("watched\n")), "disk: ignored without focus");
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("unfocused\n")), "disk: then reloaded on activation");
+
+    // Modified: never reloaded; reported once; flagged in the mode line; saving asks.
+    app_dev_feed(app, "M-> m", &t->arena);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("outside\n")), "disk: change");
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("unfocused\nm")) && b->disk_state == BUFFER_DISK_CHANGED &&
+                  test_echo_has(app, "d.txt changed on disk") && test_mode_line_has(t, app, "d.txt  [changed on disk]"),
+               "disk: a modified buffer is flagged, not reloaded");
+    echo_clear(&app->echo);
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, app->echo.len == 0 && b->disk_state == BUFFER_DISK_CHANGED, "disk: reported once");
+    app_dev_feed(app, "C-x C-s", &t->arena);
+    TEST_CHECK(t, app->mini.active && str8_equal(app->mini.prompt, STR8_LIT("d.txt has changed since visited or saved. Save anyway? (yes or no) ")),
+               "disk: the save guard '%S'", app->mini.prompt);
+    app_dev_feed(app, "n o RET", &t->arena);
+    TEST_CHECK(t, test_file_is(t, path, "outside\n") && b->modified, "disk: 'no' does not save");
+    app_dev_feed(app, "C-x C-s C-g", &t->arena);
+    TEST_CHECK(t, test_file_is(t, path, "outside\n") && b->modified && b->disk_state == BUFFER_DISK_CHANGED, "disk: C-g does not save");
+    // In a save-some-buffers walk: an abort at the guard stops the walk.
+    app_dev_feed(app, "C-x b e . t x t RET z C-x b RET", &t->arena);
+    app_dev_feed(app, "C-x s y y C-g", &t->arena); // e.txt first (list order), then d.txt and its guard
+    TEST_CHECK(t, !app->mini.active && b->modified && !e->modified && test_file_is(t, path, "outside\n"),
+               "disk: abort at the guard in a walk (e.txt, saved before it, stays saved)");
+    app_dev_feed(app, "C-x s y y e s RET", &t->arena);
+    TEST_CHECK(t, !app->mini.active && !b->modified && test_file_is(t, path, "unfocused\nm") &&
+                  b->disk_state == BUFFER_DISK_OK, "disk: 'yes' at the guard saves and the walk goes on");
+
+    // Deleted: reported once, the buffer stays, saving writes it again without asking.
+    os_file_delete(path);
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, b->disk_state == BUFFER_DISK_DELETED && test_echo_has(app, "d.txt deleted on disk") && test_text_is(t, b, STR8_LIT("unfocused\nm")) &&
+                  test_mode_line_has(t, app, "[deleted on disk]"), "disk: deleted");
+    app_dev_feed(app, "C-e ! C-x C-s", &t->arena);
+    TEST_CHECK(t, !app->mini.active && test_file_is(t, path, "unfocused\nm!") && b->disk_state == BUFFER_DISK_OK, "disk: saved again");
+
+    // auto_revert off: an unmodified buffer is flagged like a modified one.
+    app->config->settings.auto_revert = 0;
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("no revert\n")), "disk: change");
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("unfocused\nm!")) && b->disk_state == BUFFER_DISK_CHANGED, "disk: auto_revert off");
+    app->config->settings.auto_revert = 1;
+
+    // Watches follow the displayed buffers and are all released.
+    app_dev_feed(app, "C-x b * s c r a t c h * RET", &t->arena);
+    TEST_CHECK(t, app->watch_count == 0 && os_dev_watch_count() == watches_before, "disk: no watch without a displayed file");
+    if (!test_app_destroy(t, app, "disk")) return 0;
+    TEST_CHECK(t, os_dev_watch_count() == watches_before, "disk: watches left open");
+    LOG("test: ok: changed on disk (activation, watch and settle, focus, undo of a reload, modified, once, save guard, walk, deleted, "
+        "auto_revert off, watches)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3969,6 +4091,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_save_some(&t);
     arena_reset(&t.arena);
     test_revert(&t);
+    arena_reset(&t.arena);
+    test_disk(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

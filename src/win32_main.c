@@ -13,7 +13,7 @@
 
 #define EVENT_CAPACITY 256
 #define EVENT_RESERVE 4 // free slots required before taking another message off the queue
-#define WIN32_MAX_WATCHES 8
+#define WIN32_MAX_WATCHES 16 // the config's directory and those of the displayed buffers; the wait takes 63
 
 typedef struct Platform {
     HINSTANCE instance;
@@ -76,6 +76,7 @@ typedef struct Platform {
     String8 atlas_path;
     String8 config_path;
     String8 keys; // --keys: injected after startup
+    String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
 #endif
 } Platform;
 
@@ -1325,6 +1326,13 @@ static i32 win32_write_outputs(Platform *p) {
     app_dev_force_focus(p->app, 1); // the cursor as it looks while typing
     win32_inject_keys(p);
     if (p->event_count) win32_frame(p);
+    if (p->touch.len && !p->quit) { // a file changed outside: the app checks it when activated
+        os_write_file(p->touch, STR8_LIT("changed outside teal\n"));
+        Event off = { .kind = EVENT_FOCUS, .focused = 0 }, on = { .kind = EVENT_FOCUS, .focused = 1 };
+        win32_push_event(p, off);
+        win32_push_event(p, on);
+        win32_frame(p);
+    }
     if (p->quit) return EXIT_OK;
     r_request_capture(p->renderer);
     win32_frame(p);
@@ -1681,6 +1689,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
         if (str8_equal(a, STR8_LIT("--config")) && has_value) { p->config_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
             p->render_mode_forced = 1;
