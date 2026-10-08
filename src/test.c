@@ -1477,6 +1477,118 @@ static b32 test_view_fuzz(Test *t, u64 seed) {
 }
 
 // ---------------------------------------------------------------------------
+// Undo (buffer level)
+
+static b32 test_text_is(Test *t, Buffer *buf, String8 expected) {
+    String8 got = buffer_text(buf, &t->arena, 0, buffer_size(buf));
+    return str8_equal(got, expected);
+}
+
+static b32 test_undo_buffer(Test *t, u64 seed) {
+    enum { K = 40 };
+    Buffer *buf = buffer_create(STR8_LIT("undo"));
+    TEST_CHECK(t, buf, "undo: buffer_create failed");
+    String8 original = STR8_LIT("The quick brown fox\njumps over\nthe lazy dog.\n");
+    buffer_replace(buf, 0, 0, original);
+    buffer_mark_saved(buf); // as if loaded
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    // Not this first insert: start the history from the "loaded" text.
+    buffer_undo_enable(buf, 0);
+    buffer_undo_enable(buf, 1);
+    String8 texts[K + 1];
+    texts[0] = original;
+    i64 points[K + 1];
+    t->rng = seed ^ 0x0d0;
+    for (i32 k = 1; k <= K; k++) {
+        i64 size = buffer_size(buf);
+        i64 a = test_below(t, size + 1), b = MIN(size, a + test_below(t, 6));
+        a = buffer_snap_char(buf, a);
+        b = buffer_snap_char(buf, b);
+        points[k] = a;
+        buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, a);
+        static const char *inserts[] = { "x", "\n", "yz", "\xc5\x9f\xc4\x9f", "longer text\n" };
+        b32 ok = buffer_replace(buf, a, b, str8_cstr(inserts[test_below(t, ARRAY_COUNT(inserts))]));
+        if (k % 3 == 0) ok &= buffer_replace(buf, 0, 0, STR8_LIT("#")); // two records in one group
+        TEST_CHECK(t, ok, "undo: edit %d refused", k);
+        texts[k] = buffer_text(buf, &t->arena, 0, buffer_size(buf));
+        texts[k] = str8_copy(&t->arena, texts[k]);
+    }
+    TEST_CHECK(t, buf->modified, "undo: not modified after edits");
+    // N undos in a chain give the text after command K - N; point goes where it was.
+    i64 point = 0;
+    for (i32 n = 1; n <= K; n++) {
+        TEST_CHECK(t, buffer_undo(buf, n > 1, point, &point) == BUFFER_UNDO_DONE, "undo: undo %d failed", n);
+        TEST_CHECK(t, test_text_is(t, buf, texts[K - n]) && point == points[K - n + 1],
+                   "undo: after %d undos the text is not the text after command %d (point %D, expected %D)", n, K - n, point,
+                   points[K - n + 1]);
+    }
+    TEST_CHECK(t, !buf->modified, "undo: undoing everything left the buffer modified");
+    TEST_CHECK(t, buffer_undo(buf, 1, point, &point) == BUFFER_UNDO_NOTHING, "undo: no further undo information expected");
+    // Redo walks forward again; the saved state (here the original) clears modified.
+    for (i32 n = 1; n <= K; n++) {
+        TEST_CHECK(t, buffer_redo(buf, point, &point) == BUFFER_UNDO_DONE && test_text_is(t, buf, texts[n]),
+                   "undo: redo %d does not give the text after command %d", n, n);
+        TEST_CHECK(t, buf->modified, "undo: modified after redo %d", n);
+    }
+    TEST_CHECK(t, buffer_redo(buf, point, &point) == BUFFER_UNDO_NOTHING, "undo: no further redo information expected");
+    // Saved in the middle: undoing back to it clears modified, past it sets it again.
+    buffer_mark_saved(buf);
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    buffer_replace(buf, 0, 0, STR8_LIT("after save"));
+    TEST_CHECK(t, buf->modified && buffer_undo(buf, 0, 0, &point) == BUFFER_UNDO_DONE && !buf->modified &&
+                  buffer_undo(buf, 1, 0, &point) == BUFFER_UNDO_DONE && buf->modified &&
+                  buffer_redo(buf, 0, &point) == BUFFER_UNDO_DONE && !buf->modified,
+               "undo: modified follows the saved state");
+    // Merging: 25 consecutive merging commands are a group of 20 and one of 5.
+    String8 before = str8_copy(&t->arena, buffer_text(buf, &t->arena, 0, buffer_size(buf)));
+    for (i32 i = 0; i < 25; i++) {
+        buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_INSERT, i > 0, buffer_size(buf));
+        buffer_replace(buf, buffer_size(buf), buffer_size(buf), STR8_LIT("a"));
+    }
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    TEST_CHECK(t, buffer_undo(buf, 0, 0, &point) == BUFFER_UNDO_DONE && buffer_size(buf) == before.len + 20,
+               "undo: the 5 inserts after the first 20 are one group");
+    TEST_CHECK(t, buffer_undo(buf, 1, 0, &point) == BUFFER_UNDO_DONE && test_text_is(t, buf, before),
+               "undo: the first 20 inserts are one group");
+    // Read-only: nothing is undone.
+    buf->read_only = 1;
+    TEST_CHECK(t, buffer_undo(buf, 0, 0, &point) == BUFFER_UNDO_FAILED && test_text_is(t, buf, before), "undo: read-only");
+    buf->read_only = 0;
+    // The limit: old groups are dropped, the last one stays even when it is larger than the limit.
+    buffer_undo_set_limit(buf, 4096);
+    for (i32 i = 0; i < 100; i++) {
+        buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+        buffer_replace(buf, 0, 0, STR8_LIT("0123456789012345678901234567890123456789012345678901234567890123456789"));
+        buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+        buffer_replace(buf, 0, 70, STR8_LIT(""));
+    }
+    TEST_CHECK(t, buf->undo.log_used <= 4096 && buf->undo.first_id > 0, "undo: the limit did not drop old groups (%U bytes)",
+               buf->undo.log_used);
+    i32 undone = 0;
+    for (b32 chain = 0; buffer_undo(buf, chain, 0, &point) == BUFFER_UNDO_DONE; chain = 1) undone++;
+    TEST_CHECK(t, undone > 0 && undone < 200, "undo: %d groups undoable under the limit", undone);
+    u8 *big = PUSH_ARRAY(&t->arena, u8, MB(1));
+    memset(big, 'b', MB(1));
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    buffer_replace(buf, 0, 0, str8(big, MB(1)));
+    String8 with_big = str8_copy(&t->arena, buffer_text(buf, &t->arena, 0, buffer_size(buf)));
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    buffer_replace(buf, 0, MB(1), STR8_LIT("")); // a record larger than the limit
+    TEST_CHECK(t, buf->undo.group_count == 1 && buffer_undo(buf, 0, 0, &point) == BUFFER_UNDO_DONE && test_text_is(t, buf, with_big),
+               "undo: the last command stays undoable over the limit");
+    // Disabled: no log, modified on every edit.
+    buffer_undo_enable(buf, 0);
+    buffer_mark_saved(buf);
+    buffer_replace(buf, 0, 0, STR8_LIT("x"));
+    TEST_CHECK(t, buf->modified && buffer_undo(buf, 0, 0, &point) == BUFFER_UNDO_NOTHING, "undo: disabled");
+    u64 memory = buffer_undo_memory(buf);
+    TEST_CHECK(t, buffer_destroy(buf), "undo: memory not released");
+    LOG("test: ok: undo log: %d edits undone and redone, saved state, merging at 20, read-only, limit, disabled (%U bytes committed)",
+        (i32)K, memory);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 // Every command is found by its own name, names are unique, and unknown names are refused.
@@ -2240,6 +2352,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_view_edit_limits(&t);
     arena_reset(&t.arena);
     test_view_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_undo_buffer(&t, seed);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);
