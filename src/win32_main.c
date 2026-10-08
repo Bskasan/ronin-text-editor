@@ -1165,6 +1165,36 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
     return result;
 }
 
+// The scripted session of the smoke: the keys and the bytes saved.
+#define SMOKE_SESSION_KEYS "i n t SPC f ( ) SPC { RET a ( ) ; RET b ( ) ; RET } RET " \
+                           "M-< C-n C-SPC C-n C-w C-n C-y C-/ C-? M-> x x C-/ M-< C-x C-; C-x C-s"
+#define SMOKE_SESSION_TEXT "// int f() {\n    b();\n    a();\n}\n"
+
+// Visits `path` (written with `initial` first), types `keys` through the --keys path, then
+// compares the saved bytes with `expected`.
+static b32 win32_smoke_keys(Platform *p, String8 path, String8 initial, String8 keys, String8 expected) {
+    if (!os_write_file(path, initial) || !app_dev_visit(p->app, path)) {
+        LOG("smoke: FAIL: cannot set up %S", path);
+        return 0;
+    }
+    Event events[256];
+    i32 n = app_dev_key_events(p->app, keys, events, ARRAY_COUNT(events));
+    for (i32 i = 0; i < n; i++) win32_push_event(p, events[i]);
+    win32_frame(p);
+    OsFile f;
+    OsFileInfo info;
+    u8 bytes[256];
+    i64 len = -1;
+    if (os_file_open_read(path, &f, &info) == OS_FILE_OK) {
+        len = MIN(info.size, (i64)sizeof(bytes));
+        if (os_file_read(f, bytes, len) != OS_FILE_OK) len = -1;
+        os_file_close(f);
+    }
+    b32 ok = len >= 0 && str8_equal(str8(bytes, len), expected);
+    LOG("smoke: %s: --keys \"%S\" saved %D bytes:\n%S\n(expected:\n%S)", ok ? "ok" : "FAIL", keys, len, str8(bytes, MAX(len, 0)), expected);
+    return ok;
+}
+
 // Smoke, after the probe frames: the font was set up once; a config with another background is
 // loaded (as C-c r) and the pixel probed; a file is edited and saved through --keys input and its
 // bytes compared. The color stage is the last frame's capture.
@@ -1175,28 +1205,12 @@ static i32 win32_smoke_config_and_keys(Platform *p) {
     if (setups != 1) result = EXIT_FONT;
 
     String8 tmp = str8_fmt(&p->perm, "%S\\tmp", p->exe_dir);
-    String8 text_path = str8_fmt(&p->perm, "%S\\smoke_keys.txt", tmp);
-    if (!os_write_file(text_path, STR8_LIT("abc\n")) || !app_dev_visit(p->app, text_path)) {
-        LOG("smoke: FAIL: cannot set up %S", text_path);
-        return EXIT_OUTPUT_FILE;
-    }
-    Event events[32];
-    i32 n = app_dev_key_events(p->app, STR8_LIT("M-> RET h i C-x C-s"), events, ARRAY_COUNT(events));
-    for (i32 i = 0; i < n; i++) win32_push_event(p, events[i]);
-    win32_frame(p);
-    OsFile f;
-    OsFileInfo info;
-    u8 bytes[64];
-    i64 len = 0;
-    if (os_file_open_read(text_path, &f, &info) == OS_FILE_OK) {
-        len = MIN(info.size, (i64)sizeof(bytes));
-        if (os_file_read(f, bytes, len) != OS_FILE_OK) len = -1;
-        os_file_close(f);
-    }
-    b32 saved = len >= 0 && str8_equal(str8(bytes, MAX(len, 0)), STR8_LIT("abc\n\nhi"));
-    LOG("smoke: %s: --keys \"M-> RET h i C-x C-s\" saved '%S' (%D bytes), expected 'abc\\n\\nhi'", saved ? "ok" : "FAIL",
-        str8(bytes, MAX(len, 0)), len);
-    if (!saved && result == EXIT_OK) result = EXIT_TEST;
+    if (!win32_smoke_keys(p, str8_fmt(&p->perm, "%S\\smoke_keys.txt", tmp), STR8_LIT("abc\n"), STR8_LIT("M-> RET h i C-x C-s"),
+                          STR8_LIT("abc\n\nhi")) && result == EXIT_OK) result = EXIT_TEST;
+    // A scripted editing session: RET indents, a region is killed and yanked, undo, undo-redo, a
+    // merged run of typing undone, comment-line.
+    if (!win32_smoke_keys(p, str8_fmt(&p->perm, "%S\\smoke_session.c", tmp), STR8_LIT(""), STR8_LIT(SMOKE_SESSION_KEYS),
+                          STR8_LIT(SMOKE_SESSION_TEXT)) && result == EXIT_OK) result = EXIT_TEST;
 
     String8 conf = str8_fmt(&p->perm, "%S\\smoke.conf", tmp);
     if (!os_write_file(conf, STR8_LIT("[colors]\nbackground = #102030\n"))) {

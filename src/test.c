@@ -2175,6 +2175,96 @@ static b32 test_edit_commands(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Undo fuzz: random edits, kills, yanks, indentation, undo and undo-redo through the driver.
+// Invariants: every state id stands for one text (a state seen again has the same text); undo
+// and redo only lead to states seen before; modified exactly when the state is not the saved
+// one; point is a valid character boundary.
+
+#define TEST_UNDO_FUZZ_OPS 4000
+#define TEST_UNDO_STATES (1 << 18)
+
+static b32 test_undo_fuzz(Test *t, u64 seed) {
+    TestView tv;
+    if (!test_view_open(t, &tv, "|int main() {\n    return 0;\n}\n\nfoo bar \xc5\x9f\xc4\x9f\xc3\xbc\n", 20, 60)) return 0;
+    String8 *texts = PUSH_ARRAY(&t->arena, String8, TEST_UNDO_STATES);
+    texts[tv.buf->undo.state] = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+    static const Command *edits[] = {
+        &CMD_NEWLINE, &CMD_DELETE_BACKWARD_CHAR, &CMD_DELETE_CHAR, &CMD_KILL_LINE, &CMD_KILL_WORD, &CMD_BACKWARD_KILL_WORD,
+        &CMD_KILL_WHOLE_LINE, &CMD_YANK, &CMD_YANK_POP, &CMD_KILL_REGION, &CMD_KILL_RING_SAVE, &CMD_INDENT_FOR_TAB_COMMAND,
+        &CMD_UNINDENT, &CMD_TAB_TO_TAB_STOP, &CMD_OPEN_LINE, &CMD_DELETE_INDENTATION, &CMD_JUST_ONE_SPACE,
+        &CMD_DELETE_HORIZONTAL_SPACE, &CMD_TRANSPOSE_CHARS, &CMD_UPCASE_WORD, &CMD_DOWNCASE_WORD, &CMD_CAPITALIZE_WORD,
+        &CMD_COMMENT_LINE, &CMD_MARK_WHOLE_BUFFER,
+    };
+    static const Command *motions[] = {
+        &CMD_FORWARD_CHAR, &CMD_BACKWARD_CHAR, &CMD_NEXT_LINE, &CMD_PREVIOUS_LINE, &CMD_FORWARD_WORD, &CMD_BACKWARD_WORD,
+        &CMD_MOVE_BEGINNING_OF_LINE, &CMD_MOVE_END_OF_LINE, &CMD_BEGINNING_OF_BUFFER, &CMD_END_OF_BUFFER, &CMD_SET_MARK_COMMAND,
+        &CMD_KEYBOARD_QUIT, &CMD_FORWARD_PARAGRAPH,
+    };
+    static const u32 chars[] = { 'a', 'Z', ' ', '{', '}', '(', ')', ';', 0x15F, 0x131, '\t' };
+    t->rng = seed ^ 0x0f0;
+    u64 t0 = os_time_us();
+    i64 undos = 0, redos = 0, known = 0;
+    for (i32 op = 0; op < TEST_UNDO_FUZZ_OPS; op++) {
+        u64 r = test_below(t, 100);
+        const Command *cmd;
+        b32 shift = 0;
+        if (r < 30) {
+            cmd = &CMD_SELF_INSERT;
+            tv.ctx.codepoint = chars[test_below(t, ARRAY_COUNT(chars))];
+        } else if (r < 55) {
+            cmd = edits[test_below(t, ARRAY_COUNT(edits))];
+        } else if (r < 75) {
+            cmd = motions[test_below(t, ARRAY_COUNT(motions))];
+            shift = test_below(t, 4) == 0;
+        } else if (r < 92) {
+            cmd = &CMD_UNDO;
+        } else {
+            cmd = &CMD_UNDO_REDO;
+        }
+        u64 before = tv.buf->undo.state;
+        tv.ctx.shift_translated = shift;
+        test_view_run(&tv, cmd);
+        tv.ctx.shift_translated = 0;
+        u64 state = tv.buf->undo.state;
+        String8 text = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf));
+        TEST_CHECK(t, state < TEST_UNDO_STATES, "undo fuzz op %d (seed 0x%X): state %U past the test's table", op, seed, state);
+        if (texts[state].data) {
+            TEST_CHECK(t, str8_equal(texts[state], text), "undo fuzz op %d (seed 0x%X, %s): state %U came back with another text",
+                       op, seed, cmd->name, state);
+            known += state != before;
+        } else {
+            TEST_CHECK(t, (cmd != &CMD_UNDO && cmd != &CMD_UNDO_REDO) || state == before,
+                       "undo fuzz op %d (seed 0x%X, %s): led to a state never seen", op, seed, cmd->name);
+            texts[state] = str8_copy(&t->arena, text);
+        }
+        undos += cmd == &CMD_UNDO && state != before;
+        redos += cmd == &CMD_UNDO_REDO && state != before;
+        TEST_CHECK(t, tv.buf->modified == (state != tv.buf->undo.saved_state), "undo fuzz op %d (seed 0x%X): modified flag", op, seed);
+        i64 p = view_point(tv.view, &tv.view->cursors[0]);
+        TEST_CHECK(t, p >= 0 && p <= buffer_size(tv.buf) && buffer_snap_char(tv.buf, p) == p, "undo fuzz op %d: point %D", op, p);
+        if (buffer_size(tv.buf) > 4000) { // keep the text small
+            test_view_run(&tv, &CMD_MARK_WHOLE_BUFFER);
+            test_view_run(&tv, &CMD_KILL_REGION);
+            texts[tv.buf->undo.state] = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        }
+    }
+    u64 t1 = os_time_us();
+    // Undo all the way back: the original text, unmodified.
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    for (i32 i = 0; i < 100000 && tv.buf->undo.state != tv.buf->undo.saved_state; i++) {
+        test_view_run(&tv, &CMD_UNDO);
+        if (test_echo_is(&tv, "No further undo information")) break;
+    }
+    TEST_CHECK(t, !tv.buf->modified && str8_equal(buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)), texts[tv.buf->undo.saved_state]),
+               "undo fuzz (seed 0x%X): undoing everything does not give the original text", seed);
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: undo fuzz, %d commands (seed 0x%X): %D undos and %D redos changed the text, %D returns to known states; "
+        "%U ms, undoing everything %U ms", (i32)TEST_UNDO_FUZZ_OPS, seed, undos, redos, known, (t1 - t0) / 1000,
+        (os_time_us() - t1) / 1000);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 // Every command is found by its own name, names are unique, and unknown names are refused.
@@ -2964,6 +3054,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_indent(&t);
     arena_reset(&t.arena);
     test_edit_commands(&t);
+    arena_reset(&t.arena);
+    test_undo_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);
