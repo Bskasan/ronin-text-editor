@@ -148,6 +148,8 @@ typedef struct Buffer {
     i64 file_size;  // as of the last load or save
     u64 file_time;  // last write time, same
     i32 tab_width;  // columns per tab stop (Emacs' buffer-local tab-width; the app sets it from the config)
+    b32 indent_tabs;     // indentation with tabs (indent-tabs-mode): from the config, or detected
+    b32 indent_detected; // indent_tabs was decided from the file's contents
     BufferUndo undo;
 } Buffer;
 

@@ -36,7 +36,7 @@ KeyChord key_chord_from_text(u32 codepoint);
 
 // kbd notation: chords separated by spaces; C- M- S- prefixes; RET TAB ESC SPC DEL; <delete>
 // <insert> <left> <right> <up> <down> <home> <end> <prior> <next> (<pageup> <pagedown>), <f1>..<f24>,
-// <pause> <apps>; otherwise exactly one character. A modified uppercase letter means S- plus the
+// <pause> <apps>, <backtab> (= S-TAB, printed so); otherwise exactly one character. A modified uppercase letter means S- plus the
 // lowercase one ("C-A" = "C-S-a"). False with a reason in *error on bad input.
 b32 key_chord_parse(String8 token, KeyChord *out, const char **error);
 b32 key_seq_parse(String8 text, KeySeq *out, const char **error);
@@ -83,6 +83,7 @@ typedef enum KeyResultKind {
     KEY_RESULT_UNDEFINED,   // "<seq> is undefined"; the state is reset
     KEY_RESULT_QUIT,        // keyboard-quit pressed while a prefix was pending: cancelled
     KEY_RESULT_DESCRIBE,    // describe-key: `command` is what seq runs (NULL = undefined); not run
+    KEY_RESULT_QUOTED,      // quoted-insert: insert `codepoint` literally (0: the key has no character)
 } KeyResultKind;
 
 typedef struct KeyResult {
@@ -97,6 +98,7 @@ typedef struct KeyInput {
     KeySeq pending; // the proper prefix typed so far
     b32 drop_text;  // the last KEY_DOWN was consumed: drop text events until the next KEY_DOWN
     b32 describe;   // describe-key: describe the next complete sequence instead of running it
+    b32 quoted;     // quoted-insert: the next key is inserted literally
 } KeyInput;
 
 void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult *out);
