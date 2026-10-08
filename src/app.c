@@ -72,7 +72,6 @@ static const char *app_sample[] = {
 #define APP_WHEEL_LINES 3 // per notch (120 units)
 #define APP_PAD_PX 4      // left padding of a text area at 96 DPI
 #define APP_CONFIG_RESERVE MB(16)
-#define APP_MAX_KEYMAPS 4
 #define APP_HEADLESS_CELL_W 8  // the cell of a headless app (dev: --test), which has no font
 #define APP_HEADLESS_LINE_H 16
 
@@ -87,8 +86,7 @@ struct App {
     Echo echo;
     CommandContext ctx;          // keeps last_command between events
     KeyInput keys;               // the key sequence state
-    Keymap *keymaps[APP_MAX_KEYMAPS]; // the lookup stack: context maps first, then "global"
-    i32 keymap_count;
+    Minibuffer mini;             // prompts; while active its keymap comes before the global one
     Config *config;              // in config_arenas[config_slot]
     Arena config_arenas[2];      // a load parses into the other arena, then switches
     i32 config_slot;
@@ -99,6 +97,7 @@ struct App {
     i32 text_scale;              // text-scale-increase / decrease steps, session only
     i32 wheel_scale_accum;       // Ctrl + wheel units not yet turned into text scale steps
     b32 dragging;                // the left button went down in a text area and is held
+    View *drag_view;             // ... of this view (or the minibuffer)
     i64 drag_anchor;             // where it went down (a drag selects from there)
     Renderer *renderer;          // during a frame: commands that change the font rebind the atlas at once
     b32 quit;
@@ -137,6 +136,13 @@ static AppLayout app_layout(App *app, FrameInput *in) {
     return l;
 }
 
+// Cells of a string: one per codepoint (or invalid byte), as font_draw_text.
+static i64 app_text_cells(String8 s) {
+    i64 cells = 0;
+    for (i64 i = 0; i < s.len; i++) cells += (s.data[i] & 0xC0) != 0x80;
+    return cells;
+}
+
 // Hands every view its rect: equal columns side by side above the echo area. Each view is its
 // text area plus a mode line at the bottom.
 static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
@@ -150,6 +156,14 @@ static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
         v->rows = MAX((v->h - l->line_h) / l->line_h, 1);
         v->cols = MAX((v->w - l->pad) / l->cell_w, 1);
     }
+    // The minibuffer: its text area starts after the prompt.
+    View *m = app->mini.view;
+    m->x = (i32)MIN(app_text_cells(app->mini.prompt), (i64)l->cols) * l->cell_w;
+    m->y = l->minibuffer_y;
+    m->w = MAX(in->width - m->x, l->pad + l->cell_w);
+    m->h = l->line_h;
+    m->rows = 1;
+    m->cols = MAX((m->w - l->pad) / l->cell_w, 1);
 }
 
 static b32 app_has_focus(App *app) {
@@ -331,6 +345,26 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, V
     r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)(v->x + v->w), (f32)(mode_y + line_h) }, COLOR_HEX(app->config->theme.text));
     String8 mode = app_mode_line_text(v, in->scratch);
     font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((v->w - l->pad) / l->cell_w, 0)), COLOR_HEX(app->config->theme.background));
+}
+
+// The minibuffer line: the prompt, the input (a one-line view), and the echo text as a transient
+// note in brackets after the input ("[No match]"), as Emacs shows messages while it reads.
+static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput *in) {
+    Minibuffer *mb = &app->mini;
+    Theme *th = &app->config->theme;
+    View *v = mb->view;
+    font_draw_text(app->font, r, l->pad, l->minibuffer_y, app_clip_cells(mb->prompt, l->cols), COLOR_HEX(th->prompt));
+    app_draw_region(app, r, l, v, &v->cursors[0], 1);
+    i64 line = view_top_line(v);
+    i32 text_x = v->x + l->pad;
+    app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, in->scratch);
+    app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), app_has_focus(app), in->dpi_scale, in->scratch);
+    if (app->echo.len) {
+        i64 end_col = view_column_of(v->buffer, buffer_line_end(v->buffer, line)) - v->left_col + 1;
+        i64 room = v->cols - end_col;
+        String8 note = str8_fmt(in->scratch, "[%S]", str8(app->echo.text, app->echo.len));
+        if (room > 2) font_draw_text(app->font, r, text_x + (i32)end_col * l->cell_w, v->y, app_clip_cells(note, room), COLOR_HEX(th->text));
+    }
 }
 
 #if TEAL_DEV
@@ -570,8 +604,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
     }
     os_set_caption_color(c->theme.background);
     for (i32 i = 0; i < app->buffers.count; i++) app_buffer_settings(app, app->buffers.entries[i].buffer);
-    app->keymaps[0] = &c->global;
-    app->keymap_count = 1;
+    app_buffer_settings(app, app->mini.buffer);
     app->keys.pending.len = 0;
     app->ctx.settings = &c->settings;
     kill_set_max(&app->kills, c->settings.kill_ring_max);
@@ -667,6 +700,10 @@ App *app_create(Arena *perm, AppArgs *args) {
 
     app->views[0] = view_create(perm, initial);
     app->view_count = 1;
+    Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
+    if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
+    minibuffer_init(&app->mini, perm, mini);
+    app->ctx.mini = &app->mini;
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
     if (!kill_init(&app->kills, app->config->settings.kill_ring_max)) os_fatal(STR8_LIT("Out of address space (kill ring)."));
@@ -690,6 +727,7 @@ App *app_create(Arena *perm, AppArgs *args) {
 i32 app_shutdown(App *app) {
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
+    leaks += minibuffer_destroy(&app->mini);
     leaks += buffer_list_destroy(&app->buffers);
     kill_destroy(&app->kills);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
@@ -719,12 +757,19 @@ static i64 app_mouse_pos(AppLayout *l, View *v, i32 x, i32 y) {
 
 // A left press in a text area activates its view. One click puts point at the cell (a drag from
 // there selects); a double click selects the word, a triple click the line with its newline.
+// While the minibuffer is active only its line takes clicks.
 static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
-    i32 i = app_view_at(app, x, y);
-    if (i < 0) return;
-    View *v = app->views[i];
-    if (y >= v->y + v->h - l->line_h) return; // the mode line
-    app->active_view = i;
+    View *v;
+    if (app->mini.active) {
+        v = app->mini.view;
+        if (y < v->y || x < v->x) return;
+    } else {
+        i32 i = app_view_at(app, x, y);
+        if (i < 0) return;
+        v = app->views[i];
+        if (y >= v->y + v->h - l->line_h) return; // the mode line
+        app->active_view = i;
+    }
     Buffer *buf = v->buffer;
     Cursor *c = &v->cursors[0];
     i64 pos = app_mouse_pos(l, v, x, y);
@@ -741,6 +786,7 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
     }
     view_set_point(v, c, pos);
     app->dragging = 1;
+    app->drag_view = v;
     app->drag_anchor = c->mark_active ? buffer_marker_get(buf, c->mark) : pos;
     view_ensure_visible(v);
     app->ctx.last_command = NULL;
@@ -748,7 +794,8 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
 
 // While the left button is held: point follows the mouse, the region runs from where it went down.
 static void app_drag(App *app, AppLayout *l, i32 x, i32 y) {
-    View *v = app->views[app->active_view];
+    View *v = app->drag_view;
+    if (v == app->mini.view && !app->mini.active) return; // the prompt ended during the drag
     Cursor *c = &v->cursors[0];
     i64 pos = app_mouse_pos(l, v, x, y);
     if (pos != view_point(v, c) || c->mark_active) {
@@ -822,8 +869,16 @@ static void cmd_save_buffers_kill_terminal(CommandContext *ctx) {
     app->quit = 1;
 }
 
+// Commands that show another buffer in ctx->view refuse to do it in the minibuffer.
+static b32 app_can_switch(CommandContext *ctx) {
+    if (ctx->view != ctx->app->mini.view) return 1;
+    echo_message(ctx->echo, "Cannot switch buffers in minibuffer window");
+    return 0;
+}
+
 static void app_cycle_buffer(CommandContext *ctx, i32 dir) {
     App *app = ctx->app;
+    if (!app_can_switch(ctx)) return;
     i32 n = app->buffers.count;
     i32 i = buffer_list_index(&app->buffers, ctx->view->buffer);
     if (n < 2 || i < 0) return;
@@ -837,6 +892,7 @@ static void cmd_previous_buffer(CommandContext *ctx) { app_cycle_buffer(ctx, -1)
 // Visits the user's teal.conf, creating it from the built-in defaults when it does not exist.
 static void cmd_open_config(CommandContext *ctx) {
     App *app = ctx->app;
+    if (!app_can_switch(ctx)) return;
     String8 path = app->config_path;
     if (!path.len) {
         echo_message(ctx->echo, "No place for teal.conf: APPDATA is not set");
@@ -910,17 +966,35 @@ const Command CMD_TEXT_SCALE_RESET           = { "text-scale-reset", cmd_text_sc
 const Command CMD_DESCRIBE_KEY               = { "describe-key", cmd_describe_key, COMMAND_ONCE };
 const Command CMD_QUOTED_INSERT              = { "quoted-insert", cmd_quoted_insert, COMMAND_ONCE };
 
+// Commands run in the minibuffer while it is active, otherwise in the active view.
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
-    app->ctx.view = app->views[app->active_view];
+    app->ctx.view = app->mini.active ? app->mini.view : app->views[app->active_view];
     app->ctx.codepoint = codepoint;
     app->ctx.shift_translated = shift_translated;
     view_run_command(&app->ctx, cmd);
 }
 
-// A KEY_DOWN or text event through the keymap.
+// A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
+// is active, else [global]. A single-key prompt takes the key itself, after the keymap has said
+// what the key is bound to, so the quit keys still abort it.
 static void app_key_event(App *app, Event *e) {
+    Keymap *stack[2];
+    i32 count = 0;
+    if (app->mini.active) stack[count++] = &app->config->minibuffer;
+    stack[count++] = &app->config->global;
     KeyResult k;
-    key_input_feed(&app->keys, app->keymaps, app->keymap_count, e, &k);
+    key_input_feed(&app->keys, stack, count, e, &k);
+    if (app->mini.active && app->mini.kind == MINI_KEY) {
+        if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED) return;
+        app->keys.pending.len = 0;
+        app->keys.describe = app->keys.quoted = 0;
+        KeyChord last = k.seq.chords[k.seq.len - 1];
+        u32 ch = (last & (CHORD_NAMED | CHORD_CTRL | CHORD_META)) ? 0 : (last & CHORD_CODE_MASK);
+        echo_clear(&app->echo);
+        app->ctx.view = app->mini.view;
+        minibuffer_key(&app->ctx, k.kind == KEY_RESULT_PREFIX ? NULL : k.command, ch);
+        return;
+    }
     u8 seq[KEY_SEQ_TEXT_CAP];
     i64 n = key_seq_print(&k.seq, seq, sizeof(seq) - 1);
     switch (k.kind) {
@@ -976,7 +1050,8 @@ static b32 app_update(App *app, FrameInput *in) {
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
         switch (e->kind) {
-        case EVENT_CLOSE: // the window's close button, Alt+F4: as C-x C-c
+        case EVENT_CLOSE: // the window's close button, Alt+F4: as C-x C-c, after ending any prompt
+            minibuffer_abort(&app->mini);
             app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
             break;
         case EVENT_FOCUS:
@@ -1011,6 +1086,7 @@ static b32 app_update(App *app, FrameInput *in) {
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
     for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]); // also views showing a buffer edited elsewhere
+    if (app->mini.active) view_ensure_visible(app->mini.view);
     app->laid_w = in->width;
     app->laid_h = in->height;
     app->laid_cell_w = l.cell_w;
@@ -1022,9 +1098,14 @@ static b32 app_update(App *app, FrameInput *in) {
 static void app_render(App *app, FrameInput *in, Renderer *r) {
     AppLayout l = app_layout(app, in);
     r_begin_frame(r, COLOR_HEX(app->config->theme.background));
-    for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view);
-    String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
-    font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));
+    // While the minibuffer is active the calling view's cursor is hollow.
+    for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view && !app->mini.active);
+    if (app->mini.active) {
+        app_draw_minibuffer(app, r, &l, in);
+    } else {
+        String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
+        font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));
+    }
 }
 
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {

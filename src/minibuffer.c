@@ -79,3 +79,425 @@ i64 match_rank(MatchQuery *q, Candidate *cands, i64 count, i32 *out) {
     }
     return n;
 }
+
+// ---------------------------------------------------------------------------
+// The minibuffer
+
+void minibuffer_init(Minibuffer *mb, Arena *perm, Buffer *buffer) {
+    memset(mb, 0, sizeof(*mb));
+    mb->buffer = buffer;
+    mb->view = view_create(perm, buffer);
+    mb->arena = arena_create(MINI_ARENA_RESERVE);
+    mb->cand_arena = arena_create(MINI_ARENA_RESERVE);
+    mb->text_arena = arena_create(MINI_ARENA_RESERVE);
+    mb->match_arena = arena_create(MINI_ARENA_RESERVE);
+    mb->history_arena = arena_create(MINI_ARENA_RESERVE);
+    mb->history_pos = -1;
+}
+
+i32 minibuffer_destroy(Minibuffer *mb) {
+    view_destroy(mb->view);
+    i32 leaks = (i32)mb->buffer->marker_live;
+    if (!buffer_destroy(mb->buffer)) leaks++;
+    Arena *arenas[] = { &mb->arena, &mb->cand_arena, &mb->text_arena, &mb->match_arena, &mb->history_arena };
+    for (i32 i = 0; i < ARRAY_COUNT(arenas); i++) os_release(arenas[i]->base);
+    return leaks;
+}
+
+String8 minibuffer_input(Minibuffer *mb, Arena *arena) {
+    String8 s = buffer_text(mb->buffer, arena, 0, buffer_size(mb->buffer));
+    return str8_copy(arena, s);
+}
+
+// Replaces the whole input (history, completion); point goes to its end. The replacement is
+// an ordinary edit, so it can be undone.
+static void minibuffer_set_input(Minibuffer *mb, String8 text) {
+    Buffer *buf = mb->buffer;
+    buffer_replace(buf, 0, buffer_size(buf), text);
+    view_set_point(mb->view, &mb->view->cursors[0], buffer_size(buf));
+}
+
+// The input from scratch: no text, no undo history, no mark.
+static void minibuffer_reset_input(Minibuffer *mb, String8 text) {
+    Buffer *buf = mb->buffer;
+    buffer_undo_enable(buf, 0);
+    buffer_replace(buf, 0, buffer_size(buf), text);
+    buffer_undo_enable(buf, 1);
+    View *v = mb->view;
+    Cursor *c = &v->cursors[0];
+    view_set_point(v, c, buffer_size(buf));
+    c->mark_set = c->mark_active = c->mark_shift = 0;
+    buffer_marker_set(buf, v->top, 0);
+    v->left_col = 0;
+}
+
+void minibuffer_clear_candidates(Minibuffer *mb) {
+    arena_reset(&mb->cand_arena);
+    arena_reset(&mb->text_arena);
+    mb->cands = (Candidate *)mb->cand_arena.base;
+    mb->cand_count = 0;
+}
+
+void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, u32 flags) {
+    Candidate *c = PUSH_STRUCT(&mb->cand_arena, Candidate);
+    ASSERT(c == mb->cands + mb->cand_count);
+    c->text = str8_copy(&mb->text_arena, text);
+    c->folded = match_fold(&mb->text_arena, text);
+    c->annotation = annotation.len ? str8_copy(&mb->text_arena, annotation) : annotation;
+    c->flags = flags;
+    mb->cand_count++;
+}
+
+// Filters and ranks the candidates for the current input; the first match is selected.
+static void minibuffer_filter(Minibuffer *mb) {
+    arena_reset(&mb->match_arena);
+    mb->seen_edits = mb->buffer->edit_count;
+    mb->match_count = 0;
+    mb->selected = mb->list_top = 0;
+    if (mb->kind != MINI_CHOICE) return;
+    String8 input = minibuffer_input(mb, &mb->match_arena);
+    i64 from = mb->candidates_fn ? mb->candidates_fn(mb, mb->candidates_data, input) : 0;
+    mb->match_from = CLAMP(from, 0, input.len);
+    mb->query = match_query(&mb->match_arena, str8(input.data + mb->match_from, input.len - mb->match_from));
+    mb->matches = PUSH_ARRAY(&mb->match_arena, i32, mb->cand_count);
+    mb->match_count = match_rank(&mb->query, mb->cands, mb->cand_count, mb->matches);
+}
+
+b32 minibuffer_read(CommandContext *ctx, MiniRequest *req) {
+    Minibuffer *mb = ctx->mini;
+    if (!mb) {
+        echo_message(ctx->echo, "No minibuffer");
+        return 0;
+    }
+    if (mb->active) {
+        echo_message(ctx->echo, "Command attempted to use minibuffer while in minibuffer");
+        return 0;
+    }
+    if (!mb->in_continuation) {
+        arena_reset(&mb->arena);
+        mb->state = (MiniState){ 0 };
+    }
+    mb->active = 1;
+    mb->finished = 0;
+    mb->kind = req->kind;
+    mb->prompt = str8_copy(&mb->arena, req->prompt);
+    mb->done = req->done;
+    mb->then_command = NULL;
+    mb->caller = ctx->view;
+    mb->answers = req->answers;
+    mb->candidates_fn = req->candidates;
+    mb->candidates_data = req->data;
+    mb->require_match = req->require_match;
+    mb->file = req->file;
+    mb->history = req->history;
+    mb->history_pos = -1;
+    mb->typed = str8(NULL, 0);
+    if (req->kind != MINI_CHOICE) minibuffer_clear_candidates(mb);
+    else if (req->candidates) minibuffer_clear_candidates(mb); // the callback fills them
+    minibuffer_reset_input(mb, req->kind == MINI_KEY ? str8(NULL, 0) : req->initial);
+    minibuffer_filter(mb);
+    echo_clear(ctx->echo);
+    return 1;
+}
+
+// The calling View stays recorded until the continuation has run.
+static void minibuffer_close(Minibuffer *mb) {
+    mb->active = 0;
+    minibuffer_reset_input(mb, str8(NULL, 0));
+    minibuffer_clear_candidates(mb);
+    arena_reset(&mb->match_arena);
+    mb->match_count = 0;
+}
+
+void minibuffer_abort(Minibuffer *mb) {
+    if (!mb->active) return;
+    minibuffer_close(mb);
+    mb->finished = 0;
+    mb->done = NULL;
+    mb->then_command = NULL;
+    mb->state = (MiniState){ 0 };
+    arena_reset(&mb->arena);
+}
+
+// Accepts `text` (copied into the chain arena): the prompt closes and the driver runs the
+// continuation after the running command.
+static void minibuffer_finish(Minibuffer *mb, String8 text, i32 candidate, u32 flags) {
+    MiniResult *r = &mb->result;
+    *r = (MiniResult){ .text = str8_copy(&mb->arena, text), .candidate = candidate, .flags = flags };
+    if (mb->history != MINI_HISTORY_NONE && mb->kind != MINI_KEY && mb->kind != MINI_YES_NO) {
+        minibuffer_history_add(mb, mb->history, r->text);
+    }
+    minibuffer_close(mb);
+    mb->finished = 1;
+}
+
+static void cmd_minibuffer_done(CommandContext *ctx) {
+    Minibuffer *mb = ctx->mini;
+    MiniDoneFn *done = mb->done;
+    mb->done = NULL;
+    if (done) done(ctx, &mb->result);
+}
+
+// Internal: never bound, not in the command table.
+static const Command CMD_MINIBUFFER_DONE = { "minibuffer-done", cmd_minibuffer_done, COMMAND_ONCE };
+
+void minibuffer_after_command(CommandContext *ctx) {
+    Minibuffer *mb = ctx->mini;
+    if (mb->active && mb->buffer->edit_count != mb->seen_edits) minibuffer_filter(mb);
+    if (!mb->finished) return;
+    mb->finished = 0;
+    // The continuation is a command of its own on the calling View: its own undo boundary and
+    // ensure_visible; with M-x the chosen command itself.
+    CommandContext c = *ctx;
+    c.view = mb->caller ? mb->caller : ctx->view;
+    c.cursor = NULL;
+    c.codepoint = 0;
+    c.shift_translated = 0;
+    const Command *cmd = mb->then_command ? mb->then_command : &CMD_MINIBUFFER_DONE;
+    mb->then_command = NULL;
+    mb->in_continuation++;
+    view_run_command(&c, cmd);
+    mb->in_continuation--;
+    ctx->last_command = c.last_command;
+}
+
+// ---------------------------------------------------------------------------
+// History: per category, session only, no consecutive duplicates.
+
+// Moves the live strings down over the dead ones once more than half of the arena is dead.
+static void minibuffer_history_compact(Minibuffer *mb) {
+    Arena *a = &mb->history_arena;
+    if (a->pos < KB(64) || a->pos < 2 * mb->history_live) return;
+    String8 *items[MINI_HISTORY_COUNT * MINI_HISTORY_MAX];
+    i32 n = 0;
+    for (i32 k = 0; k < MINI_HISTORY_COUNT; k++) {
+        for (i32 i = 0; i < mb->histories[k].count; i++) items[n++] = &mb->histories[k].items[i];
+    }
+    for (i32 i = 1; i < n; i++) { // by address, so every move goes down (insertion sort: at most 600)
+        String8 *x = items[i];
+        i32 j = i;
+        for (; j > 0 && items[j - 1]->data > x->data; j--) items[j] = items[j - 1];
+        items[j] = x;
+    }
+    u64 pos = 0;
+    for (i32 i = 0; i < n; i++) {
+        memmove(a->base + pos, items[i]->data, (size_t)items[i]->len);
+        items[i]->data = a->base + pos;
+        pos += (u64)items[i]->len;
+    }
+    arena_pop_to(a, pos);
+}
+
+void minibuffer_history_add(Minibuffer *mb, MiniHistoryKind kind, String8 text) {
+    if (kind <= MINI_HISTORY_NONE || kind >= MINI_HISTORY_COUNT || !text.len) return;
+    MiniHistory *h = &mb->histories[kind];
+    if (h->count && str8_equal(h->items[0], text)) return;
+    if (h->count == MINI_HISTORY_MAX) mb->history_live -= (u64)h->items[--h->count].len;
+    memmove(h->items + 1, h->items, (size_t)h->count * sizeof(String8));
+    h->items[0] = str8_copy(&mb->history_arena, text);
+    h->count++;
+    mb->history_live += (u64)text.len;
+    minibuffer_history_compact(mb);
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+
+// A transient note after the input, as Emacs' minibuffer-message: "[No match]". Not logged.
+static void minibuffer_note(CommandContext *ctx, const char *text) {
+    echo_set(ctx->echo, str8_cstr(text));
+}
+
+// The minibuffer, when the command runs in it; otherwise "Not in a minibuffer".
+static Minibuffer *minibuffer_here(CommandContext *ctx) {
+    Minibuffer *mb = ctx->mini;
+    if (!mb || !mb->active || ctx->view != mb->view) {
+        echo_message(ctx->echo, "Not in a minibuffer");
+        return NULL;
+    }
+    return mb;
+}
+
+// "N" or "N:M", decimal, blanks around it allowed.
+static b32 minibuffer_parse_numbers(String8 s, MiniResult *r) {
+    i64 i = 0;
+    while (i < s.len && s.data[i] == ' ') i++;
+    r->numbers = 0;
+    for (;;) {
+        i64 start = i, v = 0;
+        while (i < s.len && s.data[i] >= '0' && s.data[i] <= '9' && i - start < 18) v = v * 10 + (s.data[i++] - '0');
+        if (i == start || (i < s.len && s.data[i] >= '0' && s.data[i] <= '9')) return 0; // no digits, or too many
+        r->number[r->numbers++] = v;
+        if (i < s.len && s.data[i] == ':' && r->numbers == 1) {
+            i++;
+            continue;
+        }
+        break;
+    }
+    while (i < s.len && s.data[i] == ' ') i++;
+    return i == s.len;
+}
+
+// The candidate whose text equals the matched part of the input (case-insensitively), or -1.
+static i64 minibuffer_exact_candidate(Minibuffer *mb, String8 input) {
+    u64 mark = arena_pos(&mb->match_arena);
+    String8 want = match_fold(&mb->match_arena, str8(input.data + mb->match_from, input.len - mb->match_from));
+    i64 found = -1;
+    for (i64 i = 0; i < mb->cand_count && found < 0; i++) if (str8_equal(mb->cands[i].folded, want)) found = i;
+    arena_pop_to(&mb->match_arena, mark);
+    return found;
+}
+
+// RET (as_typed = 0) and C-j (as_typed = 1).
+static void minibuffer_accept(CommandContext *ctx, b32 as_typed) {
+    Minibuffer *mb = minibuffer_here(ctx);
+    if (!mb || mb->kind == MINI_KEY) return;
+    String8 input = minibuffer_input(mb, &mb->arena);
+    switch (mb->kind) {
+    case MINI_TEXT:
+        minibuffer_finish(mb, input, -1, 0);
+        break;
+    case MINI_NUMBER: {
+        MiniResult r = { 0 };
+        if (!minibuffer_parse_numbers(input, &r)) {
+            minibuffer_note(ctx, "Please enter a number");
+            return;
+        }
+        minibuffer_finish(mb, input, -1, 0);
+        mb->result.numbers = r.numbers;
+        mb->result.number[0] = r.number[0];
+        mb->result.number[1] = r.number[1];
+    } break;
+    case MINI_YES_NO: {
+        String8 answer = match_fold(&mb->arena, input);
+        b32 yes = str8_equal(answer, STR8_LIT("yes"));
+        if (!yes && !str8_equal(answer, STR8_LIT("no"))) {
+            minibuffer_set_input(mb, str8(NULL, 0));
+            minibuffer_note(ctx, "Please answer yes or no");
+            return;
+        }
+        minibuffer_finish(mb, input, -1, 0);
+        mb->result.yes = yes;
+    } break;
+    case MINI_CHOICE: {
+        i64 index = -1;
+        if (!as_typed && mb->match_count > 0) index = mb->matches[mb->selected];
+        else if (mb->require_match) index = minibuffer_exact_candidate(mb, input);
+        if (index < 0) {
+            if (mb->require_match) {
+                minibuffer_note(ctx, "No match");
+                return;
+            }
+            minibuffer_finish(mb, input, -1, 0);
+            return;
+        }
+        Candidate *c = &mb->cands[index];
+        String8 text = str8_fmt(&mb->arena, "%S%S", str8(input.data, mb->match_from), c->text);
+        if (mb->file && (c->flags & CANDIDATE_DIR) && !as_typed) { // a directory: descend into it
+            minibuffer_set_input(mb, str8_fmt(&mb->arena, "%S/", text));
+            return;
+        }
+        minibuffer_finish(mb, text, (i32)index, c->flags);
+    } break;
+    case MINI_KEY:
+        break;
+    }
+}
+
+static void cmd_exit_minibuffer(CommandContext *ctx) { minibuffer_accept(ctx, 0); }
+static void cmd_exit_minibuffer_input(CommandContext *ctx) { minibuffer_accept(ctx, 1); }
+
+static void cmd_abort_minibuffers(CommandContext *ctx) {
+    Minibuffer *mb = minibuffer_here(ctx);
+    if (!mb) return;
+    minibuffer_abort(mb);
+    echo_message(ctx->echo, "Quit");
+}
+
+// MINI_KEY: the answer is ctx->codepoint.
+static void cmd_minibuffer_answer(CommandContext *ctx) {
+    Minibuffer *mb = ctx->mini;
+    u8 bytes[4];
+    i64 n = utf8_encode(ctx->codepoint, bytes);
+    minibuffer_finish(mb, str8(bytes, n), -1, 0);
+    mb->result.key = ctx->codepoint;
+}
+
+static const Command CMD_MINIBUFFER_ANSWER = { "minibuffer-answer", cmd_minibuffer_answer, COMMAND_ONCE }; // internal
+
+void minibuffer_key(CommandContext *ctx, const Command *command, u32 chord_char) {
+    Minibuffer *mb = ctx->mini;
+    if (command && (command->flags & COMMAND_QUIT)) { // first: no answer can shadow an abort
+        view_run_command(ctx, &CMD_ABORT_MINIBUFFERS);
+        return;
+    }
+    u32 key = unicode_lower(chord_char);
+    for (const char *a = mb->answers; key && a && *a; a++) {
+        if ((u32)(u8)*a == key) {
+            ctx->codepoint = key;
+            view_run_command(ctx, &CMD_MINIBUFFER_ANSWER);
+            return;
+        }
+    }
+    // "Please answer y or n", "Please answer y, n, ! or q"
+    u8 text[128];
+    i64 len = fmt_buf(text, sizeof(text), "Please answer ");
+    i32 count = 0;
+    for (const char *a = mb->answers; a && *a; a++) count++;
+    for (i32 i = 0; i < count && len < (i64)sizeof(text) - 8; i++) {
+        if (i) len += fmt_buf(text + len, (i64)sizeof(text) - len, i == count - 1 ? " or " : ", ");
+        text[len++] = (u8)mb->answers[i];
+    }
+    echo_set(ctx->echo, str8(text, len));
+}
+
+// M-p (dir 1, older) and M-n (dir -1, newer). Going past the newest gives back what was typed.
+static void minibuffer_history_step(CommandContext *ctx, i32 dir) {
+    Minibuffer *mb = minibuffer_here(ctx);
+    if (!mb) return;
+    MiniHistory *h = mb->history > MINI_HISTORY_NONE && mb->history < MINI_HISTORY_COUNT ? &mb->histories[mb->history] : NULL;
+    i32 pos = mb->history_pos + dir;
+    if (pos >= (h ? h->count : 0)) {
+        minibuffer_note(ctx, "Beginning of history; no preceding item");
+        return;
+    }
+    if (pos < -1) {
+        minibuffer_note(ctx, "End of history; no default available");
+        return;
+    }
+    if (mb->history_pos == -1) mb->typed = minibuffer_input(mb, &mb->arena);
+    mb->history_pos = pos;
+    minibuffer_set_input(mb, pos < 0 ? mb->typed : h->items[pos]);
+}
+
+static void cmd_previous_history_element(CommandContext *ctx) { minibuffer_history_step(ctx, 1); }
+static void cmd_next_history_element(CommandContext *ctx) { minibuffer_history_step(ctx, -1); }
+
+static b32 minibuffer_is_slash(u8 b) { return b == '/' || b == '\\'; }
+
+// DEL in a file name prompt: directly after a slash it removes the whole last component
+// ("c:/a/src/" -> "c:/a/"); otherwise it is delete-backward-char.
+static void cmd_minibuffer_backward_updir(CommandContext *ctx) {
+    Minibuffer *mb = ctx->mini;
+    if (mb && mb->active && mb->file && ctx->view == mb->view) {
+        Buffer *buf = mb->buffer;
+        i64 p = view_point(ctx->view, ctx->cursor);
+        if (p > 0 && minibuffer_is_slash(buffer_byte(buf, p - 1))) {
+            i64 s = p - 1;
+            while (s > 0 && !minibuffer_is_slash(buffer_byte(buf, s - 1))) s--;
+            if (s > 0) {
+                buffer_replace(buf, s, p, STR8_LIT(""));
+                return;
+            }
+        }
+    }
+    CMD_DELETE_BACKWARD_CHAR.fn(ctx);
+}
+
+const Command CMD_EXIT_MINIBUFFER           = { "exit-minibuffer", cmd_exit_minibuffer, COMMAND_ONCE };
+const Command CMD_EXIT_MINIBUFFER_INPUT     = { "exit-minibuffer-input", cmd_exit_minibuffer_input, COMMAND_ONCE };
+const Command CMD_ABORT_MINIBUFFERS         = { "abort-minibuffers", cmd_abort_minibuffers, COMMAND_ONCE | COMMAND_QUIT };
+const Command CMD_PREVIOUS_HISTORY_ELEMENT  = { "previous-history-element", cmd_previous_history_element, COMMAND_ONCE };
+const Command CMD_NEXT_HISTORY_ELEMENT      = { "next-history-element", cmd_next_history_element, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_BACKWARD_UPDIR = { "minibuffer-backward-updir", cmd_minibuffer_backward_updir,
+                                                COMMAND_EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };

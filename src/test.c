@@ -3085,6 +3085,233 @@ static b32 test_headless_app(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// The minibuffer: prompts opened directly, keys through the headless app.
+
+typedef struct TestPromptLog {
+    i32 calls;
+    MiniResult r;
+    u8 text[256];
+    i64 len;
+    View *view;   // the View the continuation ran on
+    b32 chain;    // test_prompt_chain: open a second prompt from the continuation
+} TestPromptLog;
+
+static TestPromptLog test_prompt_log;
+
+static void test_prompt_done(CommandContext *ctx, MiniResult *r) {
+    TestPromptLog *log = &test_prompt_log;
+    log->calls++;
+    log->r = *r;
+    log->len = MIN(r->text.len, (i64)sizeof(log->text));
+    memcpy(log->text, r->text.data, (size_t)log->len);
+    log->view = ctx->view;
+}
+
+static void test_prompt_chain(CommandContext *ctx, MiniResult *r) {
+    test_prompt_done(ctx, r);
+    MiniRequest next = { .kind = MINI_TEXT, .prompt = STR8_LIT("Second: "), .done = test_prompt_done };
+    minibuffer_read(ctx, &next);
+}
+
+static b32 test_prompt_open(App *app, MiniRequest *req) {
+    app->ctx.view = app->views[app->active_view];
+    if (!req->done) req->done = test_prompt_done;
+    return minibuffer_read(&app->ctx, req);
+}
+
+static b32 test_prompt_text(App *app, const char *prompt, const char *initial, MiniKind kind) {
+    MiniRequest req = { .kind = kind, .prompt = str8_cstr(prompt), .initial = str8_cstr(initial), .history = MINI_HISTORY_TEXT };
+    return test_prompt_open(app, &req);
+}
+
+static b32 test_input_is(Test *t, App *app, const char *expected) {
+    return str8_equal(minibuffer_input(&app->mini, &t->arena), str8_cstr(expected));
+}
+
+static b32 test_echo_has(App *app, const char *expected) {
+    return str8_equal(str8(app->echo.text, app->echo.len), str8_cstr(expected));
+}
+
+static b32 test_logged(i32 calls, const char *text) {
+    TestPromptLog *log = &test_prompt_log;
+    return log->calls == calls && str8_equal(str8(log->text, log->len), str8_cstr(text));
+}
+
+static b32 test_minibuffer(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "minibuffer: app_create failed");
+    Minibuffer *mb = &app->mini;
+    View *v = app->views[0];
+    TestPromptLog *log = &test_prompt_log;
+    *log = (TestPromptLog){ 0 };
+
+    // RET accepts; the continuation runs on the calling view; typing never reaches its buffer.
+    TEST_CHECK(t, test_prompt_text(app, "Text: ", "ab", MINI_TEXT) && mb->active && test_input_is(t, app, "ab"), "minibuffer: open");
+    app_dev_feed(app, "c RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_logged(1, "abc") && log->view == v && buffer_size(v->buffer) == 0,
+               "minibuffer: RET accepts 'abc' on the calling view (calls %d)", log->calls);
+    // C-g and ESC abort: no continuation, "Quit".
+    test_prompt_text(app, "Text: ", "", MINI_TEXT);
+    app_dev_feed(app, "x C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 1 && test_echo_has(app, "Quit"), "minibuffer: C-g aborts");
+    test_prompt_text(app, "Text: ", "", MINI_TEXT);
+    app_dev_feed(app, "x ESC", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 1 && test_echo_has(app, "Quit"), "minibuffer: ESC aborts");
+    // A pending prefix: C-x C-g cancels only the prefix; the next C-g aborts.
+    test_prompt_text(app, "Text: ", "", MINI_TEXT);
+    app_dev_feed(app, "C-x C-g", &t->arena);
+    TEST_CHECK(t, mb->active, "minibuffer: C-x C-g cancels only the prefix");
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 1, "minibuffer: then C-g aborts");
+
+    // Editing commands, the kill ring, undo and the region work in it; kills reach the normal buffer.
+    test_prompt_text(app, "Text: ", "hello world", MINI_TEXT);
+    app_dev_feed(app, "C-a M-d C-y C-y", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "hellohello world"), "minibuffer: kill-word and yank");
+    app_dev_feed(app, "C-/", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "hello world"), "minibuffer: undo");
+    app_dev_feed(app, "C-e C-SPC M-b C-w RET", &t->arena);
+    TEST_CHECK(t, test_logged(2, "hello "), "minibuffer: a region killed");
+    app_dev_feed(app, "C-y", &t->arena);
+    String8 text = test_app_text(t, app);
+    TEST_CHECK(t, str8_equal(text, STR8_LIT("world")), "minibuffer: the kill yanked in the buffer: '%S'", text);
+    app_dev_feed(app, "C-/", &t->arena);
+    // Undo history does not survive from one prompt to the next; the initial input is not undoable.
+    test_prompt_text(app, "Text: ", "abc", MINI_TEXT);
+    app_dev_feed(app, "C-/", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "abc"), "minibuffer: nothing to undo in a new prompt");
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // The mouse: a click in the minibuffer line moves point there; clicks elsewhere are ignored.
+    test_prompt_text(app, "Text: ", "abcdef", MINI_TEXT);
+    View *m = mb->view;
+    Event click = { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = m->x + 4 + 2 * 8 + 3, .y = m->y + 4 };
+    Event up = { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT };
+    app_dev_feed_events(app, &click, 1, &t->arena);
+    app_dev_feed_events(app, &up, 1, &t->arena);
+    TEST_CHECK(t, view_point(m, &m->cursors[0]) == 2, "minibuffer: click at column 2 gave point %D", view_point(m, &m->cursors[0]));
+    click.x = 30;
+    click.y = 30;
+    app_dev_feed_events(app, &click, 1, &t->arena);
+    app_dev_feed_events(app, &up, 1, &t->arena);
+    TEST_CHECK(t, view_point(m, &m->cursors[0]) == 2 && mb->active, "minibuffer: a click in a view is ignored");
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // Numbers: N or N:M; anything else is refused with a note and the prompt stays.
+    test_prompt_text(app, "Line: ", "", MINI_NUMBER);
+    app_dev_feed(app, "1 2 x RET", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "Please enter a number") && log->calls == 2, "minibuffer: not a number");
+    app_dev_feed(app, "DEL : 5 RET", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 3 && log->r.numbers == 2 && log->r.number[0] == 12 && log->r.number[1] == 5,
+               "minibuffer: 12:5");
+    // yes or no, typed in full.
+    test_prompt_text(app, "Sure? (yes or no) ", "", MINI_YES_NO);
+    app_dev_feed(app, "y e RET", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "Please answer yes or no") && test_input_is(t, app, ""), "minibuffer: 'ye'");
+    app_dev_feed(app, "n o RET", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 4 && !log->r.yes, "minibuffer: no");
+    test_prompt_text(app, "Sure? (yes or no) ", "", MINI_YES_NO);
+    app_dev_feed(app, "Y E S RET", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 5 && log->r.yes, "minibuffer: YES");
+
+    // A single key: other keys are refused with a note; the quit keys abort, even one of the answers.
+    MiniRequest key = { .kind = MINI_KEY, .prompt = STR8_LIT("Save? (y or n) "), .answers = "yn" };
+    test_prompt_open(app, &key);
+    app_dev_feed(app, "x", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "Please answer y or n"), "minibuffer: key 'x' refused");
+    app_dev_feed(app, "C-x", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "Please answer y or n") && app->keys.pending.len == 0, "minibuffer: a prefix key refused");
+    app_dev_feed(app, "Y", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 6 && log->r.key == 'y', "minibuffer: key Y");
+    const char *quits[] = { "C-g", "ESC", "<f5>", "q" };
+    KeySeq seq;
+    const char *error;
+    key_seq_parse(STR8_LIT("<f5>"), &seq, &error);
+    keymap_bind(&app->config->minibuffer, &seq, &CMD_ABORT_MINIBUFFERS);
+    key_seq_parse(STR8_LIT("q"), &seq, &error);
+    keymap_bind(&app->config->global, &seq, &CMD_KEYBOARD_QUIT);
+    for (i32 i = 0; i < ARRAY_COUNT(quits); i++) {
+        MiniRequest q = { .kind = MINI_KEY, .prompt = STR8_LIT("Save? (y, n, ! or q) "), .answers = "yn!q" };
+        test_prompt_open(app, &q);
+        app_dev_feed(app, quits[i], &t->arena);
+        TEST_CHECK(t, !mb->active && log->calls == 6 && test_echo_has(app, "Quit"), "minibuffer: %s aborts a key prompt", quits[i]);
+    }
+    keymap_bind(&app->config->global, &seq, NULL);
+    MiniRequest q = { .kind = MINI_KEY, .prompt = STR8_LIT("Save? (y, n, ! or q) "), .answers = "yn!q" };
+    test_prompt_open(app, &q);
+    app_dev_feed(app, "z", &t->arena);
+    TEST_CHECK(t, test_echo_has(app, "Please answer y, n, ! or q"), "minibuffer: the answers listed");
+    app_dev_feed(app, "!", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == 7 && log->r.key == '!', "minibuffer: key !");
+
+    // History: per category, no consecutive duplicates; M-n past the newest gives back the input.
+    const char *entries[] = { "one", "two", "two", "three" };
+    for (i32 i = 0; i < ARRAY_COUNT(entries); i++) {
+        MiniRequest h = { .kind = MINI_TEXT, .prompt = STR8_LIT("M-x "), .initial = str8_cstr(entries[i]), .history = MINI_HISTORY_COMMAND };
+        test_prompt_open(app, &h);
+        app_dev_feed(app, "RET", &t->arena);
+    }
+    MiniRequest h = { .kind = MINI_TEXT, .prompt = STR8_LIT("M-x "), .history = MINI_HISTORY_COMMAND };
+    test_prompt_open(app, &h);
+    app_dev_feed(app, "t y p e d M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "three"), "minibuffer: M-p");
+    app_dev_feed(app, "M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "two"), "minibuffer: M-p twice (no duplicate)");
+    app_dev_feed(app, "M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "one"), "minibuffer: M-p thrice");
+    app_dev_feed(app, "M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "one") && test_echo_has(app, "Beginning of history; no preceding item"), "minibuffer: oldest");
+    app_dev_feed(app, "M-n M-n M-n", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "typed"), "minibuffer: M-n back to the typed input");
+    app_dev_feed(app, "M-n", &t->arena);
+    TEST_CHECK(t, test_echo_has(app, "End of history; no default available"), "minibuffer: newest");
+    app_dev_feed(app, "C-g", &t->arena);
+    MiniRequest other = { .kind = MINI_TEXT, .prompt = STR8_LIT("File: "), .history = MINI_HISTORY_FILE };
+    test_prompt_open(app, &other);
+    app_dev_feed(app, "M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "") && test_echo_has(app, "Beginning of history; no preceding item"), "minibuffer: another category");
+    // No recursion.
+    TEST_CHECK(t, !test_prompt_text(app, "Again: ", "", MINI_TEXT) &&
+                  test_echo_has(app, "Command attempted to use minibuffer while in minibuffer"), "minibuffer: recursion refused");
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // A chain: the continuation opens the next prompt; an abort there drops the rest of the chain.
+    i32 calls = log->calls;
+    MiniRequest chain = { .kind = MINI_TEXT, .prompt = STR8_LIT("First: "), .done = test_prompt_chain };
+    test_prompt_open(app, &chain);
+    app_dev_feed(app, "a RET", &t->arena);
+    TEST_CHECK(t, mb->active && log->calls == calls + 1 && str8_equal(mb->prompt, STR8_LIT("Second: ")), "minibuffer: chained prompt");
+    app_dev_feed(app, "b RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_logged(calls + 2, "b"), "minibuffer: second link accepted");
+    test_prompt_open(app, &chain);
+    app_dev_feed(app, "a RET C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && log->calls == calls + 3 && !mb->done, "minibuffer: abort in the second link");
+
+    // DEL in a file name prompt removes the last component after a slash.
+    MiniRequest file = { .kind = MINI_TEXT, .prompt = STR8_LIT("Find file: "), .initial = STR8_LIT("c:/a/src/"), .file = 1 };
+    test_prompt_open(app, &file);
+    app_dev_feed(app, "DEL", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "c:/a/"), "minibuffer: DEL after a slash");
+    app_dev_feed(app, "x DEL DEL", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "c:/"), "minibuffer: DEL of a character, then of a component");
+    app_dev_feed(app, "DEL", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "c:"), "minibuffer: DEL without an earlier slash");
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // Opening and closing never moves the calling view.
+    for (i32 i = 0; i < 300; i++) app_dev_feed(app, "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x RET", &t->arena);
+    app_dev_feed(app, "M-< C-v C-v C-e", &t->arena);
+    i64 top = buffer_marker_get(v->buffer, v->top), left = v->left_col;
+    TEST_CHECK(t, top > 0, "minibuffer: the view is scrolled");
+    test_prompt_text(app, "Text: ", "", MINI_TEXT);
+    app_dev_feed(app, "a b C-g", &t->arena);
+    TEST_CHECK(t, buffer_marker_get(v->buffer, v->top) == top && v->left_col == left, "minibuffer: the scroll position moved");
+    if (!test_app_destroy(t, app, "minibuffer")) return 0;
+    LOG("test: ok: minibuffer (accept, abort, prefix, editing, mouse, number, yes-or-no, keys, history, recursion, chain, updir, scroll)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3240,6 +3467,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_list_dir(&t);
     arena_reset(&t.arena);
     test_matcher(&t);
+    arena_reset(&t.arena);
+    test_minibuffer(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

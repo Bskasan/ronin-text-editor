@@ -400,6 +400,7 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     if (ctx->kills) kill_to_clipboard(ctx->kills); // once per command, when it killed
     view_ensure_visible(v);
     ctx->last_command = cmd;
+    if (ctx->mini) minibuffer_after_command(ctx); // filters candidates again; runs an accepted prompt's continuation
 }
 
 // ---------------------------------------------------------------------------
@@ -691,7 +692,7 @@ const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_ins
 const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
-const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE };
+const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE | COMMAND_QUIT };
 const Command CMD_SET_MARK_COMMAND       = { "set-mark-command", cmd_set_mark_command, 0 };
 const Command CMD_EXCHANGE_POINT_AND_MARK = { "exchange-point-and-mark", cmd_exchange_point_and_mark, 0 };
 const Command CMD_MARK_WHOLE_BUFFER      = { "mark-whole-buffer", cmd_mark_whole_buffer, COMMAND_ONCE };
