@@ -3382,6 +3382,90 @@ static b32 test_completion(Test *t) {
     return 1;
 }
 
+static Buffer *test_current(App *app) {
+    return app->views[app->active_view]->buffer;
+}
+
+static b32 test_current_is(App *app, const char *name) {
+    return str8_equal(test_current(app)->name, str8_cstr(name));
+}
+
+// Unique buffer names, switch-to-buffer, kill-buffer, through the keys.
+static b32 test_buffers(Test *t) {
+    String8 root = str8_fmt(&t->arena, "%S\\p7buf", t->tmp_dir);
+    os_make_dir(root);
+    os_make_dir(str8_fmt(&t->arena, "%S\\a", root));
+    os_make_dir(str8_fmt(&t->arena, "%S\\b", root));
+    String8 xa = str8_fmt(&t->arena, "%S\\a\\x.c", root), xb = str8_fmt(&t->arena, "%S\\b\\x.c", root);
+    String8 one = str8_fmt(&t->arena, "%S\\one.txt", root);
+    TEST_CHECK(t, os_write_file(xa, STR8_LIT("a\n")) && os_write_file(xb, STR8_LIT("b\n")) && os_write_file(one, STR8_LIT("1\n")),
+               "buffers: cannot write the files");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "buffers: app_create failed");
+    Minibuffer *mb = &app->mini;
+    BufferList *list = &app->buffers;
+    app_dev_visit(app, xa);
+    app_dev_visit(app, xb);
+    TEST_CHECK(t, test_current_is(app, "x.c<b>") && buffer_list_find_name(list, STR8_LIT("x.c")), "buffers: unique names");
+    app_dev_visit(app, one);
+
+    // switch-to-buffer: the default (most recently shown other buffer) on empty input.
+    app_dev_feed(app, "C-x b", &t->arena);
+    TEST_CHECK(t, str8_equal(mb->prompt, STR8_LIT("Switch to buffer (default x.c<b>): ")) &&
+                  str8_equal(mb->cands[mb->matches[0]].text, STR8_LIT("x.c<b>")), "buffers: switch prompt and default '%S'", mb->prompt);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "x.c<b>"), "buffers: switched to the default");
+    app_dev_feed(app, "C-x b RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "one.txt"), "buffers: and back");
+    app_dev_feed(app, "C-x b x . c RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "x.c"), "buffers: the exact name first");
+    // An unknown name creates an empty buffer: RET with no match, or C-j with the name as typed.
+    i32 count = list->count;
+    app_dev_feed(app, "C-x b n e w b u f RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "newbuf") && list->count == count + 1 && !test_current(app)->path.len, "buffers: created by RET");
+    app_dev_feed(app, "C-x b o n e C-j", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "one") && list->count == count + 2, "buffers: created by C-j");
+    app_dev_feed(app, "C-x b C-g", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "one") && list->count == count + 2, "buffers: abort switches nothing, creates nothing");
+
+    // kill-buffer: the default is the current buffer; the view shows the most recently shown other one.
+    app_dev_feed(app, "C-x k", &t->arena);
+    TEST_CHECK(t, str8_equal(mb->prompt, STR8_LIT("Kill buffer (default one): ")), "buffers: kill prompt '%S'", mb->prompt);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "newbuf") && list->count == count + 1 && !buffer_list_find_name(list, STR8_LIT("one")),
+               "buffers: killed the current buffer");
+    app_dev_feed(app, "C-x k q q q q RET", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "No match"), "buffers: kill an unknown name");
+    app_dev_feed(app, "C-g", &t->arena);
+    // A modified file buffer asks; no, C-g and yes.
+    app_dev_feed(app, "C-x b x . c RET z", &t->arena);
+    Buffer *x = test_current(app);
+    TEST_CHECK(t, str8_equal(x->name, STR8_LIT("x.c")) && x->modified, "buffers: x.c modified");
+    app_dev_feed(app, "C-x k RET", &t->arena);
+    TEST_CHECK(t, mb->active && str8_equal(mb->prompt, STR8_LIT("Buffer x.c modified; kill anyway? (yes or no) ")), "buffers: asks");
+    app_dev_feed(app, "n o RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current(app) == x && buffer_list_index(list, x) >= 0, "buffers: 'no' keeps it");
+    app_dev_feed(app, "C-x k RET C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current(app) == x && buffer_list_index(list, x) >= 0 && test_echo_has(app, "Quit"),
+               "buffers: an abort at the question keeps it");
+    app_dev_feed(app, "C-x k RET y e s RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current_is(app, "newbuf") && !buffer_list_find_name(list, STR8_LIT("x.c")), "buffers: 'yes' kills");
+    // *Messages* cannot be killed; *scratch* comes back empty.
+    app_dev_feed(app, "C-x k * M e s s a g e s * RET", &t->arena);
+    TEST_CHECK(t, buffer_list_find_name(list, STR8_LIT("*Messages*")) && test_echo_has(app, "*Messages* cannot be killed"),
+               "buffers: *Messages*");
+    app_dev_feed(app, "C-x b * s c r a t c h * RET h i", &t->arena);
+    Buffer *old = test_current(app);
+    count = list->count;
+    app_dev_feed(app, "C-x k RET", &t->arena);
+    Buffer *fresh = buffer_list_find_name(list, STR8_LIT("*scratch*"));
+    TEST_CHECK(t, fresh && fresh != old && buffer_size(fresh) == 0 && list->count == count && test_current_is(app, "newbuf"),
+               "buffers: *scratch* recreated");
+    if (!test_app_destroy(t, app, "buffers")) return 0;
+    LOG("test: ok: buffers (unique names, switch-to-buffer default and creation, kill-buffer, *Messages*, *scratch*)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3541,6 +3625,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_minibuffer(&t);
     arena_reset(&t.arena);
     test_completion(&t);
+    arena_reset(&t.arena);
+    test_buffers(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

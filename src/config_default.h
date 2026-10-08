@@ -203,6 +203,8 @@ static const char config_default[] =
     "# Files, buffers, quitting\n"
     "C-x C-s     save-buffer\n"
     "C-x C-c     save-buffers-kill-terminal\n"
+    "C-x b       switch-to-buffer\n"
+    "C-x k       kill-buffer\n"
     "C-x <left>  previous-buffer\n"
     "C-x <right> next-buffer\n"
     "M-x         execute-extended-command\n"

@@ -243,6 +243,26 @@ i32 buffer_list_index(BufferList *list, Buffer *buf) {
     return -1;
 }
 
+void buffer_list_remove(BufferList *list, Buffer *buf) {
+    i32 i = buffer_list_index(list, buf);
+    if (i < 0) return;
+    buffer_marker_destroy(buf, list->entries[i].point);
+    buffer_marker_destroy(buf, list->entries[i].top);
+    memmove(list->entries + i, list->entries + i + 1, (size_t)(list->count - i - 1) * sizeof(BufferEntry));
+    list->count--;
+    arena_pop_to(&list->arena, (u64)list->count * sizeof(BufferEntry));
+}
+
+void buffer_list_touch(BufferList *list, Buffer *buf) {
+    i32 i = buffer_list_index(list, buf);
+    if (i >= 0) list->entries[i].last_shown = ++list->tick;
+}
+
+Buffer *buffer_list_find_name(BufferList *list, String8 name) {
+    for (i32 i = 0; i < list->count; i++) if (str8_equal(list->entries[i].buffer->name, name)) return list->entries[i].buffer;
+    return NULL;
+}
+
 static u8 view_ascii_lower(u8 c) {
     return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c;
 }
@@ -281,6 +301,7 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf) {
     v->top = buffer_marker_create(buf, e ? buffer_marker_get(buf, e->top) : 0, 0);
     view_add_cursor(v, e ? buffer_marker_get(buf, e->point) : 0);
     v->left_col = e ? e->left_col : 0;
+    if (e) e->last_shown = ++list->tick;
     v->recenter_step = 0;
     v->recenter_row = -1;
 }
