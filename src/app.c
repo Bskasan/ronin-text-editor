@@ -73,6 +73,8 @@ static const char *app_sample[] = {
 #define APP_PAD_PX 4      // left padding of a text area at 96 DPI
 #define APP_CONFIG_RESERVE MB(16)
 #define APP_MAX_KEYMAPS 4
+#define APP_HEADLESS_CELL_W 8  // the cell of a headless app (dev: --test), which has no font
+#define APP_HEADLESS_LINE_H 16
 
 struct App {
     Font *font;
@@ -125,8 +127,8 @@ typedef struct AppLayout {
 
 static AppLayout app_layout(App *app, FrameInput *in) {
     AppLayout l;
-    l.cell_w = app->font->cell_w;
-    l.line_h = app->font->line_h;
+    l.cell_w = app->font ? app->font->cell_w : APP_HEADLESS_CELL_W;
+    l.line_h = app->font ? app->font->line_h : APP_HEADLESS_LINE_H;
     l.pad = MAX((i32)(APP_PAD_PX * in->dpi_scale + 0.5f), 1);
     l.minibuffer_y = in->height - l.line_h;
     l.mode_line_y = l.minibuffer_y - l.line_h;
@@ -562,7 +564,7 @@ static void app_buffer_settings(App *app, Buffer *buf) {
 
 static void app_apply_config(App *app, Renderer *r, b32 startup) {
     Config *c = app->config;
-    if (!startup) {
+    if (!startup && app->font) {
         FontParams fp = app_font_params(app);
         font_reconfigure(app->font, r, &fp);
     }
@@ -642,8 +644,13 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->config_source.path = app->config_path;
     ConfigPoll config_result = app_poll_config(app, 1, 1);
     FontParams fp = app_font_params(app);
-    app->font = font_create(perm, &fp, args->dpi_scale);
-    if (!app->font) return NULL;
+#if TEAL_DEV
+    if (!args->headless)
+#endif
+    {
+        app->font = font_create(perm, &fp, args->dpi_scale);
+        if (!app->font) return NULL;
+    }
 
     buffer_list_init(&app->buffers);
     app->messages = buffer_create(STR8_LIT("*Messages*")); // first, so everything below is logged
@@ -667,7 +674,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     app_apply_config(app, NULL, 1);
     app_report_config(app, config_result, 0);
     app_watch_config(app);
-    if (app->font->used_fallback) {
+    if (app->font && app->font->used_fallback) {
         echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
     }
     // +LINE:COLUMN, 1-based on the command line as in Emacs (move-to-column (1- COLUMN)).
@@ -681,7 +688,7 @@ App *app_create(Arena *perm, AppArgs *args) {
 }
 
 i32 app_shutdown(App *app) {
-    i32 leaks = font_shutdown(app->font);
+    i32 leaks = app->font ? font_shutdown(app->font) : 0;
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += buffer_list_destroy(&app->buffers);
     kill_destroy(&app->kills);
@@ -860,6 +867,7 @@ static void cmd_reload_config(CommandContext *ctx) {
 // step 0 resets. 1.2 times per step (Emacs' text-scale-mode-step); the size stays within 4..96 pt.
 static void app_text_scale(CommandContext *ctx, i32 step) {
     App *app = ctx->app;
+    if (!app->font) return;
     i32 old = app->text_scale;
     f32 old_size = app_font_params(app).size_pt;
     app->text_scale = step ? app->text_scale + step : 0;
@@ -950,16 +958,10 @@ u32 app_wait_ms(App *app) {
     return config_wait_ms(&app->config_source, os_time_us());
 }
 
-b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
-#if TEAL_DEV
-    u64 t0 = os_time_us();
-#endif
-    app->renderer = r;
-    font_frame_begin(app->font, r, in->dpi_scale);
+// Events, commands and layout: everything but drawing (no font or renderer calls, so a headless app
+// runs it too). False = quit.
+static b32 app_update(App *app, FrameInput *in) {
     AppLayout l = app_layout(app, in);
-#if TEAL_DEV
-    if (app->sample) return app_dev_sample_frame(app, in, r, &l);
-#endif
     app_layout_views(app, in, &l);
     // Fit the views again before the events only when the size or the font changed (a click maps
     // through the scroll position); every frame does it after the events anyway.
@@ -1004,7 +1006,6 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
         }
     }
     if (config_pending(&app->config_source)) app_reload_config(app, 0); // a settle delay or retry may be due (EVENT_WAKEUP)
-    app->renderer = NULL;
     if (app->quit) return 0;
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
@@ -1014,14 +1015,34 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     app->laid_h = in->height;
     app->laid_cell_w = l.cell_w;
     app->laid_line_h = l.line_h;
-
     app_update_title(app, in->scratch);
+    return 1;
+}
 
+static void app_render(App *app, FrameInput *in, Renderer *r) {
+    AppLayout l = app_layout(app, in);
     r_begin_frame(r, COLOR_HEX(app->config->theme.background));
     for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view);
     String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
     font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));
+}
 
+b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
+    app->renderer = r;
+    font_frame_begin(app->font, r, in->dpi_scale);
+#if TEAL_DEV
+    if (app->sample) {
+        AppLayout l = app_layout(app, in);
+        return app_dev_sample_frame(app, in, r, &l);
+    }
+#endif
+    b32 running = app_update(app, in);
+    app->renderer = NULL;
+    if (!running) return 0;
+    app_render(app, in, r);
 #if TEAL_DEV
     app->dev_build_us = os_time_us() - t0;
 #endif
@@ -1240,6 +1261,23 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
 #undef CELL
 #undef APP_PUSH_PROBE
     return n;
+}
+
+// A headless app (--test): events through app_update with a fixed 1280x800 window. False = quit.
+b32 app_dev_feed_events(App *app, Event *events, i32 count, Arena *scratch) {
+    FrameInput in = { .events = events, .event_count = count, .width = 1280, .height = 800, .dpi_scale = 1.0f, .scratch = scratch };
+    u64 mark = arena_pos(scratch);
+    b32 running = app_update(app, &in);
+    arena_pop_to(scratch, mark);
+    return running;
+}
+
+// --keys notation through a headless app, one event at a time. False = quit.
+b32 app_dev_feed(App *app, const char *keys, Arena *scratch) {
+    Event events[256];
+    i32 n = app_dev_key_events(app, str8_cstr(keys), events, ARRAY_COUNT(events));
+    for (i32 i = 0; i < n; i++) if (!app_dev_feed_events(app, &events[i], 1, scratch)) return 0;
+    return 1;
 }
 
 i32 app_dev_key_events(App *app, String8 keys, Event *out, i32 cap) {

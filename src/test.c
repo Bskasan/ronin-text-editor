@@ -3019,6 +3019,40 @@ void test_bench_buffer(String8 path, String8 tmp_dir) {
     buffer_destroy(buf);
 }
 
+// ---------------------------------------------------------------------------
+// The headless app: the real key path (keymap, driver, app commands, prompts) without a window
+// or a font. Keys in --keys notation.
+
+static App *test_app_create(Test *t) {
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1 };
+    App *app = app_create(&t->arena, &args);
+    if (app) app_dev_feed_events(app, NULL, 0, &t->arena); // the first frame: layout
+    return app;
+}
+
+static b32 test_app_destroy(Test *t, App *app, const char *what) {
+    i32 leaks = app_shutdown(app);
+    TEST_CHECK(t, leaks == 0, "%s: %d leak(s) at shutdown", what, leaks);
+    return 1;
+}
+
+static String8 test_app_text(Test *t, App *app) {
+    Buffer *buf = app->views[app->active_view]->buffer;
+    return buffer_text(buf, &t->arena, 0, buffer_size(buf));
+}
+
+static b32 test_headless_app(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "headless app: app_create failed");
+    app_dev_feed(app, "h i RET C-a x C-/", &t->arena);
+    String8 text = test_app_text(t, app);
+    TEST_CHECK(t, str8_equal(text, STR8_LIT("hi\n")) && str8_equal(app->views[0]->buffer->name, STR8_LIT("*scratch*")),
+               "headless app: typed into *scratch*: '%S'", text);
+    if (!test_app_destroy(t, app, "headless app")) return 0;
+    LOG("test: ok: headless app (keys through the keymap and the driver)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -3083,6 +3117,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_buffer_list(&t);
     arena_reset(&t.arena);
     test_hot_reload(&t);
+    arena_reset(&t.arena);
+    test_headless_app(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

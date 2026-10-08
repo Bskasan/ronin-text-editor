@@ -188,6 +188,7 @@ typedef struct AppArgs {
     b32 sample;          // --sample (and --smoke): the Phase 2 hand-colored sample instead of the buffer
     String8 config_path; // --config: this file instead of the user's teal.conf
     b32 user_config;     // read the user's teal.conf (off in the smoke and the benches: defaults only)
+    b32 headless;        // --test: no font, no window; driven through app_dev_feed
 #endif
 } AppArgs;
 
@@ -224,6 +225,8 @@ u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
 void app_dev_goto_line(App *app, i64 line); // point to the start of line (< 0: the last line), recentered
 i32  app_dev_key_events(App *app, String8 keys, Event *out, i32 cap); // --keys: tokens to events (bad tokens logged, skipped)
+b32  app_dev_feed_events(App *app, Event *events, i32 count, Arena *scratch); // headless: events through the app, false = quit
+b32  app_dev_feed(App *app, const char *keys, Arena *scratch);               // headless: --keys notation, one event at a time
 void app_dev_use_config(App *app, String8 path); // switches to this config file and reloads it (as C-c r)
 b32  app_dev_visit(App *app, String8 path);      // visits a file in the active view
 i32  app_dev_font_setups(App *app);              // font set-ups so far (the startup does exactly one)
