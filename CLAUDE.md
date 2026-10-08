@@ -53,7 +53,10 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - Never push. Never amend or rewrite existing commits. The user pushes.
 - Never commit build outputs or scratch files. If a pending change looks unintended, list it
   and ask instead of committing it.
-- A phase ends with a clean working tree. Its last commit is `docs: mark phase N done`.
+- Never make an empty commit.
+- A phase ends with a clean working tree. Its last commit is `docs: mark phase N done`, and the
+  phase's roadmap checkbox in docs/ARCHITECTURE.md changes in that commit only, together with
+  nothing else.
 
 ## Build / run / verify
 
