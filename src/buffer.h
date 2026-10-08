@@ -12,6 +12,10 @@
 #define BUFFER_MAX_FILE_SIZE GB(1)
 #define BUFFER_MARKER_RESERVE MB(64) // marker slots, 16 bytes each
 #define BUFFER_DEFAULT_TAB_WIDTH 4
+#define BUFFER_UNDO_RESERVE GB(4)          // the undo log of one buffer (address space)
+#define BUFFER_UNDO_GROUP_RESERVE MB(256)  // its group index
+#define BUFFER_UNDO_DEFAULT_LIMIT MB(64)   // the app sets undo_limit_mb
+#define BUFFER_UNDO_MERGE_MAX 20           // consecutive self-inserts (or single deletes) per group
 
 typedef enum BufferEncoding {
     BUFFER_UTF8,
@@ -49,6 +53,62 @@ typedef struct BufferMarkerSlot {
     u32 flags;
     u32 next_free; // free list: next free slot + 1, 0 = end
 } BufferMarkerSlot;
+
+// ---------------------------------------------------------------------------
+// Undo. buffer_replace logs every edit: a record is {start, removed, inserted} followed by the
+// removed bytes only (undoing an insertion needs just its length). Records form groups, one per
+// command (the command driver calls buffer_undo_boundary); consecutive self-inserts or single
+// deletes merge into groups of up to BUFFER_UNDO_MERGE_MAX. Undo applies a group's inverse
+// through buffer_replace, so it is logged as a group too and can itself be undone (Emacs).
+//
+// Every logged edit yields a new state id; an undo group's state_after is the state before the
+// group it reverts. The buffer is unmodified exactly when its state is the state at the last
+// load or save, so undoing (or redoing) back to it clears the modified flag.
+
+typedef enum BufferUndoMerge {
+    BUFFER_UNDO_MERGE_NONE,
+    BUFFER_UNDO_MERGE_INSERT,
+    BUFFER_UNDO_MERGE_DELETE,
+} BufferUndoMerge;
+
+typedef enum BufferUndoResult {
+    BUFFER_UNDO_DONE,
+    BUFFER_UNDO_NOTHING, // no (further) undo / redo information
+    BUFFER_UNDO_FAILED,  // read-only, or an edit did not fit
+} BufferUndoResult;
+
+typedef struct BufferUndoRecord { // in the log, followed by `removed` bytes (padded to 8)
+    i64 start;
+    i64 removed;
+    i64 inserted;
+    u64 prev; // bytes back to the previous record of its group, 0 for the first
+} BufferUndoRecord;
+
+typedef struct BufferUndoGroup {
+    u64 offset, size;             // its records in the log
+    u64 last;                     // offset of its last record
+    i64 point_before;             // the primary point before the command; where undo puts point
+    u64 state_before, state_after;
+    i64 target;                   // an undo group: the id of the group it reverts; -1 otherwise
+    i32 merge, merge_count;       // BufferUndoMerge of the commands merged into it
+    b32 redo;                     // made by buffer_redo (redo only reverts groups made by undo)
+} BufferUndoGroup;
+
+typedef struct BufferUndo {
+    b32 enabled;
+    u8 *log;
+    u64 log_committed, log_used;
+    BufferUndoGroup *groups;
+    i64 group_committed, group_count; // entries
+    i64 first_id;                     // the id of groups[0]; older groups were dropped by the limit
+    u64 limit;                        // bytes of records
+    b32 open;                         // the last group still takes records (merging, or the running command)
+    BufferUndoMerge want_merge;       // the next group, set by buffer_undo_boundary
+    i64 want_point;
+    b32 applying;                     // inside buffer_undo / buffer_redo: no merging, no trimming
+    u64 state, next_state, saved_state;
+    i64 pending;                      // the undo chain: the next group to undo, -1 = none
+} BufferUndo;
 
 typedef struct Buffer {
     Arena meta; // holds this struct, path and name
@@ -88,6 +148,7 @@ typedef struct Buffer {
     i64 file_size;  // as of the last load or save
     u64 file_time;  // last write time, same
     i32 tab_width;  // columns per tab stop (Emacs' buffer-local tab-width; the app sets it from the config)
+    BufferUndo undo;
 } Buffer;
 
 Buffer *buffer_create(String8 name); // NULL if the address space cannot be reserved
@@ -126,6 +187,22 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance); // pos cla
 void         buffer_marker_destroy(Buffer *buf, BufferMarker m);
 i64          buffer_marker_get(Buffer *buf, BufferMarker m);
 void         buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos); // clamped and snapped
+
+// Undo (see above). Undo is on for a new buffer; program buffers (*Messages*) turn it off.
+void buffer_undo_enable(Buffer *buf, b32 on);      // off also drops the log
+void buffer_undo_set_limit(Buffer *buf, u64 bytes); // the oldest groups are dropped above it
+// Called by the command driver before every command: the next edit starts a new group unless
+// `merge` is the open group's class, `consecutive` (the same command again) and the group has
+// fewer than BUFFER_UNDO_MERGE_MAX commands. `point` is restored when the group is undone.
+void buffer_undo_boundary(Buffer *buf, BufferUndoMerge merge, b32 consecutive, i64 point);
+// Undoes one group: the most recent one, or with `chain` (the previous command was an undo) the
+// one before the group undone last (Emacs' pending undo list). *point_out gets the
+// point to restore.
+BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out);
+// Undoes the last undo that led to the current state (Emacs' undo-redo).
+BufferUndoResult buffer_redo(Buffer *buf, i64 point, i64 *point_out);
+void buffer_mark_saved(Buffer *buf);  // the current state is the saved one: unmodified
+u64  buffer_undo_memory(Buffer *buf); // committed bytes of the log and its group index
 
 // Files. Loading needs an empty buffer; on failure it stays empty and the status says why.
 // Opening a missing file gives OS_FILE_NOT_FOUND; the caller may then visit the path as a new file.
