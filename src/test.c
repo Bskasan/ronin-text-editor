@@ -4523,6 +4523,16 @@ static b32 test_replace(Test *t) {
     app_dev_feed(app, "M-% RET C-f", &t->arena); // another key ends the session, then runs
     TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 5 && test_app_echo_is(app, "Replaced 0 occurrences"),
                "replace: C-f ends the session at the match, then runs (%D)", test_app_point(app));
+    // A change from outside while asking (a revert): the answer does not replace a stale range; the match
+    // is searched again and asked about.
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("ab foo\n"));
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% f o o RET b a r RET", &t->arena);
+    buffer_replace(v->buffer, 0, 0, STR8_LIT("xyz")); // as a revert would
+    app_dev_feed(app, "y", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && rp->match_start == 6 && test_app_point(app) == 9, "replace: a stale match is searched again");
+    app_dev_feed(app, "y", &t->arena);
+    if (!test_replace_text(t, app, "after an outside change", "xyzab bar\n")) return 0;
     // One undo takes back the whole session (point where it started); undo-redo applies it again.
     buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("foo foo foo foo\n"));
     view_set_point(v, &v->cursors[0], 2);
