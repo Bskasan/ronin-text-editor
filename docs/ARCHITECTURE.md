@@ -21,7 +21,9 @@
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
 | `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
 | `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, the minibuffer commands, M-x, goto-line |
-| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack, buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), `app_update` (events, commands, layout) and drawing (views, region, the minibuffer line, the candidate list), window title, mouse (click, drag, double / triple click); dev: the Phase 2 sample behind `--sample`, smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates |
+| `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded, over the gap buffer's two segments in place, resumable with a budget of positions, SSE2 scan for the first byte |
+| `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
+| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (views, region, the search highlighting, the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer, revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
 | `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
@@ -43,7 +45,9 @@ includes only `platform.h` and `render.h`; `font.c` additionally calls `font_bac
    which reads the config (built-in defaults, then the user's teal.conf), opens DirectWrite
    once with the configured font and pre-rasterizes ASCII. Then it joins the worker, logs its
    results, and creates swap chain, pipeline and atlas texture (`r_finish_create`).
-2. Shows the window cloaked (DWMWA_CLOAK), presents the first frame, uncloaks: no white flash.
+2. Shows the window cloaked (DWMWA_CLOAK) and without activation (SW_SHOWNA; the first frame
+   renders on its WM_SIZE), uncloaks, then activates it (SetForegroundWindow): no white flash, and
+   the focus, with its IME and text services setup (~10 ms), comes after the first frame is on screen.
 3. Loop: if no redraw is pending, block in `MsgWaitForMultipleObjectsEx` on the messages and the
    directory watches, with no timeout unless the app asks for one (`app_wait_ms`: only while a
    config read is to be retried). Signalled watches become `EVENT_DIR_CHANGED`. Drain every queued
@@ -52,6 +56,9 @@ includes only `platform.h` and `render.h`; `font.c` additionally calls `font_bac
    mid-drain instead of dropping anything. If anything requested a redraw, run exactly one
    frame: `app_update_and_render` → `font_frame_begin`, `r_begin_frame`, `r_push_rect` /
    `font_draw_text`…, `r_end_frame` (flush + `Present(1, 0)`). Scratch resets after each frame.
+   Background work has one deadline per frame (2 ms): search slices first (isearch, query-replace,
+   replace-all), then lexer states with what is left; while either is pending the app asks for
+   another frame, otherwise none.
 4. `WM_SIZE` resizes the swap chain and renders immediately, so live resize stays crisp
    inside the modal size loop. Minimized = frames are no-ops.
 
@@ -230,6 +237,52 @@ memory, startup and size.
   each; states are committed with the index, 4 bytes per line, only for languages with a lexer).
 - Startup (release, 7 runs) 198 ms median (193 in Phase 7). Release exe 296,448 bytes (260,096 after
   Phase 7); the same imports.
+
+## Measurements (Phase 9)
+
+Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client.
+
+- Startup, where the time goes (bench build, "startup:" lines): process creation to WinMain 12-15 ms
+  (loader: imports, static CRT); arguments and the device thread's start 0.6 ms; the hidden window
+  4-6 ms; the app 2-20 ms (DirectWrite's first use dominates: 2 ms warm, ~20 ms cold; config 0.25 ms,
+  syntax_init 0.07 ms, buffers, minibuffer and kill ring 0.15 ms), all overlapping the device thread;
+  waiting for D3D11CreateDevice 125-150 ms; swap chain, pipeline and atlas texture 3-4 ms. Then
+  ShowWindow took 13-17 ms before the first frame could start: ~10 ms of it between WM_ACTIVATE and
+  WM_IME_NOTIFY (the focus sets up the IME and text services), the rest DWM. The first frame: update
+  0.3 ms, build 0.04 ms, flush (atlas upload) 0.6 ms, Present 1.1 ms; a second frame, whose Present
+  waited 3-6 ms, was drawn before uncloaking. Nothing of ours above 0.2 ms was unneeded for the first
+  frame (syntax_init is 0.07 ms and runs while the device is created, so it stayed); the window is now
+  activated after the first frame is on screen and the second frame is gone. `--startup-ms` (release,
+  9 runs alternating with Phase 8): 186 -> 175 ms median; again at the end of the phase 192 -> 178 ms
+  (205 -> 190 under load).
+- `--bench-search` on the 100 MB file, a needle only at its very end and one that does not occur;
+  frames with Present(0, 0); build = command + frame build including the search slices:
+
+| needle | typed, 34 key events | pasted, one step |
+|---|---|---|
+| at the end, folded | 41-51 ms, 34 frames, longest 2.13 ms | 39-41 ms, 19-20 frames, longest 2.11 ms |
+| at the end, exact | 8-10 ms, 34 frames, longest 2.05 ms | 4 ms, 4 frames (M-c C-y), longest 2.04 ms |
+| not in the file, folded | 41-42 ms, 34 frames, longest 2.15 ms | 39-45 ms, 19-20 frames, longest 2.15 ms |
+| not in the file, exact | 8-10 ms, 34 frames, longest 2.05 ms | 4-6 ms, 3-4 frames, longest 2.03 ms |
+
+  Folded runs at ~2.6 GB/s (the needle's first letter is common, every hit is verified); exact at
+  ~25 GB/s (its first byte, a capital, never occurs). No frame exceeded the 2 ms budget by more than a
+  slice. isearch keystrokes on src/app.c (typing, repeats, DEL, RET, with the lazy highlight): command +
+  frame build 27-36 us avg, worst 156-278 us (one run had a 4.3 ms outlier).
+- replace-string foo -> baz over 1,000,000 occurrences (8 MB): 70-80 ms in 32-35 frames, longest frame
+  2.24-2.30 ms; the undo log grows by 39 MB (a 32-byte record and 8 bytes of removed text per
+  replacement). The one undo of those million replacements: 32-38 ms in one frame; its undo-redo the same.
+- Typing (bench-view, 10,000 self-inserts on one line at line 1,000,000, command + frame build): the
+  phase's commits measured 17-26 us without following the code (code layout: a commit that only added
+  a dev log moved it by 5 us, padding the App struct moved nothing, a timing patch flipped which build
+  was faster); the column scan of that long line was most of the frame. With printable ASCII scanned
+  16 bytes at a time (perf commit): 6-7 us (Phase 8 build in the same runs: 17-19 us); next-line 15 us
+  in both.
+- Idle after an isearch left active, an isearch ended, and a query-replace asking: 0 ms CPU over 10 s.
+- Memory (release, private bytes idle, 3 runs): *scratch* 77.0-77.4 MB; src\keymap.c 76.3-77.4 MB; the
+  100 MB .txt 191.9-193.4 MB; the 100 MB .c 216.1-217.3 MB (Phase 8: 75.8-77.6, 75.9-77.6,
+  192.4-193.6, 216.4-217.7).
+- Release exe 323,584 bytes (296,448 after Phase 8); the same six DLLs and the same imported functions.
 
 ## Roadmap
 
@@ -650,18 +703,105 @@ memory, startup and size.
   closers return to their opener's line; one level after a line leaving brackets open; brace-less
   bodies, else binding, case labels; lines inside multi-line comments and strings and C/C++
   preprocessor lines are left alone by TAB. Indentation brings states up to its line first (250 us).
-  No electric colon: a label typed after another label needs TAB.
+  Electric labels (Phase 9): see below.
 - show_paren_mode: the closer before point wins, else the opener at point; same matcher; cached per
   view.
+
+### Search, isearch, query-replace (Phase 9)
+
+- One search engine in the core (search.c), used by isearch and query-replace now and by
+  project-wide search in Phase 12. Literal text only; regular expressions are in Later.
+- The engine works on the gap buffer's two segments without copying the text (only a candidate that
+  straddles the gap is copied, into a window of at most the needle's length), finds matches across
+  the gap, searches forward (the smallest start >= F) and backward (the largest start whose match
+  ends by B) inside a range, and is resumable: it examines at most a budget of start positions per
+  call. The app slices it by time: 256 KB of positions a slice, slices until the frame's 2 ms
+  deadline (search before lexer states), so a frame overruns by at most one slice and a keystroke
+  never waits for a search on a huge buffer. An edit between slices starts it over. No allocation.
+- Fast path: the needle's first byte, 16 bytes at a time (SSE2): one compare exact, (b | 0x20) for a
+  folded ASCII letter, the lead bytes of a folded non-ASCII character and of its uppercase form.
+  Every hit is verified. --test checks for every character below U+3000 that the lead bytes cover
+  everything that folds to it.
+- Case: smart, as in Emacs. A search string without uppercase letters matches case-insensitively;
+  one with any uppercase letter matches exactly. M-c toggles for the rest of the search. Folding is
+  the matcher's: a character becomes its lowercase form only when that has the same UTF-8 length, so
+  a match is always as long as the needle.
+- isearch is a mode with its own keymap on the keymap stack ([keys isearch], searched before the
+  global one), not a minibuffer prompt. Text typed while it is active extends the search string. A
+  key bound to any other command ends the search at the current match and then runs that command
+  (a prefix that only the global keymap has, such as C-x, ends it at once so "C-x-" shows), as in
+  Emacs; so do clicks and the close button. Commands that run inside it carry COMMAND_ISEARCH.
+- isearch's state is a stack of steps (a typed character, a repeat, a direction change, a yank, a
+  history entry, a case switch). A step is resolved from the step below it, by a search or at once;
+  steps typed while one is being searched wait their turn; DEL pops one (cancelling its search) and
+  restores the step below's match and point. Emacs' semantics: extending searches from the current
+  match's start (backward: from its end), repeats do not overlap the current match, a direction
+  change keeps the match and moves point to its other end (Emacs 28's default), repeating a failing
+  search wraps ("Wrapped", then "Overwrapped" past the start), C-g first removes the failing (or
+  still searched) part, then quits to the start, RET / ESC / C-m end at the match and set the mark
+  (inactive) at the start with "Mark saved where search started" when point moved and no region is
+  active. The failing part of the string is what follows the newest successful step whose string is
+  a prefix of it (Emacs' isearch-fail-pos).
+- C-w and C-y lowercase the text they append while the search folds, so a yank never makes the
+  search exact (Emacs' search-upper-case = not-yanks). C-s C-s with an empty string reuses the last
+  search string; M-p / M-n go around the search history (the minibuffer's history storage, its own
+  category; a search ended normally is added, a quit one is not).
+- The session's position lives in its steps, not in the cursor. The mouse wheel scrolls during an
+  isearch and while query-replace asks, dragging point as always; every session key (a repeat, DEL,
+  typing, C-w, an answer, exit) first puts point back on the session's match and the view on it. A
+  key that ends the session and runs as a command runs after that.
+- Keys typed ahead of a pending search (fast typing, --keys: in the same frame): an answer or an exit
+  first gives the pending search one slice, so it is found at once in all but huge buffers; past a
+  slice an exit uses the last resolved step and query-replace ignores the answer (keys other than
+  C-g are ignored while query-replace searches for its next match; queueing them is in Later).
+- Highlighting: in the searched view only, the current match on the isearch background with its text
+  in isearch_text; every other match that starts on a drawn row on lazy_highlight, searched within
+  each row's on-screen bytes plus the needle's length (the bound line drawing has), so the cost is
+  per visible line and never depends on the buffer's size. None while failing. query-replace draws its
+  question's match and the other matches in its range the same way.
+- query-replace (M-%): two chained minibuffer prompts with their history; an empty first answer repeats
+  the last pair (an empty search string without one is refused). From point, or inside the active
+  region (then deactivated); the mark (inactive) goes to where it started. Answers bypass the keymap
+  (as a single-key prompt): y / SPC, n / DEL, !, . , q / RET, C-g (Quit); any other key ends the
+  session ("Replaced N occurrences") and runs. The next search starts after each replacement, so a
+  replacement containing the search string never loops. An answer after an outside change (a revert)
+  searches for its match again instead of replacing a stale range.
+- replace-string (no default key) and "!" replace across frames: "Replacing... N%" in the echo
+  area, frames keep being drawn, C-g stops it and keeps what was done ("Replaced N occurrences
+  (stopped)"), every other key and click is ignored until it finishes or is stopped, and the view does
+  not follow the progress (point goes after the last replacement at the end).
+- Case conversion as Emacs' case-replace (replace-match), when the search folded and the replacement
+  has no uppercase letter: an all-caps match with a word of two or more letters gets an all-caps
+  replacement (so does an all-caps match of one-letter words: "X" -> "BAR", as in Emacs); a match
+  whose words all start with a capital gets each word of the replacement capitalized; anything else
+  gets the replacement as typed. Words are letters and digits (every byte >= 0x80 a letter).
+- A whole query-replace or replace-string session is one undo group: its answers (and the C-g that
+  stops replace-all) carry COMMAND_UNDO_CONTINUE, so the driver sets no undo boundary for them, and the
+  replacements made between frames are outside any command. Undo restores everything and puts point
+  where the session started; undo-redo applies it again. Any other command ends the session first, and
+  its own boundary closes the group.
+- Electric labels: the character that completes a case or default label (":" in the C family, C# and
+  JavaScript / TypeScript, ";" in Jai) reindents its line when only blanks follow it and the line is a
+  label by the indentation rule (case or default first on the line), in the same undo group as the
+  character, as closing brackets do. RET does not reindent the line it leaves.
+
+#### Known limits
+
+- Case-insensitive search does not pair Turkish dotted and dotless i (İ / i, I / ı): the fold only
+  maps characters whose encoded length stays the same (İ -> i would shorten), and the default
+  mapping pairs I with i, not with ı.
+- While query-replace searches for its next match beyond one slice (huge buffers), keys other than
+  C-g are ignored, not queued.
 
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
   message wait, for lower input latency (Phase 15 candidate).
-- Startup is ~190 ms, of which ~155 ms is `D3D11CreateDevice` (NVIDIA driver load) even on
-  its own thread; everything else already overlaps it. Accepted. To make the launch feel
-  instant: show the window immediately with the background color painted (GDI) until the
-  first Present.
+- Startup is ~175 ms, of which ~125-150 ms is waiting for `D3D11CreateDevice` (driver load) even
+  on its own thread; everything else of ours already overlaps it (Phase 9 measurements). Accepted.
+  To make the launch feel instant: show the window immediately with the background color painted
+  (GDI) until the first Present. The 12-15 ms before WinMain (the loader) could shrink by loading
+  d3d11.dll on the device thread (LoadLibrary) instead of as an import.
 - Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
 - ESC as the Meta prefix, as in Emacs (ESC is keyboard-quit for now).
 - *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
@@ -677,7 +817,8 @@ memory, startup and size.
 - Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
   more layout).
 - Column cache for very long lines: point's column is found by scanning from the line start
-  (each view_ensure_visible and the drawing scan it; ~5 us a scan on a 10,000-character line).
+  (each view_ensure_visible and the drawing scan it; printable ASCII 16 bytes at a time since
+  Phase 9, other text byte by byte).
 - Prefix arguments (C-u), the mark ring, rectangle commands, overwrite mode.
 - Clipboard delayed rendering (a 50 MB kill is converted to UTF-16 at once).
 - Auto-scroll while dragging outside the window; after a double or triple click, a drag that
@@ -694,5 +835,12 @@ memory, startup and size.
   line that moved keeps its place in it (now: line and column inside the replaced range).
 - JSX tags in JavaScript / TypeScript highlighting.
 - Resumable lexing inside very long lines (a 5 MB minified line costs ~10 ms per keystroke).
-- Electric reindent (a line typed as case/default/'#' reindented on ':' / RET, as Emacs'
-  electric-indent-mode) - needs a decision on RET reindenting the line it leaves.
+- Regular-expression search (isearch-forward-regexp, query-replace-regexp).
+- A total match count in isearch ("3/41").
+- Editing the search string in the minibuffer (M-e in isearch).
+- occur.
+- Queueing the keys typed while query-replace searches for its next match on a huge buffer (now
+  ignored beyond one slice).
+- Turkish-aware case folding for search (İ / i, I / ı).
+- A second-byte filter for folded searches whose first letter is common (now ~2.6 GB/s against
+  ~25 GB/s for a rare first byte).
