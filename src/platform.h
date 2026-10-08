@@ -165,7 +165,7 @@ typedef enum EventKind {
 typedef struct Event {
     EventKind kind;
     u32 mods;          // MOD_* (key, text, mouse)
-    Key key;           // EVENT_KEY_DOWN
+    Key key;           // EVENT_KEY_DOWN; KEY_NONE for a key teal has no Key for (keypad digits, VK_OEM_8, ...)
     u32 scancode;      // EVENT_KEY_DOWN, extended keys have bit 8 set
     b32 repeat;        // EVENT_KEY_DOWN
     // EVENT_TEXT: the character typed. EVENT_KEY_DOWN: the character the key produces with the
