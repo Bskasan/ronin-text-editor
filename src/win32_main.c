@@ -2137,6 +2137,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
         os_dev_stage("uncloaked");
         if (!p->smoke) SetForegroundWindow(p->hwnd); // the smoke never takes the focus
+        if (p->smoke) p->redraw = 1; // its second plain frame, at once (nothing else would wake the loop)
         os_dev_stage("activated");
         p->stages_logged = 1;
         win32_dev_log_stages(p);
