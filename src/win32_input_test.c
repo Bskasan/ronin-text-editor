@@ -284,6 +284,35 @@ static void it_cases(InputTest *t) {
     }
     it_expect_text(t, "letters a-z, then with Shift", letters, 52, want);
 
+    // Symbols and, where the layout has them, Turkish letters: each from its own keys (a dead key followed
+    // by Space, which gives the accent itself), one character each.
+    static const char *const texts[] = { "{}[]\\|@#$~", "\xC4\x9F\xC3\xBC\xC5\x9F\xC4\xB1\xC3\xB6\xC3\xA7\xC4\x9E\xC3\x9C\xC5\x9E\xC4\xB0\xC3\x96\xC3\x87" };
+    for (i32 k = 0; k < ARRAY_COUNT(texts); k++) {
+        String8 text = str8_cstr(texts[k]), typed = { 0 };
+        ItStroke strokes[48];
+        i32 n = 0, missing = 0;
+        for (i64 i = 0; i < text.len;) {
+            i64 advance;
+            u32 cp = utf8_decode(text.data + i, text.len - i, &advance);
+            i += advance;
+            ItStroke s;
+            if (!it_char_stroke(t, t->hkl, t->altgr, cp, &s)) {
+                missing++;
+                continue;
+            }
+            b32 dead;
+            it_layout_char(t, t->hkl, s.vk, s.mods, &dead);
+            strokes[n++] = s;
+            if (dead) strokes[n++] = (ItStroke){ 0, VK_SPACE, 0 };
+            String8 c = it_utf8(a, cp);
+            typed = typed.len ? str8_fmt(a, "%S%S", typed, c) : c;
+        }
+        if (k == 0 && missing) it_fail(t, "%d of the symbols { } [ ] \\ | @ # $ ~ have no key", missing);
+        if (k == 1 && t->hkl == LongToHandle(0x041F041F) && missing) it_fail(t, "%d Turkish letters have no key on Turkish Q", missing);
+        if (n) it_expect_text(t, k == 0 ? "symbols typed from their keys" : "Turkish letters typed from their keys", strokes, n, typed);
+        if (k == 1) LOG("test: input %s: %d of 12 Turkish letters typed from their keys", t->name, 12 - missing);
+    }
+
     // Meta, Ctrl, Ctrl+Meta with a letter.
     it_expect_describe(t, "Left Alt + letter", (ItStroke){ IT_LALT, 'F', 0 }, STR8_LIT("M-f"));
     it_expect_describe(t, "Left Ctrl + letter", (ItStroke){ IT_LCTRL, 'F', 0 }, STR8_LIT("C-f"));
