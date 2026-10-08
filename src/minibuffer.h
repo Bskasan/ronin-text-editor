@@ -120,6 +120,7 @@ typedef struct MiniRequest {
     void *data;                  // for `candidates`
     b32 require_match;           // MINI_CHOICE: input that matches no candidate is refused ("[No match]")
     b32 file;                    // a file name: DEL after a slash removes the last component; a directory candidate descends
+    b32 run_command;             // M-x: the result names a command, which runs instead of `done`
 } MiniRequest;
 
 typedef struct MiniHistory {
@@ -143,7 +144,7 @@ struct Minibuffer {
     const char *answers;
     MiniCandidatesFn *candidates_fn;
     void *candidates_data;
-    b32 require_match, file;
+    b32 require_match, file, run_command;
     MiniHistoryKind history;
     i32 history_pos;          // -1: the input as typed; otherwise an index into the history
     String8 typed;            // the input before M-p
@@ -184,10 +185,14 @@ void minibuffer_after_command(CommandContext *ctx);
 void minibuffer_key(CommandContext *ctx, const Command *command, u32 chord_char);
 void minibuffer_history_add(Minibuffer *mb, MiniHistoryKind kind, String8 text);
 
+// The first match the list shows, so that the selection is among its `lines` rows.
+i64  minibuffer_list_top(Minibuffer *mb, i32 lines);
 void minibuffer_clear_candidates(Minibuffer *mb);
 void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, u32 flags);
 
 extern const Command CMD_EXIT_MINIBUFFER, CMD_EXIT_MINIBUFFER_INPUT, CMD_ABORT_MINIBUFFERS;
 extern const Command CMD_PREVIOUS_HISTORY_ELEMENT, CMD_NEXT_HISTORY_ELEMENT, CMD_MINIBUFFER_BACKWARD_UPDIR;
+extern const Command CMD_MINIBUFFER_COMPLETE, CMD_MINIBUFFER_NEXT_COMPLETION, CMD_MINIBUFFER_PREVIOUS_COMPLETION;
+extern const Command CMD_MINIBUFFER_NEXT_PAGE, CMD_MINIBUFFER_PREVIOUS_PAGE, CMD_EXECUTE_EXTENDED_COMMAND;
 
 #endif // MINIBUFFER_H

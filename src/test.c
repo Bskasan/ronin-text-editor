@@ -3312,6 +3312,76 @@ static b32 test_minibuffer(Test *t) {
     return 1;
 }
 
+// The candidate list, completion commands and M-x, through the keys.
+static b32 test_completion(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "completion: app_create failed");
+    Minibuffer *mb = &app->mini;
+    View *v = app->views[0];
+    app_dev_feed(app, "a b c RET d e f C-a", &t->arena);
+    i64 top = buffer_marker_get(v->buffer, v->top);
+
+    // M-x runs the chosen command on the calling view, and it becomes last_command.
+    app_dev_feed(app, "M-x f o r w a r d - c h a r", &t->arena);
+    TEST_CHECK(t, mb->active && mb->match_count >= 1 && str8_equal(mb->cands[mb->matches[0]].text, STR8_LIT("forward-char")) &&
+                  mb->cands[mb->matches[0]].score == MATCH_EXACT, "completion: M-x forward-char ranks first");
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, !mb->active && view_point(v, &v->cursors[0]) == 5 && app->ctx.last_command == &CMD_FORWARD_CHAR,
+               "completion: M-x forward-char ran (point %D)", view_point(v, &v->cursors[0]));
+    // Annotations: the key binding.
+    app_dev_feed(app, "M-x f o r w a r d - c h a r", &t->arena);
+    TEST_CHECK(t, str8_equal(mb->cands[mb->matches[0]].annotation, STR8_LIT("C-f")), "completion: the binding annotation '%S'",
+               mb->cands[mb->matches[0]].annotation);
+    app_dev_feed(app, "C-g", &t->arena);
+    // No match: RET refuses, the prompt stays; C-j with a partial name too.
+    app_dev_feed(app, "M-x x y z z y RET", &t->arena);
+    TEST_CHECK(t, mb->active && mb->match_count == 0 && test_echo_has(app, "No match"), "completion: RET with no match");
+    app_dev_feed(app, "C-a C-k e x i t C-j", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "No match"), "completion: C-j with a partial name");
+    // TAB: the longest common prefix first, then "Complete, but not unique" on the exact one.
+    app_dev_feed(app, "TAB", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "exit-minibuffer"), "completion: TAB to the common prefix");
+    app_dev_feed(app, "TAB", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "exit-minibuffer") && test_echo_has(app, "Complete, but not unique"), "completion: not unique");
+    app_dev_feed(app, "- i TAB", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "exit-minibuffer-input"), "completion: TAB to the only match");
+    app_dev_feed(app, "TAB", &t->arena);
+    TEST_CHECK(t, test_echo_has(app, "Sole completion"), "completion: sole completion");
+    // TAB on a substring match completes to the selection; recursion is refused inside.
+    app_dev_feed(app, "C-a C-k - b u f f e r TAB", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "beginning-of-buffer"), "completion: TAB to the selection");
+    app_dev_feed(app, "M-x", &t->arena);
+    TEST_CHECK(t, mb->active && test_echo_has(app, "Command attempted to use minibuffer while in minibuffer"), "completion: no recursion");
+    // C-n / C-p / pages move the selection; RET takes it.
+    app_dev_feed(app, "C-a C-k o f - b u f f e r", &t->arena);
+    TEST_CHECK(t, mb->match_count == 2 && mb->selected == 0, "completion: two matches for 'of-buffer' (%D)", mb->match_count);
+    app_dev_feed(app, "C-n C-n C-n", &t->arena);
+    TEST_CHECK(t, mb->selected == 1, "completion: C-n stops at the last match");
+    app_dev_feed(app, "C-p C-p <down>", &t->arena);
+    TEST_CHECK(t, mb->selected == 1, "completion: C-p and <down>");
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, !mb->active && view_point(v, &v->cursors[0]) == buffer_size(v->buffer), "completion: end-of-buffer ran");
+    app_dev_feed(app, "M-x", &t->arena);
+    i64 all = mb->match_count;
+    app_dev_feed(app, "<next> <next>", &t->arena);
+    TEST_CHECK(t, mb->selected == 16 && mb->list_top == 9, "completion: two pages down (selected %D, top %D of %D)", mb->selected,
+               mb->list_top, all);
+    app_dev_feed(app, "<prior>", &t->arena);
+    TEST_CHECK(t, mb->selected == 8 && mb->list_top == 8, "completion: a page up (selected %D, top %D)", mb->selected, mb->list_top);
+    // Typing filters again and selects the first match.
+    app_dev_feed(app, "u n d o", &t->arena);
+    TEST_CHECK(t, mb->selected == 0 && mb->list_top == 0 && mb->match_count == 2, "completion: refiltered (%D)", mb->match_count);
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, buffer_marker_get(v->buffer, v->top) == top && v->left_col == 0, "completion: the scroll position moved");
+    // History of commands: M-p gives the last one run.
+    app_dev_feed(app, "M-x M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, "end-of-buffer"), "completion: command history");
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "completion")) return 0;
+    LOG("test: ok: completion (M-x, annotations, no match, TAB, selection, pages, refilter, history)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3469,6 +3539,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_matcher(&t);
     arena_reset(&t.arena);
     test_minibuffer(&t);
+    arena_reset(&t.arena);
+    test_completion(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
