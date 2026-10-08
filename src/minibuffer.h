@@ -82,6 +82,7 @@ typedef enum MiniHistoryKind {
     MINI_HISTORY_FILE,
     MINI_HISTORY_BUFFER,
     MINI_HISTORY_LINE,
+    MINI_HISTORY_SEARCH,  // isearch strings (M-p / M-n in isearch, C-s C-s)
     MINI_HISTORY_TEXT, // tests and anything else
     MINI_HISTORY_COUNT,
 } MiniHistoryKind;

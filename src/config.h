@@ -36,6 +36,9 @@ typedef struct Theme { // 0xRRGGBB
     u32 constant, function, directive; // syntax colors (Phase 8)
     u32 paren_match;                   // the background of a bracket and its match
     u32 prompt, completion_selection, completion_match; // the minibuffer
+    u32 isearch, isearch_text;         // the current search match: its background and text
+    u32 lazy_highlight;                // the background of the other matches on screen
+    u32 isearch_fail;                  // the background of the failing part of a search string
 } Theme;
 
 typedef struct ConfigDiag {
@@ -49,6 +52,7 @@ typedef struct Config {
     Theme theme;
     Keymap global;     // [keys]
     Keymap minibuffer; // [keys minibuffer]: searched before global while the minibuffer is active
+    Keymap isearch;    // [keys isearch]: searched before global while an isearch is active
     ConfigDiag *first_diag, *last_diag; // in the arena given to config_parse, at most CONFIG_DIAG_CAP
     i32 errors, warnings;               // all of them
 } Config;

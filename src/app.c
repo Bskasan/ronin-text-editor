@@ -41,6 +41,9 @@ struct App {
     CommandContext ctx;          // keeps last_command between events
     KeyInput keys;               // the key sequence state
     Minibuffer mini;             // prompts; while active its keymap comes before the global one
+    Isearch isearch;             // while active its keymap comes before the global one
+    Search lazy;                 // the lazy highlight: the other matches on the drawn rows
+    b32 search_pending;          // a search step is still being searched: another frame
     Arena files_arena;           // files.c: paths being built; reset by each use
     AppWatch watches[APP_MAX_VIEWS]; // the directories of the displayed file buffers
     i32 watch_count;
@@ -74,6 +77,7 @@ struct App {
 #if TEAL_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
+    i64 dev_work_budget; // search positions per frame instead of the clock (deterministic tests); 0 = the clock
 #endif
 };
 
@@ -502,6 +506,37 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     }
 }
 
+// The echo line of a search session: the prompt in the prompt color, then `text` (the search string)
+// with its part from `fail` on the isearch_fail background, then the echo text as a note in brackets
+// and `progress` (>= 0: still searching).
+static void app_draw_search_line(App *app, Renderer *r, AppLayout *l, FrameInput *in, String8 prompt, String8 text, i64 fail,
+                                 String8 progress) {
+    Theme *th = &app->config->theme;
+    i64 cols = MAX((in->width - l->pad) / l->cell_w, 0);
+    i32 y = l->minibuffer_y;
+    prompt = app_clip_cells(prompt, cols);
+    i32 x = font_draw_text(app->font, r, l->pad, y, prompt, COLOR_HEX(th->prompt));
+    cols -= app_text_cells(prompt);
+    text = app_clip_cells(text, cols);
+    fail = MIN(fail, text.len);
+    if (fail < text.len) {
+        f32 x0 = (f32)(x + (i32)app_text_cells(str8(text.data, fail)) * l->cell_w);
+        f32 x1 = (f32)(x + (i32)app_text_cells(text) * l->cell_w);
+        r_push_rect(r, (Rect){ x0, (f32)y, x1, (f32)(y + l->line_h) }, COLOR_HEX(th->isearch_fail));
+    }
+    x = font_draw_text(app->font, r, x, y, text, COLOR_HEX(th->text));
+    cols -= app_text_cells(text);
+    String8 note = str8_fmt(in->scratch, "%s%S%s%S", app->echo.len ? "  [" : "", str8(app->echo.text, app->echo.len),
+                            app->echo.len ? "]" : "", progress);
+    font_draw_text(app->font, r, x, y, app_clip_cells(note, MAX(cols, 0)), COLOR_HEX(th->text));
+}
+
+static void app_draw_isearch_line(App *app, Renderer *r, AppLayout *l, FrameInput *in) {
+    Isearch *is = &app->isearch;
+    String8 progress = isearch_pending(is) ? str8_fmt(in->scratch, "  [searching... %d%%]", search_progress(&is->search)) : str8(NULL, 0);
+    app_draw_search_line(app, r, l, in, isearch_prompt(is, in->scratch), isearch_top(is)->string, isearch_fail_pos(is), progress);
+}
+
 // ---------------------------------------------------------------------------
 // Startup and frames
 
@@ -778,6 +813,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);
+    isearch_init(&app->isearch, &app->mini);
+    app->ctx.isearch = &app->isearch;
     APP_STAGE("app: minibuffer");
     app->files_arena = arena_create(GB(1));
     app->watch_arena = arena_create(MB(16));
@@ -808,6 +845,7 @@ i32 app_shutdown(App *app) {
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += minibuffer_destroy(&app->mini);
+    isearch_destroy(&app->isearch);
     os_release(app->files_arena.base);
     files_unwatch_all(app);
     os_release(app->watch_arena.base);
@@ -843,6 +881,7 @@ static i64 app_mouse_pos(AppLayout *l, View *v, i32 x, i32 y) {
 // While the minibuffer is active only its line takes clicks.
 static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
     View *v;
+    isearch_exit(&app->ctx); // a click ends a search at its match first
     if (app->mini.active) {
         v = app->mini.view;
         if (y < v->y || x < v->x) return;
@@ -1065,16 +1104,58 @@ static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shi
     view_run_command(&app->ctx, cmd);
 }
 
+// While an isearch is active: a command of its own keymap runs inside it, a plain character extends
+// the string; any other key ends the search at the match first (a global prefix at once, so "C-x-"
+// shows), then goes on as usual. True when the key was taken.
+static b32 app_isearch_key(App *app, KeyResult *k) {
+    switch (k->kind) {
+    case KEY_RESULT_IGNORED:
+    case KEY_RESULT_DROPPED:
+        return 1;
+    case KEY_RESULT_PREFIX:
+        if (keymap_has_prefix(&app->config->isearch, &k->seq)) return 1; // a sequence of the isearch keymap
+        break;
+    case KEY_RESULT_SELF_INSERT:
+        echo_clear(&app->echo);
+        app_run_command(app, &CMD_ISEARCH_PRINTING_CHAR, k->codepoint, 0);
+        return 1;
+    case KEY_RESULT_COMMAND:
+        if (k->command == &CMD_SELF_INSERT && k->codepoint) {
+            echo_clear(&app->echo);
+            app_run_command(app, &CMD_ISEARCH_PRINTING_CHAR, k->codepoint, 0);
+            return 1;
+        }
+        if (k->command->flags & COMMAND_ISEARCH) {
+            echo_clear(&app->echo);
+            app_run_command(app, k->command, k->codepoint, k->shift_translated);
+            return 1;
+        }
+        break;
+    default:
+        break;
+    }
+    echo_clear(&app->echo);
+    isearch_exit(&app->ctx);
+    return 0;
+}
+
 // A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
-// is active, else [global]. A single-key prompt takes the key itself, after the keymap has said
-// what the key is bound to, so the quit keys still abort it.
+// is active, [isearch, global] while an isearch is, else [global]. A single-key prompt takes the key
+// itself, after the keymap has said what the key is bound to, so the quit keys still abort it.
 static void app_key_event(App *app, Event *e) {
     Keymap *stack[2];
     i32 count = 0;
+    b32 isearch = app->isearch.active && !app->mini.active;
     if (app->mini.active) stack[count++] = &app->config->minibuffer;
+    else if (isearch) stack[count++] = &app->config->isearch;
     stack[count++] = &app->config->global;
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);
+    b32 ended = 0; // the key ended an isearch: its message ("Mark saved ...") stays while the key runs
+    if (isearch) {
+        if (app_isearch_key(app, &k)) return;
+        ended = 1;
+    }
     if (app->mini.active && app->mini.kind == MINI_KEY) {
         if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED) return;
         app->keys.pending.len = 0;
@@ -1099,7 +1180,7 @@ static void app_key_event(App *app, Event *e) {
     case KEY_RESULT_COMMAND:
     case KEY_RESULT_SELF_INSERT:
     case KEY_RESULT_QUIT:
-        echo_clear(&app->echo); // a message stays until the next key
+        if (!ended) echo_clear(&app->echo); // a message stays until the next key
         app_run_command(app, k.command, k.codepoint, k.shift_translated);
         break;
     case KEY_RESULT_UNDEFINED:
@@ -1119,10 +1200,27 @@ static void app_key_event(App *app, Event *e) {
     }
 }
 
-// Lexer states for the visible lines of every view, within one budget per frame. While some view
-// still needs states, another frame is requested; once they are there, nothing runs.
-static void app_catch_up(App *app, Arena *scratch) {
-    u64 end = os_time_us() + SYNTAX_FRAME_BUDGET_US;
+// Search work within the frame's deadline, one slice at a time (a frame overruns it by at most one
+// slice). It comes first: the user is waiting for the match.
+static void app_search_work(App *app, u64 deadline) {
+    i64 used = 0;
+    while (isearch_pending(&app->isearch)) {
+        i64 slice = SEARCH_SLICE_BYTES;
+#if TEAL_DEV
+        if (app->dev_work_budget) { // tests: a fixed number of positions per frame instead of the clock
+            if (used >= app->dev_work_budget) break;
+            slice = MIN(slice, app->dev_work_budget - used);
+        } else
+#endif
+        if (used && os_time_us() >= deadline) break;
+        used += isearch_work(&app->isearch, slice);
+    }
+    app->search_pending = isearch_pending(&app->isearch);
+}
+
+// Lexer states for the visible lines of every view, with what is left of the frame's deadline. While
+// some view still needs states, another frame is requested; once they are there, nothing runs.
+static void app_catch_up(App *app, Arena *scratch, u64 end) {
     b32 pending = 0;
     for (i32 i = 0; i < app->view_count; i++) {
         View *v = app->views[i];
@@ -1134,7 +1232,7 @@ static void app_catch_up(App *app, Arena *scratch) {
 }
 
 b32 app_wants_frame(App *app) {
-    return app->syntax_pending;
+    return app->syntax_pending || app->search_pending;
 }
 
 u32 app_wait_ms(App *app) {
@@ -1161,6 +1259,7 @@ static b32 app_update(App *app, FrameInput *in) {
         Event *e = &in->events[i];
         switch (e->kind) {
         case EVENT_CLOSE: // the window's close button, Alt+F4: as C-x C-c, after ending any prompt
+            isearch_exit(&app->ctx);
             minibuffer_abort(&app->mini);
             app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
             break;
@@ -1198,6 +1297,9 @@ static b32 app_update(App *app, FrameInput *in) {
     if (config_pending(&app->config_source)) app_reload_config(app, 0); // a settle delay or retry may be due (EVENT_WAKEUP)
     files_poll(app);
     if (app->quit) return 0;
+    // One deadline for the background work of this frame: search slices, then lexer states.
+    u64 deadline = os_time_us() + SYNTAX_FRAME_BUDGET_US;
+    app_search_work(app, deadline);
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
@@ -1207,7 +1309,7 @@ static b32 app_update(App *app, FrameInput *in) {
     app->laid_h = in->height;
     app->laid_cell_w = l.cell_w;
     app->laid_line_h = l.line_h;
-    app_catch_up(app, in->scratch);
+    app_catch_up(app, in->scratch, deadline);
     app_update_title(app, in->scratch);
     files_update_watches(app);
     files_report_unsaved(app);
@@ -1227,6 +1329,8 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
     if (app->mini.active) {
         if (list_rows) app_draw_candidates(app, r, &l, in, list_rows);
         app_draw_minibuffer(app, r, &l, in);
+    } else if (app->isearch.active) {
+        app_draw_isearch_line(app, r, &l, in);
     } else {
         String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
         font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));

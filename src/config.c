@@ -10,6 +10,7 @@ void config_init(Config *c) {
     memset(c, 0, sizeof(*c));
     c->global.name = "global";
     c->minibuffer.name = "minibuffer";
+    c->isearch.name = "isearch";
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,8 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "prompt", offsetof(Theme, prompt) },
     { "completion_selection", offsetof(Theme, completion_selection) },
     { "completion_match", offsetof(Theme, completion_match) },
+    { "isearch", offsetof(Theme, isearch) },       { "isearch_text", offsetof(Theme, isearch_text) },
+    { "lazy_highlight", offsetof(Theme, lazy_highlight) }, { "isearch_fail", offsetof(Theme, isearch_fail) },
 };
 
 static void config_color(ConfigParser *p, String8 name, String8 value) {
@@ -274,7 +277,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         if (!line.len || line.data[0] == '#') continue;
         if (line.data[0] == '[') {
             if (line.data[line.len - 1] != ']') {
-                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys] or [keys minibuffer])");
+                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer] or [keys isearch])");
                 section = CONFIG_SECTION_UNKNOWN;
                 continue;
             }
@@ -282,11 +285,12 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
             section = str8_equal(name, STR8_LIT("settings")) ? CONFIG_SECTION_SETTINGS
                     : str8_equal(name, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
                     : CONFIG_SECTION_UNKNOWN;
-            // [keys] and [keys global] bind in the global map, [keys minibuffer] in the minibuffer's.
+            // [keys] and [keys global] bind in the global map, [keys minibuffer] and [keys isearch] in theirs.
             if (str8_starts_with(name, STR8_LIT("keys")) && (name.len == 4 || config_is_blank(name.data[4]))) {
                 String8 map = config_trim(str8(name.data + 4, name.len - 4));
                 p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
-                       : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer : NULL;
+                       : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer
+                       : str8_equal(map, STR8_LIT("isearch"))          ? &c->isearch : NULL;
                 if (p.keys) section = CONFIG_SECTION_KEYS;
             }
             if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(name));
@@ -294,7 +298,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         }
         switch (section) {
         case CONFIG_SECTION_NONE:
-            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys] or [keys minibuffer])");
+            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer] or [keys isearch])");
             break;
         case CONFIG_SECTION_UNKNOWN:
             break;
@@ -351,6 +355,9 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
     config_init(c);
     config_parse(c, arena, config_default_text(), STR8_LIT("<built-in>"));
     // Dev: the built-in config parses cleanly, so every command it names exists.
+#if TEAL_DEV
+    for (ConfigDiag *d = c->first_diag; d; d = d->next) LOG("config: built-in: %S", d->text);
+#endif
     ASSERT(c->errors == 0 && c->warnings == 0);
     memset(info, 0, sizeof(*info));
     if (!path.len) return OS_FILE_NOT_FOUND;
