@@ -1267,6 +1267,11 @@ static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 r
     }
 }
 
+void app_dev_cell(App *app, i32 *w, i32 *h) {
+    *w = app->font ? app->font->cell_w : APP_HEADLESS_CELL_W;
+    *h = app->font ? app->font->line_h : APP_HEADLESS_LINE_H;
+}
+
 void app_dev_log_keys(App *app, b32 on) {
     app->dev_log_keys = on;
 }
@@ -1566,7 +1571,7 @@ void app_dev_smoke_syntax(App *app, i32 language) {
     app->force_focus = 1;
 }
 
-// The probes of a syntax frame: a comment, a keyword and a string pixel in their exact colors, the
+// The probes of a syntax frame: a comment, a keyword, a string and a number pixel in their exact colors, the
 // match of the bracket at point on the paren_match background. With `rendering`, also the
 // rendering checks: background, mode line, cursor, a text cell, a space cell, '_' inked only in its
 // lower part (catches upside-down bitmaps), the ClearType channel order on '|'.
@@ -1580,6 +1585,7 @@ i32 app_dev_syntax_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, b32 
     APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(0, 17, 0), .rgb = th->comment, .what = "syntax: a comment pixel");
     APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(0, 6, 1), .rgb = th->keyword, .what = "syntax: a keyword pixel ('return')");
     APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(7, 25, 1), .rgb = th->string, .what = "syntax: a string pixel");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(8, 9, 4), .rgb = th->number, .what = "syntax: a number pixel ('0')");
     APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(11, 12, 2), .rgb = th->paren_match,
                    .what = "syntax: the matching ')' on the paren_match background");
     if (rendering) {
@@ -1815,6 +1821,10 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
                        .what = "minibuffer: the calling view's hollow cursor, left edge");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + t, .y0 = 2 * lh + t, .x1 = x + cw - t, .y1 = 3 * lh - t, .rgb = th->background,
                        .what = "minibuffer: the calling view's hollow cursor, inside");
+    } else if (stage == 5) {
+        // ... then "x": "foox" fails; its failing part on the isearch_fail background in the prompt line.
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = l.minibuffer_y, .x1 = in->width, .y1 = l.minibuffer_y + lh,
+                       .rgb = app->config->theme.isearch_fail, .what = "isearch: the failing part on the isearch_fail background");
     } else if (stage == 4) {
         // app_dev_smoke_isearch after C-s f o o C-s: the current match at columns 8-10, a lazy highlight at
         // 0-2, the spaces at 3 and 7 untouched (their middle thirds, away from the neighbors' fringes).
