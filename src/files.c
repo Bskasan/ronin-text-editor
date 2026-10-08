@@ -169,6 +169,42 @@ static void cmd_save_buffer(CommandContext *ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Reverting
+
+// Rereads the buffer's file through buffer_replace (buffer_revert): markers, and so every point,
+// follow the edit; it can be undone.
+static void files_revert(CommandContext *ctx, Buffer *buf) {
+    i64 point = ctx->view->buffer == buf ? view_point(ctx->view, &ctx->view->cursors[0]) : 0;
+    OsFileStatus status = buffer_revert(buf, point);
+    if (status == OS_FILE_OK) echo_message(ctx->echo, "Reverted %S", buf->name);
+    else files_echo(ctx->echo, "Cannot revert %S: %s", buf->path, buffer_status_text(status));
+}
+
+static void files_revert_confirmed(CommandContext *ctx, MiniResult *r) {
+    if (r->yes) files_revert(ctx, ctx->view->buffer);
+}
+
+// A modified buffer asks first.
+static void cmd_revert_buffer(CommandContext *ctx) {
+    Buffer *buf = ctx->view->buffer;
+    if (!buf->path.len) {
+        echo_message(ctx->echo, "Buffer does not seem to be associated with any file");
+        return;
+    }
+    if (!buf->modified) {
+        files_revert(ctx, buf);
+        return;
+    }
+    arena_reset(&ctx->app->files_arena);
+    String8 prompt = str8_fmt(&ctx->app->files_arena, "Discard edits and reread from %S? (yes or no) ", buf->path);
+    for (i64 i = 0; i < prompt.len; i++) if (prompt.data[i] == '\\') prompt.data[i] = '/';
+    MiniRequest req = { .kind = MINI_YES_NO, .prompt = prompt, .done = files_revert_confirmed };
+    minibuffer_read(ctx, &req);
+}
+
+const Command CMD_REVERT_BUFFER = { "revert-buffer", cmd_revert_buffer, COMMAND_ONCE };
+
+// ---------------------------------------------------------------------------
 // save-some-buffers and quitting. One chain walks the buffer list: state.index is the next entry to
 // look at, state.flags what was asked for.
 

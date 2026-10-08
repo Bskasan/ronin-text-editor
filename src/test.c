@@ -3693,6 +3693,113 @@ static b32 test_save_some(Test *t) {
     return 1;
 }
 
+// buffer_revert: one replace of the changed middle; markers, undo, line endings, no-ops, read-only;
+// then revert-buffer through the keys.
+static b32 test_revert(Test *t) {
+    String8 path = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p7revert.txt", t->tmp_dir));
+    os_dev_set_read_only(path, 0);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nbbbb\ncccc\n")), "revert: cannot write the file");
+    Buffer *buf = buffer_create(STR8_LIT(""));
+    TEST_CHECK(t, buf && buffer_load_file(buf, path) == OS_FILE_OK, "revert: load failed");
+    BufferMarker before = buffer_marker_create(buf, 2, 0), after = buffer_marker_create(buf, 12, 1);
+    BufferMarker inside = buffer_marker_create(buf, 6, 0), inside_adv = buffer_marker_create(buf, 7, 1);
+    // Typing just before: a merged group of self-inserts that the revert must not join.
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_INSERT, 0, 0);
+    buffer_replace(buf, 0, 0, STR8_LIT("T"));
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_INSERT, 1, 1);
+    buffer_replace(buf, 1, 1, STR8_LIT("U"));
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nXYZ\ncccc\n")), "revert: cannot change the file");
+    i64 groups = buf->undo.group_count;
+    TEST_CHECK(t, buffer_revert(buf, 3) == OS_FILE_OK && test_text_is(t, buf, STR8_LIT("aaaa\nXYZ\ncccc\n")) && !buf->modified &&
+                  buf->undo.group_count == groups + 1, "revert: text, unmodified, one undo group");
+    // The typing was undone by the revert too ("TU" is not in the file): prefix "" .. the whole middle.
+    TEST_CHECK(t, buffer_marker_get(buf, before) == 0 && buffer_marker_get(buf, after) == 11, "revert: markers before (%D) and after (%D)",
+               buffer_marker_get(buf, before), buffer_marker_get(buf, after));
+    buffer_marker_destroy(buf, before);
+    buffer_marker_destroy(buf, after);
+    buffer_marker_destroy(buf, inside);
+    buffer_marker_destroy(buf, inside_adv);
+    // Undo restores the text before the revert (modified); undo-redo returns to the file (unmodified).
+    i64 p;
+    TEST_CHECK(t, buffer_undo(buf, 0, 0, &p) == BUFFER_UNDO_DONE && test_text_is(t, buf, STR8_LIT("TUaaaa\nbbbb\ncccc\n")) && buf->modified,
+               "revert: undo restores the old text");
+    TEST_CHECK(t, buffer_undo(buf, 1, 0, &p) == BUFFER_UNDO_DONE && test_text_is(t, buf, STR8_LIT("aaaa\nbbbb\ncccc\n")),
+               "revert: the typing is a group of its own");
+    TEST_CHECK(t, buffer_redo(buf, 0, &p) == BUFFER_UNDO_DONE && buffer_redo(buf, 0, &p) == BUFFER_UNDO_DONE &&
+                  test_text_is(t, buf, STR8_LIT("aaaa\nXYZ\ncccc\n")) && !buf->modified, "revert: undo-redo back to the file, unmodified");
+    TEST_CHECK(t, buffer_destroy(buf), "revert: destroy");
+
+    // Exact marker positions on a clean buffer: before, after (same distance from the end), inside.
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nbbbb\ncccc\n")), "revert: cannot write the file");
+    buf = buffer_create(STR8_LIT(""));
+    TEST_CHECK(t, buf && buffer_load_file(buf, path) == OS_FILE_OK, "revert: load failed");
+    before = buffer_marker_create(buf, 2, 0);
+    after = buffer_marker_create(buf, 12, 1);
+    inside = buffer_marker_create(buf, 6, 0);
+    inside_adv = buffer_marker_create(buf, 7, 1);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nXYZ\ncccc\n")), "revert: cannot change the file");
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK, "revert: failed");
+    TEST_CHECK(t, buffer_marker_get(buf, before) == 2 && buffer_marker_get(buf, after) == 11 && buffer_marker_get(buf, inside) == 5 &&
+                  buffer_marker_get(buf, inside_adv) == 8, "revert: markers %D %D %D %D", buffer_marker_get(buf, before),
+               buffer_marker_get(buf, after), buffer_marker_get(buf, inside), buffer_marker_get(buf, inside_adv));
+    buffer_marker_destroy(buf, before);
+    buffer_marker_destroy(buf, after);
+    buffer_marker_destroy(buf, inside);
+    buffer_marker_destroy(buf, inside_adv);
+    // Line endings only: the same text, the mode taken over, no edit, no undo group.
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\r\nXYZ\r\ncccc\r\n")), "revert: cannot change the file");
+    u64 edits = buf->edit_count;
+    groups = buf->undo.group_count;
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK && buf->eol == BUFFER_EOL_CRLF && buf->edit_count == edits &&
+                  buf->undo.group_count == groups && !buf->modified && test_text_is(t, buf, STR8_LIT("aaaa\nXYZ\ncccc\n")),
+               "revert: line endings only");
+    // An unchanged file: no edit, no group.
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK && buf->edit_count == edits && buf->undo.group_count == groups, "revert: unchanged");
+    // A multi-byte character changed in its last byte: the replaced range covers whole characters.
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("a\xC3\xA9z\n")), "revert: cannot change the file");
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK && os_write_file(path, STR8_LIT("a\xC3\xA8z\n")) && buffer_revert(buf, 0) == OS_FILE_OK &&
+                  test_text_is(t, buf, STR8_LIT("a\xC3\xA8z\n")) && buf->undo.groups[buf->undo.group_count - 1].size ==
+                  sizeof(BufferUndoRecord) + 8, "revert: whole characters");
+    // A read-only file reverts and the buffer stays read-only.
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("ro\n")) && os_dev_set_read_only(path, 1), "revert: cannot make the file read-only");
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK && buf->read_only && test_text_is(t, buf, STR8_LIT("ro\n")), "revert: read-only");
+    os_dev_set_read_only(path, 0);
+    // A missing file: refused, the buffer untouched.
+    os_file_delete(path);
+    edits = buf->edit_count;
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_NOT_FOUND && buf->edit_count == edits && test_text_is(t, buf, STR8_LIT("ro\n")),
+               "revert: a missing file");
+    TEST_CHECK(t, buffer_destroy(buf), "revert: destroy");
+
+    // revert-buffer: unmodified reverts at once; modified asks (no, C-g, yes).
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("one\n")), "revert: cannot write the file");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "revert: app_create failed");
+    app_dev_visit(app, path);
+    Buffer *b = test_current(app);
+    os_write_file(path, STR8_LIT("two\n"));
+    app_dev_feed(app, "M-x r e v e r t - b u f f e r RET", &t->arena);
+    TEST_CHECK(t, !app->mini.active && test_text_is(t, b, STR8_LIT("two\n")) && test_echo_has(app, "Reverted p7revert.txt"),
+               "revert: revert-buffer unmodified");
+    // Point was at 0, the start of the replaced "one": an advancing marker, it is now after "two".
+    app_dev_feed(app, "x M-x r e v e r t - b u f f e r RET", &t->arena);
+    String8 q = str8_fmt(&t->arena, "Discard edits and reread from %S? (yes or no) ", test_slashes(t, path));
+    TEST_CHECK(t, app->mini.active && str8_equal(app->mini.prompt, q), "revert: asks '%S'", app->mini.prompt);
+    app_dev_feed(app, "n o RET", &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("twox\n")) && b->modified, "revert: 'no' keeps the edits");
+    app_dev_feed(app, "M-x r e v e r t - b u f f e r RET C-g", &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("twox\n")) && b->modified && !app->mini.active, "revert: C-g keeps the edits");
+    app_dev_feed(app, "M-x r e v e r t - b u f f e r RET y e s RET", &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("two\n")) && !b->modified, "revert: 'yes' rereads");
+    app_dev_feed(app, "C-/", &t->arena);
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("twox\n")) && b->modified, "revert: undone through the keys");
+    if (!test_app_destroy(t, app, "revert")) return 0;
+    os_file_delete(path);
+    LOG("test: ok: revert (one replace, markers, undo and undo-redo, line endings, no-op, whole characters, read-only, "
+        "missing file, revert-buffer answers)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3860,6 +3967,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_goto_line(&t);
     arena_reset(&t.arena);
     test_save_some(&t);
+    arena_reset(&t.arena);
+    test_revert(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
