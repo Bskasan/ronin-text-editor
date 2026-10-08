@@ -145,6 +145,7 @@ static const struct { const char *name; u32 offset; } config_bool_settings[] = {
     { "indent_with_tabs", offsetof(Settings, indent_with_tabs) },
     { "detect_indentation", offsetof(Settings, detect_indentation) },
     { "auto_revert", offsetof(Settings, auto_revert) },
+    { "show_paren_mode", offsetof(Settings, show_paren_mode) },
 };
 
 static void config_setting(ConfigParser *p, String8 name, String8 value) {

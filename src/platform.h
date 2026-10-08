@@ -236,6 +236,7 @@ void app_dev_smoke_region(App *app);      // stage 2: an active region over line
 i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list
 void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
 void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
+b32  app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b); // show_paren_mode's pair in the active view
 b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
