@@ -12,6 +12,7 @@
 #include "edit.h"
 #include "keymap.h"
 #include "config.h"
+#include "minibuffer.h"
 
 #include "base.c"
 #include "png.c"
@@ -21,6 +22,7 @@
 #include "edit.c"
 #include "keymap.c"
 #include "config.c"
+#include "minibuffer.c"
 #include "app.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only

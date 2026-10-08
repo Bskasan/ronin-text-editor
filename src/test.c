@@ -3079,6 +3079,63 @@ static b32 test_list_dir(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Matching
+
+static void test_candidates(Arena *arena, const char **texts, i64 n, Candidate *out) {
+    for (i64 i = 0; i < n; i++) {
+        out[i] = (Candidate){ .text = str8_cstr(texts[i]) };
+        out[i].folded = match_fold(arena, out[i].text);
+    }
+}
+
+// The ranked candidates as "a,b,c".
+static String8 test_ranked(Test *t, const char **texts, i64 n, const char *input) {
+    Candidate *c = PUSH_ARRAY(&t->arena, Candidate, n);
+    test_candidates(&t->arena, texts, n, c);
+    i32 *order = PUSH_ARRAY(&t->arena, i32, n);
+    MatchQuery q = match_query(&t->arena, str8_cstr(input));
+    i64 found = match_rank(&q, c, n, order);
+    String8 s = str8_fmt(&t->arena, "");
+    for (i64 i = 0; i < found; i++) s = str8_fmt(&t->arena, i ? "%S,%S" : "%S%S", s, c[order[i]].text);
+    return s;
+}
+
+static b32 test_matcher(Test *t) {
+    static const char *cmds[] = { "save-buffer", "find-file", "write-file", "file-find", "files", "FIND-FILE-X", "kill-buffer" };
+    static const struct { const char *input, *expected; } cases[] = {
+        { "", "save-buffer,find-file,write-file,file-find,files,FIND-FILE-X,kill-buffer" }, // everything, own order
+        { "file", "file-find,files,find-file,write-file,FIND-FILE-X" },  // prefix first, then substring, stable
+        { "find-file", "find-file,FIND-FILE-X" },                        // exact first, then prefix
+        { "FIND-file", "find-file,FIND-FILE-X" },                        // case-insensitive
+        { "buf  save", "save-buffer" },                                  // terms in any order, extra spaces
+        { "file find", "file-find,find-file,FIND-FILE-X" },              // all terms; prefix of the first term first
+        { "fi le", "find-file,file-find,files,FIND-FILE-X,write-file" }, // "fi" is a prefix of four
+        { "xyz", "" },                                                   // no match
+        { "buffer kill x", "" },                                         // one term missing
+        { "  ", "save-buffer,find-file,write-file,file-find,files,FIND-FILE-X,kill-buffer" }, // blanks only: no terms
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        String8 got = test_ranked(t, cmds, ARRAY_COUNT(cmds), cases[i].input);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(cases[i].expected)), "matcher: '%s' gave '%S', expected '%s'", cases[i].input, got,
+                   cases[i].expected);
+    }
+    // Non-ASCII folding keeps byte offsets; spans point into the shown text.
+    static const char *words[] = { "\xC3\x9C" "berstra\xC3\x9F" "e", "\xC4\xB0stanbul" }; // Überstraße, İstanbul
+    String8 got = test_ranked(t, words, 2, "\xC3\xBC" "ber");                                // über
+    TEST_CHECK(t, str8_equal(got, str8_cstr(words[0])), "matcher: non-ASCII case folding ('%S')", got);
+    Candidate c[2];
+    test_candidates(&t->arena, words, 2, c);
+    TEST_CHECK(t, c[1].folded.len == c[1].text.len, "matcher: folding changed a length");
+    MatchQuery q = match_query(&t->arena, STR8_LIT("STRA e"));
+    MatchSpan spans[4];
+    i32 n = match_spans(&q, &c[0], spans, 4);
+    TEST_CHECK(t, n == 2 && spans[0].start == 5 && spans[0].end == 9 && spans[1].start == 3 && spans[1].end == 4,
+               "matcher: spans (%d: %D-%D, %D-%D)", n, spans[0].start, spans[0].end, spans[1].start, spans[1].end);
+    LOG("test: ok: matcher (%d ranking cases, folding, spans)", (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -3147,6 +3204,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_headless_app(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
+    arena_reset(&t.arena);
+    test_matcher(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
