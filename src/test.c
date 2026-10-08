@@ -4224,6 +4224,241 @@ static b32 test_headless_app(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// isearch through the real key path
+
+// A headless app showing *scratch* with `text`, point at `point`.
+static App *test_search_app(Test *t, String8 text, i64 point) {
+    App *app = test_app_create(t);
+    if (!app) return NULL;
+    View *v = app->views[0];
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), text);
+    view_set_point(v, &v->cursors[0], point);
+    view_ensure_visible(v);
+    return app;
+}
+
+static i64 test_app_point(App *app) {
+    View *v = app->views[app->active_view];
+    return view_point(v, &v->cursors[0]);
+}
+
+static b32 test_app_echo_is(App *app, const char *expected) {
+    return str8_equal(str8(app->echo.text, app->echo.len), str8_cstr(expected));
+}
+
+// The wheel over the first view: positive notches scroll towards the top.
+static void test_app_wheel(Test *t, App *app, i32 notches) {
+    Event e = { .kind = EVENT_MOUSE_WHEEL, .x = 100, .y = 100, .wheel = notches * 120 };
+    app_dev_feed_events(app, &e, 1, &t->arena);
+}
+
+// Frames without events until no search is pending; returns how many.
+static i32 test_app_pump(Test *t, App *app) {
+    i32 frames = 0;
+    while (app_wants_frame(app) && frames < 100000) {
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+        frames++;
+    }
+    return frames;
+}
+
+static b32 test_isearch_state(Test *t, App *app, const char *what, b32 active, i64 point, const char *prompt, const char *string, i64 fail) {
+    Isearch *is = &app->isearch;
+    TEST_CHECK(t, is->active == active, "isearch: %s: active %d, want %d", what, is->active, active);
+    TEST_CHECK(t, test_app_point(app) == point, "isearch: %s: point %D, want %D", what, test_app_point(app), point);
+    if (!active) return 1;
+    String8 p = isearch_prompt(is, &t->arena), s = isearch_top(is)->string;
+    TEST_CHECK(t, str8_equal(p, str8_cstr(prompt)), "isearch: %s: prompt '%S', want '%s'", what, p, prompt);
+    TEST_CHECK(t, str8_equal(s, str8_cstr(string)), "isearch: %s: string '%S', want '%s'", what, s, string);
+    i64 want_fail = fail < 0 ? s.len : fail;
+    TEST_CHECK(t, isearch_fail_pos(is) == want_fail, "isearch: %s: failing from %D, want %D", what, isearch_fail_pos(is), want_fail);
+    return 1;
+}
+
+static b32 test_isearch(Test *t) {
+    // "foo bar\nfoo baz\nqux Foo\n": foo at 0 and 8, Foo at 20; the search starts at 5.
+    String8 text = STR8_LIT("foo bar\nfoo baz\nqux Foo\n");
+    App *app = test_search_app(t, text, 5);
+    TEST_CHECK(t, app, "isearch: app_create failed");
+    static const struct {
+        const char *keys;
+        b32 active;
+        i64 point;
+        const char *prompt, *string;
+        i64 fail; // -1: nothing fails
+    } steps[] = {
+        { "C-s", 1, 5, "I-search: ", "", -1 },
+        { "f", 1, 9, "I-search: ", "f", -1 },
+        { "o o", 1, 11, "I-search: ", "foo", -1 },
+        { "C-s", 1, 23, "I-search: ", "foo", -1 },               // Foo: no capital in the string, folded
+        { "C-s", 1, 23, "Failing I-search: ", "foo", -1 },       // no more: point stays, nothing of the string fails
+        { "C-s", 1, 3, "Wrapped I-search: ", "foo", -1 },        // wraps to the top; before the start: wrapped
+        { "C-s", 1, 11, "Overwrapped I-search: ", "foo", -1 },   // past the start again
+        { "C-r", 1, 8, "Overwrapped I-search backward: ", "foo", -1 }, // reversed: the same match, point to its start
+        { "C-r", 1, 0, "Overwrapped I-search backward: ", "foo", -1 },
+        { "DEL", 1, 8, "Overwrapped I-search backward: ", "foo", -1 }, // DEL unwinds every step
+        { "DEL", 1, 11, "Overwrapped I-search: ", "foo", -1 },
+        { "DEL", 1, 3, "Wrapped I-search: ", "foo", -1 },
+        { "DEL", 1, 23, "Failing I-search: ", "foo", -1 },
+        { "DEL", 1, 23, "I-search: ", "foo", -1 },
+        { "DEL", 1, 11, "I-search: ", "foo", -1 },
+        { "DEL", 1, 10, "I-search: ", "fo", -1 },
+        { "DEL", 1, 9, "I-search: ", "f", -1 },
+        { "DEL", 1, 5, "I-search: ", "", -1 },
+        { "DEL", 1, 5, "I-search: ", "", -1 },                    // nothing left to undo
+        { "f o o x", 1, 11, "Failing I-search: ", "foox", 3 },  // the x fails
+        { "y", 1, 11, "Failing I-search: ", "fooxy", 3 },
+        { "C-g", 1, 11, "I-search: ", "foo", -1 },                // C-g removes what fails
+        { "C-g", 0, 5, NULL, NULL, -1 },                          // then quits to the start
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(steps); i++) {
+        app_dev_feed(app, steps[i].keys, &t->arena);
+        char what[64];
+        test_cstr(what, sizeof(what), "step %d ('%s')", i, steps[i].keys);
+        if (!test_isearch_state(t, app, what, steps[i].active, steps[i].point, steps[i].prompt, steps[i].string, steps[i].fail)) return 0;
+    }
+    TEST_CHECK(t, test_app_echo_is(app, "Quit") && !app->views[0]->cursors[0].mark_set, "isearch: C-g quits without a mark");
+    MiniHistory *h = &app->mini.histories[MINI_HISTORY_SEARCH];
+    TEST_CHECK(t, h->count == 0, "isearch: a quit search is not in the history");
+
+    // RET and ESC: end at the match, the mark at the start, the string in the history.
+    View *v = app->views[0];
+    Cursor *c = &v->cursors[0];
+    app_dev_feed(app, "C-s f o o RET", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 11 && c->mark_set && !c->mark_active &&
+                  buffer_marker_get(v->buffer, c->mark) == 5 && test_app_echo_is(app, "Mark saved where search started"),
+               "isearch: RET ends at the match and sets the mark at the start");
+    TEST_CHECK(t, h->count == 1 && str8_equal(h->items[0], STR8_LIT("foo")), "isearch: RET puts the string in the history");
+    view_set_point(v, c, 0);
+    app_dev_feed(app, "C-s b a z ESC", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 15 && buffer_marker_get(v->buffer, c->mark) == 0,
+               "isearch: ESC ends at the match and sets the mark");
+    // C-s C-s: the last string; M-p / M-n walk the history around.
+    view_set_point(v, c, 0);
+    app_dev_feed(app, "C-s C-s", &t->arena);
+    if (!test_isearch_state(t, app, "C-s C-s", 1, 15, "I-search: ", "baz", -1)) return 0;
+    app_dev_feed(app, "M-p", &t->arena);
+    if (!test_isearch_state(t, app, "M-p", 1, 15, "I-search: ", "baz", -1)) return 0;
+    app_dev_feed(app, "M-p", &t->arena);
+    if (!test_isearch_state(t, app, "M-p M-p", 1, 3, "I-search: ", "foo", -1)) return 0;
+    app_dev_feed(app, "M-n", &t->arena);
+    if (!test_isearch_state(t, app, "M-n", 1, 15, "I-search: ", "baz", -1)) return 0;
+    app_dev_feed(app, "M-n", &t->arena);
+    if (!test_isearch_state(t, app, "M-n around", 1, 3, "I-search: ", "foo", -1)) return 0;
+    app_dev_feed(app, "DEL", &t->arena);
+    if (!test_isearch_state(t, app, "DEL after M-n", 1, 15, "I-search: ", "baz", -1)) return 0;
+    app_dev_feed(app, "C-g", &t->arena);
+    // A key bound to another command ends the search at the match, then runs.
+    view_set_point(v, c, 0);
+    app_dev_feed(app, "C-s b a C-f", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 7 && buffer_marker_get(v->buffer, c->mark) == 0 &&
+                  test_app_echo_is(app, "Mark saved where search started"), "isearch: C-f ends the search at the match, then runs");
+    // A global prefix ends it at once, and shows.
+    view_set_point(v, c, 0);
+    app_dev_feed(app, "C-s f C-x", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 1 && test_app_echo_is(app, "C-x-"), "isearch: C-x ends the search");
+    app_dev_feed(app, "C-g", &t->arena);
+    // C-w: the rest of the word after the match, lowercased while folding.
+    view_set_point(v, c, 16);
+    app_dev_feed(app, "C-s x C-w", &t->arena);
+    if (!test_isearch_state(t, app, "C-w", 1, 23, "I-search: ", "x foo", -1)) return 0;
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    // C-y: the latest kill, lowercased while folding.
+    memcpy(kill_push(&app->kills, 3), "BAZ", 3);
+    kill_to_clipboard(&app->kills);
+    view_set_point(v, c, 0);
+    app_dev_feed(app, "C-s C-y", &t->arena);
+    if (!test_isearch_state(t, app, "C-y", 1, 15, "I-search: ", "baz", -1)) return 0;
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    // Smart case: a capital letter makes the search exact; M-c switches either way.
+    view_set_point(v, c, 0);
+    app_dev_feed(app, "C-s F o o", &t->arena);
+    if (!test_isearch_state(t, app, "smart case: exact", 1, 23, "I-search: ", "Foo", -1)) return 0;
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    view_set_point(v, c, 17);
+    app_dev_feed(app, "C-s f o o", &t->arena);
+    if (!test_isearch_state(t, app, "smart case: folded", 1, 23, "I-search: ", "foo", -1)) return 0;
+    app_dev_feed(app, "M-c", &t->arena);
+    if (!test_isearch_state(t, app, "M-c: exact", 1, 23, "Failing I-search: ", "foo", -1)) return 0;
+    TEST_CHECK(t, test_app_echo_is(app, "case sensitive"), "isearch: M-c says so");
+    app_dev_feed(app, "M-c", &t->arena);
+    if (!test_isearch_state(t, app, "M-c again: folded", 1, 23, "I-search: ", "foo", -1)) return 0;
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    // Not in the minibuffer; the isearch commands outside a search.
+    app_dev_feed(app, "M-x C-s", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && app->mini.active && test_app_echo_is(app, "isearch is not available in the minibuffer"),
+               "isearch: refused in the minibuffer");
+    app_dev_feed(app, "C-g", &t->arena);
+    app_dev_feed(app, "M-x i s e a r c h - e x i t RET", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Not in an isearch"), "isearch: isearch-exit outside a search");
+    if (!test_app_destroy(t, app, "isearch")) return 0;
+
+    // Sliced: a fixed number of positions per frame instead of the clock.
+    i64 big = 2000000;
+    u8 *data = PUSH_ARRAY(&t->arena, u8, big + 8);
+    memset(data, 'x', (size_t)big);
+    memcpy(data + big, "needle\n", 7);
+    app = test_search_app(t, str8(data, big + 7), 0);
+    app->dev_work_budget = KB(64);
+    app_dev_feed(app, "C-s n e e d l e", &t->arena);
+    TEST_CHECK(t, isearch_pending(&app->isearch) && app_wants_frame(app) && search_progress(&app->isearch.search) > 0 &&
+                  search_progress(&app->isearch.search) < 100 && test_app_point(app) == 0, "isearch: sliced: still searching after the keys");
+    i32 frames = test_app_pump(t, app);
+    if (!test_isearch_state(t, app, "sliced", 1, big + 6, "I-search: ", "needle", -1)) return 0;
+    // The 12 key events after the "n" already searched one slice each: about 30 frames of 64 KB in all.
+    TEST_CHECK(t, frames + 12 >= (i32)(big / KB(64)) && frames + 12 <= (i32)(big / KB(64)) + 2 && !app_wants_frame(app),
+               "isearch: sliced: %d frames after the keys for %D bytes at 64 KB a frame", frames, big);
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    view_set_point(app->views[0], &app->views[0]->cursors[0], 0);
+    app_dev_feed(app, "C-s n e", &t->arena); // "n" being searched, "ne" waiting
+    app_dev_feed(app, "DEL", &t->arena);       // drops "ne"; "n" still searched
+    TEST_CHECK(t, isearch_pending(&app->isearch) && app->isearch.count == 2, "isearch: sliced: DEL drops a waiting step");
+    app_dev_feed(app, "DEL", &t->arena);       // drops the step being searched
+    if (!test_isearch_state(t, app, "sliced: DEL during the search", 1, 0, "I-search: ", "", -1)) return 0;
+    TEST_CHECK(t, !app_wants_frame(app), "isearch: sliced: nothing pending after DEL");
+    app_dev_feed(app, "C-g", &t->arena);
+    app->dev_work_budget = 0;
+    if (!test_app_destroy(t, app, "isearch sliced")) return 0;
+
+    // The wheel: it drags point, but the next key acts on the session's own match.
+    u8 *lines = PUSH_ARRAY(&t->arena, u8, 200 * 13);
+    for (i32 i = 0; i < 200; i++) fmt_buf(lines + i * 13, 14, "foo line %03d\n", i); // foo at 13 * i
+    app = test_search_app(t, str8(lines, 200 * 13), 0);
+    v = app->views[0];
+    c = &v->cursors[0];
+    app_dev_feed(app, "C-s f o o", &t->arena);
+    test_app_wheel(t, app, -10);
+    TEST_CHECK(t, test_app_point(app) > 13 * 20, "isearch: the wheel dragged point (%D)", test_app_point(app));
+    app_dev_feed(app, "C-s", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 16 && view_top_line(v) <= 1, "isearch: wheel then C-s: the next match after the session's (%D, top %D)",
+               test_app_point(app), view_top_line(v));
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "DEL", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 3, "isearch: wheel then DEL: back to the step before (%D)", test_app_point(app));
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "C-w", &t->arena);
+    if (!test_isearch_state(t, app, "wheel then C-w", 1, 8, "I-search: ", "foo line", -1)) return 0;
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 8 && buffer_marker_get(v->buffer, c->mark) == 0 && view_top_line(v) == 0,
+               "isearch: wheel then RET: at the match, not where the wheel left point");
+    app_dev_feed(app, "C-s f o o C-s", &t->arena);
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 8, "isearch: wheel then C-g: back to the start (%D)", test_app_point(app));
+    app_dev_feed(app, "C-s f o o", &t->arena);
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "C-f", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 17, "isearch: wheel then C-f: ends at the match, then runs (%D)",
+               test_app_point(app));
+    if (!test_app_destroy(t, app, "isearch wheel")) return 0;
+    LOG("test: ok: isearch: %d steps of the state table (extend, repeat, fail, wrap, overwrap, reverse, DEL unwinding, C-g twice), "
+        "RET, ESC, C-s C-s, M-p / M-n, another command, a global prefix, C-w, C-y, smart case, M-c, the minibuffer, sliced "
+        "(%d frames), the wheel", (i32)ARRAY_COUNT(steps), frames);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // The minibuffer: prompts opened directly, keys through the headless app.
 
 typedef struct TestPromptLog {
@@ -5390,6 +5625,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_hot_reload(&t);
     arena_reset(&t.arena);
     test_headless_app(&t);
+    arena_reset(&t.arena);
+    test_isearch(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
