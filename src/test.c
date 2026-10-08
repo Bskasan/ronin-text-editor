@@ -3614,6 +3614,85 @@ static b32 test_goto_line(Test *t) {
     return 1;
 }
 
+// save-some-buffers (y, n, !, q, none, abort) and quitting (both answers, aborts, the close button).
+static b32 test_save_some(Test *t) {
+    String8 root = str8_fmt(&t->arena, "%S\\p7save", t->tmp_dir);
+    os_make_dir(root);
+    String8 f[3];
+    for (i32 i = 0; i < 3; i++) {
+        f[i] = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\f%d.txt", root, i + 1));
+        TEST_CHECK(t, os_write_file(f[i], STR8_LIT("0\n")), "save-some: cannot write %S", f[i]);
+    }
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "save-some: app_create failed");
+    Minibuffer *mb = &app->mini;
+    Buffer *b[3];
+    for (i32 i = 0; i < 3; i++) {
+        app_dev_visit(app, f[i]);
+        b[i] = test_current(app);
+    }
+#define TEST_MODIFY(i) do { view_switch_buffer(app->views[0], &app->buffers, b[i]); app_dev_feed(app, "M-< x", &t->arena); } while (0)
+    for (i32 i = 0; i < 3; i++) TEST_MODIFY(i);
+    app_dev_feed(app, "C-x s", &t->arena);
+    String8 q1 = str8_fmt(&t->arena, "Save file %S? (y, n, !, q) ", test_slashes(t, f[0]));
+    TEST_CHECK(t, mb->active && mb->kind == MINI_KEY && str8_equal(mb->prompt, q1), "save-some: first question '%S'", mb->prompt);
+    app_dev_feed(app, "y n y", &t->arena);
+    TEST_CHECK(t, !mb->active && test_file_is(t, f[0], "x0\n") && test_file_is(t, f[1], "0\n") && b[1]->modified &&
+                  test_file_is(t, f[2], "x0\n") && !b[0]->modified && !b[2]->modified, "save-some: y n y");
+    TEST_MODIFY(0);
+    TEST_MODIFY(2);
+    app_dev_feed(app, "C-x s !", &t->arena);
+    TEST_CHECK(t, !mb->active && !b[0]->modified && !b[1]->modified && !b[2]->modified && test_file_is(t, f[0], "xx0\n") &&
+                  test_file_is(t, f[1], "x0\n"), "save-some: ! saves the rest");
+    app_dev_feed(app, "C-x s", &t->arena);
+    TEST_CHECK(t, !mb->active && test_echo_has(app, "(No files need saving)"), "save-some: none");
+    for (i32 i = 0; i < 3; i++) TEST_MODIFY(i);
+    app_dev_feed(app, "C-x s q", &t->arena);
+    TEST_CHECK(t, !mb->active && b[0]->modified && b[1]->modified && b[2]->modified, "save-some: q stops");
+    // An abort halfway: what was saved stays saved, the rest stays modified, no more questions.
+    app_dev_feed(app, "C-x s y C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && !b[0]->modified && b[1]->modified && b[2]->modified && test_echo_has(app, "Quit") &&
+                  test_file_is(t, f[0], "xxx0\n"), "save-some: abort at the second question");
+    app_dev_feed(app, "C-x s ESC", &t->arena);
+    TEST_CHECK(t, !mb->active && b[1]->modified && b[2]->modified, "save-some: ESC at the first question");
+
+    // Quitting: every save question first, then "exit anyway?" while modified file buffers remain.
+    app_dev_feed(app, "C-x C-c n n", &t->arena);
+    TEST_CHECK(t, mb->active && mb->kind == MINI_YES_NO && str8_equal(mb->prompt, STR8_LIT("Modified buffers exist; exit anyway? (yes or no) ")),
+               "quit: the exit question '%S'", mb->prompt);
+    app_dev_feed(app, "n o RET", &t->arena);
+    TEST_CHECK(t, !mb->active && !app->quit, "quit: 'no' stays");
+    app_dev_feed(app, "C-x C-c y n C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && !app->quit && !b[1]->modified && b[2]->modified, "quit: abort at the exit question keeps the save");
+    app_dev_feed(app, "C-x C-c C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && !app->quit && b[2]->modified, "quit: abort at a save question");
+    // The close button aborts an open prompt and starts the same chain.
+    app_dev_feed(app, "C-x b", &t->arena);
+    Event close = { .kind = EVENT_CLOSE };
+    app_dev_feed_events(app, &close, 1, &t->arena);
+    String8 q3 = str8_fmt(&t->arena, "Save file %S? (y, n, !, q) ", test_slashes(t, f[2]));
+    TEST_CHECK(t, mb->active && str8_equal(mb->prompt, q3) && !app->quit, "quit: the close button asks '%S'", mb->prompt);
+    app_dev_feed(app, "n y e s RET", &t->arena);
+    TEST_CHECK(t, app->quit && b[2]->modified, "quit: 'yes' exits without saving");
+    if (!test_app_destroy(t, app, "save-some")) return 0;
+
+    // Saving everything quits without the exit question.
+    app = test_app_create(t);
+    TEST_CHECK(t, app, "save-some: app_create failed");
+    app_dev_visit(app, f[0]);
+    app_dev_feed(app, "z", &t->arena);
+    TEST_CHECK(t, app_dev_feed(app, "C-x C-c", &t->arena) && app->mini.active, "quit: asks about f1");
+    TEST_CHECK(t, !app_dev_feed(app, "!", &t->arena) && app->quit && test_file_is(t, f[0], "zxxx0\n"), "quit: ! saves and exits");
+    if (!test_app_destroy(t, app, "save-some")) return 0;
+    // Nothing modified: C-x C-c exits at once.
+    app = test_app_create(t);
+    TEST_CHECK(t, app && !app_dev_feed(app, "a C-x C-c", &t->arena) && app->quit, "quit: a modified *scratch* does not ask");
+    if (!test_app_destroy(t, app, "save-some")) return 0;
+#undef TEST_MODIFY
+    LOG("test: ok: save-some-buffers (y, n, !, q, none, aborts) and quitting (both answers, aborts, close button)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3779,6 +3858,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_find_write(&t);
     arena_reset(&t.arena);
     test_goto_line(&t);
+    arena_reset(&t.arena);
+    test_save_some(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

@@ -966,26 +966,6 @@ static void app_reload_config(App *app, b32 force) {
     app_report_config(app, result, 1);
 }
 
-// Refuses once while file buffers are modified (real prompts come with the minibuffer, Phase 7);
-// an immediate repeat quits. The window's close button takes the same path.
-static void cmd_save_buffers_kill_terminal(CommandContext *ctx) {
-    App *app = ctx->app;
-    u8 names[256];
-    i64 n = 0;
-    i32 count = 0;
-    for (i32 i = 0; i < app->buffers.count; i++) {
-        Buffer *b = app->buffers.entries[i].buffer;
-        if (!b->modified || !b->path.len) continue;
-        n += fmt_buf(names + n, (i64)sizeof(names) - n, count ? ", %S" : "%S", b->name);
-        count++;
-    }
-    if (count && ctx->last_command != &CMD_SAVE_BUFFERS_KILL_TERMINAL) {
-        echo_message(ctx->echo, "Modified buffer%s: %S; repeat to quit without saving", count == 1 ? "" : "s", str8(names, n));
-        return;
-    }
-    app->quit = 1;
-}
-
 // Commands that show another buffer in ctx->view refuse to do it in the minibuffer.
 static b32 app_can_switch(CommandContext *ctx) {
     if (ctx->view != ctx->app->mini.view) return 1;
@@ -1072,7 +1052,6 @@ static void cmd_quoted_insert(CommandContext *ctx) {
     echo_set(ctx->echo, STR8_LIT("C-q-"));
 }
 
-const Command CMD_SAVE_BUFFERS_KILL_TERMINAL = { "save-buffers-kill-terminal", cmd_save_buffers_kill_terminal, COMMAND_ONCE };
 const Command CMD_NEXT_BUFFER                = { "next-buffer", cmd_next_buffer, COMMAND_ONCE };
 const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", cmd_previous_buffer, COMMAND_ONCE };
 const Command CMD_OPEN_CONFIG                = { "open-config", cmd_open_config, COMMAND_ONCE };

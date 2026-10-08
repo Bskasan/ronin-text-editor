@@ -96,7 +96,8 @@ typedef struct MiniResult {
     i32 numbers;
 } MiniResult;
 
-// The chain's own state, kept from one prompt to the next until the chain ends.
+// The chain's own state, kept from one prompt to the next until the chain ends. A command that
+// starts a chain sets it (before or after its first minibuffer_read); an abort clears it.
 typedef struct MiniState {
     Buffer *buffer;   // the buffer a chain is about (kill-buffer, save-some-buffers ...)
     i32 index;        // a position in a loop (save-some-buffers)
