@@ -14,6 +14,7 @@
 #include "keymap.h"
 #include "config.h"
 #include "minibuffer.h"
+#include "search.h"
 
 #include "base.c"
 #include "png.c"
@@ -29,6 +30,7 @@
 #include "keymap.c"
 #include "config.c"
 #include "minibuffer.c"
+#include "search.c"
 #include "app.c"
 #include "files.c"
 #include "command.c"
