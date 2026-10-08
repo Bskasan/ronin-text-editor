@@ -374,6 +374,48 @@ static b32 app_paren(App *app, i32 index, Arena *scratch, i64 *a, i64 *b) {
     return c->a >= 0;
 }
 
+// The lazy highlight: every match of `needle` that starts on a drawn row (and in [lo, hi)), except
+// the current one. Each row is searched only within its on-screen bytes (plus the needle's length), the
+// same bound line drawing has, so the cost never depends on the buffer's size.
+static void app_draw_lazy(App *app, Renderer *r, AppLayout *l, View *v, i32 draw_rows, String8 needle, b32 fold,
+                          i64 current, i64 lo, i64 hi) {
+    Buffer *buf = v->buffer;
+    Search *s = &app->lazy;
+    if (!search_begin(s, buf, needle, fold, 1, 0, 0, 0)) return;
+    i64 top = view_top_line(v), count = buffer_line_count(buf), size = buffer_size(buf);
+    for (i32 row = 0; row < draw_rows && top + row < count; row++) {
+        i64 line = top + row, ls = buffer_line_start(buf, line), le = buffer_line_end(buf, line);
+        i64 col = 0;
+        i64 shown = view_walk(buf, ls, le, &col, v->left_col); // the first byte on screen
+        i64 row_lo = MAX(MAX(ls, shown - s->len + 1), lo);
+        i64 row_hi = MIN(MIN(size, MIN(le, shown + ((i64)v->cols + 1) * 4) + s->len - 1), hi);
+        for (i64 from = row_lo; from < row_hi;) {
+            search_restart(s, buf, 1, from, row_lo, row_hi);
+            if (search_run(s, buf, I64_MAX / 4) != SEARCH_FOUND) break;
+            if (s->match_start != current) app_draw_span(r, l, v, s->match_start, s->match_end, draw_rows, app->config->theme.lazy_highlight);
+            from = s->match_end;
+        }
+    }
+}
+
+// The search shown in a view: the other matches, then the current match's background. Returns the
+// current match's text color range for line drawing (start -1: none).
+static AppSpan app_draw_search(App *app, Renderer *r, AppLayout *l, View *v, i32 draw_rows) {
+    AppSpan current = { -1, -1, app->config->theme.isearch_text };
+    Isearch *is = &app->isearch;
+    if (!is->active || is->view != v) return current;
+    IsearchStep *cur = isearch_current(is), *top = isearch_top(is);
+    if (!isearch_pending(is) && top->success && top->string.len) {
+        app_draw_lazy(app, r, l, v, draw_rows, top->string, top->fold, cur->match_start, 0, buffer_size(v->buffer));
+    }
+    if (cur->match_start >= 0) {
+        current.start = cur->match_start;
+        current.end = cur->match_end;
+        app_draw_span(r, l, v, current.start, current.end, draw_rows, app->config->theme.isearch);
+    }
+    return current;
+}
+
 // `bottom`: the view is drawn above it (the candidate list covers the rest), its mode line moved up.
 // Its rows and scroll position are not touched, so nothing scrolls when the list opens or closes.
 static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i32 index, b32 active, i32 bottom) {
@@ -396,8 +438,9 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
             }
         }
     }
+    AppSpan current = app_draw_search(app, r, l, v, draw_rows);
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
-        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, NULL, in->scratch);
+        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, current.start >= 0 ? &current : NULL, in->scratch);
     }
     b32 filled = active && app_has_focus(app);
     for (i32 k = 0; k < v->cursor_count; k++) {
