@@ -54,4 +54,140 @@ i32        match_spans(MatchQuery *q, Candidate *c, MatchSpan *out, i32 cap);
 // prefix matches, then the others, each group in the candidates' own order. Returns the count.
 i64        match_rank(MatchQuery *q, Candidate *cands, i64 count, i32 *out);
 
+// ---------------------------------------------------------------------------
+// The minibuffer: a one-line View on its own Buffer, so every editing command works in it. The
+// prompt is drawn before the input and is not part of the text.
+//
+// Prompts never block: minibuffer_read opens one and returns. When the user accepts, the command
+// driver (view_run_command) runs the request's continuation as a command of its own on the View
+// the prompt was opened from; a continuation may open the next prompt (a chain). Aborting (C-g,
+// ESC) drops the whole chain. There is one minibuffer and no recursion.
+
+#define MINI_HISTORY_MAX 100 // entries per category
+#define MINI_ARENA_RESERVE GB(1)
+
+typedef enum MiniKind {
+    MINI_TEXT,   // a line of text
+    MINI_CHOICE, // a line, completed from candidates
+    MINI_NUMBER, // N or N:M
+    MINI_KEY,    // one key from `answers`, no editing: keys bypass the keymap
+    MINI_YES_NO, // "yes" or "no", typed in full
+} MiniKind;
+
+typedef enum MiniHistoryKind {
+    MINI_HISTORY_NONE,
+    MINI_HISTORY_COMMAND,
+    MINI_HISTORY_FILE,
+    MINI_HISTORY_BUFFER,
+    MINI_HISTORY_LINE,
+    MINI_HISTORY_TEXT, // tests and anything else
+    MINI_HISTORY_COUNT,
+} MiniHistoryKind;
+
+typedef struct Minibuffer Minibuffer;
+
+typedef struct MiniResult {
+    String8 text;     // the accepted input, or the candidate's text (in the chain arena)
+    i32 candidate;    // MINI_CHOICE: the accepted candidate, -1 = the input as typed
+    u32 flags;        // ... and its CANDIDATE_* flags
+    u32 key;          // MINI_KEY: the answer, lowercase
+    b32 yes;          // MINI_YES_NO
+    i64 number[2];    // MINI_NUMBER: N, and M when numbers == 2
+    i32 numbers;
+} MiniResult;
+
+// The chain's own state, kept from one prompt to the next until the chain ends.
+typedef struct MiniState {
+    Buffer *buffer;   // the buffer a chain is about (kill-buffer, save-some-buffers ...)
+    i32 index;        // a position in a loop (save-some-buffers)
+    u32 flags;
+    String8 text;     // in the chain arena
+} MiniState;
+
+typedef void MiniDoneFn(CommandContext *ctx, MiniResult *r);
+// MINI_CHOICE: called whenever the input changes; may rebuild the candidates (minibuffer_add_candidate
+// after minibuffer_clear_candidates). Returns where the part of the input to match starts.
+typedef i64 MiniCandidatesFn(Minibuffer *mb, void *data, String8 input);
+
+typedef struct MiniRequest {
+    MiniKind kind;
+    String8 prompt;              // copied
+    String8 initial;             // the initial input, copied
+    MiniHistoryKind history;
+    MiniDoneFn *done;
+    const char *answers;         // MINI_KEY: the accepted keys, such as "yn" or "yn!q"
+    MiniCandidatesFn *candidates;
+    void *data;                  // for `candidates`
+    b32 require_match;           // MINI_CHOICE: input that matches no candidate is refused ("[No match]")
+    b32 file;                    // a file name: DEL after a slash removes the last component; a directory candidate descends
+} MiniRequest;
+
+typedef struct MiniHistory {
+    String8 items[MINI_HISTORY_MAX]; // [0] is the newest
+    i32 count;
+} MiniHistory;
+
+struct Minibuffer {
+    Buffer *buffer;
+    View *view;
+    b32 active;
+    b32 finished;             // accepted: the driver runs the continuation after this command
+    i32 in_continuation;      // a prompt opened now continues the chain (its arena is kept)
+    MiniKind kind;
+    String8 prompt;
+    MiniDoneFn *done;
+    const Command *then_command; // instead of `done`: run this command on the calling View (M-x)
+    View *caller;
+    MiniResult result;
+    MiniState state;
+    const char *answers;
+    MiniCandidatesFn *candidates_fn;
+    void *candidates_data;
+    b32 require_match, file;
+    MiniHistoryKind history;
+    i32 history_pos;          // -1: the input as typed; otherwise an index into the history
+    String8 typed;            // the input before M-p
+    u64 seen_edits;           // the buffer's edit_count when the candidates were last filtered
+    Arena arena;              // the chain: prompts, results, MiniState text; reset when a chain starts
+
+    // Candidates (MINI_CHOICE).
+    Arena cand_arena;         // the Candidate array only, so it stays contiguous
+    Arena text_arena;         // their strings
+    Arena match_arena;        // the current input, query and matches; reset on every filter
+    Candidate *cands;
+    i64 cand_count;
+    i32 *matches;
+    i64 match_count;
+    MatchQuery query;
+    i64 match_from;           // where the matched part of the input starts (file names: after the last slash)
+    i64 selected;             // index into matches
+    i64 list_top;             // the first match shown
+
+    MiniHistory histories[MINI_HISTORY_COUNT];
+    Arena history_arena;      // the history's strings; dead ones compacted away
+    u64 history_live;         // bytes of live strings in it
+};
+
+void minibuffer_init(Minibuffer *mb, Arena *perm, Buffer *buffer); // the buffer is the minibuffer's own
+i32  minibuffer_destroy(Minibuffer *mb); // returns leaked markers
+// Opens a prompt. False (with Emacs' message) when the minibuffer is already active.
+b32  minibuffer_read(CommandContext *ctx, MiniRequest *req);
+// Ends the prompt without running anything; the chain is dropped.
+void minibuffer_abort(Minibuffer *mb);
+String8 minibuffer_input(Minibuffer *mb, Arena *arena);
+// The command driver calls this after every command: it filters the candidates again when the
+// input changed, and runs the continuation of an accepted prompt.
+void minibuffer_after_command(CommandContext *ctx);
+// MINI_KEY: what a key does (keys bypass the keymap). `command` is what the key is bound to in the
+// keymap stack (NULL if nothing), `chord_char` its character when it is a plain character key (0
+// otherwise). Runs the answer or the abort through the driver.
+void minibuffer_key(CommandContext *ctx, const Command *command, u32 chord_char);
+void minibuffer_history_add(Minibuffer *mb, MiniHistoryKind kind, String8 text);
+
+void minibuffer_clear_candidates(Minibuffer *mb);
+void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, u32 flags);
+
+extern const Command CMD_EXIT_MINIBUFFER, CMD_EXIT_MINIBUFFER_INPUT, CMD_ABORT_MINIBUFFERS;
+extern const Command CMD_PREVIOUS_HISTORY_ELEMENT, CMD_NEXT_HISTORY_ELEMENT, CMD_MINIBUFFER_BACKWARD_UPDIR;
+
 #endif // MINIBUFFER_H

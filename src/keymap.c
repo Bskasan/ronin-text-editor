@@ -366,10 +366,11 @@ void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult
     b32 describe = in->describe;
     in->describe = 0;
     if (!command && had_prefix) {
-        // keyboard-quit (C-g, ESC) cancels a pending prefix.
+        // keyboard-quit or abort-minibuffers (C-g, ESC) cancels a pending prefix.
         KeySeq single = { { chord & ~CHORD_SHIFT }, 1 };
         b32 unused;
-        if (key_lookup(stack, count, &single, &unused) == &CMD_KEYBOARD_QUIT) {
+        const Command *quit = key_lookup(stack, count, &single, &unused);
+        if (quit && (quit->flags & COMMAND_QUIT)) {
             out->kind = KEY_RESULT_QUIT;
             out->command = &CMD_KEYBOARD_QUIT;
             return;
