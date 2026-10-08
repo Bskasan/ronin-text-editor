@@ -101,6 +101,10 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
     build/teal_bench.exe --bench-edit                     # same file: typing with undo, kill / yank /
                                                           # undo of 50 MB, undo log, kill ring, memory
                                                           # per extra buffer
+    build/teal_bench.exe --bench-complete                 # filter and rank 10,000 / 100,000 candidates
+                                                          # per keystroke (avg, worst)
+    build/teal_debug.exe <file> --keys ".." --touch <file> --screenshot ..   # rewrite the file after the
+                                                          # keys and activate the app (changed on disk)
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
@@ -125,18 +129,24 @@ text. A synthetic click on a character with focus forced on gives a fifth frame 
 filled cursor there with the glyph drawn over it, the old cursor cell cleared. An active
 region over lines 0-1 gives a sixth frame (stage 2): selected cells in the selection color, a
 glyph drawn over it, the selection reaching the window edge on lines whose newline is selected,
-unselected cells and edges in the background. The window title must be "*scratch* - teal",
+unselected cells and edges in the background. M-x with "minib" gives a seventh frame (stage 3):
+a pixel of the prompt in the prompt color, the selected row's empty part in completion_selection,
+a pixel of a matched substring in completion_match, an unselected row in the background, the
+calling view's hollow cursor. The window title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
 killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the
-pixel probed, and the font must not have been set up again. It also requires a non-empty atlas,
+pixel probed, and the font must not have been set up again. WM_QUERYENDSESSION is sent to its own
+window with an unsaved file (refused, a shutdown block reason, the save question; a repeated query
+keeps that chain; C-g keeps the reason; WM_ENDSESSION(FALSE) removes it) and again once it is
+saved (allowed). It also requires a non-empty atlas,
 the D3D11 debug layer active with zero WARNING+ messages, and no leaks (device refcount 0, empty
 DXGI live-object report, DirectWrite references 0, no directory watch left open).
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer
 messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches), 7 output file, 8 font /
 ClearType (also: the font set up more than once), 9 test failure (--test; in the smoke: the
---keys edit saved the wrong bytes), 10 unknown argument (every build).
+--keys edit saved the wrong bytes, or the end-of-session check), 10 unknown argument (every build).
 
 `--test` runs without a window or device: a differential fuzz of `buffer_replace` against a
 flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
@@ -160,7 +170,17 @@ clipboard conversions and the fake, the kill ring (kill-line cases, append and p
 the clipboard link, read-only, the storage), indentation (a table of C, Jai and JavaScript
 snippets, tabs, detection, RET, closing brackets, TAB, backtab, M-i, C-q), the other editing
 commands on tricky input, and an undo fuzz of 4,000 random commands through the driver (every
-state id stands for one text, undo and redo return to known states, the modified flag). A failed dev ASSERT logs its
+state id stands for one text, undo and redo return to known states, the modified flag). Phase 7
+drives a headless app (no window, no font; keys in --keys notation through the real keymap and
+driver) against temporary trees in build\tmp\p7*: the directory listing, the matcher (ranking,
+terms, case, folding, spans, narrowing against full ranking), the minibuffer (RET / C-j, C-g and
+ESC on every prompt kind, a prefix inside it, editing, kill ring, undo, mouse, numbers, yes-or-no,
+single keys and the quit keys, history, recursion, chains, DEL after a slash, scroll positions),
+completion and M-x, unique names, switch-to-buffer and kill-buffer, find-file and write-file,
+goto-line, save-some-buffers and quitting (every answer, aborts at every link, the close button),
+revert (one replace, markers, undo and undo-redo, line endings, no-ops, whole characters),
+changed on disk (activation, watch and settle, modified, the save guard, deleted, auto_revert off,
+watches released) and the end of the session. A failed dev ASSERT logs its
 file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
@@ -179,5 +199,7 @@ number/constant).
 | cursor           | #90ee90 |   | keyword         | #ffffff |
 | selection        | #0000ff |   | number/constant | #7ad0c6 |
 | type             | #8cde94 |   | variable        | #c1d1e3 |
+| prompt           | #0fdfaf |   | completion_match | #ffffff |
+| completion_selection | #0000ff | |                |         |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.
