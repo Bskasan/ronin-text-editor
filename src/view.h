@@ -105,12 +105,14 @@ typedef struct BufferEntry {
     Buffer *buffer;
     BufferMarker point, top; // saved when a view switches away from the buffer
     i64 left_col;
+    u64 last_shown;          // the list's tick when a view last switched to it; 0 = never shown
 } BufferEntry;
 
 typedef struct BufferList {
     Arena arena; // holds only `entries`, so the array stays contiguous
     BufferEntry *entries;
     i32 count;
+    u64 tick;    // counts switches (BufferEntry.last_shown)
 } BufferList;
 
 void         buffer_list_init(BufferList *list);
@@ -119,6 +121,10 @@ void         buffer_list_init(BufferList *list);
 i32          buffer_list_destroy(BufferList *list);
 BufferEntry *buffer_list_add(BufferList *list, Buffer *buf);
 i32          buffer_list_index(BufferList *list, Buffer *buf); // -1 if not listed
+// Takes a buffer off the list (its saved markers released; the buffer itself stays).
+void         buffer_list_remove(BufferList *list, Buffer *buf);
+void         buffer_list_touch(BufferList *list, Buffer *buf); // shown now: the most recently shown
+Buffer      *buffer_list_find_name(BufferList *list, String8 name); // exact name, or NULL
 // The buffer visiting `full_path` (compared case-insensitively for ASCII, as Windows does), or NULL.
 Buffer      *buffer_list_find_path(BufferList *list, String8 full_path);
 // Shows `buf` in the view: saves where the view was in its old buffer, then restores where `buf`

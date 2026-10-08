@@ -694,6 +694,26 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
 // ---------------------------------------------------------------------------
 // Buffers
 
+// Another listed buffer has this name.
+static b32 app_name_taken(App *app, Buffer *buf, String8 name) {
+    for (i32 i = 0; i < app->buffers.count; i++) {
+        Buffer *b = app->buffers.entries[i].buffer;
+        if (b != buf && str8_equal(b->name, name)) return 1;
+    }
+    return 0;
+}
+
+// A listed buffer whose name another listed buffer already has is renamed: "name<parent dir>", then
+// "name<2>", "name<3>", ...
+static void app_uniquify(App *app, Buffer *buf) {
+    if (!app_name_taken(app, buf, buf->name)) return;
+    String8 base = buf->name;
+    String8 parent = buf->path.len ? config_file_name(str8(buf->path.data, MAX(buf->path.len - base.len - 1, 0))) : str8(NULL, 0);
+    String8 name = parent.len ? str8_fmt(&buf->meta, "%S<%S>", base, parent) : base;
+    for (i32 n = 2; app_name_taken(app, buf, name); n++) name = str8_fmt(&buf->meta, "%S<%d>", base, n);
+    buf->name = name;
+}
+
 static Buffer *app_new_buffer(App *app, String8 name) {
     Buffer *buf = buffer_create(name);
     if (!buf) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
@@ -738,7 +758,19 @@ static Buffer *app_find_file(App *app, String8 path) {
     }
     app_buffer_settings(app, buf);
     buffer_list_add(&app->buffers, buf);
+    app_uniquify(app, buf);
     return buf;
+}
+
+// The buffer to show instead of `buf`: the most recently shown other buffer, else the first other
+// one in the list; NULL when there is none.
+static Buffer *app_other_buffer(App *app, Buffer *buf) {
+    BufferEntry *best = NULL;
+    for (i32 i = 0; i < app->buffers.count; i++) {
+        BufferEntry *e = &app->buffers.entries[i];
+        if (e->buffer != buf && (!best || e->last_shown > best->last_shown)) best = e;
+    }
+    return best ? best->buffer : NULL;
 }
 
 static View *app_active_view(App *app) {
@@ -781,6 +813,7 @@ App *app_create(Arena *perm, AppArgs *args) {
 
     app->views[0] = view_create(perm, initial);
     app->view_count = 1;
+    buffer_list_touch(&app->buffers, initial);
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);

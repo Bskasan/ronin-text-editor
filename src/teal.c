@@ -24,6 +24,7 @@
 #include "config.c"
 #include "minibuffer.c"
 #include "app.c"
+#include "files.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only
 
