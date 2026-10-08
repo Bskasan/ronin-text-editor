@@ -4008,7 +4008,7 @@ static String8 test_ranked(Test *t, const char **texts, i64 n, const char *input
     test_candidates(&t->arena, texts, n, c);
     i32 *order = PUSH_ARRAY(&t->arena, i32, n);
     MatchQuery q = match_query(&t->arena, str8_cstr(input));
-    i64 found = match_rank(&q, c, n, order);
+    i64 found = match_rank(&q, c, n, order, 0);
     String8 s = str8_fmt(&t->arena, "");
     for (i64 i = 0; i < found; i++) s = str8_fmt(&t->arena, i ? "%S,%S" : "%S%S", s, c[order[i]].text);
     return s;
@@ -4045,7 +4045,32 @@ static b32 test_matcher(Test *t) {
     i32 n = match_spans(&q, &c[0], spans, 4);
     TEST_CHECK(t, n == 2 && spans[0].start == 5 && spans[0].end == 9 && spans[1].start == 3 && spans[1].end == 4,
                "matcher: spans (%d: %D-%D, %D-%D)", n, spans[0].start, spans[0].end, spans[1].start, spans[1].end);
-    LOG("test: ok: matcher (%d ranking cases, folding, spans)", (i32)ARRAY_COUNT(cases));
+    // Narrowing: while the input only grows, ranking just the previous matches gives the full result.
+    Test rng = { .rng = 0x5EED };
+    Candidate *pool = PUSH_ARRAY(&t->arena, Candidate, 500), *full = PUSH_ARRAY(&t->arena, Candidate, 500);
+    for (i32 i = 0; i < 500; i++) {
+        u8 *w = PUSH_ARRAY(&t->arena, u8, 12);
+        i64 len = 1 + test_below(&rng, 11);
+        for (i64 k = 0; k < len; k++) w[k] = "abcAB -"[test_below(&rng, 7)];
+        pool[i] = (Candidate){ .text = str8(w, len) };
+        pool[i].folded = match_fold(&t->arena, pool[i].text);
+        full[i] = pool[i];
+    }
+    i32 *a = PUSH_ARRAY(&t->arena, i32, 500), *b = PUSH_ARRAY(&t->arena, i32, 500);
+    for (i32 round = 0; round < 200; round++) {
+        u8 typed[8];
+        i64 len = 0;
+        MatchQuery q0 = match_query(&t->arena, str8(typed, 0));
+        match_rank(&q0, pool, 500, a, 0);
+        while (len < (i64)sizeof(typed)) {
+            typed[len++] = (u8)"abcAB -"[test_below(&rng, 7)];
+            MatchQuery qn = match_query(&t->arena, str8(typed, len));
+            i64 na = match_rank(&qn, pool, 500, a, 1), nb = match_rank(&qn, full, 500, b, 0);
+            TEST_CHECK(t, na == nb && test_equal((u8 *)a, (u8 *)b, na * (i64)sizeof(i32)), "matcher: narrowing differs for '%S' (%D vs %D)",
+                       str8(typed, len), na, nb);
+        }
+    }
+    LOG("test: ok: matcher (%d ranking cases, folding, spans, narrowing on 200 typed inputs)", (i32)ARRAY_COUNT(cases));
     return 1;
 }
 

@@ -52,7 +52,9 @@ MatchScore match_score(MatchQuery *q, Candidate *c);
 i32        match_spans(MatchQuery *q, Candidate *c, MatchSpan *out, i32 cap);
 // Scores every candidate and writes the indices of the matches to `out`: exact matches first, then
 // prefix matches, then the others, each group in the candidates' own order. Returns the count.
-i64        match_rank(MatchQuery *q, Candidate *cands, i64 count, i32 *out);
+// `narrow`: the input only grew since the last call on these candidates (characters appended), so only
+// the candidates that matched then can match now; the others are skipped.
+i64        match_rank(MatchQuery *q, Candidate *cands, i64 count, i32 *out, b32 narrow);
 
 // ---------------------------------------------------------------------------
 // The minibuffer: a one-line View on its own Buffer, so every editing command works in it. The
@@ -156,6 +158,11 @@ struct Minibuffer {
     Arena cand_arena;         // the Candidate array only, so it stays contiguous
     Arena text_arena;         // their strings
     Arena match_arena;        // the current input, query and matches; reset on every filter
+    Arena input_arena;        // the input of the last filter (narrowing)
+    String8 last_input;
+    i64 last_from;
+    u64 cand_epoch;           // counts candidate sets (minibuffer_clear_candidates)
+    u64 filtered_epoch;       // the set the last filter ranked; ~0 = none
     Candidate *cands;
     i64 cand_count;
     i32 *matches;
