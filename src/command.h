@@ -45,6 +45,7 @@ struct CommandContext {
     KillRing *kills;          // the kill ring (edit.h)
     Minibuffer *mini;         // prompts (minibuffer.h); NULL in the headless view tests
     const Keymap *global;     // the global keymap (M-x shows the bindings)
+    Arena *scratch;           // per-frame scratch (lexing for indentation); everything pushed is popped again
     b32 kill_append;          // set by the driver: this command's kills append to the newest entry
     u32 codepoint;            // self-insert: the character of the key
     b32 shift_translated;     // the key had Shift and was found without it (shift-select, Phase 6)

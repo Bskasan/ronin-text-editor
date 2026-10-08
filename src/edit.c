@@ -374,45 +374,63 @@ i64 edit_indent_cols(Buffer *buf, i64 line) {
     return col;
 }
 
-static b32 edit_is_closer(u8 b) {
-    return b == ')' || b == ']' || b == '}';
+// The previous line with code (not blank, not only comments), or -1; *info describes it. The
+// search stops after SYNTAX_MATCH_MAX bytes.
+static i64 edit_prev_code_line(Buffer *buf, i64 line, Arena *scratch, SyntaxLine *info) {
+    i64 budget = SYNTAX_MATCH_MAX;
+    for (i64 l = line - 1; l >= 0 && budget > 0; l--) {
+        budget -= buffer_line_end(buf, l) - buffer_line_start(buf, l) + 1;
+        syntax_line_info(buf, l, scratch, info);
+        if (info->code) return l;
+    }
+    return -1;
 }
 
-// After the line's leading blanks: the run of closing brackets (blanks between them allowed).
-// Returns their count; *after gets the position after the run.
-static i64 edit_leading_closers(Buffer *buf, i64 line, i64 *after) {
-    i64 p = edit_indent_end(buf, line), end = buffer_line_end(buf, line), n = 0, last = p;
-    while (p < end) {
-        u8 b = buffer_byte(buf, p);
-        if (edit_is_closer(b)) {
-            n++;
-            last = ++p;
-        } else if (edit_is_blank(b)) {
-            p++;
-        } else {
-            break;
-        }
+// The line on which the statement that ends on `line` started: the line of the opener of its last
+// closer whose opener is on an earlier line, or where a literal it starts inside began.
+static i64 edit_statement_start(Buffer *buf, i64 line, SyntaxLine *info, Arena *scratch) {
+    if (info->last_unmatched >= 0) {
+        i64 m = syntax_match_bracket(buf, info->last_unmatched, scratch);
+        return m >= 0 ? buffer_line_of(buf, m) : line;
     }
-    *after = last;
-    return n;
+    i64 budget = SYNTAX_MATCH_MAX;
+    for (SyntaxLine l = *info; l.in_literal && line > 0 && budget > 0;) {
+        line--;
+        budget -= buffer_line_end(buf, line) - buffer_line_start(buf, line) + 1;
+        syntax_line_info(buf, line, scratch, &l);
+    }
+    return line;
 }
 
-i64 edit_compute_indent(Buffer *buf, i64 line, i64 indent_width) {
-    i64 after;
-    i64 closers = edit_leading_closers(buf, line, &after);
-    i64 prev = line - 1;
-    while (prev >= 0 && edit_line_blank(buf, prev)) prev--;
-    i64 base = 0, balance = 0;
-    if (prev >= 0) {
-        base = edit_indent_cols(buf, prev);
-        edit_leading_closers(buf, prev, &after); // already applied to its own indentation
-        for (i64 p = after, end = buffer_line_end(buf, prev); p < end; p++) {
-            u8 b = buffer_byte(buf, p);
-            if (b == '(' || b == '[' || b == '{') balance++;
-            else if (edit_is_closer(b)) balance--;
-        }
+i64 edit_compute_indent(Buffer *buf, i64 line, i64 indent_width, Arena *scratch) {
+    syntax_catch_up(buf, line, EDIT_SYNC_US, scratch);
+    SyntaxLine here, prev;
+    syntax_line_info(buf, line, scratch, &here);
+    i64 w = indent_width;
+    if (here.in_literal) { // RET into a comment or string: the previous line's indentation
+        i64 p = line - 1;
+        while (p >= 0 && edit_line_blank(buf, p)) p--;
+        return p >= 0 ? edit_indent_cols(buf, p) : 0;
     }
-    return CLAMP(base + (balance - closers) * indent_width, 0, (i64)EDIT_INDENT_MAX);
+    i64 p = edit_prev_code_line(buf, line, scratch, &prev);
+    i64 cols = 0;
+    if (here.leading_closer >= 0) {
+        i64 m = syntax_match_bracket(buf, here.leading_closer, scratch);
+        if (m >= 0) cols = edit_indent_cols(buf, buffer_line_of(buf, m));
+        else cols = p >= 0 ? edit_indent_cols(buf, p) - w : 0; // no match within reach: one level less
+    } else if (p >= 0) {
+        if (prev.open > 0) cols = edit_indent_cols(buf, p) + w;
+        else cols = edit_indent_cols(buf, edit_statement_start(buf, p, &prev, scratch));
+    }
+    return CLAMP(cols, 0, (i64)EDIT_INDENT_MAX);
+}
+
+b32 edit_line_fixed(Buffer *buf, i64 line, Arena *scratch) {
+    if (edit_line_blank(buf, line)) return 0;
+    syntax_catch_up(buf, line, EDIT_SYNC_US, scratch);
+    SyntaxLine info;
+    syntax_line_info(buf, line, scratch, &info);
+    return info.in_literal;
 }
 
 b32 edit_set_indent(Buffer *buf, i64 line, i64 cols) {
@@ -459,21 +477,23 @@ static b32 edit_writable(CommandContext *ctx) {
     return 1;
 }
 
-// Reindents a line by the rule; a blank line becomes empty (keep_blank: it is indented too).
-static void edit_reindent_line(CommandContext *ctx, i64 line, b32 keep_blank) {
+// Reindents a line by the rule; a blank line becomes empty (keep_blank: it is indented too). A line
+// inside a multi-line comment or string is left alone, except for the new line of RET (`newline`).
+static void edit_reindent_line(CommandContext *ctx, i64 line, b32 keep_blank, b32 newline) {
     Buffer *buf = ctx->view->buffer;
     if (!keep_blank && edit_line_blank(buf, line)) {
         buffer_replace(buf, buffer_line_start(buf, line), buffer_line_end(buf, line), STR8_LIT(""));
         return;
     }
-    edit_set_indent(buf, line, edit_compute_indent(buf, line, ctx->settings->indent_width));
+    if (!newline && edit_line_fixed(buf, line, ctx->scratch)) return;
+    edit_set_indent(buf, line, edit_compute_indent(buf, line, ctx->settings->indent_width, ctx->scratch));
 }
 
 void edit_electric_close(CommandContext *ctx) {
     Buffer *buf = ctx->view->buffer;
     i64 p = view_point(ctx->view, ctx->cursor);
     i64 line = buffer_line_of(buf, p);
-    if (edit_indent_end(buf, line) == p - 1) edit_reindent_line(ctx, line, 0);
+    if (edit_indent_end(buf, line) == p - 1) edit_reindent_line(ctx, line, 0, 0);
 }
 
 // The newline, then the new line indented by the rule. A line left with only blanks is emptied.
@@ -490,7 +510,7 @@ static void cmd_newline(CommandContext *ctx) {
     if (edit_line_blank(buf, line - 1)) {
         buffer_replace(buf, buffer_line_start(buf, line - 1), buffer_line_end(buf, line - 1), STR8_LIT(""));
     }
-    edit_reindent_line(ctx, line, 1);
+    edit_reindent_line(ctx, line, 1, 1);
 }
 
 // The lines a region command acts on: from the region's first line to its last (a region ending
@@ -514,12 +534,12 @@ static void cmd_indent_for_tab_command(CommandContext *ctx) {
     Buffer *buf = v->buffer;
     i64 first, last;
     if (edit_region_lines(ctx, &first, &last)) {
-        for (i64 line = first; line <= last; line++) edit_reindent_line(ctx, line, 0);
+        for (i64 line = first; line <= last; line++) edit_reindent_line(ctx, line, 0, 0);
         return;
     }
     i64 line = buffer_line_of(buf, view_point(v, ctx->cursor));
     b32 in_indent = view_point(v, ctx->cursor) <= edit_indent_end(buf, line);
-    edit_reindent_line(ctx, line, 1);
+    edit_reindent_line(ctx, line, 1, 0);
     if (in_indent) view_set_point(v, ctx->cursor, edit_indent_end(buf, line));
 }
 

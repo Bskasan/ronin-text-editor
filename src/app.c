@@ -1219,6 +1219,7 @@ u32 app_wait_ms(App *app) {
 // Events, commands and layout: everything but drawing (no font or renderer calls, so a headless app
 // runs it too). False = quit.
 static b32 app_update(App *app, FrameInput *in) {
+    app->ctx.scratch = in->scratch;
     AppLayout l = app_layout(app, in);
     app_layout_views(app, in, &l);
     // Fit the views again before the events only when the size or the font changed (a click maps

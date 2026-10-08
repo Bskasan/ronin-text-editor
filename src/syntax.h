@@ -65,6 +65,35 @@ b32  syntax_line_ready(Buffer *buf, i64 line); // its start state is known to be
 // tokens: plain) when the buffer has no lexer or the line has no stored state yet.
 b32  syntax_line_tokens(Buffer *buf, i64 line, String8 text, SyntaxTokens *out);
 
+// ---------------------------------------------------------------------------
+// Brackets and lines on tokens (indentation, show-paren). Only ( ) [ ] { } outside comments and
+// strings count, and none on a C or C++ preprocessor line. Lines are lexed from their stored start
+// states (the matcher going forward chains them itself). A buffer without a lexer counts every
+// bracket.
+
+#define SYNTAX_MATCH_MAX KB(256) // how much text the matcher looks through
+
+// The bracket matching the one at `pos` (an opener: forward, a closer: backward), or -1: not a
+// bracket in code, unmatched, a mismatched pair on the way, or not within SYNTAX_MATCH_MAX.
+i64 syntax_match_bracket(Buffer *buf, i64 pos, Arena *scratch);
+// The innermost opener before `pos` not closed before it, or -1 (none within the bound, or a mismatch).
+i64 syntax_enclosing_open(Buffer *buf, i64 pos, Arena *scratch);
+
+typedef struct SyntaxLine {
+    b32 code;           // it has a token other than comments: not blank, not only comments
+    b32 directive;      // a C or C++ preprocessor line (or a line continuing one)
+    b32 in_literal;     // it starts inside a multi-line comment or string
+    i64 leading_closer; // the closer that is its first significant byte, or -1
+    i64 head, head_end; // the first significant token after any leading closers (-1: none) and, for a word, its end
+    u32 head_kind;      // that token's kind
+    u8 last;            // its last significant byte (0: none)
+    i32 open;           // brackets it opens and leaves open
+    i64 last_unmatched; // its last closer whose opener is on an earlier line, or -1
+} SyntaxLine;
+
+void syntax_line_info(Buffer *buf, i64 line, Arena *scratch, SyntaxLine *info);
+b32  syntax_word_is(Buffer *buf, i64 start, i64 end, const char *word); // the text of [start, end) is `word`
+
 #if TEAL_DEV
 void syntax_dev_fake_clock(b32 on); // the clock is the number of bytes lexed (deterministic budget tests)
 u64  syntax_dev_lexed(void);        // bytes lexed by catch-up so far
