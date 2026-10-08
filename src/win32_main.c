@@ -107,6 +107,10 @@ b32 os_commit(void *ptr, u64 size) {
     return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) != NULL;
 }
 
+void os_decommit(void *ptr, u64 size) {
+    if (size) VirtualFree(ptr, size, MEM_DECOMMIT);
+}
+
 b32 os_write_file(String8 path, String8 data) {
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
