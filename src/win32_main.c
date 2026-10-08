@@ -93,6 +93,12 @@ typedef struct Platform {
     Event last_key_event; // the last of them
     i32 dev_menu_paths;   // WM_SYSKEY*, WM_SYSCHAR, WM_SYSDEADCHAR, SC_KEYMENU left to DefWindowProc (menu, beep)
     i32 dev_keymenu;      // WM_SYSCOMMAND SC_KEYMENU received
+    b32 idle_check;       // --idle-check: shown without focus, idle; CPU time, frames and wakeups measured
+    b32 clipboard_check;  // --clipboard-check: the real clipboard through the app, saved and put back
+    b32 clip_no_history;  // what teal puts on the clipboard stays out of clipboard history (the check's text)
+    u64 idle_wakeups;     // passes of the main loop
+    u64 idle_start_cpu, idle_start_wakeups;
+    i64 idle_start_frames;
     const char *stage_what[32]; // os_dev_stage: the startup timeline, logged after the first frame
     LARGE_INTEGER stage_qpc[32];
     i32 stage_count;
@@ -466,6 +472,22 @@ void os_dev_clipboard_external(String8 text) {
 }
 #endif
 
+#if TEAL_DEV
+// With the clipboard open and text set: keeps it out of Windows' clipboard history and cloud
+// clipboard (--clipboard-check: its test text must not stay anywhere).
+static void win32_dev_clip_exclude(void) {
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+    DWORD *zero = h ? (DWORD *)GlobalLock(h) : NULL;
+    if (!zero) {
+        if (h) GlobalFree(h);
+        return;
+    }
+    *zero = 0;
+    GlobalUnlock(h);
+    if (!SetClipboardData(RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing"), h)) GlobalFree(h);
+}
+#endif
+
 b32 os_clipboard_set(String8 text) {
     Platform *p = g_platform;
     i64 units = clip_utf16_len(text);
@@ -488,6 +510,9 @@ b32 os_clipboard_set(String8 text) {
         GlobalUnlock(h);
         ok = SetClipboardData(CF_UNICODETEXT, h) != NULL;
     }
+#if TEAL_DEV
+    if (ok && p->clip_no_history) win32_dev_clip_exclude();
+#endif
     if (h && !ok) GlobalFree(h);
     CloseClipboard();
     return ok;
@@ -552,6 +577,7 @@ void os_unwatch(OsWatch watch) {
 static void win32_push_event(Platform *p, Event e);
 #if TEAL_DEV
 static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
+static void win32_dev_idle_check_mark(Platform *p, b32 end);
 #endif
 
 // Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it.
@@ -1012,6 +1038,13 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_ERASEBKGND:
         return 1;
+
+#if TEAL_DEV
+    case WM_APP + 1: // --idle-check: the idle period starts
+    case WM_APP + 2: // ... and ends
+        win32_dev_idle_check_mark(p, msg == WM_APP + 2);
+        return 0;
+#endif
 
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -2284,8 +2317,172 @@ static void win32_bench_complete(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --idle-check: after a second to settle, five seconds without input: the process's CPU time, the
+// frames drawn and the main loop's passes over them, and the private bytes. Two posted messages mark
+// the period (the only wakeups it should have); the window is shown without taking the focus.
+#define IDLE_SETTLE_MS 1000
+#define IDLE_PERIOD_MS 5000
+
+static u64 win32_dev_cpu_us(void) {
+    FILETIME created, exited, kernel, user;
+    GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+    return (win32_filetime_u64(kernel) + win32_filetime_u64(user)) / 10;
+}
+
+static DWORD WINAPI win32_dev_idle_thread(void *param) {
+    HWND hwnd = param;
+    Sleep(IDLE_SETTLE_MS);
+    PostMessageW(hwnd, WM_APP + 1, 0, 0);
+    Sleep(IDLE_PERIOD_MS);
+    PostMessageW(hwnd, WM_APP + 2, 0, 0);
+    return 0;
+}
+
+static void win32_dev_idle_check_start(Platform *p) {
+    HANDLE thread = CreateThread(NULL, 0, win32_dev_idle_thread, p->hwnd, 0, NULL);
+    if (thread) CloseHandle(thread);
+    else p->quit = 1, p->exit_code = EXIT_TEST;
+}
+
+static void win32_dev_idle_check_mark(Platform *p, b32 end) {
+    if (!end) {
+        p->idle_start_cpu = win32_dev_cpu_us();
+        p->idle_start_frames = p->frame_count;
+        p->idle_start_wakeups = p->idle_wakeups;
+        return;
+    }
+    u64 cpu = win32_dev_cpu_us() - p->idle_start_cpu;
+    i64 frames = p->frame_count - p->idle_start_frames;
+    u64 wakeups = p->idle_wakeups - p->idle_start_wakeups;
+    u64 bytes = os_dev_private_bytes();
+    // 0.5% of one core over the period is what Task Manager still shows as 0.
+    b32 ok = frames == 0 && cpu * 200 < (u64)IDLE_PERIOD_MS * 1000;
+    LOG("idle-check: %s: %U ms idle: CPU %U us (%U.%02U%% of one core), %D frame(s), %U main loop pass(es) besides the two marks; "
+        "private bytes %U KB (%U MB)", ok ? "PASS" : "FAIL", (u64)IDLE_PERIOD_MS, cpu, cpu / (IDLE_PERIOD_MS * 10),
+        cpu * 100 / (IDLE_PERIOD_MS * 10) % 100, frames, wakeups > 1 ? wakeups - 1 : 0, bytes / 1024, bytes / (1024 * 1024));
+    p->exit_code = ok ? EXIT_OK : EXIT_TEST;
+    p->quit = 1;
+}
+
+// --clipboard-check: the real clipboard through the app. Only when the clipboard holds plain text or
+// nothing (what can be put back exactly); its text is saved first and put back afterwards. Everything
+// written carries the format that keeps it out of clipboard history. kill-ring-save of two lines must
+// give CRLF on the clipboard; another program's CRLF text must yank as LF lines.
+static void win32_dev_clip_put(Platform *p, const u16 *text, i64 len) {
+    if (!win32_open_clipboard(p)) return;
+    EmptyClipboard();
+    if (text) {
+        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(len + 1) * 2);
+        u16 *out = h ? (u16 *)GlobalLock(h) : NULL;
+        if (out) {
+            memcpy(out, text, (size_t)len * 2);
+            out[len] = 0;
+            GlobalUnlock(h);
+            if (!SetClipboardData(CF_UNICODETEXT, h)) GlobalFree(h);
+            else win32_dev_clip_exclude();
+        } else if (h) {
+            GlobalFree(h);
+        }
+    }
+    CloseClipboard();
+}
+
+// The clipboard's CF_UNICODETEXT as UTF-16 in `arena`; false when it has none.
+static b32 win32_dev_clip_read(Platform *p, Arena *arena, u16 **text, i64 *len) {
+    *text = NULL;
+    *len = 0;
+    if (!win32_open_clipboard(p)) return 0;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    u16 *data = h ? (u16 *)GlobalLock(h) : NULL;
+    if (data) {
+        i64 cap = (i64)(GlobalSize(h) / 2);
+        while (*len < cap && data[*len]) (*len)++;
+        *text = PUSH_ARRAY(arena, u16, *len + 1);
+        memcpy(*text, data, (size_t)*len * 2);
+        GlobalUnlock(h);
+    }
+    CloseClipboard();
+    return data != NULL;
+}
+
+static b32 win32_dev_utf16_is(u16 *text, i64 len, const char *ascii) {
+    i64 n = 0;
+    while (ascii[n]) n++;
+    if (!text || len != n) return 0;
+    for (i64 i = 0; i < n; i++) if (text[i] != (u16)ascii[i]) return 0;
+    return 1;
+}
+
+static i32 win32_dev_clipboard_check(Platform *p) {
+    WNDCLASSEXW wc = { .cbSize = sizeof(wc), .lpfnWndProc = DefWindowProcW, .hInstance = p->instance, .lpszClassName = L"teal_clip" };
+    RegisterClassExW(&wc);
+    p->hwnd = CreateWindowExW(0, L"teal_clip", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, p->instance, NULL); // a clipboard owner
+    if (!p->hwnd || !win32_open_clipboard(p)) {
+        LOG("clipboard-check: FAIL: cannot open the clipboard");
+        return EXIT_TEST;
+    }
+    UINT other = 0, count = 0;
+    for (UINT f = EnumClipboardFormats(0); f; f = EnumClipboardFormats(f)) {
+        count++;
+        if (!other && f != CF_UNICODETEXT && f != CF_TEXT && f != CF_OEMTEXT && f != CF_LOCALE) other = f;
+    }
+    CloseClipboard();
+    if (other) {
+        WCHAR name[128];
+        int n = GetClipboardFormatNameW(other, name, ARRAY_COUNT(name));
+        String8 what = n > 0 ? str8_fmt(&p->perm, "the format '%S'", str8_from_str16(&p->perm, (u16 *)name, n))
+                             : str8_fmt(&p->perm, "the standard format %u", other);
+        LOG("clipboard-check: SKIP: the clipboard holds %S, which could not be put back exactly; nothing was touched", what);
+        return EXIT_OK;
+    }
+    u16 *saved;
+    i64 saved_len;
+    b32 had_text = win32_dev_clip_read(p, &p->perm, &saved, &saved_len);
+    LOG("clipboard-check: the clipboard holds %s (%u format(s)); saved", had_text ? "plain text" : "nothing", count);
+
+    p->clip_no_history = 1;
+    Arena arena = arena_create(MB(256));
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1 };
+    App *app = app_create(&arena, &args);
+    b32 ok_copy = 0, ok_yank = 0;
+    String8 yanked = { 0 };
+    u16 *got = NULL;
+    i64 got_len = 0;
+    if (app) {
+        app_dev_feed_events(app, NULL, 0, &arena);
+        // E14: two lines copied in teal are CRLF lines on the clipboard (what Notepad reads).
+        app_dev_show_scratch(app, STR8_LIT("line one\nline two\n"));
+        app_dev_feed(app, "C-x h M-w", &arena);
+        win32_dev_clip_read(p, &arena, &got, &got_len);
+        ok_copy = win32_dev_utf16_is(got, got_len, "line one\r\nline two\r\n");
+        // E15: text another program put there (CRLF) is yanked as LF lines.
+        static const u16 outside[] = { 'f', 'r', 'o', 'm', ' ', 'o', 'u', 't', 's', 'i', 'd', 'e', '\r', '\n', 's', 'e', 'c', 'o', 'n', 'd' };
+        win32_dev_clip_put(p, outside, ARRAY_COUNT(outside));
+        app_dev_show_scratch(app, STR8_LIT(""));
+        app_dev_feed(app, "C-y", &arena);
+        yanked = app_dev_text(app, &arena);
+        ok_yank = str8_equal(yanked, STR8_LIT("from outside\nsecond"));
+        app_shutdown(app);
+    }
+
+    // Put back what was there, and check it.
+    win32_dev_clip_put(p, had_text ? saved : NULL, saved_len);
+    u16 *back;
+    i64 back_len;
+    b32 back_text = win32_dev_clip_read(p, &arena, &back, &back_len);
+    b32 ok_restore = had_text ? back_text && back_len == saved_len && memcmp(back, saved, (size_t)saved_len * 2) == 0
+                              : !back_text && CountClipboardFormats() == 0;
+    b32 ok = app && ok_copy && ok_yank && ok_restore;
+    LOG("clipboard-check: %s: kill-ring-save of two lines gives CRLF on the clipboard %d (%D units), another program's CRLF text "
+        "yanks as LF lines %d ('%S'), the clipboard put back as it was %d", ok ? "PASS" : "FAIL", ok_copy, got_len, ok_yank, yanked,
+        ok_restore);
+    DestroyWindow(p->hwnd);
+    p->hwnd = NULL;
+    return ok ? EXIT_OK : EXIT_TEST;
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    return p->smoke || p->idle_check || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
            p->bench_search ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -2402,6 +2599,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--clipboard-check"))) { p->clipboard_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
             p->render_mode_forced = 1;
@@ -2436,6 +2635,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
+    if (p->clipboard_check) { // headless, the real clipboard
+        i32 code = win32_dev_clipboard_check(p);
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return code;
+    }
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         failures += win32_dev_test_mods(p);
@@ -2592,7 +2796,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if TEAL_DEV
         os_dev_stage("uncloaked");
-        if (!p->smoke) SetForegroundWindow(p->hwnd); // the smoke never takes the focus
+        if (!p->smoke && !p->idle_check) SetForegroundWindow(p->hwnd); // the smoke never takes the focus
+        if (p->idle_check) win32_dev_idle_check_start(p);
         if (p->smoke) p->redraw = 1; // its second plain frame, at once (nothing else would wake the loop)
         os_dev_stage("activated");
         p->stages_logged = 1;
@@ -2650,6 +2855,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             }
         }
         win32_poll_watches(p);
+#if TEAL_DEV
+        p->idle_wakeups++;
+#endif
 
         MSG msg;
         for (;;) {
