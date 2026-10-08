@@ -9,6 +9,7 @@ String8 config_default_text(void) {
 void config_init(Config *c) {
     memset(c, 0, sizeof(*c));
     c->global.name = "global";
+    c->minibuffer.name = "minibuffer";
 }
 
 // ---------------------------------------------------------------------------
@@ -18,7 +19,8 @@ typedef struct ConfigParser {
     Config *config;
     Arena *arena;
     String8 file;
-    i64 line; // 1-based
+    i64 line;    // 1-based
+    Keymap *keys; // the map of the current [keys ...] section
 } ConfigParser;
 
 static void config_diag(ConfigParser *p, b32 warning, const char *fmt, ...) {
@@ -132,6 +134,7 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "undo_limit_mb", offsetof(Settings, undo_limit_mb), 1, 2048 },
     { "kill_ring_max", offsetof(Settings, kill_ring_max), 1, KILL_RING_CAP },
     { "indent_width", offsetof(Settings, indent_width), 1, 16 },
+    { "completion_lines", offsetof(Settings, completion_lines), 1, 40 },
 };
 
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {
@@ -141,6 +144,7 @@ static const struct { const char *name; u32 offset; } config_bool_settings[] = {
     { "delete_selection_mode", offsetof(Settings, delete_selection_mode) },
     { "indent_with_tabs", offsetof(Settings, indent_with_tabs) },
     { "detect_indentation", offsetof(Settings, detect_indentation) },
+    { "auto_revert", offsetof(Settings, auto_revert) },
 };
 
 static void config_setting(ConfigParser *p, String8 name, String8 value) {
@@ -194,6 +198,9 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "comment", offsetof(Theme, comment) },       { "string", offsetof(Theme, string) },
     { "keyword", offsetof(Theme, keyword) },       { "number", offsetof(Theme, number) },
     { "type", offsetof(Theme, type) },             { "variable", offsetof(Theme, variable) },
+    { "prompt", offsetof(Theme, prompt) },
+    { "completion_selection", offsetof(Theme, completion_selection) },
+    { "completion_match", offsetof(Theme, completion_match) },
 };
 
 static void config_color(ConfigParser *p, String8 name, String8 value) {
@@ -234,7 +241,7 @@ static void config_key(ConfigParser *p, String8 line) {
             return;
         }
     }
-    i32 removed = keymap_bind(&p->config->global, &seq, command);
+    i32 removed = keymap_bind(p->keys, &seq, command);
     if (removed < 0) {
         config_diag(p, 0, "too many key bindings (at most %d)", (i32)KEYMAP_CAP);
     } else if (removed > 0) {
@@ -253,7 +260,7 @@ typedef enum ConfigSection {
 } ConfigSection;
 
 void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
-    ConfigParser p = { c, arena, file_name, 0 };
+    ConfigParser p = { c, arena, file_name, 0, &c->global };
     ConfigSection section = CONFIG_SECTION_NONE;
     for (i64 i = 0; i < text.len;) {
         i64 end = i;
@@ -264,21 +271,27 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         if (!line.len || line.data[0] == '#') continue;
         if (line.data[0] == '[') {
             if (line.data[line.len - 1] != ']') {
-                config_diag(&p, 0, "bad section header (expected [settings], [colors] or [keys])");
+                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys] or [keys minibuffer])");
                 section = CONFIG_SECTION_UNKNOWN;
                 continue;
             }
             String8 name = config_trim(str8(line.data + 1, line.len - 2));
             section = str8_equal(name, STR8_LIT("settings")) ? CONFIG_SECTION_SETTINGS
                     : str8_equal(name, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
-                    : str8_equal(name, STR8_LIT("keys"))     ? CONFIG_SECTION_KEYS
                     : CONFIG_SECTION_UNKNOWN;
+            // [keys] and [keys global] bind in the global map, [keys minibuffer] in the minibuffer's.
+            if (name.len >= 4 && memcmp(name.data, "keys", 4) == 0 && (name.len == 4 || config_is_blank(name.data[4]))) {
+                String8 map = config_trim(str8(name.data + 4, name.len - 4));
+                p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
+                       : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer : NULL;
+                if (p.keys) section = CONFIG_SECTION_KEYS;
+            }
             if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(name));
             continue;
         }
         switch (section) {
         case CONFIG_SECTION_NONE:
-            config_diag(&p, 0, "line outside a section ([settings], [colors] or [keys])");
+            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys] or [keys minibuffer])");
             break;
         case CONFIG_SECTION_UNKNOWN:
             break;

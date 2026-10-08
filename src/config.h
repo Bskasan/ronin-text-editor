@@ -26,10 +26,13 @@ struct Settings {
     i32 indent_width;         // columns per indentation level
     b32 indent_with_tabs;     // indentation uses tabs (then spaces for the rest)
     b32 detect_indentation;   // a loaded file decides tabs or spaces for its buffer
+    i32 completion_lines;     // rows of the minibuffer's candidate list
+    b32 auto_revert;          // an unmodified buffer whose file changed on disk is reloaded
 };
 
 typedef struct Theme { // 0xRRGGBB
     u32 background, text, cursor, selection, comment, string, keyword, number, type, variable;
+    u32 prompt, completion_selection, completion_match; // the minibuffer
 } Theme;
 
 typedef struct ConfigDiag {
@@ -41,7 +44,8 @@ typedef struct ConfigDiag {
 typedef struct Config {
     Settings settings;
     Theme theme;
-    Keymap global;
+    Keymap global;     // [keys]
+    Keymap minibuffer; // [keys minibuffer]: searched before global while the minibuffer is active
     ConfigDiag *first_diag, *last_diag; // in the arena given to config_parse, at most CONFIG_DIAG_CAP
     i32 errors, warnings;               // all of them
 } Config;
