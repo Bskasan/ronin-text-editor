@@ -60,6 +60,8 @@ typedef struct Platform {
     i64 goto_line, goto_col; // +LINE[:COLUMN], 1-based; 0 = not given
     b32 render_mode_forced;
     FbRenderMode render_mode;
+    b32 unsaved;      // some file buffer has unsaved changes (os_set_unsaved_files)
+    b32 block_reason; // a shutdown block reason is registered
 #if TEAL_DEV
     HANDLE log_file;
     b32 smoke;
@@ -75,8 +77,6 @@ typedef struct Platform {
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
-    b32 unsaved;      // some file buffer has unsaved changes (os_set_unsaved_files)
-    b32 block_reason; // a shutdown block reason is registered
     String8 keys; // --keys: injected after startup
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
 #endif
