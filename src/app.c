@@ -160,7 +160,7 @@ static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
     View *m = app->mini.view;
     m->x = (i32)MIN(app_text_cells(app->mini.prompt), (i64)l->cols) * l->cell_w;
     m->y = l->minibuffer_y;
-    m->w = MAX(in->width - m->x, l->pad + l->cell_w);
+    m->w = MAX(in->width - m->x - (app->mini.kind == MINI_CHOICE ? 16 * l->cell_w : 0), l->pad + l->cell_w); // room for "3/41"
     m->h = l->line_h;
     m->rows = 1;
     m->cols = MAX((m->w - l->pad) / l->cell_w, 1);
@@ -246,12 +246,12 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
     if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(app->config->theme.text));
 }
 
-// The cell rect of a cursor, or false when it is outside the window (only the primary cursor
-// is kept visible).
-static b32 app_cursor_rect(App *app, AppLayout *l, View *v, i64 pos, i32 *x0, i32 *y0, i32 *x1, i32 *y1) {
+// The cell rect of a cursor, or false when it is outside the window's first `rows` rows (only the
+// primary cursor is kept visible).
+static b32 app_cursor_rect(App *app, AppLayout *l, View *v, i64 pos, i32 rows, i32 *x0, i32 *y0, i32 *x1, i32 *y1) {
     Buffer *buf = v->buffer;
     i64 row = buffer_line_of(buf, pos) - view_top_line(v);
-    if (row < 0 || row >= v->rows) return 0;
+    if (row < 0 || row >= rows) return 0;
     i64 col = view_column_of(buf, pos);
     i64 w = pos < buffer_size(buf) && view_is_control(buffer_byte(buf, pos)) ? 2 : 1;
     if (col < v->left_col || col + w > v->left_col + v->cols) return 0;
@@ -263,9 +263,9 @@ static b32 app_cursor_rect(App *app, AppLayout *l, View *v, i64 pos, i32 *x0, i3
 }
 
 // Filled: a block with the character under it in the background color. Hollow: a box.
-static void app_draw_cursor(App *app, Renderer *r, AppLayout *l, View *v, i64 pos, b32 filled, f32 dpi_scale, Arena *scratch) {
+static void app_draw_cursor(App *app, Renderer *r, AppLayout *l, View *v, i64 pos, i32 rows, b32 filled, f32 dpi_scale, Arena *scratch) {
     i32 x0, y0, x1, y1;
-    if (!app_cursor_rect(app, l, v, pos, &x0, &y0, &x1, &y1)) return;
+    if (!app_cursor_rect(app, l, v, pos, rows, &x0, &y0, &x1, &y1)) return;
     Color cursor = COLOR_HEX(app->config->theme.cursor);
     if (!filled) {
         i32 t = MAX((i32)(dpi_scale + 0.5f), 1);
@@ -325,11 +325,14 @@ static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor
     }
 }
 
-static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, View *v, b32 active) {
+// `bottom`: the view is drawn above it (the candidate list covers the rest), its mode line moved up.
+// Its rows and scroll position are not touched, so nothing scrolls when the list opens or closes.
+static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, View *v, b32 active, i32 bottom) {
     Buffer *buf = v->buffer;
     i32 line_h = l->line_h;
     i32 text_x = v->x + l->pad;
-    i32 mode_y = v->y + v->h - line_h;
+    i32 mode_y = MAX(MIN(v->y + v->h, bottom) - line_h, v->y);
+    i32 rows = MIN(v->rows, (mode_y - v->y) / line_h);
     // Only the visible lines (the partial one above the mode line too, which covers it).
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
@@ -339,12 +342,84 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, V
     }
     b32 filled = active && app_has_focus(app);
     for (i32 k = 0; k < v->cursor_count; k++) {
-        app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[k]), filled, in->dpi_scale, in->scratch);
+        app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[k]), rows, filled, in->dpi_scale, in->scratch);
     }
     // Mode line, inverse video.
     r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)(v->x + v->w), (f32)(mode_y + line_h) }, COLOR_HEX(app->config->theme.text));
     String8 mode = app_mode_line_text(v, in->scratch);
     font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((v->w - l->pad) / l->cell_w, 0)), COLOR_HEX(app->config->theme.background));
+}
+
+// Rows of the candidate list: up to completion_lines, never the whole window.
+static i32 app_list_rows(App *app, AppLayout *l) {
+    Minibuffer *mb = &app->mini;
+    if (!mb->active || mb->kind != MINI_CHOICE) return 0;
+    i64 rows = MIN(mb->match_count, (i64)app->config->settings.completion_lines);
+    return (i32)MAX(MIN(rows, (i64)(l->minibuffer_y / l->line_h) - 2), 0);
+}
+
+// The text of a candidate from column 0, the matched spans in the match color, clipped to `cells`.
+static void app_draw_candidate_text(App *app, Renderer *r, i32 x, i32 y, Candidate *c, MatchSpan *spans, i32 n, i64 cells) {
+    Theme *th = &app->config->theme;
+    String8 text = app_clip_cells(c->text, cells);
+    i64 at = 0;
+    while (at < text.len) {
+        // The next boundary: the start or end of a span, whichever comes first after `at`.
+        b32 matched = 0;
+        i64 next = text.len;
+        for (i32 k = 0; k < n; k++) {
+            if (spans[k].start <= at && at < spans[k].end) {
+                matched = 1;
+                next = MIN(next, spans[k].end);
+            } else if (spans[k].start > at) {
+                next = MIN(next, spans[k].start);
+            }
+        }
+        if (matched) { // overlapping spans: run to the end of the furthest one that covers `at`
+            for (b32 grew = 1; grew;) {
+                grew = 0;
+                for (i32 k = 0; k < n; k++) {
+                    if (spans[k].start <= next && next < spans[k].end) {
+                        next = spans[k].end;
+                        grew = 1;
+                    }
+                }
+            }
+        }
+        next = MIN(next, text.len);
+        String8 run = str8(text.data + at, next - at);
+        x = font_draw_text(app->font, r, x, y, run, COLOR_HEX(matched ? th->completion_match : th->text));
+        at = next;
+    }
+    if (c->flags & CANDIDATE_DIR && text.len == c->text.len) font_draw_text(app->font, r, x, y, STR8_LIT("/"), COLOR_HEX(th->text));
+}
+
+// The candidate list above the minibuffer line: the selected row highlighted, matched substrings in
+// their color, annotations right-aligned.
+static void app_draw_candidates(App *app, Renderer *r, AppLayout *l, FrameInput *in, i32 rows) {
+    Minibuffer *mb = &app->mini;
+    Theme *th = &app->config->theme;
+    i32 y0 = l->minibuffer_y - rows * l->line_h;
+    r_push_rect(r, (Rect){ 0, (f32)y0, (f32)in->width, (f32)l->minibuffer_y }, COLOR_HEX(th->background));
+    i64 top = minibuffer_list_top(mb, rows);
+    i64 cols = MAX((in->width - 2 * l->pad) / l->cell_w, 1);
+    for (i32 row = 0; row < rows && top + row < mb->match_count; row++) {
+        i64 index = top + row;
+        Candidate *c = &mb->cands[mb->matches[index]];
+        i32 y = y0 + row * l->line_h;
+        if (index == mb->selected) {
+            r_push_rect(r, (Rect){ 0, (f32)y, (f32)in->width, (f32)(y + l->line_h) }, COLOR_HEX(th->completion_selection));
+        }
+        i64 ann = app_text_cells(c->annotation);
+        i64 room = ann && ann + 2 < cols ? cols - ann - 2 : cols;
+        MatchSpan spans[MATCH_MAX_TERMS];
+        i32 n = match_spans(&mb->query, c, spans, MATCH_MAX_TERMS);
+        app_draw_candidate_text(app, r, l->pad, y, c, spans, n, room);
+        if (room < cols) {
+            i32 x = l->pad + (i32)(cols - ann) * l->cell_w;
+            font_draw_text(app->font, r, x, y, c->annotation, COLOR_HEX(th->text));
+        }
+    }
 }
 
 // The minibuffer line: the prompt, the input (a one-line view), and the echo text as a transient
@@ -358,7 +433,12 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     i64 line = view_top_line(v);
     i32 text_x = v->x + l->pad;
     app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, in->scratch);
-    app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), app_has_focus(app), in->dpi_scale, in->scratch);
+    app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), 1, app_has_focus(app), in->dpi_scale, in->scratch);
+    if (mb->kind == MINI_CHOICE) { // "3/41" at the right end
+        String8 count = str8_fmt(in->scratch, "%D/%D", mb->match_count ? mb->selected + 1 : 0, mb->match_count);
+        i32 x = in->width - l->pad - (i32)count.len * l->cell_w;
+        if (x > text_x) font_draw_text(app->font, r, x, v->y, count, COLOR_HEX(th->text));
+    }
     if (app->echo.len) {
         i64 end_col = view_column_of(v->buffer, buffer_line_end(v->buffer, line)) - v->left_col + 1;
         i64 room = v->cols - end_col;
@@ -607,6 +687,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
     app_buffer_settings(app, app->mini.buffer);
     app->keys.pending.len = 0;
     app->ctx.settings = &c->settings;
+    app->ctx.global = &c->global;
     kill_set_max(&app->kills, c->settings.kill_ring_max);
 }
 
@@ -1098,9 +1179,15 @@ static b32 app_update(App *app, FrameInput *in) {
 static void app_render(App *app, FrameInput *in, Renderer *r) {
     AppLayout l = app_layout(app, in);
     r_begin_frame(r, COLOR_HEX(app->config->theme.background));
-    // While the minibuffer is active the calling view's cursor is hollow.
-    for (i32 i = 0; i < app->view_count; i++) app_draw_view(app, r, &l, in, app->views[i], i == app->active_view && !app->mini.active);
+    // While the minibuffer is active the calling view's cursor is hollow; a candidate list covers the
+    // bottom of the views.
+    i32 list_rows = app_list_rows(app, &l);
+    i32 bottom = l.minibuffer_y - list_rows * l.line_h;
+    for (i32 i = 0; i < app->view_count; i++) {
+        app_draw_view(app, r, &l, in, app->views[i], i == app->active_view && !app->mini.active, bottom);
+    }
     if (app->mini.active) {
+        if (list_rows) app_draw_candidates(app, r, &l, in, list_rows);
         app_draw_minibuffer(app, r, &l, in);
     } else {
         String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));

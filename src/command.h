@@ -10,6 +10,7 @@ typedef struct Echo Echo;
 typedef struct Settings Settings;
 typedef struct KillRing KillRing;
 typedef struct Minibuffer Minibuffer;
+typedef struct Keymap Keymap;
 typedef struct CommandContext CommandContext;
 typedef void CommandFn(CommandContext *ctx);
 
@@ -43,6 +44,7 @@ struct CommandContext {
     const Settings *settings; // the config's settings (config.h)
     KillRing *kills;          // the kill ring (edit.h)
     Minibuffer *mini;         // prompts (minibuffer.h); NULL in the headless view tests
+    const Keymap *global;     // the global keymap (M-x shows the bindings)
     b32 kill_append;          // set by the driver: this command's kills append to the newest entry
     u32 codepoint;            // self-insert: the character of the key
     b32 shift_translated;     // the key had Shift and was found without it (shift-select, Phase 6)

@@ -189,6 +189,7 @@ b32 minibuffer_read(CommandContext *ctx, MiniRequest *req) {
     mb->candidates_data = req->data;
     mb->require_match = req->require_match;
     mb->file = req->file;
+    mb->run_command = req->run_command;
     mb->history = req->history;
     mb->history_pos = -1;
     mb->typed = str8(NULL, 0);
@@ -227,6 +228,7 @@ static void minibuffer_finish(Minibuffer *mb, String8 text, i32 candidate, u32 f
     if (mb->history != MINI_HISTORY_NONE && mb->kind != MINI_KEY && mb->kind != MINI_YES_NO) {
         minibuffer_history_add(mb, mb->history, r->text);
     }
+    if (mb->run_command) mb->then_command = command_find(r->text);
     minibuffer_close(mb);
     mb->finished = 1;
 }
@@ -501,3 +503,133 @@ const Command CMD_PREVIOUS_HISTORY_ELEMENT  = { "previous-history-element", cmd_
 const Command CMD_NEXT_HISTORY_ELEMENT      = { "next-history-element", cmd_next_history_element, COMMAND_ONCE };
 const Command CMD_MINIBUFFER_BACKWARD_UPDIR = { "minibuffer-backward-updir", cmd_minibuffer_backward_updir,
                                                 COMMAND_EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
+
+// ---------------------------------------------------------------------------
+// Completion commands
+
+// The first match shown so that the selection is among the `lines` rows of the list.
+i64 minibuffer_list_top(Minibuffer *mb, i32 lines) {
+    lines = MAX(lines, 1);
+    if (mb->selected < mb->list_top) mb->list_top = mb->selected;
+    if (mb->selected >= mb->list_top + lines) mb->list_top = mb->selected - lines + 1;
+    mb->list_top = CLAMP(mb->list_top, 0, MAX(mb->match_count - lines, 0));
+    return mb->list_top;
+}
+
+// A choice prompt (else a note and NULL).
+static Minibuffer *minibuffer_choice_here(CommandContext *ctx) {
+    Minibuffer *mb = minibuffer_here(ctx);
+    if (mb && mb->kind != MINI_CHOICE) {
+        minibuffer_note(ctx, "No completions");
+        return NULL;
+    }
+    return mb;
+}
+
+// Replaces the matched part of the input by a candidate's text (with a slash for a directory).
+static void minibuffer_complete_to(Minibuffer *mb, String8 input, String8 text, b32 slash) {
+    minibuffer_set_input(mb, str8_fmt(&mb->arena, slash ? "%S%S/" : "%S%S", str8(input.data, mb->match_from), text));
+}
+
+// TAB: first to the longest common prefix of the matches (when the input is a prefix of it), then
+// to the selected candidate; a directory descends. "[Sole completion]" when nothing is left to do.
+static void cmd_minibuffer_complete(CommandContext *ctx) {
+    Minibuffer *mb = minibuffer_choice_here(ctx);
+    if (!mb) return;
+    if (!mb->match_count) {
+        minibuffer_note(ctx, "No match");
+        return;
+    }
+    String8 input = minibuffer_input(mb, &mb->arena);
+    String8 part = match_fold(&mb->arena, str8(input.data + mb->match_from, input.len - mb->match_from));
+    Candidate *first = &mb->cands[mb->matches[0]];
+    i64 lcp = first->folded.len;
+    for (i64 k = 1; k < mb->match_count && lcp > 0; k++) {
+        Candidate *c = &mb->cands[mb->matches[k]];
+        i64 n = 0;
+        while (n < lcp && n < c->folded.len && c->folded.data[n] == first->folded.data[n]) n++;
+        lcp = n;
+    }
+    while (lcp > 0 && lcp < first->text.len && (first->text.data[lcp] & 0xC0) == 0x80) lcp--; // a character boundary
+    if (lcp > part.len && memcmp(first->folded.data, part.data, (size_t)part.len) == 0) {
+        minibuffer_complete_to(mb, input, str8(first->text.data, lcp), 0);
+        return;
+    }
+    Candidate *sel = &mb->cands[mb->matches[mb->selected]];
+    b32 dir = mb->file && (sel->flags & CANDIDATE_DIR);
+    if (str8_equal(sel->folded, part) && !dir) {
+        minibuffer_note(ctx, mb->match_count == 1 ? "Sole completion" : "Complete, but not unique");
+        return;
+    }
+    minibuffer_complete_to(mb, input, sel->text, dir);
+}
+
+static void minibuffer_move_selection(CommandContext *ctx, i64 by) {
+    Minibuffer *mb = minibuffer_choice_here(ctx);
+    if (!mb || !mb->match_count) return;
+    mb->selected = CLAMP(mb->selected + by, 0, mb->match_count - 1);
+    minibuffer_list_top(mb, ctx->settings->completion_lines);
+}
+
+static void cmd_minibuffer_next_completion(CommandContext *ctx) { minibuffer_move_selection(ctx, 1); }
+static void cmd_minibuffer_previous_completion(CommandContext *ctx) { minibuffer_move_selection(ctx, -1); }
+static void cmd_minibuffer_next_page(CommandContext *ctx) { minibuffer_move_selection(ctx, ctx->settings->completion_lines); }
+static void cmd_minibuffer_previous_page(CommandContext *ctx) { minibuffer_move_selection(ctx, -ctx->settings->completion_lines); }
+
+const Command CMD_MINIBUFFER_COMPLETE            = { "minibuffer-complete", cmd_minibuffer_complete, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_NEXT_COMPLETION     = { "minibuffer-next-completion", cmd_minibuffer_next_completion, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_PREVIOUS_COMPLETION = { "minibuffer-previous-completion", cmd_minibuffer_previous_completion, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_NEXT_PAGE           = { "minibuffer-next-page", cmd_minibuffer_next_page, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_PREVIOUS_PAGE       = { "minibuffer-previous-page", cmd_minibuffer_previous_page, COMMAND_ONCE };
+
+// ---------------------------------------------------------------------------
+// M-x
+
+static b32 minibuffer_name_less(const char *a, const char *b) {
+    while (*a && *a == *b) a++, b++;
+    return (u8)*a < (u8)*b;
+}
+
+// The shortest global binding of a command, printed ("C-x C-f"), or empty.
+static String8 minibuffer_binding(Arena *arena, const Keymap *map, const Command *cmd) {
+    const KeyBinding *best = NULL;
+    for (i32 i = 0; map && i < map->count; i++) {
+        const KeyBinding *b = &map->bindings[i];
+        if (b->command == cmd && (!best || b->seq.len < best->seq.len)) best = b;
+    }
+    if (!best) return str8(NULL, 0);
+    u8 *text = PUSH_ARRAY(arena, u8, KEY_SEQ_TEXT_CAP);
+    KeySeq seq = best->seq;
+    return str8(text, key_seq_print(&seq, text, KEY_SEQ_TEXT_CAP));
+}
+
+// Every command, alphabetically, annotated with its key binding. Built once per prompt.
+static i64 minibuffer_command_candidates(Minibuffer *mb, void *data, String8 input) {
+    (void)input;
+    if (mb->cand_count) return 0;
+    i32 n = command_count();
+    const Command *sorted[256];
+    n = MIN(n, (i32)ARRAY_COUNT(sorted));
+    for (i32 i = 0; i < n; i++) { // insertion sort by name: a few dozen commands, once per prompt
+        const Command *c = command_at(i);
+        i32 j = i;
+        for (; j > 0 && minibuffer_name_less(c->name, sorted[j - 1]->name); j--) sorted[j] = sorted[j - 1];
+        sorted[j] = c;
+    }
+    u64 mark = arena_pos(&mb->match_arena);
+    for (i32 i = 0; i < n; i++) {
+        String8 binding = minibuffer_binding(&mb->match_arena, (const Keymap *)data, sorted[i]);
+        minibuffer_add_candidate(mb, str8_cstr(sorted[i]->name), binding, 0);
+    }
+    arena_pop_to(&mb->match_arena, mark);
+    return 0;
+}
+
+static void cmd_execute_extended_command(CommandContext *ctx) {
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("M-x "), .history = MINI_HISTORY_COMMAND,
+                        .candidates = minibuffer_command_candidates, .data = (void *)ctx->global, .require_match = 1,
+                        .run_command = 1 };
+    minibuffer_read(ctx, &req);
+}
+
+const Command CMD_EXECUTE_EXTENDED_COMMAND = { "execute-extended-command", cmd_execute_extended_command, COMMAND_ONCE };
