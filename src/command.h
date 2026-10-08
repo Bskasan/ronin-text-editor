@@ -11,6 +11,7 @@ typedef struct Settings Settings;
 typedef struct KillRing KillRing;
 typedef struct Minibuffer Minibuffer;
 typedef struct Isearch Isearch;
+typedef struct Replace Replace;
 typedef struct Keymap Keymap;
 typedef struct CommandContext CommandContext;
 typedef void CommandFn(CommandContext *ctx);
@@ -28,6 +29,7 @@ enum {
     COMMAND_KILL_BACKWARD  = 1 << 8, // ... and prepends instead
     COMMAND_QUIT           = 1 << 9, // keyboard-quit, abort-minibuffers: cancels a pending prefix, aborts any prompt
     COMMAND_ISEARCH        = 1 << 10, // runs inside an isearch without ending it ([keys isearch])
+    COMMAND_UNDO_CONTINUE  = 1 << 11, // no undo boundary before it: its edits join the open group (a query-replace session)
 };
 
 typedef struct Command {
@@ -47,6 +49,7 @@ struct CommandContext {
     KillRing *kills;          // the kill ring (edit.h)
     Minibuffer *mini;         // prompts (minibuffer.h); NULL in the headless view tests
     Isearch *isearch;         // the isearch (isearch.h); NULL in the headless view tests
+    Replace *replace;         // query-replace and replace-string (isearch.h); same
     const Keymap *global;     // the global keymap (M-x shows the bindings)
     Arena *scratch;           // per-frame scratch (lexing for indentation); everything pushed is popped again
     b32 kill_append;          // set by the driver: this command's kills append to the newest entry

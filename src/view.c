@@ -408,7 +408,8 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     // deletes merge (the buffer caps a group at 20 commands).
     BufferUndoMerge merge = (cmd->flags & COMMAND_MERGE_INSERT) ? BUFFER_UNDO_MERGE_INSERT
                           : (cmd->flags & COMMAND_MERGE_DELETE) ? BUFFER_UNDO_MERGE_DELETE : BUFFER_UNDO_MERGE_NONE;
-    buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, &v->cursors[0]));
+    // A query-replace answer continues the session's group.
+    if (!(cmd->flags & COMMAND_UNDO_CONTINUE)) buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, &v->cursors[0]));
     // A kill right after a kill appends to the same kill ring entry.
     ctx->kill_append = (cmd->flags & COMMAND_KILL) && ctx->last_command && (ctx->last_command->flags & COMMAND_KILL);
     if (cmd->flags & COMMAND_ONCE) {

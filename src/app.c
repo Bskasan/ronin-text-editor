@@ -42,6 +42,7 @@ struct App {
     KeyInput keys;               // the key sequence state
     Minibuffer mini;             // prompts; while active its keymap comes before the global one
     Isearch isearch;             // while active its keymap comes before the global one
+    Replace replace;             // query-replace and replace-string: while active, keys go to it first
     Search lazy;                 // the lazy highlight: the other matches on the drawn rows
     b32 search_pending;          // a search step is still being searched: another frame
     Arena files_arena;           // files.c: paths being built; reset by each use
@@ -398,10 +399,19 @@ static void app_draw_lazy(App *app, Renderer *r, AppLayout *l, View *v, i32 draw
     }
 }
 
-// The search shown in a view: the other matches, then the current match's background. Returns the
-// current match's text color range for line drawing (start -1: none).
+// The search shown in a view (an isearch, or the question of a query-replace): the other matches, then
+// the current match's background. Returns the current match's text color range for line drawing
+// (start -1: none).
 static AppSpan app_draw_search(App *app, Renderer *r, AppLayout *l, View *v, i32 draw_rows) {
     AppSpan current = { -1, -1, app->config->theme.isearch_text };
+    Replace *rp = &app->replace;
+    if (rp->state == REPLACE_ASKING && rp->view == v) {
+        app_draw_lazy(app, r, l, v, draw_rows, rp->from, rp->fold, rp->match_start, rp->lo, buffer_marker_get(v->buffer, rp->end));
+        current.start = rp->match_start;
+        current.end = rp->match_end;
+        app_draw_span(r, l, v, current.start, current.end, draw_rows, app->config->theme.isearch);
+        return current;
+    }
     Isearch *is = &app->isearch;
     if (!is->active || is->view != v) return current;
     IsearchStep *cur = isearch_current(is), *top = isearch_top(is);
@@ -858,6 +868,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     minibuffer_init(&app->mini, perm, mini);
     isearch_init(&app->isearch, &app->mini);
     app->ctx.isearch = &app->isearch;
+    replace_init(&app->replace);
+    app->ctx.replace = &app->replace;
     APP_STAGE("app: minibuffer");
     app->files_arena = arena_create(GB(1));
     app->watch_arena = arena_create(MB(16));
@@ -889,6 +901,7 @@ i32 app_shutdown(App *app) {
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += minibuffer_destroy(&app->mini);
     isearch_destroy(&app->isearch);
+    replace_destroy(&app->replace); // before the buffers: its marker
     os_release(app->files_arena.base);
     files_unwatch_all(app);
     os_release(app->watch_arena.base);
@@ -925,6 +938,8 @@ static i64 app_mouse_pos(AppLayout *l, View *v, i32 x, i32 y) {
 static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
     View *v;
     isearch_exit(&app->ctx); // a click ends a search at its match first
+    if (app->replace.state == REPLACE_SEARCHING || app->replace.state == REPLACE_ALL) return; // clicks wait for it
+    replace_finish(&app->replace, REPLACE_END_DONE); // a click ends a question
     if (app->mini.active) {
         v = app->mini.view;
         if (y < v->y || x < v->x) return;
@@ -1182,6 +1197,18 @@ static b32 app_isearch_key(App *app, KeyResult *k) {
     return 0;
 }
 
+// A key as an answer to query-replace's question ('y', ' ', 'n', 0x7f for DEL, '!', 'q', '\r' for RET,
+// '.'; a capital letter as its small one), else 0.
+static u32 app_replace_answer(KeyResult *k) {
+    if (k->kind == KEY_RESULT_PREFIX || k->seq.len != 1) return 0;
+    KeyChord c = k->seq.chords[0];
+    if (c & (CHORD_CTRL | CHORD_META)) return 0;
+    u32 code = c & CHORD_CODE_MASK;
+    if (c & CHORD_NAMED) return (c & CHORD_SHIFT) ? 0 : code == KEY_ENTER ? '\r' : code == KEY_BACKSPACE ? 0x7f : 0;
+    u32 a = unicode_lower(code);
+    return a == 'y' || a == 'n' || a == 'q' || a == ' ' || a == '!' || a == '.' ? a : 0;
+}
+
 // A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
 // is active, [isearch, global] while an isearch is, else [global]. A single-key prompt takes the key
 // itself, after the keymap has said what the key is bound to, so the quit keys still abort it.
@@ -1189,12 +1216,22 @@ static void app_key_event(App *app, Event *e) {
     Keymap *stack[2];
     i32 count = 0;
     b32 isearch = app->isearch.active && !app->mini.active;
+    b32 replacing = app->replace.state != REPLACE_OFF && !app->mini.active;
     if (app->mini.active) stack[count++] = &app->config->minibuffer;
     else if (isearch) stack[count++] = &app->config->isearch;
     stack[count++] = &app->config->global;
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);
-    b32 ended = 0; // the key ended an isearch: its message ("Mark saved ...") stays while the key runs
+    b32 ended = 0; // the key ended a search session: its message ("Mark saved ...") stays while the key runs
+    if (replacing) {
+        if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED) return;
+        echo_clear(&app->echo);
+        if (replace_key(&app->ctx, k.kind == KEY_RESULT_PREFIX ? NULL : k.command, app_replace_answer(&k))) {
+            app->keys.pending.len = 0; // a key ignored while the session searches leaves no prefix behind
+            return;
+        }
+        ended = 1;
+    }
     if (isearch) {
         if (app_isearch_key(app, &k)) return;
         ended = 1;
@@ -1245,9 +1282,9 @@ static void app_key_event(App *app, Event *e) {
 
 // Search work within the frame's deadline, one slice at a time (a frame overruns it by at most one
 // slice). It comes first: the user is waiting for the match.
-static void app_search_work(App *app, u64 deadline) {
+static void app_search_work(App *app, Arena *scratch, u64 deadline) {
     i64 used = 0;
-    while (isearch_pending(&app->isearch)) {
+    while (isearch_pending(&app->isearch) || replace_pending(&app->replace)) {
         i64 slice = SEARCH_SLICE_BYTES;
 #if TEAL_DEV
         if (app->dev_work_budget) { // tests: a fixed number of positions per frame instead of the clock
@@ -1256,9 +1293,9 @@ static void app_search_work(App *app, u64 deadline) {
         } else
 #endif
         if (used && os_time_us() >= deadline) break;
-        used += isearch_work(&app->isearch, slice);
+        used += isearch_pending(&app->isearch) ? isearch_work(&app->isearch, slice) : replace_work(&app->replace, scratch, slice);
     }
-    app->search_pending = isearch_pending(&app->isearch);
+    app->search_pending = isearch_pending(&app->isearch) || replace_pending(&app->replace);
 }
 
 // Lexer states for the visible lines of every view, with what is left of the frame's deadline. While
@@ -1303,6 +1340,7 @@ static b32 app_update(App *app, FrameInput *in) {
         switch (e->kind) {
         case EVENT_CLOSE: // the window's close button, Alt+F4: as C-x C-c, after ending any prompt
             isearch_exit(&app->ctx);
+            replace_finish(&app->replace, app->replace.state == REPLACE_ALL ? REPLACE_END_STOPPED : REPLACE_END_DONE);
             minibuffer_abort(&app->mini);
             app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
             break;
@@ -1342,7 +1380,7 @@ static b32 app_update(App *app, FrameInput *in) {
     if (app->quit) return 0;
     // One deadline for the background work of this frame: search slices, then lexer states.
     u64 deadline = os_time_us() + SYNTAX_FRAME_BUDGET_US;
-    app_search_work(app, deadline);
+    app_search_work(app, in->scratch, deadline);
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
@@ -1374,6 +1412,8 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
         app_draw_minibuffer(app, r, &l, in);
     } else if (app->isearch.active) {
         app_draw_isearch_line(app, r, &l, in);
+    } else if (app->replace.state != REPLACE_OFF) {
+        app_draw_search_line(app, r, &l, in, replace_prompt(&app->replace, in->scratch), str8(NULL, 0), 0, str8(NULL, 0));
     } else {
         String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
         font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));
