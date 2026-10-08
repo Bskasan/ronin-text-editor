@@ -105,6 +105,7 @@ struct App {
     u8 title[256];               // the window title last set
     i32 title_len;
     i64 initial_line;            // 0-based line to visit on the first frame, -1 = none
+    i32 laid_w, laid_h, laid_cell_w, laid_line_h; // the layout the views were last fitted to
     i64 initial_col;
 #if TEAL_DEV
     b32 sample; // --sample: the Phase 2 display
@@ -960,11 +961,15 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     if (app->sample) return app_dev_sample_frame(app, in, r, &l);
 #endif
     app_layout_views(app, in, &l);
+    // Fit the views again before the events only when the size or the font changed (a click maps
+    // through the scroll position); every frame does it after the events anyway.
+    b32 relaid = in->width != app->laid_w || in->height != app->laid_h || l.cell_w != app->laid_cell_w || l.line_h != app->laid_line_h;
     if (app->initial_line >= 0) { // the first frame: the layout is known now
         view_goto_line_column(app->views[0], app->initial_line, app->initial_col);
         app->initial_line = -1;
+        relaid = 1;
     }
-    for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]); // the size may have changed
+    if (relaid) for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]);
 
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
@@ -1004,7 +1009,11 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
-    for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]);
+    for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]); // also views showing a buffer edited elsewhere
+    app->laid_w = in->width;
+    app->laid_h = in->height;
+    app->laid_cell_w = l.cell_w;
+    app->laid_line_h = l.line_h;
 
     app_update_title(app, in->scratch);
 
