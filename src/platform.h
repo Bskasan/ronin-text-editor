@@ -56,6 +56,15 @@ typedef struct OsFileInfo {
 
 String8      os_full_path(Arena *arena, String8 path); // absolute, normalized; empty on failure
 OsFileStatus os_file_info(String8 path, OsFileInfo *info);
+
+typedef struct OsDirEntry {
+    String8 name; // UTF-8, no directory part
+    b32 is_dir;
+} OsDirEntry;
+
+// The entries of a directory, "." and ".." left out, in the order the file system gives them. The
+// array and the names go into `arena`.
+OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *count);
 OsFileStatus os_file_open_read(String8 path, OsFile *file, OsFileInfo *info); // shares read, write, delete
 OsFileStatus os_file_read(OsFile file, void *dst, i64 size); // exactly size bytes
 // A new, empty file next to `target` (same directory, so it can replace it); its path goes into `arena`.
