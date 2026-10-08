@@ -39,7 +39,7 @@ static i64 match_find(String8 s, String8 term) {
     if (!term.len) return 0;
     u8 first = term.data[0];
     for (i64 i = 0, last = s.len - term.len; i <= last; i++) {
-        if (s.data[i] == first && memcmp(s.data + i, term.data, (size_t)term.len) == 0) return i;
+        if (s.data[i] == first && mem_equal(s.data + i, term.data, term.len)) return i;
     }
     return -1;
 }
@@ -49,7 +49,7 @@ MatchScore match_score(MatchQuery *q, Candidate *c) {
         if (match_find(c->folded, q->terms[k]) < 0) return MATCH_NONE;
     }
     if (q->count && str8_equal(c->folded, q->whole)) return MATCH_EXACT;
-    if (q->count && c->folded.len >= q->terms[0].len && memcmp(c->folded.data, q->terms[0].data, (size_t)q->terms[0].len) == 0) {
+    if (q->count && str8_starts_with(c->folded, q->terms[0])) {
         return MATCH_PREFIX;
     }
     return MATCH_SUBSTRING;
@@ -556,7 +556,7 @@ static void cmd_minibuffer_complete(CommandContext *ctx) {
         lcp = n;
     }
     while (lcp > 0 && lcp < first->text.len && (first->text.data[lcp] & 0xC0) == 0x80) lcp--; // a character boundary
-    if (lcp > part.len && memcmp(first->folded.data, part.data, (size_t)part.len) == 0) {
+    if (lcp > part.len && str8_starts_with(first->folded, part)) {
         minibuffer_complete_to(mb, input, str8(first->text.data, lcp), 0);
         return;
     }
