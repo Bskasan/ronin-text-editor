@@ -1367,6 +1367,12 @@ void app_dev_smoke_region(App *app) {
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
 }
 
+void app_dev_set_language(App *app, i32 language) {
+    Buffer *buf = app_active_view(app)->buffer;
+    buf->language = (BufferLanguage)language;
+    syntax_attach(buf);
+}
+
 b32 app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b) {
     return app->config->settings.show_paren_mode && app_paren(app, app->active_view, scratch, a, b);
 }
@@ -1535,7 +1541,8 @@ AppDevMemory app_dev_memory(App *app) {
     m.line_index = (u64)buf->nl_cap * sizeof(u32);
     m.markers = (u64)buf->marker_cap * sizeof(BufferMarkerSlot);
     m.undo_log = m.undo;
-    m.buffer = m.meta + m.text + m.line_index + m.markers + m.undo_log;
+    m.states = buffer_states_memory(buf);
+    m.buffer = m.meta + m.text + m.line_index + m.markers + m.undo_log + m.states;
     return m;
 }
 

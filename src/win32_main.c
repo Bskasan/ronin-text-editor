@@ -75,6 +75,7 @@ typedef struct Platform {
     b32 bench_view;
     b32 bench_edit;
     b32 bench_complete;
+    b32 bench_syntax;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -681,7 +682,7 @@ void os_fatal(String8 message) {
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
-                       g_platform->bench_edit || g_platform->bench_complete)) interactive = 0;
+                       g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -1690,6 +1691,71 @@ static void win32_bench_edit(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-syntax, frame part: frames without events until the states of what is shown are complete.
+// Logs the frames, the time and the longest frame (command + frame build); with vsync each frame
+// would also wait one refresh interval.
+static void win32_bench_catch_up(Platform *p, const char *what, u32 refresh_us) {
+    BenchStat st = { 0 };
+    u64 t0 = os_time_us();
+    do { // at least one frame: a jump without a frame has not asked for states yet
+        win32_bench_pump();
+        p->event_count = 0;
+        FrameInput input = win32_frame_input(p);
+        app_update_and_render(p->app, &input, p->renderer);
+        arena_reset(&p->scratch);
+        win32_bench_record(p, &st);
+    } while (app_wants_frame(p->app) && st.count < 1000000);
+    u64 total = os_time_us() - t0;
+    LOG("bench-syntax: %s: %U frames, %U ms until the colors are right (Present(0, 0)); longest frame build %U us, avg %U us; "
+        "with vsync at one frame per refresh: ~%U ms", what, st.count, total / 1000, st.build_max, st.build_sum / MAX(st.count, 1),
+        st.count * refresh_us / 1000);
+}
+
+// --bench-syntax: lexing throughput per language (test.c), then with the 100 MB C file: "/*" typed on
+// the first line and a jump to the end, a jump to line 1,000,000 after undoing it, and 10,000
+// self-inserts there with highlighting on and with the buffer in Fundamental.
+static void win32_bench_syntax(Platform *p) {
+    test_bench_syntax();
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    MONITORINFOEXW mi = { .cbSize = sizeof(mi) };
+    DEVMODEW dm = { .dmSize = sizeof(dm) };
+    u32 refresh_us = 16667;
+    if (GetMonitorInfoW(MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST), (MONITORINFO *)&mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) {
+        refresh_us = 1000000u / (u32)dm.dmDisplayFrequency;
+    }
+    LOG("bench-syntax: %D lines of C; build = command + frame build", app_dev_line_count(p->app));
+    win32_bench_catch_up(p, "the top after loading", refresh_us);
+    app_dev_goto_line(p->app, 0);
+    win32_bench_keys(p, "/");
+    u64 slash_star = win32_bench_keys(p, "*");
+    LOG("bench-syntax: typing \"/*\" on the first line: %U us (command + frame build)", slash_star);
+    win32_bench_keys(p, "M->");
+    win32_bench_catch_up(p, "\"/*\" on the first line, then M->", refresh_us);
+    win32_bench_keys(p, "C-/");
+    app_dev_goto_line(p->app, 1000000);
+    win32_bench_catch_up(p, "undone, then line 1,000,000", refresh_us);
+    AppDevMemory m = app_dev_memory(p->app);
+    LOG("bench-syntax: states of the 100 MB file: %U KB committed (line index %U KB)", m.states / 1024, m.line_index / 1024);
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    for (i32 round = 0; round < 2; round++) {
+        if (round == 1) {
+            app_dev_set_language(p->app, BUFFER_LANG_FUNDAMENTAL);
+            win32_bench_catch_up(p, "Fundamental", refresh_us);
+        }
+        BenchStat st = { 0 }, st2 = { 0 };
+        app_dev_goto_line(p->app, 1000000);
+        win32_bench_view_step(p, plain, &st2);
+        win32_bench_catch_up(p, "before typing", refresh_us);
+        for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &st);
+        win32_bench_log(p, "bench-syntax", round == 0 ? "self-insert at line 1,000,000, highlighting on (C)"
+                                                      : "self-insert at line 1,000,000, Fundamental (no highlighting)", &st);
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 // --bench-complete: filtering and ranking 10,000 and 100,000 candidates, per keystroke that changes the
 // input (typing, deleting, clearing), three rounds of a scripted input. Filter = the matcher and the
 // ranking alone; build = the command and the frame build (Present separately, not counted).
@@ -1740,7 +1806,8 @@ static void win32_bench_complete(Platform *p) {
 }
 
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->screenshot_path.len ||
+    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+           p->screenshot_path.len ||
            p->atlas_path.len;
 }
 #endif
@@ -1843,6 +1910,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-view"))) { p->bench_view = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -1879,7 +1947,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
-                                   : p->bench_complete ? "bench-complete"
+                                   : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -1891,6 +1959,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->bench_buffer || p->bench_view || p->bench_edit) { // generated before the app opens it; measured after startup
         p->file_path = test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
     }
+    if (p->bench_syntax) p->file_path = test_bench_syntax_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
 #endif
 
     // Argument parsing above takes microseconds; the device thread starts right after it.
@@ -1942,7 +2011,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
 
     app_args.config_path = p->config_path;
-    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete); // defaults
+    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
+                             p->bench_syntax); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -2030,6 +2100,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_view && !p->quit) {
         win32_bench_view(p);
+        p->quit = 1;
+    }
+    if (p->bench_syntax && !p->quit) {
+        win32_bench_syntax(p);
         p->quit = 1;
     }
     if (p->bench_complete && !p->quit) {
