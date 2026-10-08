@@ -32,6 +32,8 @@ struct Settings {
 
 typedef struct Theme { // 0xRRGGBB
     u32 background, text, cursor, selection, comment, string, keyword, number, type, variable;
+    u32 constant, function, directive; // syntax colors (Phase 8)
+    u32 paren_match;                   // the background of a bracket and its match
     u32 prompt, completion_selection, completion_match; // the minibuffer
 } Theme;
 

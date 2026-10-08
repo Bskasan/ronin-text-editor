@@ -121,6 +121,7 @@ struct App {
     i64 initial_line;            // 0-based line to visit on the first frame, -1 = none
     i32 laid_w, laid_h, laid_cell_w, laid_line_h; // the layout the views were last fitted to
     i64 initial_col;
+    b32 syntax_pending;          // some view's visible lines still need lexer states: another frame
 #if TEAL_DEV
     b32 sample; // --sample: the Phase 2 display
     i32 cursor_col, cursor_row;
@@ -229,23 +230,64 @@ static void app_draw_caret(App *app, Renderer *r, i32 x0, i32 y, i64 col, i64 le
     }
 }
 
-// One line of the buffer, only its columns [left, left + cols). x0 is the x of column `left`.
+static u32 app_kind_color(Theme *th, u32 kind) {
+    switch (kind) {
+    case SYN_COMMENT:   return th->comment;
+    case SYN_STRING:    return th->string;
+    case SYN_NUMBER:    return th->number;
+    case SYN_KEYWORD:   return th->keyword;
+    case SYN_TYPE:      return th->type;
+    case SYN_CONSTANT:  return th->constant;
+    case SYN_DIRECTIVE: return th->directive;
+    case SYN_FUNCTION:  return th->function;
+    case SYN_VARIABLE:  return th->variable;
+    }
+    return th->text; // text, punctuation, invalid
+}
+
+// One line of the buffer, only its columns [left, left + cols), in its token colors. x0 is the x
+// of column `left`.
 static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i32 x0, i32 y, i64 left, i64 cols, Arena *scratch) {
+    Theme *th = &app->config->theme;
     i32 cell_w = app->font->cell_w;
     i64 right = left + cols;
-    i64 end = buffer_line_end(buf, line);
+    i64 start = buffer_line_start(buf, line), end = buffer_line_end(buf, line);
     i64 col = 0;
     // The first character that reaches column `left` (a tab or ^X may start before it).
-    i64 pos = view_walk(buf, buffer_line_start(buf, line), end, &col, left);
+    i64 pos = view_walk(buf, start, end, &col, left);
     // Every visible column needs at most 4 bytes, so a huge line is never copied whole.
     String8 s = buffer_text(buf, scratch, pos, MIN(end, pos + (cols + 1) * 4));
+    // The line's tokens up to its last visible byte; beyond SYNTAX_DRAW_MAX bytes into the line, plain.
+    SyntaxTokens toks = { 0 };
+    i64 lexed = 0;
+    i64 lex_end = MIN(pos + s.len, start + SYNTAX_DRAW_MAX);
+    if (buf->states_on && pos < lex_end) {
+        String8 prefix = buffer_text(buf, scratch, start, lex_end);
+        toks.cap = (i32)prefix.len + 2;
+        toks.tokens = PUSH_ARRAY(scratch, SyntaxToken, toks.cap);
+        if (syntax_line_tokens(buf, line, prefix, &toks)) lexed = prefix.len;
+    }
+    i32 k = 0;
+    u32 run_rgb = th->text;
     i64 run = 0, run_col = col;
     i64 i = 0;
     while (i < s.len && col < right) {
         u8 b = s.data[i];
+        i64 at = pos + i - start;
+        u32 rgb = th->text;
+        if (at < lexed) {
+            while (k + 1 < toks.count && (i64)toks.tokens[k + 1].start <= at) k++;
+            if (toks.count && (i64)toks.tokens[k].start <= at) rgb = app_kind_color(th, toks.tokens[k].kind);
+        }
+        if (rgb != run_rgb) {
+            if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(run_rgb));
+            run = i;
+            run_col = col;
+            run_rgb = rgb;
+        }
         if (b == '\t' || view_is_control(b)) {
-            if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(app->config->theme.text));
-            if (b != '\t') app_draw_caret(app, r, x0, y, col, left, right, b, COLOR_HEX(app->config->theme.number));
+            if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(run_rgb));
+            if (b != '\t') app_draw_caret(app, r, x0, y, col, left, right, b, COLOR_HEX(th->number));
             col += view_char_width(b, col, buf->tab_width);
             run = ++i;
             run_col = col;
@@ -256,7 +298,7 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
         i += advance;
         col++;
     }
-    if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(app->config->theme.text));
+    if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(run_rgb));
 }
 
 // The cell rect of a cursor, or false when it is outside the window's first `rows` rows (only the
@@ -1152,6 +1194,24 @@ static void app_key_event(App *app, Event *e) {
     }
 }
 
+// Lexer states for the visible lines of every view, within one budget per frame. While some view
+// still needs states, another frame is requested; once they are there, nothing runs.
+static void app_catch_up(App *app, Arena *scratch) {
+    u64 end = os_time_us() + SYNTAX_FRAME_BUDGET_US;
+    b32 pending = 0;
+    for (i32 i = 0; i < app->view_count; i++) {
+        View *v = app->views[i];
+        u64 now = os_time_us();
+        u64 budget = now < end ? end - now : 1;
+        if (!syntax_catch_up(v->buffer, view_top_line(v) + v->rows, budget, scratch)) pending = 1;
+    }
+    app->syntax_pending = pending;
+}
+
+b32 app_wants_frame(App *app) {
+    return app->syntax_pending;
+}
+
 u32 app_wait_ms(App *app) {
     return MIN(config_wait_ms(&app->config_source, os_time_us()), files_wait_ms(app));
 }
@@ -1221,6 +1281,7 @@ static b32 app_update(App *app, FrameInput *in) {
     app->laid_h = in->height;
     app->laid_cell_w = l.cell_w;
     app->laid_line_h = l.line_h;
+    app_catch_up(app, in->scratch);
     app_update_title(app, in->scratch);
     files_update_watches(app);
     files_report_unsaved(app);

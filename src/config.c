@@ -198,6 +198,8 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "comment", offsetof(Theme, comment) },       { "string", offsetof(Theme, string) },
     { "keyword", offsetof(Theme, keyword) },       { "number", offsetof(Theme, number) },
     { "type", offsetof(Theme, type) },             { "variable", offsetof(Theme, variable) },
+    { "constant", offsetof(Theme, constant) },     { "function", offsetof(Theme, function) },
+    { "directive", offsetof(Theme, directive) },   { "paren_match", offsetof(Theme, paren_match) },
     { "prompt", offsetof(Theme, prompt) },
     { "completion_selection", offsetof(Theme, completion_selection) },
     { "completion_match", offsetof(Theme, completion_match) },

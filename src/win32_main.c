@@ -777,7 +777,7 @@ static void win32_frame(Platform *p) {
     FrameInput input = win32_frame_input(p);
     if (!app_update_and_render(p->app, &input, p->renderer)) p->quit = 1;
     p->event_count = 0;
-    p->redraw = r_wants_redraw(p->renderer);
+    p->redraw = r_wants_redraw(p->renderer) || app_wants_frame(p->app);
     arena_reset(&p->scratch);
     p->frame_count++;
 
@@ -1439,6 +1439,7 @@ static i32 win32_write_outputs(Platform *p) {
         win32_frame(p);
     }
     if (p->quit) return EXIT_OK;
+    for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p); // the colors of what is shown
     r_request_capture(p->renderer);
     win32_frame(p);
     i32 result = EXIT_OK;
