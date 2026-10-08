@@ -578,6 +578,7 @@ void os_unwatch(OsWatch watch) {
 static void win32_push_event(Platform *p, Event e);
 #if TEAL_DEV
 static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
+static u64 win32_dev_hash(String8 s);
 static void win32_dev_idle_check_mark(Platform *p, b32 end);
 #endif
 
@@ -2300,7 +2301,41 @@ static void win32_bench_search(Platform *p) {
     st = (BenchStat){ 0 };
     total = win32_bench_search_keys(p, "C-?", &st);
     LOG("bench-search: its undo-redo: %U ms in %U frame(s), longest frame build %U us", total / 1000, st.count, st.build_max);
+
+    // The 100 MB file (manual K17): replace-string shows its progress, C-g stops it, one C-x u gives
+    // back the file's text exactly. A wrong result fails the bench (exit 9).
+    if (app_dev_visit(p->app, p->file_path)) {
+        u64 hash0 = win32_dev_hash(app_dev_text(p->app, &p->scratch));
+        arena_reset(&p->scratch);
+        i64 size0 = app_dev_size(p->app);
+        win32_bench_keys(p, "M-<");
+        win32_bench_keys(p, "M-x r e p l a c e - s t r i n g RET b u f f e r RET B U F RET");
+        for (i32 k = 0; k < 3; k++) win32_bench_keys(p, "");
+        String8 progress = app_dev_replace_prompt(p->app, &p->perm);
+        win32_bench_keys(p, "C-g");
+        String8 stopped = str8_copy(&p->perm, app_dev_echo(p->app));
+        i64 size1 = app_dev_size(p->app);
+        u64 t0 = os_time_us();
+        win32_bench_keys(p, "C-x u");
+        for (i32 k = 0; k < 100000 && app_wants_frame(p->app); k++) win32_bench_keys(p, "");
+        u64 undo_us = os_time_us() - t0;
+        u64 hash1 = win32_dev_hash(app_dev_text(p->app, &p->scratch));
+        arena_reset(&p->scratch);
+        b32 ok = str8_starts_with(progress, STR8_LIT("Replacing... ")) && str8_starts_with(stopped, STR8_LIT("Replaced ")) &&
+                 test_contains(stopped, "(stopped)") && size1 != size0 && app_dev_size(p->app) == size0 && hash1 == hash0;
+        LOG("bench-search: %s: replace-string buffer -> BUF in the 100 MB file: after 4 frames '%S'; C-g: '%S' (%D bytes changed); "
+            "one C-x u in %U ms gives back the exact text %d", ok ? "ok" : "FAIL", progress, stopped, size0 - size1, undo_us / 1000,
+            hash1 == hash0 && app_dev_size(p->app) == size0);
+        if (!ok) p->exit_code = EXIT_TEST;
+    }
     r_dev_set_present_interval(p->renderer, 1);
+}
+
+// FNV-1a: comparing big texts by a hash.
+static u64 win32_dev_hash(String8 s) {
+    u64 h = 0xcbf29ce484222325ull;
+    for (i64 i = 0; i < s.len; i++) h = (h ^ s.data[i]) * 0x100000001b3ull;
+    return h;
 }
 
 // --bench-complete: filtering and ranking 10,000 and 100,000 candidates, per keystroke that changes the
