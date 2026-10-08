@@ -78,6 +78,7 @@ struct App {
     Font *font;
     BufferList buffers;          // every buffer, in creation order
     Buffer *messages;            // *Messages*: the echo area's log
+    KillRing kills;              // one for every buffer
     View *views[APP_MAX_VIEWS];  // laid out side by side
     i32 view_count;
     i32 active_view;
@@ -569,6 +570,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
     app->keymap_count = 1;
     app->keys.pending.len = 0;
     app->ctx.settings = &c->settings;
+    kill_set_max(&app->kills, c->settings.kill_ring_max);
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +655,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->view_count = 1;
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
+    if (!kill_init(&app->kills, app->config->settings.kill_ring_max)) os_fatal(STR8_LIT("Out of address space (kill ring)."));
+    app->ctx.kills = &app->kills;
     app_apply_config(app, NULL, 1);
     app_report_config(app, config_result, 0);
     app_watch_config(app);
@@ -673,6 +677,7 @@ i32 app_shutdown(App *app) {
     i32 leaks = font_shutdown(app->font);
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += buffer_list_destroy(&app->buffers);
+    kill_destroy(&app->kills);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
     os_unwatch(app->config_watch);
     return leaks;

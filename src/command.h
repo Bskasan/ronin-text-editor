@@ -8,6 +8,7 @@ typedef struct View View;
 typedef struct Cursor Cursor;
 typedef struct Echo Echo;
 typedef struct Settings Settings;
+typedef struct KillRing KillRing;
 typedef struct CommandContext CommandContext;
 typedef void CommandFn(CommandContext *ctx);
 
@@ -20,6 +21,8 @@ enum {
     COMMAND_EDIT         = 1 << 4, // changes text: the mark is deactivated afterwards
     COMMAND_REGION_DELETE  = 1 << 5, // with an active region it deletes the region instead (delete-active-region)
     COMMAND_REGION_REPLACE = 1 << 6, // with delete_selection_mode, an active region is deleted first
+    COMMAND_KILL           = 1 << 7, // after another kill it appends to the same kill ring entry
+    COMMAND_KILL_BACKWARD  = 1 << 8, // ... and prepends instead
 };
 
 typedef struct Command {
@@ -36,6 +39,8 @@ struct CommandContext {
     Cursor *cursor;           // the cursor being processed
     Echo *echo;
     const Settings *settings; // the config's settings (config.h)
+    KillRing *kills;          // the kill ring (edit.h)
+    b32 kill_append;          // set by the driver: this command's kills append to the newest entry
     u32 codepoint;            // self-insert: the character of the key
     b32 shift_translated;     // the key had Shift and was found without it (shift-select, Phase 6)
     const Command *this_command;

@@ -388,13 +388,16 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     BufferUndoMerge merge = (cmd->flags & COMMAND_MERGE_INSERT) ? BUFFER_UNDO_MERGE_INSERT
                           : (cmd->flags & COMMAND_MERGE_DELETE) ? BUFFER_UNDO_MERGE_DELETE : BUFFER_UNDO_MERGE_NONE;
     buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, &v->cursors[0]));
+    // A kill right after a kill appends to the same kill ring entry.
+    ctx->kill_append = (cmd->flags & COMMAND_KILL) && ctx->last_command && (ctx->last_command->flags & COMMAND_KILL);
     if (cmd->flags & COMMAND_ONCE) {
         view_run_for_cursor(ctx, cmd, &v->cursors[0]);
     } else {
         for (i32 i = 0; i < v->cursor_count; i++) view_run_for_cursor(ctx, cmd, &v->cursors[i]);
     }
     ctx->cursor = NULL;
-    if (cmd->flags & COMMAND_EDIT) view_deactivate_mark(ctx->view); // the view may have changed buffers
+    if (cmd->flags & (COMMAND_EDIT | COMMAND_KILL)) view_deactivate_mark(ctx->view); // the view may have changed buffers
+    if (ctx->kills) kill_to_clipboard(ctx->kills); // once per command, when it killed
     view_ensure_visible(v);
     ctx->last_command = cmd;
 }
@@ -463,22 +466,25 @@ static b32 view_is_word_byte(u8 b, b32 underscore) {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80 || (b == '_' && underscore);
 }
 
-static void cmd_forward_word(CommandContext *ctx) {
-    Buffer *buf = ctx->view->buffer;
-    b32 u = ctx->settings->underscore_is_word;
-    i64 size = buffer_size(buf), p = cmd_point(ctx);
+i64 view_forward_word(Buffer *buf, i64 p, b32 u) {
+    i64 size = buffer_size(buf);
     while (p < size && !view_is_word_byte(buffer_byte(buf, p), u)) p++;
     while (p < size && view_is_word_byte(buffer_byte(buf, p), u)) p++;
-    cmd_goto(ctx, p);
+    return p;
+}
+
+i64 view_backward_word(Buffer *buf, i64 p, b32 u) {
+    while (p > 0 && !view_is_word_byte(buffer_byte(buf, p - 1), u)) p--;
+    while (p > 0 && view_is_word_byte(buffer_byte(buf, p - 1), u)) p--;
+    return p;
+}
+
+static void cmd_forward_word(CommandContext *ctx) {
+    cmd_goto(ctx, view_forward_word(ctx->view->buffer, cmd_point(ctx), ctx->settings->underscore_is_word));
 }
 
 static void cmd_backward_word(CommandContext *ctx) {
-    Buffer *buf = ctx->view->buffer;
-    b32 u = ctx->settings->underscore_is_word;
-    i64 p = cmd_point(ctx);
-    while (p > 0 && !view_is_word_byte(buffer_byte(buf, p - 1), u)) p--;
-    while (p > 0 && view_is_word_byte(buffer_byte(buf, p - 1), u)) p--;
-    cmd_goto(ctx, p);
+    cmd_goto(ctx, view_backward_word(ctx->view->buffer, cmd_point(ctx), ctx->settings->underscore_is_word));
 }
 
 // A paragraph separator is a line of only spaces and tabs (Emacs' default paragraph-start).
