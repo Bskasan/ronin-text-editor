@@ -278,6 +278,9 @@ b32 syntax_catch_up(Buffer *buf, i64 need_line, u64 budget_us, Arena *scratch) {
             lines = bytes = 0;
         }
     }
+    // The stored states after the last one written are from an earlier pass: they need not follow
+    // from it. A later pass may only take them as converged after this line.
+    if (buf->state_valid < buf->state_known - 1) buf->state_dirty = MAX(buf->state_dirty, buf->state_valid);
     return buf->state_valid >= need_line;
 }
 
