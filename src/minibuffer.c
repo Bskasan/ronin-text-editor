@@ -136,6 +136,7 @@ void minibuffer_clear_candidates(Minibuffer *mb) {
     arena_reset(&mb->text_arena);
     mb->cands = (Candidate *)mb->cand_arena.base;
     mb->cand_count = 0;
+    mb->cand_key = str8(NULL, 0);
 }
 
 void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, u32 flags) {

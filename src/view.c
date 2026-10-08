@@ -653,17 +653,6 @@ static void cmd_mark_whole_buffer(CommandContext *ctx) {
     echo_message(ctx->echo, "Mark set");
 }
 
-static void cmd_save_buffer(CommandContext *ctx) {
-    Buffer *buf = ctx->view->buffer;
-    if (!buf->modified) {
-        echo_message(ctx->echo, "(No changes need to be saved)");
-        return;
-    }
-    OsFileStatus status = buffer_save_opt(buf, ctx->settings->fsync_on_save);
-    if (status == OS_FILE_OK) echo_message(ctx->echo, "Wrote %S", buf->path);
-    else echo_message(ctx->echo, "Cannot save %S: %s", buf->name, buffer_status_text(status));
-}
-
 static void cmd_scroll_up_command(CommandContext *ctx) {
     View *v = ctx->view;
     if (view_top_line(v) >= buffer_line_count(v->buffer) - 1) {
@@ -712,7 +701,6 @@ const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter
 const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE };
 const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
-const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
 const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE | COMMAND_QUIT };
 const Command CMD_SET_MARK_COMMAND       = { "set-mark-command", cmd_set_mark_command, 0 };
 const Command CMD_EXCHANGE_POINT_AND_MARK = { "exchange-point-and-mark", cmd_exchange_point_and_mark, 0 };

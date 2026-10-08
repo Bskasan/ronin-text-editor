@@ -164,6 +164,8 @@ struct Minibuffer {
     i64 selected;             // index into matches
     i64 list_top;             // the first match shown
 
+    String8 cand_key;         // what the candidates were built for (find-file: the directory); in text_arena
+
     MiniHistory histories[MINI_HISTORY_COUNT];
     Arena history_arena;      // the history's strings; dead ones compacted away
     u64 history_live;         // bytes of live strings in it
