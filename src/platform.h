@@ -142,6 +142,7 @@ typedef struct Event {
     // current Shift / AltGr state, Ctrl and Alt ignored (a dead key gives its spacing accent); 0 if none.
     u32 codepoint;
     MouseButton button;// EVENT_MOUSE_DOWN / UP
+    i32 clicks;        // EVENT_MOUSE_DOWN: 1, 2 (double click) or 3 (triple), by the system's double-click time and area
     i32 x, y;          // mouse events, client pixels
     i32 wheel;         // EVENT_MOUSE_WHEEL, 120 per notch, positive = away from user
     i32 width, height; // EVENT_RESIZE, client pixels

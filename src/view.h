@@ -89,6 +89,8 @@ void view_set_mark(View *view, Cursor *cursor, i64 pos, b32 active);
 void view_deactivate_mark(View *view); // every cursor
 b32  view_region(View *view, Cursor *cursor, i64 *start, i64 *end); // false when the mark is not set
 b32  view_region_active(View *view, Cursor *cursor, const Settings *settings); // transient mark mode and active
+// The run around pos that a double click selects: a word, a run of blanks, or one other character.
+void view_word_bounds(Buffer *buf, i64 pos, b32 underscore_is_word, i64 *start, i64 *end);
 
 // ---------------------------------------------------------------------------
 // The buffer list. Each entry remembers where its buffer was last shown, so switching a view

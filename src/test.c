@@ -1803,7 +1803,19 @@ static b32 test_region(Test *t) {
     test_view_run(&tv, &CMD_EXCHANGE_POINT_AND_MARK);
     TEST_CHECK(t, test_echo_is(&tv, "No mark set in this buffer"), "region: exchange without a mark");
     if (!test_view_close(t, &tv)) return 0;
-    LOG("test: ok: mark and region: shift-select, C-SPC, C-g, C-x C-x, C-x h, typing, delete-active-region, delete_selection_mode");
+    // What a double click selects.
+    Buffer *wb = buffer_create(STR8_LIT("words"));
+    buffer_replace(wb, 0, 0, STR8_LIT("foo_bar  baz,\xc5\x9fu\n"));
+    static const struct { i64 pos; b32 underscore; i64 start, end; } words[] = {
+        { 1, 0, 0, 3 }, { 1, 1, 0, 7 }, { 3, 0, 3, 4 }, { 8, 0, 7, 9 }, { 12, 0, 12, 13 }, { 13, 0, 13, 16 }, { 16, 0, 16, 17 }, { 17, 0, 17, 17 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(words); i++) {
+        i64 s0, e0;
+        view_word_bounds(wb, words[i].pos, words[i].underscore, &s0, &e0);
+        TEST_CHECK(t, s0 == words[i].start && e0 == words[i].end, "region: word bounds case %d: [%D, %D)", i, s0, e0);
+    }
+    buffer_destroy(wb);
+    LOG("test: ok: mark and region: shift-select, C-SPC, C-g, C-x C-x, C-x h, typing, delete-active-region, delete_selection_mode, word bounds");
     return 1;
 }
 

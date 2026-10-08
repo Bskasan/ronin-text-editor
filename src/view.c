@@ -309,6 +309,37 @@ b32 view_region_active(View *v, Cursor *c, const Settings *settings) {
     return settings->transient_mark_mode && c->mark_set && c->mark_active;
 }
 
+static b32 view_is_word_byte(u8 b, b32 underscore);
+
+void view_word_bounds(Buffer *buf, i64 pos, b32 underscore, i64 *start, i64 *end) {
+    i64 size = buffer_size(buf);
+    *start = *end = pos;
+    if (pos >= size) return;
+    u8 b = buffer_byte(buf, pos);
+    if (b == '\n') {
+        *end = pos + 1;
+        return;
+    }
+    i32 cls = view_is_word_byte(b, underscore) ? 1 : (b == ' ' || b == '\t') ? 2 : 0;
+    if (cls == 0) {
+        *end = buffer_next_char(buf, pos);
+        return;
+    }
+    i64 s = pos, e = pos;
+    while (s > 0) {
+        u8 c = buffer_byte(buf, s - 1);
+        if ((cls == 1 && !view_is_word_byte(c, underscore)) || (cls == 2 && c != ' ' && c != '\t')) break;
+        s--;
+    }
+    while (e < size) {
+        u8 c = buffer_byte(buf, e);
+        if ((cls == 1 && !view_is_word_byte(c, underscore)) || (cls == 2 && c != ' ' && c != '\t')) break;
+        e++;
+    }
+    *start = s;
+    *end = e;
+}
+
 // Deletes the cursor's region (delete-active-region, delete_selection_mode).
 static void view_delete_region(CommandContext *ctx, Cursor *c) {
     View *v = ctx->view;
