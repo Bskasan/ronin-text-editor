@@ -172,9 +172,12 @@ with or without the 100 MB file.
 - [x] 4. View: cursors (stored as an array from day one), scrolling, layout
 - [x] 5. Commands, keymap with prefix keys, config file, hot reload
 - [x] 6. Editing: mark/region, kill ring, undo/redo, auto-indent
-- [ ] 7. Theme file, mode line, minibuffer prompts
-- [ ] 8. Lexers and incremental highlighting
-- [ ] 9. isearch, query-replace, goto-line, buffer switching
+- [ ] 7. Minibuffer, prompts, file and buffer commands (goto-line and buffer switching from 9)
+- [ ] 8. Lexers and incremental highlighting; token-aware indentation: bracket matching on tokens
+  replaces bracket counting. A line that starts with a closer takes the indentation of the line
+  holding its matching opener; a line after one that leaves any bracket open gets one level more,
+  however many it opened (fixes `f((x) => {` giving two levels).
+- [ ] 9. isearch and query-replace
 - [ ] 10. Window splitting
 - [ ] 11. Project + fuzzy file open
 - [ ] 12. Project-wide search
@@ -477,6 +480,26 @@ with or without the 100 MB file.
   their smallest indentation and, without a region, moves to the next line (Emacs).
 - <backtab> is Emacs' name for S-TAB in the kbd notation (and how it prints).
 
+### Minibuffer, prompts, files and buffers (Phase 7)
+
+- The minibuffer is a real one-line View on its own Buffer. All editing commands, the kill ring,
+  undo, region and mouse work in it unchanged. While it is active the keymap stack is
+  [minibuffer, global].
+- Prompts never block. A command asks for input and returns; a continuation runs with the result
+  when the user accepts. Multi-step prompts chain continuations. No nested event loop.
+- No recursive minibuffers. A command that needs the minibuffer while it is active reports
+  "Command attempted to use minibuffer while in minibuffer".
+- Completion is a vertical candidate list above the minibuffer line (like Emacs' fido-vertical),
+  filtered as the user types. No *Completions* buffer.
+- Matching: case-insensitive; space-separated terms must all match as substrings; prefix matches
+  rank before other matches; an exact match ranks first. The matcher sits behind a small
+  interface: Phase 11 replaces it with fuzzy scoring for project files.
+- Opening and closing the minibuffer never changes the scroll position of any View.
+- Paths are shown with forward slashes, as Emacs does on Windows. Both separators are accepted as
+  input. "~" means the user's profile directory.
+- Files changed outside the editor: an unmodified buffer is reloaded silently; a modified buffer is
+  never touched, only flagged.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -508,7 +531,5 @@ with or without the 100 MB file.
 - Auto-scroll while dragging outside the window; after a double or triple click, a drag that
   extends by words or lines.
 - Multiple cursors and undo: undo restores only the primary cursor's point (Phase 14).
-- Smaller commit steps for small buffers: an extra 2 KB buffer costs ~440 KB (64 KB steps for
-  meta, text, line index and markers).
-- Indentation of callbacks: `f((x) => {` opens two levels under the bracket rule (Phase 8 can
-  count tokens instead).
+- Auto-save and crash recovery.
+- Slow directory listings (network shares) block the UI while find-file lists a directory.
