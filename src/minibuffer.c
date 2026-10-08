@@ -1,5 +1,8 @@
 // minibuffer.c — see minibuffer.h.
 
+#include <emmintrin.h> // SSE2 scan in the matcher (compiler intrinsics, not the CRT)
+#include <intrin.h>    // _BitScanForward
+
 // ---------------------------------------------------------------------------
 // Matching
 
@@ -34,12 +37,28 @@ MatchQuery match_query(Arena *arena, String8 input) {
     return q;
 }
 
-// The first occurrence of `term` in `s`, or -1.
+// The first occurrence of `term` in `s`, or -1. The term's first byte is looked for 16 bytes at a
+// time (SSE2); each hit compares the rest.
 static i64 match_find(String8 s, String8 term) {
     if (!term.len) return 0;
+    i64 last = s.len - term.len; // the last possible start
+    if (last < 0) return -1;
     u8 first = term.data[0];
-    for (i64 i = 0, last = s.len - term.len; i <= last; i++) {
-        if (s.data[i] == first && mem_equal(s.data + i, term.data, term.len)) return i;
+    __m128i want = _mm_set1_epi8((char)first);
+    i64 i = 0;
+    for (; i + 16 <= s.len && i <= last; i += 16) {
+        u32 mask = (u32)_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(s.data + i)), want));
+        while (mask) {
+            unsigned long bit;
+            _BitScanForward(&bit, mask);
+            i64 at = i + (i64)bit;
+            if (at > last) return -1;
+            if (mem_equal(s.data + at + 1, term.data + 1, term.len - 1)) return at;
+            mask &= mask - 1;
+        }
+    }
+    for (; i <= last; i++) {
+        if (s.data[i] == first && mem_equal(s.data + i + 1, term.data + 1, term.len - 1)) return i;
     }
     return -1;
 }
@@ -64,20 +83,21 @@ i32 match_spans(MatchQuery *q, Candidate *c, MatchSpan *out, i32 cap) {
     return n;
 }
 
-i64 match_rank(MatchQuery *q, Candidate *cands, i64 count, i32 *out) {
+i64 match_rank(MatchQuery *q, Candidate *cands, i64 count, i32 *out, b32 narrow) {
     i64 found[MATCH_EXACT + 1] = { 0 };
     for (i64 i = 0; i < count; i++) {
+        if (narrow && cands[i].score == MATCH_NONE) continue;
         MatchScore s = match_score(q, &cands[i]);
         cands[i].score = (u8)s;
         found[s]++;
     }
-    // Stable: one pass per score, best first.
-    i64 n = 0;
-    for (i32 s = MATCH_EXACT; s > MATCH_NONE; s--) {
-        if (!found[s]) continue;
-        for (i64 i = 0; i < count; i++) if (cands[i].score == s) out[n++] = (i32)i;
-    }
-    return n;
+    // Stable: each match goes to the next place of its score's group, best group first.
+    i64 next[MATCH_EXACT + 1] = { 0 };
+    next[MATCH_EXACT] = 0;
+    next[MATCH_PREFIX] = found[MATCH_EXACT];
+    next[MATCH_SUBSTRING] = found[MATCH_EXACT] + found[MATCH_PREFIX];
+    for (i64 i = 0; i < count; i++) if (cands[i].score != MATCH_NONE) out[next[cands[i].score]++] = (i32)i;
+    return found[MATCH_EXACT] + found[MATCH_PREFIX] + found[MATCH_SUBSTRING];
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +111,8 @@ void minibuffer_init(Minibuffer *mb, Arena *perm, Buffer *buffer) {
     mb->cand_arena = arena_create(MINI_ARENA_RESERVE);
     mb->text_arena = arena_create(MINI_ARENA_RESERVE);
     mb->match_arena = arena_create(MINI_ARENA_RESERVE);
+    mb->input_arena = arena_create(MINI_ARENA_RESERVE);
+    mb->filtered_epoch = ~0ull;
     mb->history_arena = arena_create(MINI_ARENA_RESERVE);
     mb->history_pos = -1;
 }
@@ -99,7 +121,7 @@ i32 minibuffer_destroy(Minibuffer *mb) {
     view_destroy(mb->view);
     i32 leaks = (i32)mb->buffer->marker_live;
     if (!buffer_destroy(mb->buffer)) leaks++;
-    Arena *arenas[] = { &mb->arena, &mb->cand_arena, &mb->text_arena, &mb->match_arena, &mb->history_arena };
+    Arena *arenas[] = { &mb->arena, &mb->cand_arena, &mb->text_arena, &mb->match_arena, &mb->input_arena, &mb->history_arena };
     for (i32 i = 0; i < ARRAY_COUNT(arenas); i++) os_release(arenas[i]->base);
     return leaks;
 }
@@ -136,6 +158,7 @@ void minibuffer_clear_candidates(Minibuffer *mb) {
     arena_reset(&mb->text_arena);
     mb->cands = (Candidate *)mb->cand_arena.base;
     mb->cand_count = 0;
+    mb->cand_epoch++;
     mb->cand_key = str8(NULL, 0);
 }
 
@@ -149,7 +172,8 @@ void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, 
     mb->cand_count++;
 }
 
-// Filters and ranks the candidates for the current input; the first match is selected.
+// Filters and ranks the candidates for the current input; the first match is selected. When the
+// input only grew (typing at its end) on the same candidates, only the previous matches are scored.
 static void minibuffer_filter(Minibuffer *mb) {
 #if TEAL_DEV
     u64 t0 = os_time_us();
@@ -162,9 +186,14 @@ static void minibuffer_filter(Minibuffer *mb) {
     String8 input = minibuffer_input(mb, &mb->match_arena);
     i64 from = mb->candidates_fn ? mb->candidates_fn(mb, mb->candidates_data, input) : 0;
     mb->match_from = CLAMP(from, 0, input.len);
+    b32 narrow = mb->filtered_epoch == mb->cand_epoch && mb->match_from == mb->last_from && str8_starts_with(input, mb->last_input);
+    arena_reset(&mb->input_arena);
+    mb->last_input = str8_copy(&mb->input_arena, input);
+    mb->last_from = mb->match_from;
+    mb->filtered_epoch = mb->cand_epoch;
     mb->query = match_query(&mb->match_arena, str8(input.data + mb->match_from, input.len - mb->match_from));
     mb->matches = PUSH_ARRAY(&mb->match_arena, i32, mb->cand_count);
-    mb->match_count = match_rank(&mb->query, mb->cands, mb->cand_count, mb->matches);
+    mb->match_count = match_rank(&mb->query, mb->cands, mb->cand_count, mb->matches, narrow);
 #if TEAL_DEV
     mb->dev_filter_us = os_time_us() - t0;
     mb->dev_filters++;
@@ -198,6 +227,7 @@ b32 minibuffer_read(CommandContext *ctx, MiniRequest *req) {
     mb->history = req->history;
     mb->history_pos = -1;
     mb->typed = str8(NULL, 0);
+    mb->filtered_epoch = ~0ull; // a new prompt is never narrowed from the last one
     if (req->kind != MINI_CHOICE) minibuffer_clear_candidates(mb);
     else if (req->candidates) minibuffer_clear_candidates(mb); // the callback fills them
     minibuffer_reset_input(mb, req->kind == MINI_KEY ? str8(NULL, 0) : req->initial);
