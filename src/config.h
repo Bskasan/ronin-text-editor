@@ -19,6 +19,7 @@ struct Settings {
     i32 tab_width;
     b32 underscore_is_word;
     b32 fsync_on_save;
+    i32 undo_limit_mb;        // per buffer
 };
 
 typedef struct Theme { // 0xRRGGBB

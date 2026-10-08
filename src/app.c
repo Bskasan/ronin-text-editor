@@ -525,6 +525,13 @@ static void app_report_config(App *app, ConfigPoll result, b32 reload) {
 }
 
 // Applies the current config: font, caption color, tab width, keys, settings.
+// The settings a buffer keeps per buffer (Emacs' buffer-local variables).
+static void app_buffer_settings(App *app, Buffer *buf) {
+    Settings *s = &app->config->settings;
+    buf->tab_width = s->tab_width;
+    buffer_undo_set_limit(buf, (u64)s->undo_limit_mb << 20);
+}
+
 static void app_apply_config(App *app, Renderer *r, b32 startup) {
     Config *c = app->config;
     if (!startup) {
@@ -532,7 +539,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
         font_reconfigure(app->font, r, &fp);
     }
     os_set_caption_color(c->theme.background);
-    for (i32 i = 0; i < app->buffers.count; i++) app->buffers.entries[i].buffer->tab_width = c->settings.tab_width;
+    for (i32 i = 0; i < app->buffers.count; i++) app_buffer_settings(app, app->buffers.entries[i].buffer);
     app->keymaps[0] = &c->global;
     app->keymap_count = 1;
     app->keys.pending.len = 0;
@@ -545,7 +552,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
 static Buffer *app_new_buffer(App *app, String8 name) {
     Buffer *buf = buffer_create(name);
     if (!buf) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
-    buf->tab_width = app->config->settings.tab_width;
+    app_buffer_settings(app, buf);
     buffer_list_add(&app->buffers, buf);
     return buf;
 }
@@ -579,7 +586,7 @@ static Buffer *app_find_file(App *app, String8 path) {
         buffer_destroy(buf);
         return NULL;
     }
-    buf->tab_width = app->config->settings.tab_width;
+    app_buffer_settings(app, buf);
     buffer_list_add(&app->buffers, buf);
     return buf;
 }

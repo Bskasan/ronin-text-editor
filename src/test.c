@@ -1035,7 +1035,9 @@ static b32 test_view_open(Test *t, TestView *tv, const char *marked, i32 rows, i
     tv->buf = buffer_create(STR8_LIT("test.c"));
     TEST_CHECK(t, tv->buf, "view: buffer_create failed");
     buffer_replace(tv->buf, 0, 0, str8(text, n));
-    tv->buf->modified = 0;
+    buffer_undo_enable(tv->buf, 0); // the starting text is not an edit: as if loaded
+    buffer_undo_enable(tv->buf, 1);
+    buffer_mark_saved(tv->buf);
     tv->view = view_create(&t->arena, tv->buf);
     tv->view->rows = rows;
     tv->view->cols = cols;
@@ -1585,6 +1587,125 @@ static b32 test_undo_buffer(Test *t, u64 seed) {
     TEST_CHECK(t, buffer_destroy(buf), "undo: memory not released");
     LOG("test: ok: undo log: %d edits undone and redone, saved state, merging at 20, read-only, limit, disabled (%U bytes committed)",
         (i32)K, memory);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Undo through the command driver
+
+static void test_type_char(TestView *tv, u32 c) {
+    tv->ctx.codepoint = c;
+    test_view_run(tv, &CMD_SELF_INSERT);
+}
+
+static b32 test_echo_is(TestView *tv, const char *expected) {
+    return str8_equal(str8(tv->echo.text, tv->echo.len), str8_cstr(expected));
+}
+
+static b32 test_undo_commands(Test *t, u64 seed) {
+    TestView tv;
+    // The Emacs chain: A, B, undo, undo, another command, undo, undo ends at the text after B.
+    if (!test_view_open(t, &tv, "|hello", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_NEWLINE);  // A
+    test_type_char(&tv, 'Z');          // B
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "\nZ|hello"), "undo: setup");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "\n|hello") && test_echo_is(&tv, "Undo"), "undo: first undo");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "|hello") && !tv.buf->modified, "undo: second undo");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_echo_is(&tv, "No further undo information"), "undo: nothing further in the chain");
+    test_view_run(&tv, &CMD_FORWARD_CHAR); // another command ends the run
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "\n|hello"), "undo: after another command undo undoes the undos (A back)");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "\nZ|hello") && tv.buf->modified, "undo: and then B back: the text after B");
+    // undo-redo goes forward along the undos.
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    test_view_run(&tv, &CMD_UNDO);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("hello")), "undo: back to the start");
+    test_view_run(&tv, &CMD_UNDO_REDO);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("\nhello")) && test_echo_is(&tv, "Redo"), "undo-redo: A again");
+    test_view_run(&tv, &CMD_UNDO_REDO);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("\nZhello")), "undo-redo: B again (%s)", test_view_marked(t, &tv));
+    test_view_run(&tv, &CMD_UNDO_REDO);
+    TEST_CHECK(t, test_echo_is(&tv, "No further redo information"), "undo-redo: nothing further");
+    if (!test_view_close(t, &tv)) return 0;
+
+    // K commands then N undos gives the text after command K - N.
+    enum { K = 30 };
+    if (!test_view_open(t, &tv, "one two\nthree |four\nfive", 10, 40)) return 0;
+    char *texts[K + 1];
+    texts[0] = test_view_marked(t, &tv);
+    static const Command *motions[] = { &CMD_FORWARD_CHAR, &CMD_BACKWARD_WORD, &CMD_NEXT_LINE, &CMD_MOVE_END_OF_LINE };
+    t->rng = seed ^ 0x1d0;
+    for (i32 k = 1; k <= K; k++) {
+        test_view_run(&tv, motions[test_below(t, ARRAY_COUNT(motions))]);
+        i64 size = buffer_size(tv.buf);
+        switch (test_below(t, 3)) {
+        case 0: test_view_run(&tv, &CMD_NEWLINE); break;
+        case 1: test_type_char(&tv, "abc\xc5\x9f"[test_below(t, 3)]); break;
+        case 2: test_view_run(&tv, size > 4 ? &CMD_DELETE_BACKWARD_CHAR : &CMD_NEWLINE); break;
+        }
+        if (buffer_size(tv.buf) == size && test_cstr_equal(test_view_marked(t, &tv), texts[k - 1])) { // a refused delete
+            test_view_run(&tv, &CMD_NEWLINE);
+        }
+        texts[k] = test_view_marked(t, &tv);
+    }
+    for (i32 n = 1; n <= K; n++) {
+        test_view_run(&tv, &CMD_UNDO);
+        String8 text = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf));
+        String8 expected = str8_cstr(texts[K - n]);
+        // Compare the text only (point is where that command started, checked below).
+        u8 *plain = PUSH_ARRAY(&t->arena, u8, expected.len);
+        i64 m = 0;
+        for (i64 i = 0; i < expected.len; i++) if (expected.data[i] != '|') plain[m++] = expected.data[i];
+        TEST_CHECK(t, str8_equal(text, str8(plain, m)), "undo: after %d undos the text is not the text after command %d", n, K - n);
+    }
+    TEST_CHECK(t, !tv.buf->modified, "undo: undoing everything leaves the buffer unmodified");
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Merging: groups of exactly 20 self-inserts, and of 20 single deletes.
+    if (!test_view_open(t, &tv, "|", 10, 40)) return 0;
+    for (i32 i = 0; i < 41; i++) test_type_char(&tv, 'a' + i % 26);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, buffer_size(tv.buf) == 40, "undo: the 41st insert is a group of its own (size %D)", buffer_size(tv.buf));
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, buffer_size(tv.buf) == 20, "undo: inserts 21-40 are one group of 20 (size %D)", buffer_size(tv.buf));
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, buffer_size(tv.buf) == 0, "undo: inserts 1-20 are one group of 20");
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    test_view_run(&tv, &CMD_UNDO); // the undos undone: 20 back
+    test_view_run(&tv, &CMD_UNDO);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, buffer_size(tv.buf) == 41, "undo: the inserts are back (size %D)", buffer_size(tv.buf));
+    test_view_run(&tv, &CMD_MOVE_END_OF_LINE);
+    for (i32 i = 0; i < 25; i++) test_view_run(&tv, &CMD_DELETE_BACKWARD_CHAR);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, buffer_size(tv.buf) == 16 + 5, "undo: deletes 21-25 are one group (size %D)", buffer_size(tv.buf));
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, buffer_size(tv.buf) == 41 && test_cstr_equal(test_view_marked(t, &tv), "abcdefghijklmnopqrstuvwxyzabcdefghijklmno|"),
+               "undo: deletes 1-20 are one group, point back at the end");
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Point goes back to where the undone command started.
+    if (!test_view_open(t, &tv, "|hello", 10, 40)) return 0;
+    test_type_char(&tv, 'a');
+    test_type_char(&tv, 'b');
+    test_view_run(&tv, &CMD_MOVE_END_OF_LINE);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "|hello"), "undo: point restored to where typing started");
+    if (!test_view_close(t, &tv)) return 0;
+
+    // A three-cursor command is one group.
+    if (!test_view_open(t, &tv, "a|b|c|", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_NEWLINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "a\n|b\n|c\n|"), "undo: three cursors, newline");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "a|b|c|"), "undo: one undo reverts all three cursors' edits");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: undo commands: the Emacs chain, undo-redo, %d commands undone, merging at 20, point, three cursors", (i32)K);
     return 1;
 }
 
@@ -2354,6 +2475,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_view_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_undo_buffer(&t, seed);
+    arena_reset(&t.arena);
+    test_undo_commands(&t, seed);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);

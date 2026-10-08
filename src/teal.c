@@ -9,6 +9,7 @@
 #include "buffer.h"
 #include "command.h"
 #include "view.h"
+#include "edit.h"
 #include "keymap.h"
 #include "config.h"
 
@@ -17,6 +18,7 @@
 #include "font.c"
 #include "buffer.c"
 #include "view.c"
+#include "edit.c"
 #include "keymap.c"
 #include "config.c"
 #include "app.c"

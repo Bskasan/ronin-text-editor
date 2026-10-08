@@ -125,11 +125,39 @@ static i32 config_clamp_int(ConfigParser *p, String8 name, String8 value, i64 v,
 // ---------------------------------------------------------------------------
 // Sections
 
+// Whole-number settings: clamped to [lo, hi] with a warning.
+static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_settings[] = {
+    { "line_height", offsetof(Settings, line_height), 80, 300 },
+    { "tab_width", offsetof(Settings, tab_width), 1, 16 },
+    { "undo_limit_mb", offsetof(Settings, undo_limit_mb), 1, 2048 },
+};
+
+static const struct { const char *name; u32 offset; } config_bool_settings[] = {
+    { "underscore_is_word", offsetof(Settings, underscore_is_word) },
+    { "fsync_on_save", offsetof(Settings, fsync_on_save) },
+};
+
 static void config_setting(ConfigParser *p, String8 name, String8 value) {
     Settings *s = &p->config->settings;
     i64 n;
     f32 x;
-    b32 b;
+    for (i32 i = 0; i < ARRAY_COUNT(config_int_settings); i++) {
+        if (!str8_equal(name, str8_cstr(config_int_settings[i].name))) continue;
+        if (!config_parse_int(value, &n)) {
+            config_diag(p, 0, "%S: '%S' is not a whole number", name, config_quote(value));
+            return;
+        }
+        *(i32 *)((u8 *)s + config_int_settings[i].offset) =
+            config_clamp_int(p, name, value, n, config_int_settings[i].lo, config_int_settings[i].hi);
+        return;
+    }
+    for (i32 i = 0; i < ARRAY_COUNT(config_bool_settings); i++) {
+        if (!str8_equal(name, str8_cstr(config_bool_settings[i].name))) continue;
+        if (!config_parse_bool(value, (b32 *)((u8 *)s + config_bool_settings[i].offset))) {
+            config_diag(p, 0, "%S: '%S' is not true or false", name, config_quote(value));
+        }
+        return;
+    }
     if (str8_equal(name, STR8_LIT("font"))) {
         if (value.len > CONFIG_FONT_CAP - 1) {
             config_diag(p, 0, "font name longer than %d bytes", CONFIG_FONT_CAP - 1);
@@ -144,30 +172,11 @@ static void config_setting(ConfigParser *p, String8 name, String8 value) {
         }
         if (x < 4.0f || x > 96.0f) config_diag(p, 1, "font_size %S is out of range (4 to 96), using %d", value, x < 4.0f ? 4 : 96);
         s->font_size = CLAMP(x, 4.0f, 96.0f);
-    } else if (str8_equal(name, STR8_LIT("line_height"))) {
-        if (!config_parse_int(value, &n)) {
-            config_diag(p, 0, "line_height: '%S' is not a whole number (percent)", config_quote(value));
-            return;
-        }
-        s->line_height = config_clamp_int(p, name, value, n, 80, 300);
     } else if (str8_equal(name, STR8_LIT("render_mode"))) {
         if (str8_equal(value, STR8_LIT("symmetric"))) s->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
         else if (str8_equal(value, STR8_LIT("natural"))) s->render_mode = FB_RENDER_NATURAL;
         else if (str8_equal(value, STR8_LIT("classic"))) s->render_mode = FB_RENDER_GDI_CLASSIC;
         else config_diag(p, 0, "render_mode: '%S' is not symmetric, natural or classic", config_quote(value));
-    } else if (str8_equal(name, STR8_LIT("tab_width"))) {
-        if (!config_parse_int(value, &n)) {
-            config_diag(p, 0, "tab_width: '%S' is not a whole number", config_quote(value));
-            return;
-        }
-        s->tab_width = config_clamp_int(p, name, value, n, 1, 16);
-    } else if (str8_equal(name, STR8_LIT("underscore_is_word")) || str8_equal(name, STR8_LIT("fsync_on_save"))) {
-        if (!config_parse_bool(value, &b)) {
-            config_diag(p, 0, "%S: '%S' is not true or false", name, config_quote(value));
-            return;
-        }
-        if (name.data[0] == 'u') s->underscore_is_word = b;
-        else s->fsync_on_save = b;
     } else {
         config_diag(p, 0, "unknown setting '%S'", config_quote(name));
     }

@@ -460,7 +460,7 @@ static void buffer_undo_trim(Buffer *buf) {
 
 // Applies the inverse of group `id` as a new group (an undo group reverting it). Its records
 // are replayed newest first; each inverse goes through buffer_replace and is logged.
-static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, b32 redo, i64 point, i64 *point_out) {
+static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, i64 point, i64 *point_out) {
     BufferUndo *u = &buf->undo;
     i64 index = id - u->first_id;
     if (index < 0 || index >= u->group_count) return BUFFER_UNDO_NOTHING;
@@ -469,7 +469,7 @@ static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, b32 redo, i64 po
     u->open = 0;
     if (!buffer_undo_new_group(buf, point, BUFFER_UNDO_MERGE_NONE, id)) return BUFFER_UNDO_FAILED;
     i64 undo_index = u->group_count - 1;
-    u->groups[undo_index].redo = redo;
+    u->groups[undo_index].backward = !target.backward;
     u->applying = 1;
     BufferUndoResult result = BUFFER_UNDO_DONE;
     // The target's records, newest first.
@@ -505,7 +505,7 @@ BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out) 
         u->pending = -1;
         return BUFFER_UNDO_NOTHING;
     }
-    BufferUndoResult r = buffer_undo_revert(buf, id, 0, point, point_out);
+    BufferUndoResult r = buffer_undo_revert(buf, id, point, point_out);
     if (r == BUFFER_UNDO_DONE) u->pending = id - 1 >= u->first_id ? id - 1 : -1;
     return r;
 }
@@ -514,12 +514,12 @@ BufferUndoResult buffer_redo(Buffer *buf, i64 point, i64 *point_out) {
     BufferUndo *u = &buf->undo;
     *point_out = point;
     if (!u->enabled) return BUFFER_UNDO_NOTHING;
-    // The most recent group made by undo whose result is the current state.
+    // The most recent group that moved back in history and led to the current state.
     for (i64 i = u->group_count - 1; i >= 0; i--) {
         BufferUndoGroup *g = &u->groups[i];
-        if (g->target < 0 || g->redo || g->state_after != u->state) continue;
+        if (!g->backward || g->state_after != u->state) continue;
         i64 id = u->first_id + i;
-        BufferUndoResult r = buffer_undo_revert(buf, id, 1, point, point_out);
+        BufferUndoResult r = buffer_undo_revert(buf, id, point, point_out);
         if (r == BUFFER_UNDO_DONE) u->pending = -1;
         return r;
     }
