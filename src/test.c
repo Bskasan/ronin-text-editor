@@ -2164,6 +2164,12 @@ static const TestGolden test_goldens[] = {
         "sssssssssssssssssss",
         "end)--\"; int z;",
         "sssssssp yyy tp" } },
+    { BUFFER_LANG_CPP, "C++: a raw string without a delimiter, quotes inside (manual G8)", {
+        "x = R\"(raw \"text\")\";",
+        "t p sssssssssssssssp" } },
+    { BUFFER_LANG_C, "C: #define with a number and a comment (manual G5)", {
+        "#define MAX 10 // note",
+        "ddddddd fff nn ccccccc" } },
     { BUFFER_LANG_C, "C: preprocessor lines: the directive word, the rest lexed, continuation", {
         "#include <stdio.h> // c",
         "dddddddd sssssssss cccc",
@@ -5781,6 +5787,358 @@ static b32 test_matcher(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Steps of docs/MANUAL_TESTS.md checked through the headless app; their ids are in the log lines.
+
+static App *test_manual_app(Test *t, String8 file, i64 line, i64 col, String8 config) {
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1, .file_path = file, .goto_line = line, .goto_col = col, .config_path = config };
+    App *app = app_create(&t->arena, &args);
+    if (app) app_dev_feed_events(app, NULL, 0, &t->arena); // the first frame: layout, the +LINE:COL jump
+    return app;
+}
+
+static String8 test_manual_dir(Test *t) {
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\manual", t->tmp_dir));
+    os_make_dir(dir);
+    return dir;
+}
+
+static b32 test_contains(String8 s, const char *what) {
+    String8 w = str8_cstr(what);
+    for (i64 i = 0; i + w.len <= s.len; i++) if (mem_equal(s.data + i, w.data, w.len)) return 1;
+    return 0;
+}
+
+static String8 test_echo(App *app) {
+    return str8(app->echo.text, app->echo.len);
+}
+
+// C1-C8: the mode line, +LINE:COL, a new file, a directory, the modified flag and saving, bytes that
+// are not UTF-8, a read-only file.
+static b32 test_manual_files(Test *t) {
+    String8 dir = test_manual_dir(t), none = { 0 };
+    u8 *lines = PUSH_ARRAY(&t->arena, u8, 300 * 16);
+    i64 n = 0;
+    for (i32 i = 0; i < 300; i++) n += fmt_buf(lines + n, 16, "int x%03d;\r\n", i);
+    String8 c_path = str8_fmt(&t->arena, "%S\\m.c", dir);
+    TEST_CHECK(t, os_write_file(c_path, str8(lines, n)), "manual C1: cannot write");
+    App *app = test_manual_app(t, c_path, 0, 0, none);
+    TEST_CHECK(t, app, "manual C1: app_create failed");
+    String8 mode = app_mode_line_text(app->views[0], &t->arena);
+    TEST_CHECK(t, test_contains(mode, " -:---  m.c ") && test_contains(mode, "Top   L1 C0    (C)    UTF-8 CRLF"),
+               "manual C1: mode line '%S'", mode);
+    app_dev_feed(app, "M-g g 1 5 0 RET", &t->arena);
+    mode = app_mode_line_text(app->views[0], &t->arena);
+    TEST_CHECK(t, test_contains(mode, "%   L150 C0"), "manual C1: a percent in the middle: '%S'", mode);
+    if (!test_app_destroy(t, app, "manual C1")) return 0;
+
+    // teal +120:8 file: line 120 centered, column 8 (1-based) is C7.
+    app = test_manual_app(t, c_path, 120, 8, none);
+    TEST_CHECK(t, app, "manual C2: app_create failed");
+    View *v = app->views[0];
+    mode = app_mode_line_text(v, &t->arena);
+    i64 top = view_top_line(v), want_top = 119 - v->rows / 2;
+    TEST_CHECK(t, test_contains(mode, "L120 C7") && top >= want_top - 1 && top <= want_top + 1, "manual C2: '%S', top line %D, expected %D",
+               mode, top, want_top);
+    if (!test_app_destroy(t, app, "manual C2")) return 0;
+
+    // A path that does not exist: an empty buffer visiting it, "(New file)".
+    String8 absent = str8_fmt(&t->arena, "%S\\absent.txt", dir);
+    os_file_delete(absent);
+    app = test_manual_app(t, absent, 0, 0, none);
+    TEST_CHECK(t, app && test_current_is(app, "absent.txt") && buffer_size(test_current(app)) == 0 && test_echo_has(app, "(New file)"),
+               "manual C3: a new file: echo '%S'", app ? test_echo(app) : none);
+    if (!test_app_destroy(t, app, "manual C3")) return 0;
+
+    // A directory: an error message, *scratch* stays.
+    app = test_manual_app(t, dir, 0, 0, none);
+    TEST_CHECK(t, app && test_current_is(app, "*scratch*") && str8_starts_with(test_echo(app), STR8_LIT("Cannot open ")) &&
+                  test_contains(test_echo(app), "is a directory"), "manual C4: a directory: echo '%S'", app ? test_echo(app) : none);
+    if (!test_app_destroy(t, app, "manual C4")) return 0;
+
+    // Editing shows "**", saving says "Wrote ..." and the flag goes.
+    String8 e_path = str8_fmt(&t->arena, "%S\\e.txt", dir);
+    TEST_CHECK(t, os_write_file(e_path, STR8_LIT("abc\n")), "manual C5: cannot write");
+    app = test_manual_app(t, e_path, 0, 0, none);
+    TEST_CHECK(t, app, "manual C5: app_create failed");
+    app_dev_feed(app, "x", &t->arena);
+    TEST_CHECK(t, test_mode_line_has(t, app, " -:**-  e.txt"), "manual C5: '**' after an edit");
+    app_dev_feed(app, "C-x C-s", &t->arena);
+    TEST_CHECK(t, str8_starts_with(test_echo(app), STR8_LIT("Wrote ")) && test_mode_line_has(t, app, " -:---  e.txt") &&
+                  test_file_is(t, e_path, "xabc\n"), "manual C5: saved: echo '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "manual C5")) return 0;
+
+    // Windows-1254 bytes (s, dotless i, g with their Turkish marks) are not UTF-8: kept byte for byte.
+    String8 w_path = str8_fmt(&t->arena, "%S\\w1254.txt", dir);
+    TEST_CHECK(t, os_write_file(w_path, STR8_LIT("abc \xFE\xFD\xF0 def\r\n\xDE\xDD\xD0\r\n")), "manual C7: cannot write");
+    app = test_manual_app(t, w_path, 0, 0, none);
+    TEST_CHECK(t, app, "manual C7: app_create failed");
+    app_dev_feed(app, "X C-x C-s", &t->arena);
+    TEST_CHECK(t, test_file_is(t, w_path, "Xabc \xFE\xFD\xF0 def\r\n\xDE\xDD\xD0\r\n"), "manual C7: the other bytes changed");
+    if (!test_app_destroy(t, app, "manual C7")) return 0;
+
+    // A read-only file: "%%", typing refused with a message.
+    String8 r_path = str8_fmt(&t->arena, "%S\\ro.txt", dir);
+    os_dev_set_read_only(r_path, 0);
+    TEST_CHECK(t, os_write_file(r_path, STR8_LIT("read only\n")) && os_dev_set_read_only(r_path, 1), "manual C8: cannot write");
+    app = test_manual_app(t, r_path, 0, 0, none);
+    TEST_CHECK(t, app, "manual C8: app_create failed");
+    b32 flag = test_mode_line_has(t, app, " -:%%-  ro.txt");
+    app_dev_feed(app, "a", &t->arena);
+    b32 refused = test_echo_has(app, "Buffer is read-only: ro.txt") && test_text_is(t, test_current(app), STR8_LIT("read only\n"));
+    os_dev_set_read_only(r_path, 0);
+    TEST_CHECK(t, flag && refused, "manual C8: '%%%%' %d, refused %d (echo '%S')", flag, refused, test_echo(app));
+    if (!test_app_destroy(t, app, "manual C8")) return 0;
+    LOG("test: ok: manual C1 C2 C3 C4 C5 C7 C8 (mode line Top / percent, +LINE:COL centered, new file, directory, ** and Wrote, "
+        "Windows-1254 bytes kept, read-only %%%%)");
+    return 1;
+}
+
+// B7 B9 D9 D10 D11 E9 E11 F10 F11: quit and undefined keys, yanking an emoji and CJK, horizontal
+// scrolling back, a tab, the wheel and clicks, three kills as one, RET with tabs, C-q TAB.
+static b32 test_manual_editing(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "manual editing: app_create failed");
+    View *v = app->views[0];
+    Cursor *c = &v->cursors[0];
+    app_dev_feed(app, "C-x C-g", &t->arena);
+    TEST_CHECK(t, test_echo_has(app, "Quit"), "manual B7: C-x C-g gave '%S'", test_echo(app));
+    app_dev_feed(app, "C-x q", &t->arena);
+    TEST_CHECK(t, test_echo_has(app, "C-x q is undefined"), "manual B7: C-x q gave '%S'", test_echo(app));
+
+    app_dev_show_scratch(app, STR8_LIT(""));
+    os_dev_clipboard_external(STR8_LIT("emoji \xF0\x9F\x98\x80 CJK \xE6\xBC\xA2\xE5\xAD\x97"));
+    app_dev_feed(app, "C-y", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("emoji \xF0\x9F\x98\x80 CJK \xE6\xBC\xA2\xE5\xAD\x97")),
+               "manual B9: yanked an emoji and CJK");
+
+    u8 long_line[201];
+    memset(long_line, 'a', 200);
+    long_line[200] = '\n';
+    app_dev_show_scratch(app, str8(long_line, 201));
+    app_dev_feed(app, "C-e", &t->arena);
+    i64 left = v->left_col;
+    app_dev_feed(app, "C-a", &t->arena);
+    TEST_CHECK(t, left > 0 && v->left_col == 0 && view_point(v, c) == 0, "manual D9: C-e scrolled to %D, C-a back to %D", left, v->left_col);
+
+    app_dev_show_scratch(app, STR8_LIT("\tx\n"));
+    app_dev_feed(app, "C-f", &t->arena);
+    b32 over = view_point(v, c) == 1 && test_mode_line_has(t, app, "L1 C4");
+    app_dev_feed(app, "C-b", &t->arena);
+    TEST_CHECK(t, over && view_point(v, c) == 0 && test_mode_line_has(t, app, "L1 C0"), "manual D10: across a tab in one step");
+
+    // The wheel: 5 notches down scroll 15 lines and point comes along; a click sets point.
+    u8 *many = PUSH_ARRAY(&t->arena, u8, 200 * 5);
+    for (i32 i = 0; i < 200; i++) memcpy(many + i * 5, "line\n", 5);
+    app_dev_show_scratch(app, str8(many, 200 * 5));
+    test_app_wheel(t, app, -5);
+    TEST_CHECK(t, view_top_line(v) == 15 && view_point(v, c) >= buffer_line_start(v->buffer, 15), "manual D11: wheel: top %D, point %D",
+               view_top_line(v), view_point(v, c));
+    Event click[2] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = 4 + 3 * 8 + 2, .y = 2 * 16 + 2 },
+                       { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 4 + 3 * 8 + 2, .y = 2 * 16 + 2 } };
+    app_dev_feed_events(app, click, 2, &t->arena);
+    TEST_CHECK(t, view_point(v, c) == buffer_line_start(v->buffer, 17) + 3, "manual D11: click: point %D", view_point(v, c));
+
+    // E9: a double click selects a word, a triple click a line, a drag from where it went down.
+    app_dev_show_scratch(app, STR8_LIT("foo bar baz\nline two\n"));
+    Event dbl = { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 2, .x = 4 + 5 * 8 + 2, .y = 2 };
+    Event up = { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 4 + 5 * 8 + 2, .y = 2 };
+    app_dev_feed_events(app, &dbl, 1, &t->arena);
+    app_dev_feed_events(app, &up, 1, &t->arena);
+    TEST_CHECK(t, c->mark_active && buffer_marker_get(v->buffer, c->mark) == 4 && view_point(v, c) == 7, "manual E9: double click");
+    Event tri = { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 3, .x = 4 + 2 * 8 + 2, .y = 16 + 2 };
+    app_dev_feed_events(app, &tri, 1, &t->arena);
+    app_dev_feed_events(app, &up, 1, &t->arena);
+    TEST_CHECK(t, c->mark_active && buffer_marker_get(v->buffer, c->mark) == 12 && view_point(v, c) == 21, "manual E9: triple click");
+    Event drag[3] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = 4 + 2, .y = 2 },
+                      { .kind = EVENT_MOUSE_MOVE, .x = 4 + 3 * 8 + 2, .y = 16 + 2 },
+                      { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 4 + 3 * 8 + 2, .y = 16 + 2 } };
+    app_dev_feed_events(app, drag, 3, &t->arena);
+    TEST_CHECK(t, c->mark_active && buffer_marker_get(v->buffer, c->mark) == 0 && view_point(v, c) == 15, "manual E9: drag: mark %D, point %D",
+               buffer_marker_get(v->buffer, c->mark), view_point(v, c));
+
+    // E11: three C-k in a row are one piece for C-y.
+    app_dev_show_scratch(app, STR8_LIT("a\nb\nc\nd\n"));
+    app_dev_feed(app, "C-k C-k C-k M-> C-y", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("\nc\nd\na\nb")), "manual E11: three kills yanked as one");
+
+    // F11: C-q TAB inserts a tab.
+    app_dev_show_scratch(app, STR8_LIT(""));
+    app_dev_feed(app, "C-q TAB", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("\t")), "manual F11: C-q TAB");
+
+    // F10: a file indented with tabs: RET indents with tabs.
+    String8 tabs = str8_fmt(&t->arena, "%S\\tabs.c", test_manual_dir(t));
+    TEST_CHECK(t, os_write_file(tabs, STR8_LIT("int f() {\n\tif (x) {\n\t\ty();\n\t}\n}\n")) && app_dev_visit(app, tabs), "manual F10: visit");
+    app_dev_feed(app, "C-n C-n C-e RET", &t->arena);
+    TEST_CHECK(t, test_text_is(t, test_current(app), STR8_LIT("int f() {\n\tif (x) {\n\t\ty();\n\t\t\n\t}\n}\n")), "manual F10: RET with tabs");
+    if (!test_app_destroy(t, app, "manual editing")) return 0;
+    LOG("test: ok: manual B7 B9 D9 D10 D11 E9 E11 F10 F11 (C-x C-g, C-x q, emoji and CJK yanked, C-a after horizontal scrolling, "
+        "a tab in one step, wheel and click, double / triple click and drag, three C-k as one, RET with tabs, C-q TAB)");
+    return 1;
+}
+
+// G4 G10: "/*" typed on line 1 makes the rest a comment and "*/" ends it; set-language Jai.
+static b32 test_manual_syntax(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "manual syntax: app_create failed");
+    String8 path = str8_fmt(&t->arena, "%S\\g4.c", test_manual_dir(t));
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("int a;\nint b; // x\nint c;\n")) && app_dev_visit(app, path), "manual G4: visit");
+    Buffer *buf = test_current(app);
+    SyntaxToken tokens[64];
+    SyntaxKind kinds[2];
+    for (i32 step = 0; step < 2; step++) {
+        app_dev_feed(app, step == 0 ? "M-< / *" : "* /", &t->arena);
+        test_app_pump(t, app);
+        SyntaxTokens out = { tokens, 0, ARRAY_COUNT(tokens) };
+        String8 line = buffer_text(buf, &t->arena, buffer_line_start(buf, 2), buffer_line_end(buf, 2));
+        TEST_CHECK(t, syntax_line_tokens(buf, 2, line, &out), "manual G4: line 3 not ready");
+        kinds[step] = test_kind_at(&out, 0);
+    }
+    TEST_CHECK(t, kinds[0] == SYN_COMMENT && kinds[1] == SYN_TYPE, "manual G4: line 3 after '/*' %d, after '*/' %d", kinds[0], kinds[1]);
+    app_dev_feed(app, "M-x s e t - l a n g u a g e RET J a i RET", &t->arena);
+    TEST_CHECK(t, test_echo_has(app, "Language: Jai") && buf->language == BUFFER_LANG_JAI, "manual G10: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "manual syntax")) return 0;
+    LOG("test: ok: manual G4 G10 ('/*' typed comments out the rest and '*/' restores it; set-language Jai)");
+    return 1;
+}
+
+// H1 H6 H7 H9 H13 H14 H15: M-x with two words, c:/, a new file saved, buffer cycling, the close
+// button's "no", C-g in prompts, *Messages*.
+static b32 test_manual_minibuffer(Test *t) {
+    String8 dir = test_manual_dir(t);
+    String8 h1 = str8_fmt(&t->arena, "%S\\h1.txt", dir), h7 = str8_fmt(&t->arena, "%S\\h7.txt", dir);
+    os_file_delete(h7);
+    TEST_CHECK(t, os_write_file(h1, STR8_LIT("one\n")), "manual H1: cannot write");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app && app_dev_visit(app, h1), "manual H1: visit");
+    Minibuffer *mb = &app->mini;
+    app_dev_feed(app, "x M-x s a v SPC b u f", &t->arena);
+    TEST_CHECK(t, mb->active && mb->match_count >= 1 && str8_equal(mb->cands[mb->matches[0]].text, STR8_LIT("save-buffer")) &&
+                  str8_equal(mb->cands[mb->matches[0]].annotation, STR8_LIT("C-x C-s")), "manual H1: 'sav buf' gave '%S' '%S'",
+               mb->match_count ? mb->cands[mb->matches[0]].text : STR8_LIT(""), mb->match_count ? mb->cands[mb->matches[0]].annotation : STR8_LIT(""));
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_file_is(t, h1, "xone\n"), "manual H1: RET ran save-buffer");
+
+    app_dev_feed(app, "C-x C-f c : /", &t->arena);
+    TEST_CHECK(t, mb->active && mb->cand_key.len == 3 && (mb->cand_key.data[0] | 0x20) == 'c' && mb->cand_key.data[1] == ':',
+               "manual H6: c:/ lists '%S'", mb->cand_key);
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current_is(app, "h1.txt"), "manual H14: C-g in find-file");
+    app_dev_feed(app, "M-x s e t - l a n g u a g e RET C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current(app)->language == BUFFER_LANG_FUNDAMENTAL, "manual H14: C-g in set-language");
+
+    app_dev_feed(app, "C-x C-f h 7 . t x t RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "h7.txt") && test_echo_has(app, "(New file)") && test_file_absent(h7), "manual H7: (New file)");
+    app_dev_feed(app, "h i C-x C-s", &t->arena);
+    TEST_CHECK(t, test_file_is(t, h7, "hi"), "manual H7: C-x C-s created the file");
+
+    View *v = app->views[0];
+    i64 point = view_point(v, &v->cursors[0]);
+    app_dev_feed(app, "C-x <left>", &t->arena);
+    b32 left = !test_current_is(app, "h7.txt");
+    app_dev_feed(app, "C-x <right>", &t->arena);
+    TEST_CHECK(t, left && test_current_is(app, "h7.txt") && view_point(v, &v->cursors[0]) == point, "manual H9: C-x <left> / <right>");
+
+    app_dev_feed(app, "C-x b * M e s s a g e s * RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "*Messages*"), "manual H15: C-x b *Messages*");
+
+    // The close button with a modified file: the save question, then "exit anyway?"; "no" stays.
+    app_dev_feed(app, "C-x b h 7 . t x t RET z", &t->arena);
+    Event close = { .kind = EVENT_CLOSE };
+    app_dev_feed_events(app, &close, 1, &t->arena);
+    b32 asked = mb->active && str8_starts_with(mb->prompt, STR8_LIT("Save file "));
+    app_dev_feed(app, "n", &t->arena);
+    b32 anyway = mb->active && str8_equal(mb->prompt, STR8_LIT("Modified buffers exist; exit anyway? (yes or no) "));
+    String8 prompt = str8_copy(&t->arena, mb->prompt);
+    app_dev_feed(app, "n o RET", &t->arena);
+    TEST_CHECK(t, asked && anyway && !app->quit && !mb->active, "manual H13: asked %d, exit anyway %d ('%S'), quit %d", asked, anyway, prompt,
+               app->quit);
+    app_dev_feed(app, "C-/", &t->arena);
+    if (!test_app_destroy(t, app, "manual minibuffer")) return 0;
+    LOG("test: ok: manual H1 H6 H7 H9 H13 H14 H15 (M-x sav buf with C-x C-s and RET, c:/, a new file created by C-x C-s, "
+        "C-x <left> / <right>, the close button's no, C-g in find-file and set-language, *Messages*)");
+    return 1;
+}
+
+// I1 I2 I5 I6 I7: open-config creates teal.conf; a saved change reloads it ("Reloaded"); tab_width,
+// a new binding, an unknown command.
+static b32 test_manual_reload(Test *t, App *app, String8 path, String8 text) {
+    if (!os_write_file(path, text)) return 0;
+    Event dir = { .kind = EVENT_DIR_CHANGED, .watch = app->config_watch }, wake = { .kind = EVENT_WAKEUP };
+    app_dev_feed_events(app, &dir, 1, &t->arena);
+    app->config_source.settle_at_us = 0; // the settle delay has passed
+    app_dev_feed_events(app, &wake, 1, &t->arena);
+    return 1;
+}
+
+static b32 test_manual_config(Test *t) {
+    String8 dir = str8_fmt(&t->arena, "%S\\cfg", test_manual_dir(t)), conf = str8_fmt(&t->arena, "%S\\teal.conf", dir);
+    os_file_delete(conf);
+    App *app = test_manual_app(t, str8(NULL, 0), 0, 0, conf);
+    TEST_CHECK(t, app, "manual I1: app_create failed");
+    app_dev_feed(app, "C-c ,", &t->arena);
+    String8 created = str8_fmt(&t->arena, "Created %S from the built-in defaults", conf);
+    TEST_CHECK(t, str8_equal(test_echo(app), created) && test_current_is(app, "teal.conf") && test_file_is(t, conf, (const char *)config_default_text().data) &&
+                  app->config_watch, "manual I1: open-config: '%S'", test_echo(app));
+
+    TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[colors]\nbackground = #202020\n")) && test_echo_has(app, "Reloaded teal.conf") &&
+                  app->config->theme.background == 0x202020, "manual I2: echo '%S', background %06x", test_echo(app), app->config->theme.background);
+
+    View *v = app->views[0];
+    TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[settings]\ntab_width = 8\n")), "manual I5: write");
+    app_dev_show_scratch(app, STR8_LIT("\tx"));
+    app_dev_feed(app, "C-f", &t->arena);
+    TEST_CHECK(t, view_column_of(v->buffer, view_point(v, &v->cursors[0])) == 8, "manual I5: tab_width 8 in the buffer");
+
+    TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[keys]\nC-z undo\n")), "manual I6: write");
+    app_dev_show_scratch(app, STR8_LIT(""));
+    app_dev_feed(app, "a b", &t->arena);
+    app_dev_feed(app, "C-z", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("")), "manual I6: C-z undo");
+
+    TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[keys]\nC-z no-such-command\n")) &&
+                  test_echo_has(app, "teal.conf:2: unknown command 'no-such-command'"), "manual I7: echo '%S'", test_echo(app));
+    app_dev_feed(app, "o k", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("ok")), "manual I7: the editor keeps working");
+    if (!test_app_destroy(t, app, "manual config")) return 0;
+    LOG("test: ok: manual I1 I2 I5 I6 I7 (open-config creates and visits teal.conf; a saved change reloads with 'Reloaded teal.conf'; "
+        "tab_width; C-z undo; an unknown command reported, editing goes on)");
+    return 1;
+}
+
+// J1 K4 K13: "Reverted" when coming back; C-x C-x after a search; replacing foo / Foo / FOO.
+static b32 test_manual_disk_search(Test *t) {
+    String8 path = str8_fmt(&t->arena, "%S\\j1.txt", test_manual_dir(t));
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("one\ntwo\n")), "manual J1: cannot write");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app && app_dev_visit(app, path), "manual J1: visit");
+    test_focus(app, 1, &t->arena);
+    app_dev_feed(app, "C-n", &t->arena);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("ONE\ntwo\nthree\n")), "manual J1: change");
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena);
+    View *v = app->views[0];
+    TEST_CHECK(t, test_echo_has(app, "Reverted j1.txt") && view_point(v, &v->cursors[0]) == 4, "manual J1: echo '%S', point %D", test_echo(app),
+               view_point(v, &v->cursors[0]));
+
+    app_dev_show_scratch(app, STR8_LIT("a foo b foo\n"));
+    app_dev_feed(app, "C-s f o o RET", &t->arena);
+    i64 at = view_point(v, &v->cursors[0]);
+    app_dev_feed(app, "C-x C-x", &t->arena);
+    TEST_CHECK(t, at == 5 && view_point(v, &v->cursors[0]) == 0, "manual K4: C-x C-x after the search: %D then %D", at, view_point(v, &v->cursors[0]));
+
+    app_dev_show_scratch(app, STR8_LIT("foo Foo FOO\n"));
+    app_dev_feed(app, "C-g M-% f o o RET b a r RET !", &t->arena); // C-g: C-x C-x left the region active
+    test_app_pump(t, app); // replace-all works over frames
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("bar Bar BAR\n")) && test_echo_has(app, "Replaced 3 occurrences"),
+               "manual K13: echo '%S', text '%S', point %D", test_echo(app), test_app_text(t, app), test_app_point(app));
+    if (!test_app_destroy(t, app, "manual disk and search")) return 0;
+    LOG("test: ok: manual J1 K4 K13 ('Reverted' on coming back, point kept; C-x C-x back to the search's start; foo Foo FOO -> bar Bar BAR, "
+        "'Replaced 3 occurrences')");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -5892,6 +6250,18 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_revert_highlight(&t);
     arena_reset(&t.arena);
     test_end_session(&t);
+    arena_reset(&t.arena);
+    test_manual_files(&t);
+    arena_reset(&t.arena);
+    test_manual_editing(&t);
+    arena_reset(&t.arena);
+    test_manual_syntax(&t);
+    arena_reset(&t.arena);
+    test_manual_minibuffer(&t);
+    arena_reset(&t.arena);
+    test_manual_config(&t);
+    arena_reset(&t.arena);
+    test_manual_disk_search(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
