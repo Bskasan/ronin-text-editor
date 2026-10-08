@@ -4761,6 +4761,37 @@ static b32 test_disk(Test *t) {
 }
 
 // The end of the Windows session: the unsaved flag the platform answers from, and the app's chain.
+// Highlighting after an auto-revert: the outside change opens a comment at the top; once the states
+// caught up, every one equals a lex from scratch.
+static b32 test_revert_highlight(Test *t) {
+    String8 path = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p8revert.c", t->tmp_dir));
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("int a;\n/* x */\nint b;\nchar *s = \"*/\";\n")), "revert highlight: cannot write");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app && app_dev_visit(app, path), "revert highlight: app or visit failed");
+    Buffer *b = test_current(app);
+    test_focus(app, 1, &t->arena);
+    TEST_CHECK(t, b->states_on && syntax_line_ready(b, 3) && !(buffer_line_state(b, 2) & SYNTAX_STATE_LITERAL),
+               "revert highlight: states before");
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("/* open\nint a;\n/* x */\nint b;\nchar *s = \"*/\";\n")), "revert highlight: cannot change");
+    test_focus(app, 0, &t->arena);
+    test_focus(app, 1, &t->arena); // activation: reverted at once (unmodified)
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("/* open\nint a;\n/* x */\nint b;\nchar *s = \"*/\";\n")), "revert highlight: reverted");
+    app_dev_feed_events(app, NULL, 0, &t->arena); // a frame: catch-up
+    i64 last = buffer_line_count(b) - 1;
+    TEST_CHECK(t, syntax_line_ready(b, last), "revert highlight: caught up (valid to %D of %D)", b->state_valid, last);
+    u32 full[16];
+    test_full_states(b, &t->arena, full);
+    for (i64 l = 0; l <= last; l++) {
+        TEST_CHECK(t, buffer_line_state(b, l) == full[l], "revert highlight: line %D: 0x%x, full 0x%x", l, buffer_line_state(b, l), full[l]);
+    }
+    TEST_CHECK(t, (buffer_line_state(b, 1) & SYNTAX_STATE_LITERAL) && (buffer_line_state(b, 2) & SYNTAX_STATE_LITERAL) &&
+                  !(buffer_line_state(b, 3) & SYNTAX_STATE_LITERAL), "revert highlight: lines 1-2 start in the comment, 3 after it");
+    if (!test_app_destroy(t, app, "revert highlight")) return 0;
+    os_file_delete(path);
+    LOG("test: ok: highlighting after an auto-revert (states equal a lex from scratch)");
+    return 1;
+}
+
 static b32 test_end_session(Test *t) {
     String8 path = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p7end.txt", t->tmp_dir));
     TEST_CHECK(t, os_write_file(path, STR8_LIT("end\n")), "end session: cannot write");
@@ -5009,6 +5040,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_revert(&t);
     arena_reset(&t.arena);
     test_disk(&t);
+    arena_reset(&t.arena);
+    test_revert_highlight(&t);
     arena_reset(&t.arena);
     test_end_session(&t);
     arena_reset(&t.arena);
