@@ -1820,6 +1820,35 @@ static b32 test_region(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Clipboard: conversions and the fake (the real clipboard is never touched in --test)
+
+static b32 test_clipboard(Test *t) {
+    // UTF-8 with LF -> UTF-16 with CRLF.
+    String8 text = STR8_LIT("a\nb\xc5\x9f\n\xf0\x9f\x98\x80z");
+    u16 expected[] = { 'a', '\r', '\n', 'b', 0x15F, '\r', '\n', 0xD83D, 0xDE00, 'z' };
+    u16 out[32];
+    i64 n = clip_utf16_len(text);
+    TEST_CHECK(t, n == ARRAY_COUNT(expected) && clip_utf16_write(text, out) == n &&
+                  test_equal((u8 *)out, (u8 *)expected, n * 2), "clipboard: LF -> CRLF, UTF-16 with a surrogate pair");
+    // CRLF and lone CR -> LF; an unpaired surrogate -> U+FFFD.
+    u16 in[] = { 'x', '\r', '\n', 'y', '\r', 'z', '\n', 0xD800, '!', '\r' };
+    String8 back = clip_utf8_from_utf16(&t->arena, in, ARRAY_COUNT(in));
+    TEST_CHECK(t, str8_equal(back, STR8_LIT("x\ny\nz\n\xef\xbf\xbd!\n")), "clipboard: CRLF and CR -> LF ('%S')", back);
+    TEST_CHECK(t, str8_equal(clip_utf8_from_utf16(&t->arena, out, n), text), "clipboard: round trip");
+    // The fake: set, get, sequence numbers, a copy by another program.
+    u32 seq = os_clipboard_seq();
+    String8 got;
+    TEST_CHECK(t, os_clipboard_set(text) && os_clipboard_seq() != seq && os_clipboard_get(&t->arena, &got) && str8_equal(got, text),
+               "clipboard: the fake round trip");
+    seq = os_clipboard_seq();
+    os_dev_clipboard_external(STR8_LIT("from elsewhere\n"));
+    TEST_CHECK(t, os_clipboard_seq() != seq && os_clipboard_get(&t->arena, &got) && str8_equal(got, STR8_LIT("from elsewhere\n")),
+               "clipboard: an external copy");
+    LOG("test: ok: clipboard: CRLF conversions both ways, surrogates, the fake clipboard");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 // Every command is found by its own name, names are unique, and unknown names are refused.
@@ -2589,6 +2618,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_undo_commands(&t, seed);
     arena_reset(&t.arena);
     test_region(&t);
+    arena_reset(&t.arena);
+    test_clipboard(&t);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);

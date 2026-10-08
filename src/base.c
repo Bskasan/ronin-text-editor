@@ -160,6 +160,69 @@ String8 str8_from_str16(Arena *arena, u16 *s, i64 len) {
     return str8(out, n);
 }
 
+i64 clip_utf16_len(String8 s) {
+    i64 n = 0;
+    for (i64 i = 0; i < s.len;) {
+        u8 b = s.data[i];
+        if (b < 0x80) {
+            n += b == '\n' ? 2 : 1;
+            i++;
+            continue;
+        }
+        i64 advance;
+        u32 cp = utf8_decode(s.data + i, s.len - i, &advance);
+        n += cp >= 0x10000 ? 2 : 1;
+        i += advance;
+    }
+    return n;
+}
+
+i64 clip_utf16_write(String8 s, u16 *out) {
+    i64 n = 0;
+    for (i64 i = 0; i < s.len;) {
+        u8 b = s.data[i];
+        if (b < 0x80) {
+            if (b == '\n') out[n++] = '\r';
+            out[n++] = b;
+            i++;
+            continue;
+        }
+        i64 advance;
+        u32 cp = utf8_decode(s.data + i, s.len - i, &advance);
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out[n++] = (u16)(0xD800 + (cp >> 10));
+            out[n++] = (u16)(0xDC00 + (cp & 0x3FF));
+        } else {
+            out[n++] = (u16)cp;
+        }
+        i += advance;
+    }
+    return n;
+}
+
+String8 clip_utf8_from_utf16(Arena *arena, u16 *s, i64 len) {
+    u8 *out = PUSH_ARRAY(arena, u8, len * 3);
+    i64 n = 0;
+    for (i64 i = 0; i < len; i++) {
+        u32 cp = s[i];
+        if (cp == '\r') {
+            if (i + 1 < len && s[i + 1] == '\n') i++;
+            out[n++] = '\n';
+            continue;
+        }
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len && s[i + 1] >= 0xDC00 && s[i + 1] <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (s[i + 1] - 0xDC00u);
+            i++;
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = UTF_REPLACEMENT;
+        }
+        n += utf8_encode(cp, out + n);
+    }
+    arena_pop_to(arena, arena_pos(arena) - (u64)(len * 3 - n));
+    return str8(out, n);
+}
+
 // ---------------------------------------------------------------------------
 // Formatter
 
