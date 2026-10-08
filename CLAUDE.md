@@ -36,17 +36,18 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   (arena_push, r_push_rect, os_write_file); macros and enum constants UPPER_SNAKE.
 - Scope discipline: build only what the current phase asks for. No speculative
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
-- Verify every change: debug build + `--smoke`, and bench build + `--test` (the optimized
-  build runs the fuzz tests quickly). Run the full `--test` on the debug build once per
-  phase, before its final commit. Take a screenshot after a visual change and look at it.
+- Verify every change: build all three configurations (debug, release, bench) before every
+  commit, then debug build + `--smoke`, and bench build + `--test` (the optimized build runs
+  the fuzz tests quickly). Run the full `--test` on the debug build once per phase, before
+  its final commit. Take a screenshot after a visual change and look at it.
 - Code, comments, docs and all communication with the user (plans, reports, questions) in English.
 - Whenever the user asks for changes to a plan, show the full revised plan again with the
   changes marked and wait for approval before implementing.
 
 ## Commit policy (every phase)
 
-- Commit as you go: one logical change per commit, each one building with zero warnings and
-  passing the tests and smoke. No single giant commit at the end of a phase.
+- Commit as you go: one logical change per commit, each one building in all three
+  configurations with zero warnings and passing the tests and smoke. No single giant commit at the end of a phase.
 - Categorized messages: `<type>(<scope>): <summary>`, type one of feat, fix, perf, refactor,
   test, docs, build, chore. Example: `feat(buffer): gap buffer with incremental line index`.
 - Never push. Never amend or rewrite existing commits. The user pushes.
