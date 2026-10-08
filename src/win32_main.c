@@ -1335,7 +1335,7 @@ static i32 win32_smoke_end_session(Platform *p) {
     b32 reason = win32_smoke_has_reason(p);
     win32_frame(p);
     String8 prompt = str8_copy(&p->perm, app_dev_prompt(p->app));
-    b32 ok1 = !refused && reason && prompt.len > 10 && memcmp(prompt.data, "Save file ", 10) == 0;
+    b32 ok1 = !refused && reason && prompt.len > 10 && str8_starts_with(prompt, STR8_LIT("Save file "));
     SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
     win32_frame(p);
     b32 ok2 = str8_equal(app_dev_prompt(p->app), prompt);

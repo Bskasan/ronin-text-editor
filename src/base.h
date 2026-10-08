@@ -95,6 +95,8 @@ typedef struct String16 {
 String8  str8(u8 *data, i64 len);
 String8  str8_cstr(const char *s);
 b32      str8_equal(String8 a, String8 b);
+b32      mem_equal(const void *a, const void *b, i64 n); // n bytes the same (no memcmp: no CRT beyond memcpy/memset/memmove)
+b32      str8_starts_with(String8 s, String8 prefix);
 String8  str8_copy(Arena *arena, String8 s);
 
 #define UTF_REPLACEMENT 0xFFFD

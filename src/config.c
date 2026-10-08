@@ -280,7 +280,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
                     : str8_equal(name, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
                     : CONFIG_SECTION_UNKNOWN;
             // [keys] and [keys global] bind in the global map, [keys minibuffer] in the minibuffer's.
-            if (name.len >= 4 && memcmp(name.data, "keys", 4) == 0 && (name.len == 4 || config_is_blank(name.data[4]))) {
+            if (str8_starts_with(name, STR8_LIT("keys")) && (name.len == 4 || config_is_blank(name.data[4]))) {
                 String8 map = config_trim(str8(name.data + 4, name.len - 4));
                 p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
                        : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer : NULL;

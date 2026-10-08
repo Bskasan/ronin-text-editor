@@ -3807,7 +3807,7 @@ static void test_focus(App *app, b32 focused, Arena *scratch) {
 
 static b32 test_mode_line_has(Test *t, App *app, const char *what) {
     String8 mode = app_mode_line_text(app->views[0], &t->arena), w = str8_cstr(what);
-    for (i64 i = 0; i + w.len <= mode.len; i++) if (memcmp(mode.data + i, w.data, (size_t)w.len) == 0) return 1;
+    for (i64 i = 0; i + w.len <= mode.len; i++) if (mem_equal(mode.data + i, w.data, w.len)) return 1;
     return 0;
 }
 

@@ -68,11 +68,24 @@ String8 str8_cstr(const char *s) {
 }
 
 b32 str8_equal(String8 a, String8 b) {
-    if (a.len != b.len) return 0;
-    for (i64 i = 0; i < a.len; i++) {
-        if (a.data[i] != b.data[i]) return 0;
+    return a.len == b.len && mem_equal(a.data, b.data, a.len);
+}
+
+b32 mem_equal(const void *a, const void *b, i64 n) {
+    const u8 *x = (const u8 *)a, *y = (const u8 *)b;
+    i64 i = 0;
+    for (; i + 8 <= n; i += 8) { // eight bytes at a time (unaligned loads through memcpy compile to one move)
+        u64 u, v;
+        memcpy(&u, x + i, 8);
+        memcpy(&v, y + i, 8);
+        if (u != v) return 0;
     }
+    for (; i < n; i++) if (x[i] != y[i]) return 0;
     return 1;
+}
+
+b32 str8_starts_with(String8 s, String8 prefix) {
+    return s.len >= prefix.len && mem_equal(s.data, prefix.data, prefix.len);
 }
 
 String8 str8_copy(Arena *arena, String8 s) {
