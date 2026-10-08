@@ -1,5 +1,8 @@
 // view.c — see view.h.
 
+#include <emmintrin.h> // SSE2: runs of printable ASCII in view_walk (compiler intrinsics, not the CRT)
+#include <intrin.h>    // _BitScanForward
+
 // ---------------------------------------------------------------------------
 // Visual columns
 
@@ -20,6 +23,22 @@ i64 view_walk(Buffer *buf, i64 pos, i64 end, i64 *io_col, i64 stop_col) {
         u8 *p = pos < buf->gap_start ? buf->text : buf->text + gap;
         i64 run_end = pos < buf->gap_start ? MIN(end, buf->gap_start) : end;
         while (pos < run_end) {
+            // Printable ASCII, one column each, 16 bytes at a time while they fit before stop_col (a long
+            // line is scanned on every frame that shows its point).
+            if (run_end - pos >= 16 && col + 16 <= stop_col) {
+                __m128i v = _mm_loadu_si128((const __m128i *)(p + pos));
+                __m128i printable = _mm_and_si128(_mm_cmpgt_epi8(v, _mm_set1_epi8(0x1F)), _mm_cmplt_epi8(v, _mm_set1_epi8(0x7F)));
+                u32 mask = (u32)_mm_movemask_epi8(printable);
+                if (mask == 0xFFFF) {
+                    col += 16;
+                    pos += 16;
+                    continue;
+                }
+                unsigned long first;
+                _BitScanForward(&first, ~mask); // the printable bytes before the first other one
+                col += (i64)first;
+                pos += (i64)first;
+            }
             u8 b = p[pos];
             if (b >= 0x20 && b < 0x7F) { // printable ASCII: the common case
                 if (col + 1 > stop_col) goto done;
