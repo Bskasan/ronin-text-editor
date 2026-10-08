@@ -2109,6 +2109,299 @@ static b32 test_kill(Test *t) {
 // ---------------------------------------------------------------------------
 // Indentation
 
+// ---------------------------------------------------------------------------
+// Syntax
+
+// Golden token tests: code lines, each followed by its kinds, one letter per byte (' ' = any):
+// t text, c comment, s string, n number, k keyword, y type, o constant, d directive, f function,
+// v variable, p punctuation, i invalid. Lines are lexed in order, each from the state the one
+// before ended in.
+typedef struct TestGolden {
+    BufferLanguage language;
+    const char *what;
+    const char *lines[32]; // code, kinds, code, kinds, ... NULL
+} TestGolden;
+
+static const TestGolden test_goldens[] = {
+    { BUFFER_LANG_C, "C: keywords, types, a number, a comment", {
+        "static const u32 x = 0x1F; // hi",
+        "kkkkkk kkkkk yyy t p nnnnp ccccc" } },
+    { BUFFER_LANG_C, "C: every number form", {
+        "n = 0x1F + 0XaB + 0b101 + 0755 + 1.5e-3f + .5 + 1'000'000ull + 0x1.8p3 + 10u + 1E+9L;",
+        "t p nnnn p nnnn p nnnnn p nnnn p nnnnnnn p nn p nnnnnnnnnnnn p nnnnnnn p nnn p nnnnnp" } },
+    { BUFFER_LANG_C, "C: strings, chars, prefixes, escapes", {
+        "s = \"a\\\"b\"; c = '\\''; w = L\"wide\"; u = u8'x';",
+        "t p ssssssp t p ssssp t p sssssssp t p sssssp" } },
+    { BUFFER_LANG_C, "C: an unterminated string ends at the end of the line", {
+        "s = \"abc",
+        "t p ssss",
+        "int y;",
+        "yyy tp" } },
+    { BUFFER_LANG_C, "C: a string continued with a backslash", {
+        "s = \"abc\\",
+        "t p sssss",
+        "def\"; int",
+        "ssssp yyy" } },
+    { BUFFER_LANG_C, "C: a block comment across lines", {
+        "x = 1; /* a",
+        "t p np cccc",
+        "b */ int y;",
+        "cccc yyy tp" } },
+    { BUFFER_LANG_C, "C: a line comment continued with a backslash", {
+        "// a \\",
+        "cccccc",
+        "int still;",
+        "cccccccccc",
+        "int z;",
+        "yyy tp" } },
+    { BUFFER_LANG_CPP, "C++: raw strings, on one line and across lines", {
+        "auto r = R\"xy(a)\" )xy\" + 1;",
+        "kkkk t p sssssssssssss p np",
+        "auto m = u8R\"--(start",
+        "kkkk t p ssssssssssss",
+        "still )- \" )--x\" in",
+        "sssssssssssssssssss",
+        "end)--\"; int z;",
+        "sssssssp yyy tp" } },
+    { BUFFER_LANG_C, "C: preprocessor lines: the directive word, the rest lexed, continuation", {
+        "#include <stdio.h> // c",
+        "dddddddd sssssssss cccc",
+        "#  define MAX(a, b) ((a) > (b) ? (a) : (b))",
+        "ddddddddd fffptp tp pptp p ptp p ptp p ptpp",
+        "#define S \"str\" \\",
+        "ddddddd f sssss p",
+        "    + 12 // x",
+        "    p nn cccc",
+        "int after;",
+        "yyy tttttp",
+        "# pragma once",
+        "dddddddd tttt",
+        "#if defined(X) && X > 1",
+        "ddd tttttttptp pp t p n" } },
+    { BUFFER_LANG_C, "C: function names in definitions at column 0", {
+        "int main(void)",
+        "yyy ffffpyyyyp",
+        "static void foo(int x)",
+        "kkkkkk yyyy fffpyyy tp",
+        "static int",
+        "kkkkkk yyy",
+        "foo(int x)",
+        "fffpyyy tp",
+        "LRESULT CALLBACK WndProc(HWND h, UINT m)",
+        "ttttttt tttttttt fffffffptttt tp tttt tp",
+        "foo(x);",
+        "tttptpp",
+        "int foo(int);",
+        "yyy fffpyyypp",
+        "typedef void (*Fn)(int);",
+        "kkkkkkk yyyy ppttppyyypp",
+        "    bar(x) {",
+        "    tttptp p",
+        "if(x)",
+        "kkptp",
+        "void Foo::bar(int)",
+        "yyyy tttppfffpyyyp",
+        "Foo::~Foo()",
+        "tttpppfffpp" } },
+    { BUFFER_LANG_C, "C: non-ASCII identifiers, control characters, invalid bytes", {
+        "int \xC3\xA9t\xC3\xA9 = 1; \x01 @ \xFF\xFEx;",
+        "yyy ttttt p np i i tttp" } },
+};
+
+// The kind at byte b of a lexed line.
+static SyntaxKind test_kind_at(SyntaxTokens *out, i64 b) {
+    SyntaxKind kind = SYN_TEXT;
+    for (i32 k = 0; k < out->count && out->tokens[k].start <= (u32)b; k++) kind = (SyntaxKind)out->tokens[k].kind;
+    return kind;
+}
+
+static b32 test_golden(Test *t, const TestGolden *g) {
+    static const char letters[SYN_KIND_COUNT + 1] = "tcsnkyodfvpi";
+    SyntaxToken tokens[512];
+    SyntaxTokens out = { tokens, 0, ARRAY_COUNT(tokens) };
+    u32 state = 0;
+    for (i32 k = 0; g->lines[k]; k += 2) {
+        String8 code = str8_cstr(g->lines[k]);
+        const char *kinds = g->lines[k + 1];
+        state = syntax_lex(g->language, state, code, &out);
+        u8 got[256];
+        i64 n = MIN(code.len, (i64)sizeof(got) - 1);
+        for (i64 b = 0; b < n; b++) got[b] = (u8)letters[test_kind_at(&out, b)];
+        b32 ok = 1;
+        for (i64 b = 0; kinds[b] && b < n; b++) ok &= kinds[b] == ' ' || (u8)kinds[b] == got[b];
+        if (!ok) LOG("test: golden '%s', line %d:\n  %S\n  %s (expected)\n  %S (got)", g->what, k / 2, code, kinds, str8(got, n));
+        TEST_CHECK(t, ok, "syntax: golden '%s', line %d", g->what, k / 2);
+    }
+    return 1;
+}
+
+// Incremental equals full: generated source-like text, random edits, catch-up with random needs
+// and budgets in between. After every catch-up the states up to state_valid must equal a lex from
+// scratch; at the end every state must, and sampled lines' tokens too.
+typedef struct TestCorpus {
+    BufferLanguage language;
+    const char **lines;
+    i32 line_count;
+    const char **pieces; // edits that change states: comment and string delimiters ...
+    i32 piece_count;
+} TestCorpus;
+
+static const char *test_corpus_c[] = {
+    "#include <stdio.h>", "#define MAX(a, b) ((a) > (b) ? (a) : (b))", "#define LONG \\", "    1 + 2 \\", "    + 3",
+    "/* a block comment", " * that spans", " */", "int main(void) {", "    const char *s = \"str\\\"ing\"; // c",
+    "    auto r = R\"x(raw", "    still raw )x\" + 1;", "    char c = '\\'';", "    x = 1'000 + 0x1F;", "}",
+    "// line comment \\", "continued", "static int", "foo(int x)", "    return x * 2; /* inline */ y;",
+    "    s = \"unterminated", "    s = \"continued \\", "string\";", "", "typedef struct { u8 *data; i64 len; } String8;",
+    "LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)", "#if defined(X) /* c", "*/ && Y", "#endif",
+};
+static const char *test_pieces_c[] = { "/*", "*/", "\"", "'", "R\"x(", ")x\"", "\\", "\n", "#", "//", "{", "}", "\\\n", "x" };
+
+static const TestCorpus test_corpora[] = {
+    { BUFFER_LANG_C, test_corpus_c, ARRAY_COUNT(test_corpus_c), test_pieces_c, ARRAY_COUNT(test_pieces_c) },
+};
+
+// States of every line lexed from scratch, into `states`.
+static void test_full_states(Buffer *buf, Arena *scratch, u32 *states) {
+    u32 state = 0;
+    i64 count = buffer_line_count(buf);
+    for (i64 l = 0; l < count; l++) {
+        states[l] = state;
+        u64 mark = arena_pos(scratch);
+        state = syntax_lex(buf->language, state, buffer_line(buf, scratch, l), NULL);
+        arena_pop_to(scratch, mark);
+    }
+}
+
+static b32 test_incremental(Test *t, const TestCorpus *c, u64 seed) {
+    t->rng = seed ^ (0x696e6372ull + (u64)c->language);
+    Buffer *buf = buffer_create(STR8_LIT("incremental"));
+    TEST_CHECK(t, buf, "syntax: buffer_create failed");
+    buf->language = c->language;
+    Arena scratch = arena_create(MB(64));
+    u8 *text = PUSH_ARRAY(&t->arena, u8, MB(1));
+    i64 n = 0;
+    for (i32 l = 0; l < 3000; l++) {
+        String8 line = str8_cstr(c->lines[test_below(t, c->line_count)]);
+        memcpy(text + n, line.data, (size_t)line.len);
+        n += line.len;
+        text[n++] = '\n';
+    }
+    buffer_replace(buf, 0, 0, str8(text, n));
+    i64 cap = 20000;
+    u32 *full = PUSH_ARRAY(&t->arena, u32, cap);
+    syntax_dev_fake_clock(1);
+    i64 checks = 0, converged = 0;
+    for (i32 op = 0; op < 600; op++) {
+        i64 size = buffer_size(buf), a = test_below(t, size + 1), b = a;
+        String8 ins = str8(NULL, 0);
+        switch (test_below(t, 4)) {
+        case 0: ins = str8_cstr(c->pieces[test_below(t, c->piece_count)]); break;
+        case 1: b = MIN(a + test_below(t, 200), size); break;
+        case 2: ins = str8_cstr(c->lines[test_below(t, c->line_count)]); break;
+        default: b = MIN(a + test_below(t, 20), size); ins = str8_cstr(c->pieces[test_below(t, c->piece_count)]); break;
+        }
+        a = buffer_snap_char(buf, a);
+        b = buffer_snap_char(buf, b);
+        if (buffer_line_count(buf) + 2 >= cap) b = size; // keep it bounded: a big delete
+        buffer_replace(buf, a, b, ins);
+        if (test_below(t, 3) == 0) {
+            // Half of them complete (so later edits can converge), half partial.
+            b32 complete = test_below(t, 2) == 0;
+            i64 need = complete ? buffer_line_count(buf) - 1 : test_below(t, buffer_line_count(buf));
+            u64 before = syntax_dev_converged();
+            syntax_catch_up(buf, need, complete ? (u64)I64_MAX : (u64)test_below(t, KB(64)), &scratch);
+            converged += syntax_dev_converged() > before;
+            test_full_states(buf, &scratch, full);
+            for (i64 l = 0; l <= buf->state_valid; l++) {
+                TEST_CHECK(t, buffer_line_state(buf, l) == full[l], "syntax: %s incremental: op %d, line %D (valid to %D): 0x%x, full 0x%x",
+                           buffer_language_name(c->language), op, l, buf->state_valid, buffer_line_state(buf, l), full[l]);
+            }
+            checks++;
+        }
+    }
+    syntax_dev_fake_clock(0);
+    i64 last = buffer_line_count(buf) - 1;
+    TEST_CHECK(t, syntax_catch_up(buf, last, (u64)I64_MAX, &scratch) && buf->state_valid == last, "syntax: final catch-up");
+    test_full_states(buf, &scratch, full);
+    for (i64 l = 0; l <= last; l++) {
+        TEST_CHECK(t, buffer_line_state(buf, l) == full[l], "syntax: %s incremental: final, line %D: 0x%x, full 0x%x",
+                   buffer_language_name(c->language), l, buffer_line_state(buf, l), full[l]);
+    }
+    // Sampled lines: the tokens for drawing (from stored states) equal a fresh lex.
+    SyntaxToken t1[1024], t2[1024];
+    for (i32 k = 0; k < 200; k++) {
+        i64 l = test_below(t, last + 1);
+        u64 mark = arena_pos(&scratch);
+        String8 line = buffer_line(buf, &scratch, l);
+        SyntaxTokens a = { t1, 0, ARRAY_COUNT(t1) }, b = { t2, 0, ARRAY_COUNT(t2) };
+        TEST_CHECK(t, syntax_line_tokens(buf, l, line, &a), "syntax: line %D has tokens", l);
+        syntax_lex(c->language, full[l], line, &b);
+        b32 same = a.count == b.count;
+        for (i32 i = 0; same && i < a.count; i++) same = a.tokens[i].start == b.tokens[i].start && a.tokens[i].kind == b.tokens[i].kind;
+        TEST_CHECK(t, same, "syntax: %s incremental: the tokens of line %D differ", buffer_language_name(c->language), l);
+        arena_pop_to(&scratch, mark);
+    }
+    LOG("test: ok: %s incremental equals full (600 edits, %D partial catch-ups checked, %D of them converged, %D lines)",
+        buffer_language_name(c->language), checks, converged, last + 1);
+    os_release(scratch.base);
+    TEST_CHECK(t, buffer_destroy(buf), "syntax: destroy");
+    return 1;
+}
+
+// The budget: with the clock counting bytes lexed, one catch-up goes past its budget by less than
+// one clock check's worth of work: SYNTAX_CHECK_LINES lines and SYNTAX_CHECK_BYTES bytes plus the
+// line that crossed them.
+static b32 test_syntax_budget(Test *t, u64 seed) {
+    t->rng = seed ^ 0x627564676574ull;
+    Buffer *buf = buffer_create(STR8_LIT("budget.c"));
+    TEST_CHECK(t, buf, "syntax: buffer_create failed");
+    buf->language = BUFFER_LANG_C;
+    Arena scratch = arena_create(MB(64));
+    u8 *text = PUSH_ARRAY(&t->arena, u8, MB(8));
+    i64 n = 0, longest = 0;
+    for (i32 l = 0; l < 40000; l++) {
+        i64 len = test_below(t, 100) == 0 ? test_below(t, KB(40)) : test_below(t, 60);
+        if (l % 10000 == 5000) len = KB(50);
+        for (i64 i = 0; i < len; i++) text[n + i] = (u8)('a' + (i % 26));
+        n += len;
+        text[n++] = '\n';
+        longest = MAX(longest, len + 1);
+    }
+    buffer_replace(buf, 0, 0, str8(text, n));
+    syntax_dev_fake_clock(1);
+    i64 calls = 0, worst = 0;
+    for (i32 round = 0; round < 40; round++) {
+        // A comment opened and closed again at the top: every state changes.
+        if (round & 1) buffer_replace(buf, 0, 2, STR8_LIT(""));
+        else buffer_replace(buf, 0, 0, STR8_LIT("/*"));
+        i64 last = buffer_line_count(buf) - 1;
+        for (b32 done = 0; !done; calls++) {
+            u64 budget = (u64)(1 + test_below(t, round < 20 ? KB(200) : 2000));
+            u64 before = syntax_dev_lexed();
+            done = syntax_catch_up(buf, last, budget, &scratch);
+            u64 used = syntax_dev_lexed() - before;
+            TEST_CHECK(t, done || used >= budget, "syntax: budget: stopped early (%U of %U)", used, budget);
+            i64 over = (i64)used - (i64)budget;
+            worst = MAX(worst, over);
+            TEST_CHECK(t, over < (i64)SYNTAX_CHECK_BYTES + longest && over < (i64)SYNTAX_CHECK_LINES * longest,
+                       "syntax: budget %U, lexed %U: over by %D", budget, used, over);
+        }
+    }
+    syntax_dev_fake_clock(0);
+    os_release(scratch.base);
+    TEST_CHECK(t, buffer_destroy(buf), "syntax: destroy");
+    LOG("test: ok: syntax budget (%D catch-ups, worst overshoot %D bytes, bound %D + the longest line %D)", calls, worst,
+        (i64)SYNTAX_CHECK_BYTES, longest);
+    return 1;
+}
+
+static b32 test_syntax(Test *t, u64 seed) {
+    for (i32 i = 0; i < ARRAY_COUNT(test_goldens); i++) if (!test_golden(t, &test_goldens[i])) return 0;
+    LOG("test: ok: syntax goldens (%d cases)", (i32)ARRAY_COUNT(test_goldens));
+    for (i32 i = 0; i < ARRAY_COUNT(test_corpora); i++) if (!test_incremental(t, &test_corpora[i], seed)) return 0;
+    return test_syntax_budget(t, seed);
+}
+
 // Every line of `input` reindented by the rule, top to bottom (as TAB over the whole buffer).
 static b32 test_indent_case(Test *t, const char *what, const char *input, const char *expected, b32 tabs, i32 tab_width) {
     Buffer *buf = buffer_create(STR8_LIT("indent.c"));
@@ -4239,6 +4532,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     t.tmp_dir = tmp_dir;
     LOG("test: seed 0x%X (override with --seed), files in %S", seed, tmp_dir);
     u64 t0 = os_time_us();
+    syntax_init();
 
     test_fuzz(&t, seed);
     arena_reset(&t.arena);
@@ -4279,6 +4573,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_clipboard(&t);
     arena_reset(&t.arena);
     test_kill(&t);
+    arena_reset(&t.arena);
+    test_syntax(&t, seed);
     arena_reset(&t.arena);
     test_indent(&t);
     arena_reset(&t.arena);
