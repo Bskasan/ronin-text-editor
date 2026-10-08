@@ -482,7 +482,7 @@ static DWORD WINAPI it_thread(void *param) {
     ItRun *run = param;
     Platform *p = run->p;
     static const struct { const WCHAR *klid; const char *name; } layouts[] = {
-        { L"00000409", "US" }, { L"00000809", "United Kingdom" },
+        { L"00000409", "US" }, { L"00000809", "United Kingdom" }, { L"0000041F", "Turkish Q" }, { L"0000040B", "Finnish" },
     };
     HKL before[32], after[32], fg_before, fg_after;
     i32 n_before, n_after;
