@@ -33,6 +33,10 @@ typedef struct Platform {
 
     b32 altgr;          // set by the synthetic Left Ctrl that precedes Right Alt
     u16 high_surrogate; // pending WM_CHAR high surrogate
+    i32 clicks;         // the last mouse-down: its click count, button, time and place (double / triple clicks)
+    MouseButton click_button;
+    DWORD click_time;
+    i32 click_x, click_y;
 
     i64 frame_count;
     LARGE_INTEGER qpc_start;
@@ -859,12 +863,26 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                            : MOUSE_MIDDLE;
         if (down) SetCapture(hwnd);
         else if (!(wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON))) ReleaseCapture();
+        i32 x = (i16)LOWORD(lp), y = (i16)HIWORD(lp);
+        if (down) {
+            // A press within the double-click time and area of the previous one counts on: 1, 2, 3, 1, ...
+            DWORD now = (DWORD)GetMessageTime();
+            i32 dx = GetSystemMetricsForDpi(SM_CXDOUBLECLK, p->dpi) / 2, dy = GetSystemMetricsForDpi(SM_CYDOUBLECLK, p->dpi) / 2;
+            b32 again = button == p->click_button && now - p->click_time <= GetDoubleClickTime() &&
+                        x >= p->click_x - dx && x <= p->click_x + dx && y >= p->click_y - dy && y <= p->click_y + dy;
+            p->clicks = again ? p->clicks % 3 + 1 : 1;
+            p->click_button = button;
+            p->click_time = now;
+            p->click_x = x;
+            p->click_y = y;
+        }
         Event e = {
             .kind = down ? EVENT_MOUSE_DOWN : EVENT_MOUSE_UP,
             .button = button,
-            .x = (i16)LOWORD(lp),
-            .y = (i16)HIWORD(lp),
+            .x = x,
+            .y = y,
             .mods = win32_mods(p),
+            .clicks = down ? p->clicks : 0,
         };
         win32_push_event(p, e);
         p->redraw = 1;
@@ -872,9 +890,11 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_MOUSEMOVE: {
-        // Delivered with the next frame; a move alone does not request one.
+        // Delivered with the next frame; a move alone does not request one, except while the left
+        // button is held (a drag selects).
         Event e = { .kind = EVENT_MOUSE_MOVE, .x = (i16)LOWORD(lp), .y = (i16)HIWORD(lp), .mods = win32_mods(p) };
         win32_push_event(p, e);
+        if (wp & MK_LBUTTON) p->redraw = 1;
         return 0;
     }
 

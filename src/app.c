@@ -95,6 +95,8 @@ struct App {
     i32 forced_render_mode;      // dev --render-mode, -1 = from the config
     i32 text_scale;              // text-scale-increase / decrease steps, session only
     i32 wheel_scale_accum;       // Ctrl + wheel units not yet turned into text scale steps
+    b32 dragging;                // the left button went down in a text area and is held
+    i64 drag_anchor;             // where it went down (a drag selects from there)
     Renderer *renderer;          // during a frame: commands that change the font rebind the atlas at once
     b32 quit;
     b32 focused;                 // the window has keyboard focus
@@ -685,18 +687,56 @@ static i32 app_view_at(App *app, i32 x, i32 y) {
     return -1;
 }
 
-// A left click in a text area activates its view and puts point at the clicked cell.
-static void app_click(App *app, AppLayout *l, i32 x, i32 y) {
+// The buffer position under a pixel of a view's text area; outside the area (a drag with the
+// mouse captured) the row and column are clamped to it. The partial last row counts as the last one.
+static i64 app_mouse_pos(AppLayout *l, View *v, i32 x, i32 y) {
+    i64 row = CLAMP((i64)(y - v->y) / l->line_h, 0, (i64)v->rows - 1);
+    if (y < v->y) row = 0;
+    i64 col = v->left_col + MAX(x - (v->x + l->pad), 0) / l->cell_w;
+    Buffer *buf = v->buffer;
+    i64 line = MIN(view_top_line(v) + row, buffer_line_count(buf) - 1);
+    return view_offset_at_column(buf, line, col);
+}
+
+// A left press in a text area activates its view. One click puts point at the cell (a drag from
+// there selects); a double click selects the word, a triple click the line with its newline.
+static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
     i32 i = app_view_at(app, x, y);
     if (i < 0) return;
     View *v = app->views[i];
     if (y >= v->y + v->h - l->line_h) return; // the mode line
-    i64 row = MIN((y - v->y) / l->line_h, v->rows - 1); // the partial row counts as the last one
-    i64 col = v->left_col + MAX(x - (v->x + l->pad), 0) / l->cell_w;
     app->active_view = i;
-    view_set_point_at(v, row, col);
+    Buffer *buf = v->buffer;
+    Cursor *c = &v->cursors[0];
+    i64 pos = app_mouse_pos(l, v, x, y);
+    view_deactivate_mark(v);
+    if (clicks == 2) {
+        i64 start, end;
+        view_word_bounds(buf, pos, app->config->settings.underscore_is_word, &start, &end);
+        view_set_mark(v, c, start, 1);
+        pos = end;
+    } else if (clicks == 3) {
+        i64 line = buffer_line_of(buf, pos);
+        view_set_mark(v, c, buffer_line_start(buf, line), 1);
+        pos = line + 1 < buffer_line_count(buf) ? buffer_line_start(buf, line + 1) : buffer_size(buf);
+    }
+    view_set_point(v, c, pos);
+    app->dragging = 1;
+    app->drag_anchor = c->mark_active ? buffer_marker_get(buf, c->mark) : pos;
     view_ensure_visible(v);
     app->ctx.last_command = NULL;
+}
+
+// While the left button is held: point follows the mouse, the region runs from where it went down.
+static void app_drag(App *app, AppLayout *l, i32 x, i32 y) {
+    View *v = app->views[app->active_view];
+    Cursor *c = &v->cursors[0];
+    i64 pos = app_mouse_pos(l, v, x, y);
+    if (pos != view_point(v, c) || c->mark_active) {
+        if (!c->mark_active && pos != app->drag_anchor) view_set_mark(v, c, app->drag_anchor, 1);
+        view_set_point(v, c, pos);
+        view_ensure_visible(v);
+    }
 }
 
 extern const Command CMD_SAVE_BUFFERS_KILL_TERMINAL, CMD_TEXT_SCALE_INCREASE, CMD_TEXT_SCALE_DECREASE;
@@ -917,7 +957,13 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
             app_key_event(app, e);
             break;
         case EVENT_MOUSE_DOWN:
-            if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y);
+            if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y, MAX(e->clicks, 1));
+            break;
+        case EVENT_MOUSE_MOVE:
+            if (app->dragging) app_drag(app, &l, e->x, e->y);
+            break;
+        case EVENT_MOUSE_UP:
+            if (e->button == MOUSE_LEFT) app->dragging = 0;
             break;
         case EVENT_MOUSE_WHEEL:
             app_wheel(app, e->x, e->y, e->wheel, e->mods);
