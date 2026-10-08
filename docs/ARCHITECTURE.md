@@ -577,8 +577,9 @@ memory, startup and size.
   buffer shows that one in its views; *scratch* is recreated at once; *Messages* cannot be killed.
 - Revert goes through buffer_replace: the file is loaded into a temporary buffer, the common prefix
   and suffix are skipped (edges moved out of UTF-8 sequences) and the middle is replaced once, as an
-  undo group of its own. Markers adjust as for any edit (point at the start of a replaced range, an
-  advancing marker, ends up after the new text); the undo log is kept, so an outside change can be
+  undo group of its own. Markers inside the replaced range, or exactly at its start, are put back
+  by line and character column, clamped (Phase 8: an outside tool rewriting most of a file sent
+  point to the end); markers outside it adjust as for any edit. The undo log is kept, so an outside change can be
   undone (the buffer is then modified) and undo-redo returns to the file. Encoding and line endings
   are taken over; a change of line endings only is no edit and no undo step.
 - Changed on disk is decided by size and write time (as Emacs): a rewrite within the same file-time
@@ -630,3 +631,5 @@ memory, startup and size.
 - A change on disk within the same file-time tick at the same size goes unseen (a content hash on
   activation would catch it, at the cost of reading every file).
 - Slow directory listings (network shares) block the UI while find-file lists a directory.
+- Revert: map positions through a line diff of the old and new text, so a marker in an unchanged
+  line that moved keeps its place in it (now: line and column inside the replaced range).

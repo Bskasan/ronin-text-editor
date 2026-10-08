@@ -221,10 +221,11 @@ OsFileStatus buffer_load_file(Buffer *buf, String8 path);
 // Reads the visited file again: loaded into a temporary buffer (so encodings and line endings are
 // handled as on load), then the part between the common prefix and the common suffix of the old
 // and new text is replaced with one buffer_replace, as an undo group of its own (`point` is where
-// undoing it puts point). Markers adjust as for any edit; the undo log is kept, so the change can
-// be undone (the buffer is then modified). Encoding, line endings, the read-only attribute and the
-// file's size and time are taken over and the buffer counts as saved. An identical text is no edit.
-// On failure the buffer is untouched.
+// undoing it puts point). Markers inside the replaced range, or at its start, are put back at
+// their line and character column (clamped); the others adjust as for any edit. The undo log is
+// kept, so the change can be undone (the buffer is then modified). Encoding, line endings, the
+// read-only attribute and the file's size and time are taken over and the buffer counts as saved.
+// An identical text is no edit. On failure the buffer is untouched.
 OsFileStatus buffer_revert(Buffer *buf, i64 point);
 void         buffer_set_path(Buffer *buf, String8 full_path); // also sets the name and the language
 const char  *buffer_language_name(BufferLanguage language);    // "C", "C++", "Fundamental", ...
