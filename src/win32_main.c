@@ -729,6 +729,7 @@ static void win32_frame(Platform *p) {
         QueryPerformanceCounter(&now);
         QueryPerformanceFrequency(&freq);
         i64 us_main = (now.QuadPart - p->qpc_start.QuadPart) * 1000000 / freq.QuadPart;
+        LOG("memory: private bytes after the first frame: %U KB", os_dev_private_bytes() / 1024);
         LOG("startup: first Present %D.%03D ms after WinMain, %D.%03D ms after process creation",
             us_main / 1000, us_main % 1000, us_process / 1000, us_process % 1000);
 #endif
@@ -1733,7 +1734,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit); // defaults
 #endif
+#if TEAL_DEV
+    LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
+#endif
     p->app = app_create(&p->perm, &app_args);
+#if TEAL_DEV
+    LOG("memory: private bytes with the app (config, font and atlas, buffers): %U KB", os_dev_private_bytes() / 1024);
+#endif
     if (!p->app) {
 #if TEAL_DEV
         if (win32_dev_batch_mode(p)) {
@@ -1756,6 +1763,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     LOG("startup: device thread %s, main thread waited %U us for it", device_thread ? "used" : "unavailable",
         os_time_us() - join_start);
+    LOG("memory: private bytes with the D3D11 device: %U KB", os_dev_private_bytes() / 1024);
 #endif
     if (!r_finish_create(renderer, p->hwnd, p->width, p->height)) {
 #if TEAL_DEV
@@ -1767,6 +1775,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         os_fatal(STR8_LIT("Could not initialize Direct3D 11."));
     }
     p->renderer = renderer; // from here on WM_SIZE / WM_PAINT may render
+#if TEAL_DEV
+    LOG("memory: private bytes with the swap chain, pipeline and atlas texture: %U KB", os_dev_private_bytes() / 1024);
+#endif
 
 #if TEAL_DEV
     if (p->screenshot_path.len || p->atlas_path.len) {
