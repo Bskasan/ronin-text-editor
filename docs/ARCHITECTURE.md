@@ -18,15 +18,17 @@
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
 | `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
-| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap, buffers, the kill ring, app commands (quit, buffer switching, open/reload config, text scale, describe-key, quoted-insert), layout of views and echo area, drawing (region included), window title, mouse (click, drag, double / triple click); dev: the Phase 2 sample behind `--sample`, smoke probes, `--bench-edit` memory |
+| `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, the minibuffer commands, M-x, goto-line |
+| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack, buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), `app_update` (events, commands, layout) and drawing (views, region, the minibuffer line, the candidate list), window title, mouse (click, drag, double / triple click); dev: the Phase 2 sample behind `--sample`, smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates |
+| `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer, revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
 | `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation (click counts), clipboard (and the dev fake), os_* implementation, dev flags |
+| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation (click counts), clipboard (and the dev fake), directory listing, the end-of-session messages, os_* implementation, dev flags |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `edit.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
+Core (`app.c`, `files.c`, `font.c`, `buffer.c`, `view.c`, `edit.c`, `minibuffer.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
 includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
 
 ## Startup and frame loop
@@ -163,6 +165,43 @@ with or without the 100 MB file.
   first frame (driver): of ~76 MB, ~67 MB is Direct3D and the driver. An extra open buffer
   (2 KB file) adds 439 KB of private bytes; its own commit is 384 KB: meta 64, text 128, line
   index 128, markers 64 KB (64 KB commit steps; undo commits nothing until the first edit).
+
+## Measurements (Phase 7)
+
+`build\teal_bench.exe`, same machine (2560x1440 at 144 Hz), 1280x800 client; the release build for
+memory, startup and size.
+
+- Small buffers: commit steps grow 4, 8, 16, 32, then 64 KB. An extra 2 KB buffer: 71 KB of private
+  bytes (439 KB in Phase 6), its own commit 16 KB (384 KB): meta 4, text 4, line index 4, markers 4,
+  undo 0. A load gets size / 16 of gap slack, as every later growth does (without it the first
+  growth while typing moved half of a 100 MB file: a 4 ms spike).
+- --bench-complete, per keystroke that changes the input (147, three rounds of typing, deleting
+  and clearing), filter + rank / command + frame build:
+
+| candidates | avg | worst |
+|---|---|---|
+| 10,000 | 67 us / 73 us | 232 us / 300 us |
+| 100,000 | 0.65 ms / 0.65 ms | 2.0-2.1 ms / 2.1 ms |
+
+  Building, folding and ranking a set: 1.1 ms for 10,000, 11 ms for 100,000. The first version
+  (a byte loop, one pass per score group, every keystroke over all candidates) took 2.2 ms avg,
+  3.2 ms worst for 100,000; the SSE2 scan for a term's first byte and one placing pass gave
+  1.85 / 2.5 ms; narrowing while the input only grows gave the numbers above. The cost is ~18 ns per
+  candidate scored at 10,000 and at 100,000 alike: compute, not memory. The worst case is a DEL
+  that widens a three-word input back to a full pass.
+- Typing (bench-view, self-insert at line 1,000,000, command + frame build, alternated with the
+  Phase 6 build): Phase 6 25-26 us avg, Phase 7 22-23 us; worst ~5 ms in both (the first insert
+  moves the gap to the middle). next-line 13 us in both.
+- Revert of the 100 MB file after a one-line change outside: ~120 ms (load into a temporary buffer,
+  compare, one replace); the undo log grows by one small record.
+- Idle with a file open (its directory watched, plus the config's): 0 ms CPU over 10 s.
+- Startup (release, 7 runs) 193 ms median (191 in Phase 6).
+- Memory, release build, private bytes idle (3 runs each): *scratch* only 77.7-78.2 MB; with
+  src\keymap.c 78.5-79.1 MB; with the 100 MB file 196.6-197.0 MB (189-190 in Phase 6: the gap slack
+  of the load, ~6.5 MB). Dev build at the startup stages: 4.7 MB before the app, +5.1 MB for the
+  app, +49 MB with the D3D11 device, +4.2 MB swap chain and pipeline, +12.8 MB after the first frame.
+- Release exe 260,096 bytes (219,648 after Phase 6); the same six DLLs; user32 adds
+  ShutdownBlockReasonCreate and ShutdownBlockReasonDestroy.
 
 ## Roadmap
 
@@ -406,9 +445,9 @@ with or without the 100 MB file.
 - A config change notification is read 50 ms after the last one (Phase 6), through the same
   pending-wait mechanism as the retries, so an editor that truncates and then writes the file
   is read once, full.
-- save-buffers-kill-terminal refuses once while file-visiting buffers are modified and quits on
-  an immediate repeat (real prompts come with the minibuffer in Phase 7); the window's close
-  button and Alt+F4 run it too. Text scale: 1.2 per step for the session (never written to
+- save-buffers-kill-terminal refused once while file-visiting buffers were modified and quit on
+  an immediate repeat (replaced by the prompts of Phase 7); the window's close button and Alt+F4
+  run it too. Text scale: 1.2 per step for the session (never written to
   the config); Ctrl + wheel does the same; other mouse input stays hard-coded.
 
 ### Editing: mark and region, kill ring, undo, indentation (Phase 6)
@@ -499,6 +538,61 @@ with or without the 100 MB file.
   input. "~" means the user's profile directory.
 - Files changed outside the editor: an unmodified buffer is reloaded silently; a modified buffer is
   never touched, only flagged.
+- The prompt is not part of the minibuffer's text: it is drawn before the input and the View's rect
+  starts after it, so M-< and C-a go to the start of the input. The buffer is " *Minibuf-1*", not
+  listed; its undo log starts empty with every prompt (the initial input is not undoable).
+- Kinds: text, choice (candidates from a callback that may rebuild them for the input: find-file
+  lists the directory part only when it changes), number (N or N:M), single key (its keys bypass the
+  keymap, except that a key bound to a COMMAND_QUIT command aborts first, so no answer can shadow C-g
+  or ESC; other keys say "[Please answer y or n]"), yes-or-no typed in full.
+- The command driver runs an accepted prompt's continuation after the command, as a command of its
+  own on the calling View (its undo boundary, ensure_visible, last_command); M-x runs the chosen
+  command itself. A command that starts a chain sets the chain's state; a continuation may open the
+  next prompt. Abort (C-g, ESC, the close button, the end of the session) drops the whole chain: what
+  earlier links did stays done (files saved stay saved), nothing later runs, an exit is cancelled.
+- C-g inside the minibuffer with a key prefix pending cancels only the prefix (COMMAND_QUIT on
+  keyboard-quit and abort-minibuffers lets either cancel a prefix in any keymap).
+- While the minibuffer reads, messages are shown as bracketed notes after the input (Emacs 27+):
+  "[No match]", "[Sole completion]", "[Complete, but not unique]", and any command's message.
+  Notes are not logged.
+- The candidate list covers the bottom of the views: they are drawn shorter with their mode line
+  moved up, their rows and scroll positions untouched, so lines near the bottom are hidden, not
+  scrolled away. The first match is selected after every change of the input. TAB completes to the
+  longest common prefix of the matches when the input is a prefix of it, then to the selection.
+  Clicks outside the minibuffer line are ignored while it reads; buffer-switching commands refuse
+  to run in the minibuffer window.
+- Case folding keeps byte offsets (a character whose folded form has another UTF-8 length is kept),
+  so match spans are positions in the shown text. While the input only grows on the same candidate
+  set, only the previous matches are scored (narrowing).
+- History per category (commands, files, buffers, lines, text), 100 entries, no consecutive
+  duplicates, session only; dead strings are compacted when they pass half of the arena.
+- M-x lists every command alphabetically with its shortest global binding. find-file and
+  write-file start in the current buffer's directory (no file: the current directory), with
+  directories first (in the file system's order, then the files); RET or TAB on a directory
+  descends; "/~/" or "/X:/" in the input starts over there (not dimmed). RET on an empty file name
+  takes the selected entry; C-j on a directory says it is a directory (no dired).
+- Buffer names are unique: a newcomer whose name is taken gets "name<parent dir>", then "name<N>"
+  (Emacs' uniquify renames both; teal only the newcomer). switch-to-buffer offers buffers most
+  recently shown first with the default (the most recently shown other buffer) selected; killing a
+  buffer shows that one in its views; *scratch* is recreated at once; *Messages* cannot be killed.
+- Revert goes through buffer_replace: the file is loaded into a temporary buffer, the common prefix
+  and suffix are skipped (edges moved out of UTF-8 sequences) and the middle is replaced once, as an
+  undo group of its own. Markers adjust as for any edit (point at the start of a replaced range, an
+  advancing marker, ends up after the new text); the undo log is kept, so an outside change can be
+  undone (the buffer is then modified) and undo-redo returns to the file. Encoding and line endings
+  are taken over; a change of line endings only is no edit and no undo step.
+- Changed on disk is decided by size and write time (as Emacs): a rewrite within the same file-time
+  tick at the same size is not seen. Checks: every file buffer when the window is activated; the
+  displayed buffers after a watch notification while focused (50 ms settle, sharing violations
+  retried every 100 ms, 5 times). One watch per distinct directory of the displayed buffers. Saving
+  a buffer whose file changed asks "<name> has changed since visited or saved. Save anyway?"; a
+  deleted file is reported once and the buffer stays; the mode line shows "[changed on disk]" or
+  "[deleted on disk]".
+- The end of the Windows session: the app keeps the platform told whether some file buffer is
+  unsaved; WM_QUERYENDSESSION is allowed at once when nothing is, otherwise refused with a shutdown
+  block reason while the quit chain asks (a repeated query does not restart it). The reason goes
+  away when nothing is unsaved, on "exit anyway", or when Windows cancels the shutdown.
+  WM_ENDSESSION(TRUE) releases and exits without writing anything.
 
 ## Later
 
@@ -509,8 +603,6 @@ with or without the 100 MB file.
   instant: show the window immediately with the background color painted (GDI) until the
   first Present.
 - Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
-- Detect changes made outside the editor (file size and write time are already recorded; the
-  directory watches of Phase 5 are general and can deliver the notifications).
 - ESC as the Meta prefix, as in Emacs (ESC is keyboard-quit for now).
 - *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
 - Chords on Turkish Q: Ctrl+Shift+ı gives C-S-i (default case mapping); a layout-aware letter
@@ -532,4 +624,9 @@ with or without the 100 MB file.
   extends by words or lines.
 - Multiple cursors and undo: undo restores only the primary cursor's point (Phase 14).
 - Auto-save and crash recovery.
+- Writing to a path another buffer visits (Emacs asks first; teal then has two buffers on it).
+- Clicking a candidate in the list; dimming the shadowed part of a file name ("c:/a/~/b").
+- Candidates' bindings from the minibuffer keymap in M-x annotations (only global ones are shown).
+- A change on disk within the same file-time tick at the same size goes unseen (a content hash on
+  activation would catch it, at the cost of reading every file).
 - Slow directory listings (network shares) block the UI while find-file lists a directory.
