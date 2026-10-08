@@ -444,6 +444,23 @@ static void files_save_some_start(CommandContext *ctx, u32 flags) {
 
 static void cmd_save_some_buffers(CommandContext *ctx) { files_save_some_start(ctx, 0); }
 
+// Windows asked to end the session while files were unsaved: the quit chain, as the close button,
+// unless that chain is already asking (Windows may ask again).
+static void files_end_session(App *app) {
+    if (app->mini.active && (app->mini.state.flags & FILES_QUIT)) return;
+    minibuffer_abort(&app->mini);
+    app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
+}
+
+// Tells the platform when "some file buffer is unsaved" changes.
+static void files_report_unsaved(App *app) {
+    b32 any = 0;
+    for (i32 i = 0; i < app->buffers.count && !any; i++) any = files_unsaved(app->buffers.entries[i].buffer);
+    if (any == app->unsaved_reported) return;
+    app->unsaved_reported = any;
+    os_set_unsaved_files(any);
+}
+
 // C-x C-c, the close button, Alt+F4 and the end of the Windows session: save-some-buffers, then
 // "Modified buffers exist; exit anyway?" if some are left.
 static void cmd_save_buffers_kill_terminal(CommandContext *ctx) { files_save_some_start(ctx, FILES_QUIT); }

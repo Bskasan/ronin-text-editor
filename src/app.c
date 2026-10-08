@@ -99,6 +99,7 @@ struct App {
     b32 disk_pending;            // a change notification came: check the displayed buffers at disk_due_us
     u64 disk_due_us;
     i32 disk_attempts;           // reloads that met a sharing violation, in a row
+    i32 unsaved_reported;        // the last os_set_unsaved_files value, -1 = none yet
     Config *config;              // in config_arenas[config_slot]
     Arena config_arenas[2];      // a load parses into the other arena, then switches
     i32 config_slot;
@@ -792,6 +793,8 @@ static View *app_active_view(App *app) {
 
 // files.c: files changed outside the editor.
 static void files_check_all(App *app);
+static void files_end_session(App *app);
+static void files_report_unsaved(App *app);
 static void files_notify(App *app, OsWatch watch);
 static void files_poll(App *app);
 static void files_update_watches(App *app);
@@ -840,6 +843,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     minibuffer_init(&app->mini, perm, mini);
     app->files_arena = arena_create(GB(1));
     app->watch_arena = arena_create(MB(16));
+    app->unsaved_reported = -1;
     app->ctx.mini = &app->mini;
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
@@ -1173,6 +1177,9 @@ static b32 app_update(App *app, FrameInput *in) {
             minibuffer_abort(&app->mini);
             app_run_command(app, &CMD_SAVE_BUFFERS_KILL_TERMINAL, 0, 0);
             break;
+        case EVENT_END_SESSION:
+            files_end_session(app);
+            break;
         case EVENT_FOCUS: // activation: every file buffer is checked against its file
             if (e->focused && !app->focused) files_check_all(app);
             app->focused = e->focused;
@@ -1215,6 +1222,7 @@ static b32 app_update(App *app, FrameInput *in) {
     app->laid_line_h = l.line_h;
     app_update_title(app, in->scratch);
     files_update_watches(app);
+    files_report_unsaved(app);
     return 1;
 }
 
@@ -1378,6 +1386,10 @@ b32 app_dev_visit(App *app, String8 path) {
     Buffer *buf = app_find_file(app, path);
     if (buf) view_switch_buffer(app_active_view(app), &app->buffers, buf);
     return buf != NULL;
+}
+
+String8 app_dev_prompt(App *app) {
+    return app->mini.active ? app->mini.prompt : str8(NULL, 0);
 }
 
 i32 app_dev_font_setups(App *app) {
