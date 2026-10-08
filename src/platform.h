@@ -24,6 +24,9 @@ String8 os_get_env(Arena *arena, String8 name);    // empty when not set
 b32   os_make_dir(String8 path);                   // true if it exists afterwards (the parent must exist)
 #if TEAL_DEV
 void  os_log_write(String8 text);
+// Startup timeline: records the time of a stage (a static string) of the first startup; the
+// platform logs every stage once after the first frame. Recording costs a counter read.
+void  os_dev_stage(const char *what);
 #endif
 
 // ---------------------------------------------------------------------------

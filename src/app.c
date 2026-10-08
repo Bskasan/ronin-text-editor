@@ -716,15 +716,23 @@ static u32  files_wait_ms(App *app);
 // Startup
 
 // The config is read before the font, so the font is set up exactly once, as configured.
+#if TEAL_DEV
+#define APP_STAGE(what) os_dev_stage(what)
+#else
+#define APP_STAGE(what) ((void)0)
+#endif
+
 App *app_create(Arena *perm, AppArgs *args) {
     App *app = PUSH_STRUCT(perm, App);
     syntax_init();
+    APP_STAGE("app: syntax_init");
     app->forced_render_mode = args->render_mode_forced ? (i32)args->render_mode : -1;
     app->config_arenas[0] = arena_create(APP_CONFIG_RESERVE);
     app->config_arenas[1] = arena_create(APP_CONFIG_RESERVE);
     app->config_path = app_config_path(perm, args);
     app->config_source.path = app->config_path;
     ConfigPoll config_result = app_poll_config(app, 1, 1);
+    APP_STAGE("app: config read and parsed");
     FontParams fp = app_font_params(app);
 #if TEAL_DEV
     if (!args->headless)
@@ -732,6 +740,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     {
         app->font = font_create(perm, &fp, args->dpi_scale);
         if (!app->font) return NULL;
+        APP_STAGE("app: font (DirectWrite, metrics, ASCII rasterized)");
     }
 
     buffer_list_init(&app->buffers);
@@ -750,9 +759,11 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->views[0] = view_create(perm, initial);
     app->view_count = 1;
     buffer_list_touch(&app->buffers, initial);
+    APP_STAGE("app: buffers and the view");
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);
+    APP_STAGE("app: minibuffer");
     app->files_arena = arena_create(GB(1));
     app->watch_arena = arena_create(MB(16));
     app->unsaved_reported = -1;
@@ -761,9 +772,11 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->ctx.echo = &app->echo;
     if (!kill_init(&app->kills, app->config->settings.kill_ring_max)) os_fatal(STR8_LIT("Out of address space (kill ring)."));
     app->ctx.kills = &app->kills;
+    APP_STAGE("app: kill ring");
     app_apply_config(app, NULL, 1);
     app_report_config(app, config_result, 0);
     app_watch_config(app);
+    APP_STAGE("app: config applied, its directory watched");
     if (app->font && app->font->used_fallback) {
         echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
     }
@@ -1212,11 +1225,13 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     app->renderer = r;
     font_frame_begin(app->font, r, in->dpi_scale);
     b32 running = app_update(app, in);
+    APP_STAGE("frame: updated (events, layout, catch-up)");
     app->renderer = NULL;
     if (!running) return 0;
     app_render(app, in, r);
 #if TEAL_DEV
     app->dev_build_us = os_time_us() - t0;
+    os_dev_stage("frame: built");
 #endif
     r_end_frame(r);
     return 1;

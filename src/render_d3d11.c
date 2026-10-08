@@ -554,6 +554,7 @@ void r_end_frame(Renderer *r) {
     r->in_frame = 0;
 #if TEAL_DEV
     u64 t1 = os_time_us();
+    os_dev_stage("frame: flushed (atlas upload, draw calls)");
 #endif
 
 #if TEAL_DEV
@@ -587,6 +588,7 @@ void r_end_frame(Renderer *r) {
     HRESULT hr = IDXGISwapChain1_Present(r->swap_chain, r->present_interval, 0);
 #if TEAL_DEV
     u64 t2 = os_time_us();
+    os_dev_stage("frame: presented");
     r->stats.flush_us = t1 - t0;
     r->stats.present_us = t2 - t1;
 #endif
