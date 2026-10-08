@@ -246,7 +246,7 @@ i32  app_dev_syntax_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, 
 void app_dev_smoke_buffer_view(App *app); // *scratch*: a known text, Fundamental, focus forced off
 void app_dev_smoke_region(App *app);      // stage 2: an active region over lines 0-1
 void app_dev_smoke_isearch(App *app);     // stage 4: "foo bar foo", point 0 (then C-s f o o C-s)
-i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list, 4: isearch
+i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list, 4: isearch, 5: failing isearch
 void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
 void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
 b32  app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b); // show_paren_mode's pair in the active view
@@ -284,6 +284,7 @@ void app_dev_append(App *app, String8 text);                  // --bench-search:
 void app_dev_show_scratch(App *app, String8 text);            // --bench-search: *scratch* with this text, point at 0
 i64  app_dev_point(App *app);                                 // the active view's point
 b32  app_dev_isearch_failing(App *app);                        // an isearch is active, done, and failing
+void app_dev_cell(App *app, i32 *w, i32 *h);                  // the text cell in pixels
 void app_dev_log_keys(App *app, b32 on);                      // --log-keys: log every key and text event's result
 String8 app_dev_echo(App *app);                               // the echo area's text
 String8 app_dev_text(App *app, Arena *arena);                 // the active view's buffer text

@@ -1668,11 +1668,12 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
     DevProbe probes[16];
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
-    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == -1 ? 12 : 4;
+    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == 5 ? 1 : stage == -1 ? 13 : 5;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
                                          : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
                                          : stage == 4 ? "isearch (current match, lazy highlight)"
+                                         : stage == 5 ? "isearch (failing)"
                                          : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
         language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
@@ -1756,7 +1757,10 @@ static i32 win32_smoke_end_session(Platform *p) {
     }
     win32_smoke_feed(p, "x");
     LRESULT refused = SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
-    b32 reason = win32_smoke_has_reason(p);
+    WCHAR reason_text[128];
+    DWORD reason_len = ARRAY_COUNT(reason_text);
+    b32 reason = ShutdownBlockReasonQuery(p->hwnd, reason_text, &reason_len) &&
+                 str8_equal(str8_from_str16(&p->scratch, (u16 *)reason_text, lstrlenW(reason_text)), STR8_LIT("Unsaved changes in teal"));
     win32_frame(p);
     String8 prompt = str8_copy(&p->perm, app_dev_prompt(p->app));
     b32 ok1 = !refused && reason && prompt.len > 10 && str8_starts_with(prompt, STR8_LIT("Save file "));
@@ -1771,7 +1775,7 @@ static i32 win32_smoke_end_session(Platform *p) {
     LRESULT allowed = SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
     b32 ok5 = allowed && !win32_smoke_has_reason(p) && !app_dev_prompt(p->app).len;
     b32 ok = ok1 && ok2 && ok3 && ok4 && ok5;
-    LOG("smoke: %s: end of session: refused with a reason and the save question '%S' %d, a repeated query keeps it %d, "
+    LOG("smoke: %s: end of session: refused with the reason 'Unsaved changes in teal' and the save question '%S' %d, a repeated query keeps it %d, "
         "an abort keeps the reason %d, a cancelled shutdown removes it %d, allowed once saved %d", ok ? "ok" : "FAIL", prompt,
         ok1, ok2, ok3, ok4, ok5);
     return ok ? EXIT_OK : EXIT_TEST;
@@ -1815,6 +1819,36 @@ static i32 win32_smoke_config_and_keys(Platform *p) {
     if (setups != 1 && result == EXIT_OK) result = EXIT_FONT;
     arena_reset(&p->scratch);
     return result;
+}
+
+// Smoke: the text scale (C-x C-+, C-x C-0, C-x C--, Ctrl + wheel) and a config's font_size each set up
+// the font again with a larger or smaller cell, and C-x C-0 / the wheel come back to the same cell.
+static i32 win32_smoke_text_scale(Platform *p) {
+    i32 w0, h0, w1, h1, w2, h2, w3, h3, w4, h4, w5, h5;
+    i32 s0 = app_dev_font_setups(p->app);
+    app_dev_cell(p->app, &w0, &h0);
+    win32_smoke_feed(p, "C-x C-+");
+    app_dev_cell(p->app, &w1, &h1);
+    win32_smoke_feed(p, "C-x C-0");
+    app_dev_cell(p->app, &w2, &h2);
+    win32_smoke_feed(p, "C-x C--");
+    app_dev_cell(p->app, &w3, &h3);
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 100, .y = 100, .wheel = 120, .mods = MOD_CTRL };
+    win32_push_event(p, wheel);
+    win32_frame(p);
+    app_dev_cell(p->app, &w4, &h4);
+    i32 s4 = app_dev_font_setups(p->app);
+    String8 conf = str8_fmt(&p->perm, "%S\\tmp\\smoke_font.conf", p->exe_dir);
+    b32 written = os_write_file(conf, STR8_LIT("[settings]\nfont_size = 14\n"));
+    app_dev_use_config(p->app, conf);
+    win32_frame(p);
+    app_dev_cell(p->app, &w5, &h5);
+    i32 s5 = app_dev_font_setups(p->app);
+    b32 ok = h1 > h0 && w2 == w0 && h2 == h0 && h3 < h0 && w4 == w0 && h4 == h0 && s4 == s0 + 4 && written && h5 > h0 && s5 == s4 + 1;
+    LOG("smoke: %s: text scale: cell %dx%d, C-x C-+ %dx%d, C-x C-0 %dx%d, C-x C-- %dx%d, Ctrl+wheel %dx%d, %d font set-up(s); "
+        "font_size = 14 in the config: %dx%d, %d more set-up", ok ? "ok" : "FAIL", w0, h0, w1, h1, w2, h2, w3, h3, w4, h4, s4 - s0,
+        w5, h5, s5 - s4);
+    return ok ? EXIT_OK : EXIT_FONT;
 }
 
 // The title shows the buffer name and was set exactly once over all the smoke frames.
@@ -2969,9 +3003,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 r_request_capture(p->renderer);
                 win32_frame(p);
                 if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 4, NULL);
-                win32_smoke_feed(p, "RET");
+                win32_smoke_feed_no_frame(p, "x"); // stage 5: "foox" fails
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 5, NULL);
+                win32_smoke_feed(p, "C-g RET");
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
+                if (code5 == EXIT_OK) code5 = win32_smoke_text_scale(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);
                 p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3 != EXIT_OK ? code3
                              : code4 != EXIT_OK ? code4 : code5;
