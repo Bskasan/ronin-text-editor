@@ -2728,6 +2728,38 @@ static const Command *test_binding(Config *c, const char *keys) {
     return keymap_get(&c->global, &seq);
 }
 
+// The minibuffer's part of the config: [keys minibuffer] binds in its own map, [keys] and
+// [keys global] in the global one; the new settings and colors.
+static b32 test_config_minibuffer(Test *t) {
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+    config_init(c);
+    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    TEST_CHECK(t, c->settings.completion_lines == 8 && c->settings.auto_revert && c->theme.prompt == 0x0fdfaf &&
+                  c->theme.completion_selection == 0x0000ff && c->theme.completion_match == 0xffffff,
+               "config minibuffer: defaults");
+    String8 user = STR8_LIT("[keys minibuffer]\nC-c a forward-char\n[keys global]\nC-c b backward-char\n[keys]\nC-c c next-line\n"
+                            "[keys bogus]\nC-c d previous-line\n[keysminibuffer]\n[settings]\ncompletion_lines = 99\nauto_revert = false\n"
+                            "[colors]\nprompt = #123456\n");
+    config_parse(c, &t->arena, user, STR8_LIT("t.conf"));
+    KeySeq a, b, d;
+    const char *error;
+    key_seq_parse(STR8_LIT("C-c a"), &a, &error);
+    key_seq_parse(STR8_LIT("C-c b"), &b, &error);
+    key_seq_parse(STR8_LIT("C-c d"), &d, &error);
+    TEST_CHECK(t, keymap_get(&c->minibuffer, &a) == &CMD_FORWARD_CHAR && !keymap_get(&c->global, &a) &&
+                  keymap_get(&c->global, &b) == &CMD_BACKWARD_CHAR && test_binding(c, "C-c c") == &CMD_NEXT_LINE &&
+                  !keymap_get(&c->global, &d) && !keymap_get(&c->minibuffer, &d),
+               "config minibuffer: sections bind in the right map");
+    TEST_CHECK(t, c->errors == 2 && c->warnings == 1 && c->settings.completion_lines == 40 && !c->settings.auto_revert &&
+                  c->theme.prompt == 0x123456, "config minibuffer: %d errors, %d warnings, completion_lines %d", c->errors,
+               c->warnings, c->settings.completion_lines);
+    TEST_CHECK(t, str8_equal(c->first_diag->text, STR8_LIT("t.conf:7: unknown section [keys bogus]")) &&
+                  str8_equal(c->first_diag->next->text, STR8_LIT("t.conf:9: unknown section [keysminibuffer]")),
+               "config minibuffer: diagnostics '%S'", c->first_diag->text);
+    LOG("test: ok: config: [keys minibuffer], completion_lines, auto_revert, minibuffer colors");
+    return 1;
+}
+
 static b32 test_config(Test *t, u64 seed) {
     Config *c = PUSH_STRUCT(&t->arena, Config);
 
@@ -2809,7 +2841,7 @@ static b32 test_config(Test *t, u64 seed) {
         "font = x\n");                        // 25: a key sequence "font =", command "x"
     config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
     static const char *expected[] = {
-        "t.conf:1: line outside a section ([settings], [colors] or [keys])",
+        "t.conf:1: line outside a section ([settings], [colors], [keys] or [keys minibuffer])",
         "t.conf:3: font_size: 'big' is not a number",
         "t.conf:4: unknown setting 'nosuch'",
         "t.conf:5: expected name = value",
@@ -2819,7 +2851,7 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:11: unknown command 'no-such-command'",
         "t.conf:12: expected a key sequence and a command",
         "t.conf:13: unknown section [bogus]",
-        "t.conf:15: bad section header (expected [settings], [colors] or [keys])",
+        "t.conf:15: bad section header (expected [settings], [colors], [keys] or [keys minibuffer])",
         "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
         "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
         "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",
@@ -3196,6 +3228,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_key_input(&t);
     arena_reset(&t.arena);
     test_config(&t, seed);
+    arena_reset(&t.arena);
+    test_config_minibuffer(&t);
     arena_reset(&t.arena);
     test_buffer_list(&t);
     arena_reset(&t.arena);
