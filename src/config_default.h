@@ -140,6 +140,8 @@ static const char config_default[] =
     "C-<up>      backward-paragraph\n"
     "C-<home>    beginning-of-buffer\n"
     "C-<end>     end-of-buffer\n"
+    "M-g g       goto-line\n"
+    "M-g M-g     goto-line\n"
     "\n"
     "# Scrolling\n"
     "C-v         scroll-up-command\n"
