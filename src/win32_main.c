@@ -74,6 +74,7 @@ typedef struct Platform {
     b32 bench_buffer;
     b32 bench_view;
     b32 bench_edit;
+    b32 bench_complete;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -680,7 +681,7 @@ void os_fatal(String8 message) {
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
-                       g_platform->bench_edit)) interactive = 0;
+                       g_platform->bench_edit || g_platform->bench_complete)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -1685,8 +1686,57 @@ static void win32_bench_edit(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-complete: filtering and ranking 10,000 and 100,000 candidates, per keystroke that changes the
+// input (typing, deleting, clearing), three rounds of a scripted input. Filter = the matcher and the
+// ranking alone; build = the command and the frame build (Present separately, not counted).
+static void win32_bench_complete(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    static const char *script = "s r c SPC v i e w DEL DEL DEL DEL b u f f e r SPC 4 2 C-a C-k m a i n . c DEL DEL t x t "
+                                "C-a C-k l i s t SPC d r a w SPC t e s t C-a C-k";
+    i64 sizes[] = { 10000, 100000 };
+    Event events[512];
+    i32 n = app_dev_key_events(p->app, str8_cstr(script), events, ARRAY_COUNT(events));
+    for (i32 s = 0; s < ARRAY_COUNT(sizes); s++) {
+        u64 open_us = app_dev_bench_complete_open(p->app, sizes[s]);
+        u64 filters, last, before;
+        i64 matches;
+        app_dev_filter_stats(p->app, &before, &last, &matches);
+        LOG("bench-complete: %D candidates built, folded and ranked in %U us (first filter %U us)", sizes[s], open_us, last);
+        u64 count = 0, f_sum = 0, f_max = 0, b_sum = 0, b_max = 0;
+        i64 most = 0, least = I64_MAX;
+        for (i32 round = 0; round < 3; round++) {
+            for (i32 i = 0; i < n; i++) {
+                win32_bench_pump();
+                p->events[0] = events[i];
+                p->event_count = 1;
+                FrameInput input = win32_frame_input(p);
+                app_update_and_render(p->app, &input, p->renderer);
+                p->event_count = 0;
+                arena_reset(&p->scratch);
+                r_dev_take_frame_stats(p->renderer);
+                app_dev_filter_stats(p->app, &filters, &last, &matches);
+                if (filters == before) continue; // a KEY_DOWN whose text follows: nothing changed
+                before = filters;
+                u64 build = app_dev_build_us(p->app);
+                count++;
+                f_sum += last;
+                f_max = MAX(f_max, last);
+                b_sum += build;
+                b_max = MAX(b_max, build);
+                most = MAX(most, matches);
+                least = MIN(least, matches);
+            }
+        }
+        count = MAX(count, 1);
+        LOG("bench-complete: %D candidates, %U keystrokes: filter + rank avg %U us, worst %U us; command + frame build avg %U us, "
+            "worst %U us; %D to %D matches", sizes[s], count, f_sum / count, f_max, b_sum / count, b_max, least, most);
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->screenshot_path.len ||
+    return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->screenshot_path.len ||
            p->atlas_path.len;
 }
 #endif
@@ -1788,6 +1838,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-view"))) { p->bench_view = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -1824,6 +1875,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
+                                   : p->bench_complete ? "bench-complete"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -1886,7 +1938,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     app_args.sample = p->sample || p->smoke; // the smoke probes check the sample
     app_args.config_path = p->config_path;
-    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit); // defaults
+    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -1974,6 +2026,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_view && !p->quit) {
         win32_bench_view(p);
+        p->quit = 1;
+    }
+    if (p->bench_complete && !p->quit) {
+        win32_bench_complete(p);
         p->quit = 1;
     }
 #endif

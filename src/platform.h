@@ -246,6 +246,9 @@ void app_dev_use_config(App *app, String8 path); // switches to this config file
 b32  app_dev_visit(App *app, String8 path);      // visits a file in the active view
 i32  app_dev_font_setups(App *app);              // font set-ups so far (the startup does exactly one)
 String8 app_dev_prompt(App *app);                // the open prompt, empty when the minibuffer is not active
+// --bench-complete: a choice prompt over `count` generated path-like candidates; returns the build time.
+u64  app_dev_bench_complete_open(App *app, i64 count);
+void app_dev_filter_stats(App *app, u64 *filters, u64 *last_us, i64 *matches);
 i64  app_dev_line_count(App *app);
 u64  app_dev_build_us(App *app); // the last frame, from its start to r_end_frame
 u64  os_dev_private_bytes(void);  // the process's committed private memory

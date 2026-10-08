@@ -1388,6 +1388,46 @@ b32 app_dev_visit(App *app, String8 path) {
     return buf != NULL;
 }
 
+// --bench-complete: deterministic path-like names, "src/view/buffer_main_123.c" and the like.
+static i64 app_dev_bench_candidates(Minibuffer *mb, void *data, String8 input) {
+    (void)input;
+    if (mb->cand_count) return 0;
+    static const char *dirs[] = { "src", "lib", "tests", "tools", "docs", "build", "include", "third_party" };
+    static const char *words[] = { "view", "buffer", "main", "config", "render", "font", "keymap", "edit", "file", "path",
+                                   "window", "command", "minibuffer", "match", "list", "draw", "input", "event", "test", "util" };
+    static const char *exts[] = { "c", "h", "cpp", "jai", "js", "ts", "md", "txt" };
+    i64 n = (i64)(uintptr_t)data;
+    u64 x = 0x9E3779B97F4A7C15ull;
+    for (i64 i = 0; i < n; i++) {
+        u8 name[128];
+        u32 r[5];
+        for (i32 k = 0; k < 5; k++) {
+            x ^= x << 13, x ^= x >> 7, x ^= x << 17;
+            r[k] = (u32)(x >> 32);
+        }
+        i64 len = fmt_buf(name, sizeof(name), "%s/%s/%s_%s_%D.%s", dirs[r[0] % 8], words[r[1] % 20], words[r[2] % 20],
+                          words[r[3] % 20], i, exts[r[4] % 8]);
+        minibuffer_add_candidate(mb, str8(name, len), str8(NULL, 0), 0);
+    }
+    return 0;
+}
+
+u64 app_dev_bench_complete_open(App *app, i64 count) {
+    u64 t0 = os_time_us();
+    minibuffer_abort(&app->mini);
+    app->ctx.view = app->views[app->active_view];
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Bench: "), .candidates = app_dev_bench_candidates,
+                        .data = (void *)(uintptr_t)count };
+    minibuffer_read(&app->ctx, &req);
+    return os_time_us() - t0;
+}
+
+void app_dev_filter_stats(App *app, u64 *filters, u64 *last_us, i64 *matches) {
+    *filters = app->mini.dev_filters;
+    *last_us = app->mini.dev_filter_us;
+    *matches = app->mini.match_count;
+}
+
 String8 app_dev_prompt(App *app) {
     return app->mini.active ? app->mini.prompt : str8(NULL, 0);
 }
