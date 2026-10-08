@@ -2889,6 +2889,174 @@ static b32 test_electric_labels(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// The search engine against a naive reference
+
+// The naive search: every start in the range, on a character boundary when the needle starts with a
+// continuation byte, compared after folding the candidate's bytes with the matcher's match_fold.
+static i64 test_search_ref(Test *t, TestRef *ref, String8 needle, b32 fold, b32 forward, i64 from, i64 lo, i64 hi) {
+    if (!needle.len) return -1;
+    lo = CLAMP(lo, 0, ref->len);
+    hi = CLAMP(hi, lo, ref->len);
+    from = CLAMP(from, lo, hi);
+    u64 mark = arena_pos(&t->arena);
+    String8 want = fold ? match_fold(&t->arena, needle) : needle;
+    b32 boundary = (needle.data[0] & 0xC0) == 0x80;
+    i64 found = -1;
+    i64 first = forward ? from : from - needle.len, step = forward ? 1 : -1;
+    for (i64 c = first; found < 0 && c >= lo && c + needle.len <= hi; c += step) {
+        if (boundary && test_ref_snap(ref, c) != c) continue;
+        String8 cand = str8(ref->data + c, needle.len);
+        if (fold) cand = match_fold(&t->arena, cand);
+        if (str8_equal(cand, want)) found = c;
+    }
+    arena_pop_to(&t->arena, mark);
+    return found;
+}
+
+// Runs a search to its end, in slices of `slice` positions (0: one uncut run). The match start or -1.
+static i64 test_search_run(Search *s, Buffer *buf, i64 slice, i32 *slices) {
+    *slices = 0;
+    SearchStatus st;
+    do {
+        st = search_run(s, buf, slice ? slice : I64_MAX / 4);
+        (*slices)++;
+    } while (st == SEARCH_RUNNING);
+    return st == SEARCH_FOUND ? s->match_start : -1;
+}
+
+static b32 test_search(Test *t, u64 seed) {
+    t->rng = seed ^ 0x5EA7C4;
+    // Pieces with case pairs of every kind the tables have, lead bytes that differ between the cases
+    // (ÿ / Ÿ, р / Р), the Turkish i's, sigma, invalid bytes, newlines.
+    static const char *pieces[] = { "a", "A", "b", "B", "ab", "Ab", "i", "I", "\xc4\xb1", "\xc4\xb0", "\xc3\xa9", "\xc3\x89",
+                                    "\xc3\xbf", "\xc5\xb8", "\xcf\x83", "\xce\xa3", "\xcf\x82", "\xd0\xb4", "\xd0\x94",
+                                    "\xd1\x80", "\xd0\xa0", "\x80", "\xc3", "\n", " ", "aa", "x" };
+    Search *s = PUSH_STRUCT(&t->arena, Search);
+    TestRef ref = { 0 };
+    ref.cap = KB(4);
+    ref.data = PUSH_ARRAY(&t->arena, u8, ref.cap);
+    i64 searches = 0, found = 0, straddled = 0, sliced_runs = 0;
+    for (i32 round = 0; round < 1500; round++) {
+        // A haystack of up to ~300 bytes.
+        ref.len = 0;
+        i32 count = (i32)test_below(t, 120);
+        for (i32 k = 0; k < count; k++) {
+            String8 p = str8_cstr(pieces[test_below(t, ARRAY_COUNT(pieces))]);
+            memcpy(ref.data + ref.len, p.data, (size_t)p.len);
+            ref.len += p.len;
+        }
+        Buffer *buf = buffer_create(STR8_LIT("search"));
+        TEST_CHECK(t, buf, "search: buffer_create failed");
+        buffer_replace(buf, 0, 0, str8(ref.data, ref.len));
+        for (i32 q = 0; q < 12; q++) {
+            // A needle: pieces, or bytes cut from the haystack (possibly starting inside a character),
+            // the latter sometimes with its ASCII case flipped.
+            u8 nbuf[64];
+            String8 needle;
+            if (ref.len && test_below(t, 2)) {
+                i64 at = test_below(t, ref.len), n = 1 + test_below(t, MIN(8, ref.len - at));
+                memcpy(nbuf, ref.data + at, (size_t)n);
+                if (test_below(t, 2)) for (i64 k = 0; k < n; k++) if ((nbuf[k] | 0x20) >= 'a' && (nbuf[k] | 0x20) <= 'z') nbuf[k] ^= 0x20;
+                needle = str8(nbuf, n);
+            } else {
+                i64 n = 0;
+                for (i32 k = 0, pieces_n = 1 + (i32)test_below(t, 3); k < pieces_n; k++) {
+                    String8 p = str8_cstr(pieces[test_below(t, ARRAY_COUNT(pieces))]);
+                    memcpy(nbuf + n, p.data, (size_t)p.len);
+                    n += p.len;
+                }
+                needle = str8(nbuf, n);
+            }
+            b32 fold = (b32)test_below(t, 2), forward = (b32)test_below(t, 2);
+            i64 lo = test_below(t, 4) ? 0 : test_below(t, ref.len + 1);
+            i64 hi = test_below(t, 4) ? ref.len : lo + test_below(t, ref.len - lo + 1);
+            i64 from = test_below(t, 3) ? test_below(t, ref.len + 1) : forward ? lo : hi;
+            i64 want = test_search_ref(t, &ref, needle, fold, forward, from, lo, hi);
+            // The gap: random, or inside the expected match.
+            i64 gap = want >= 0 && needle.len > 1 && test_below(t, 2) ? want + 1 + test_below(t, needle.len - 1) : test_below(t, ref.len + 1);
+            buffer_replace(buf, gap, gap, STR8_LIT("#"));
+            buffer_replace(buf, gap, gap + 1, STR8_LIT(""));
+            straddled += want >= 0 && gap > want && gap < want + needle.len;
+            search_begin(s, buf, needle, fold, forward, from, lo, hi);
+            i32 slices;
+            i64 got = test_search_run(s, buf, 0, &slices);
+            TEST_CHECK(t, got == want && (got < 0 || s->match_end == got + needle.len),
+                       "search: round %d query %d (seed 0x%X): '%S' fold %d forward %d from %D in [%D, %D), gap %D: got %D, want %D",
+                       round, q, seed, needle, fold, forward, from, lo, hi, gap, got, want);
+            i64 slice = 1 + test_below(t, 64);
+            search_restart(s, buf, forward, from, lo, hi);
+            i64 cut = test_search_run(s, buf, slice, &slices);
+            TEST_CHECK(t, cut == want, "search: round %d query %d (seed 0x%X): in slices of %D: got %D, want %D", round, q, seed,
+                       slice, cut, want);
+            sliced_runs += slices > 1;
+            searches += 2;
+            found += want >= 0;
+        }
+        buffer_destroy(buf);
+    }
+
+    // Fixed cases: matches at both ends, overlapping candidates, the range, an edit restarting a
+    // search that is under way.
+    Buffer *buf = buffer_create(STR8_LIT("search"));
+    buffer_replace(buf, 0, 0, STR8_LIT("abcab aaaaa"));
+    struct { const char *needle; b32 forward; i64 from, lo, hi, want; } fixed[] = {
+        { "ab", 1, 0, 0, 11, 0 }, { "ab", 0, 11, 0, 11, 3 }, { "ab", 1, 1, 0, 11, 3 }, { "ab", 0, 4, 0, 11, 0 },
+        { "aaa", 1, 7, 0, 11, 7 }, { "aaa", 1, 8, 0, 11, 8 }, { "aaa", 1, 9, 0, 11, -1 }, { "aaa", 0, 11, 0, 11, 8 },
+        { "aaa", 0, 10, 0, 11, 7 }, { "a", 0, 11, 0, 11, 10 }, { "ab", 1, 0, 1, 11, 3 }, { "ab", 0, 11, 0, 4, 0 },
+        { "ab", 1, 3, 0, 4, -1 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(fixed); i++) {
+        search_begin(s, buf, str8_cstr(fixed[i].needle), 0, fixed[i].forward, fixed[i].from, fixed[i].lo, fixed[i].hi);
+        i32 slices;
+        i64 got = test_search_run(s, buf, 0, &slices);
+        TEST_CHECK(t, got == fixed[i].want, "search: fixed case %d ('%s'): got %D, want %D", i, fixed[i].needle, got, fixed[i].want);
+    }
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxneedle"));
+    search_begin(s, buf, STR8_LIT("needle"), 0, 1, 0, 0, buffer_size(buf));
+    TEST_CHECK(t, search_run(s, buf, 10) == SEARCH_RUNNING && search_progress(s) > 0 && search_progress(s) < 100,
+               "search: a slice leaves it running, with progress");
+    buffer_replace(buf, 0, 0, STR8_LIT("needle")); // an edit while it runs: it starts over from `from`
+    i32 slices;
+    TEST_CHECK(t, test_search_run(s, buf, 10, &slices) == 0, "search: restarted after an edit");
+    // A needle too long, an empty one.
+    u8 *big = PUSH_ARRAY(&t->arena, u8, SEARCH_NEEDLE_MAX + 1);
+    memset(big, 'x', SEARCH_NEEDLE_MAX + 1);
+    TEST_CHECK(t, !search_begin(s, buf, str8(big, SEARCH_NEEDLE_MAX + 1), 0, 1, 0, 0, buffer_size(buf)) && s->status == SEARCH_NOT_FOUND,
+               "search: a needle longer than SEARCH_NEEDLE_MAX is refused");
+    TEST_CHECK(t, search_begin(s, buf, str8(big, SEARCH_NEEDLE_MAX), 0, 1, 0, 0, buffer_size(buf)), "search: SEARCH_NEEDLE_MAX bytes");
+    TEST_CHECK(t, !search_begin(s, buf, STR8_LIT(""), 0, 1, 0, 0, buffer_size(buf)), "search: an empty needle is refused");
+    // The known limit: Turkish dotted and dotless i do not pair.
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("\xc4\xb0 I"));
+    search_begin(s, buf, STR8_LIT("i"), 1, 1, 0, 0, buffer_size(buf));
+    TEST_CHECK(t, test_search_run(s, buf, 0, &slices) == 3, "search: 'i' folded finds 'I', not the dotted capital I");
+    search_begin(s, buf, STR8_LIT("\xc4\xb1"), 1, 1, 0, 0, buffer_size(buf));
+    TEST_CHECK(t, test_search_run(s, buf, 0, &slices) == -1, "search: a dotless i folded does not find 'I' (known limit)");
+    buffer_destroy(buf);
+
+    // Smart case.
+    static const struct { const char *s; b32 upper; } cases[] = {
+        { "abc", 0 }, { "aBc", 1 }, { "\xc5\x9f", 0 }, { "\xc5\x9e", 1 }, { "\xc4\xb1", 0 }, { "\xc4\xb0", 1 }, { "12_+", 0 },
+        { "\x80\xc3", 0 }, { "\xd0\x94", 1 }, { "\xcf\x82", 0 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        TEST_CHECK(t, search_has_upper(str8_cstr(cases[i].s)) == cases[i].upper, "search: search_has_upper case %d", i);
+    }
+    // The fast path's assumption: every character folding to f starts with one of f's first bytes.
+    for (u32 c = 0x80; c < 0x3000; c++) {
+        if (c >= 0xD800 && c <= 0xDFFF) continue;
+        u32 f = search_fold_char(c);
+        u8 enc[4], first[2];
+        utf8_encode(c, enc);
+        i32 n = search_first_bytes(f, first);
+        TEST_CHECK(t, enc[0] == first[0] || (n == 2 && enc[0] == first[1]), "search: U+%x folds to U+%x, whose first bytes miss it", c, f);
+    }
+    LOG("test: ok: search: %D searches against the reference (%D found, %D across the gap, %D runs in several slices), "
+        "%d fixed cases, restart after an edit, needle limits, Turkish i (known limit), smart case, first bytes",
+        searches, found, straddled, sliced_runs, (i32)ARRAY_COUNT(fixed));
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Other editing commands, on tricky input
 
 typedef struct TestEditCase {
@@ -5198,6 +5366,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_indent(&t);
     arena_reset(&t.arena);
     test_electric_labels(&t);
+    arena_reset(&t.arena);
+    test_search(&t, seed);
     arena_reset(&t.arena);
     test_edit_commands(&t);
     arena_reset(&t.arena);
