@@ -15,6 +15,7 @@
 #include "config.h"
 #include "minibuffer.h"
 #include "search.h"
+#include "isearch.h"
 
 #include "base.c"
 #include "png.c"
@@ -31,6 +32,7 @@
 #include "config.c"
 #include "minibuffer.c"
 #include "search.c"
+#include "isearch.c"
 #include "app.c"
 #include "files.c"
 #include "command.c"

@@ -3785,7 +3785,7 @@ static b32 test_config(Test *t, u64 seed) {
         "font = x\n");                        // 25: a key sequence "font =", command "x"
     config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
     static const char *expected[] = {
-        "t.conf:1: line outside a section ([settings], [colors], [keys] or [keys minibuffer])",
+        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer] or [keys isearch])",
         "t.conf:3: font_size: 'big' is not a number",
         "t.conf:4: unknown setting 'nosuch'",
         "t.conf:5: expected name = value",
@@ -3795,7 +3795,7 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:11: unknown command 'no-such-command'",
         "t.conf:12: expected a key sequence and a command",
         "t.conf:13: unknown section [bogus]",
-        "t.conf:15: bad section header (expected [settings], [colors], [keys] or [keys minibuffer])",
+        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer] or [keys isearch])",
         "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
         "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
         "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",

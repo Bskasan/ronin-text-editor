@@ -44,7 +44,7 @@ i32 search_first_bytes(u32 f, u8 out[2]) {
 
 // The matcher's folding (match_fold): character by character, the lowercase form only when it has the
 // same length; invalid bytes are kept. `in` and `out` are `len` bytes.
-static void search_fold(u8 *out, const u8 *in, i64 len) {
+void search_fold_bytes(u8 *out, const u8 *in, i64 len) {
     for (i64 i = 0; i < len;) {
         u8 b = in[i];
         if (b < 0x80) {
@@ -62,7 +62,7 @@ static void search_fold(u8 *out, const u8 *in, i64 len) {
 }
 
 // `h` folded the same way equals the folded needle `n` (both `len` bytes). Characters of `h` are
-// decoded within the window, as search_fold decodes a string of exactly these bytes.
+// decoded within the window, as search_fold_bytes decodes a string of exactly these bytes.
 static b32 search_equal_folded(const u8 *h, const u8 *n, i64 len) {
     for (i64 i = 0; i < len;) {
         u8 b = h[i];
@@ -85,7 +85,7 @@ b32 search_begin(Search *s, Buffer *buf, String8 needle, b32 fold, b32 forward, 
     s->fold = fold;
     s->len = needle.len > 0 && needle.len <= SEARCH_NEEDLE_MAX ? needle.len : 0;
     if (s->len) {
-        if (fold) search_fold(s->needle, needle.data, s->len);
+        if (fold) search_fold_bytes(s->needle, needle.data, s->len);
         else memcpy(s->needle, needle.data, (size_t)s->len);
         u8 b = s->needle[0];
         s->ascii_fold = fold && b >= 'a' && b <= 'z';

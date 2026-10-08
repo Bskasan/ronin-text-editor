@@ -44,6 +44,8 @@ typedef struct Search {
 
 // Smart case: the string has an uppercase letter (a character whose lowercase form differs).
 b32  search_has_upper(String8 s);
+// Folds `len` bytes of `in` into `out` (the same length): every character to search_fold_char.
+void search_fold_bytes(u8 *out, const u8 *in, i64 len);
 // The folded form of one character, as the search compares it: lowercase when that keeps the length.
 u32  search_fold_char(u32 c);
 // The lead bytes a character folding to `f` can start with (f non-ASCII): f's own and its uppercase
