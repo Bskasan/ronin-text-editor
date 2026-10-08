@@ -39,7 +39,7 @@ typedef struct SyntaxTokens {
 #define SYNTAX_STATE_LITERAL   (1u << 31) // the line starts inside a multi-line comment or string
 #define SYNTAX_STATE_DIRECTIVE (1u << 30) // the line continues a preprocessor line (C, C++)
 
-#define SYNTAX_DRAW_MAX KB(20)         // beyond this many bytes into a line, text is drawn plain
+#define SYNTAX_DRAW_MAX 20000          // beyond this many bytes into a line, text is drawn plain
 #define SYNTAX_FRAME_BUDGET_US 2000    // lexing per frame while states catch up
 #define SYNTAX_CHECK_LINES 64          // catch-up reads the clock after this many lines ...
 #define SYNTAX_CHECK_BYTES KB(16)      // ... or this many bytes, whichever comes first

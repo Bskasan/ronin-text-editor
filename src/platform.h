@@ -209,6 +209,7 @@ typedef struct AppArgs {
 App *app_create(Arena *perm, AppArgs *args); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
 u32  app_wait_ms(App *app); // how long the platform may block before EVENT_WAKEUP; 0xFFFFFFFF = until an event
+b32  app_wants_frame(App *app); // another frame right away: highlighting is still catching up
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
 #if TEAL_DEV
