@@ -2119,7 +2119,7 @@ static b32 test_kill(Test *t) {
 typedef struct TestGolden {
     BufferLanguage language;
     const char *what;
-    const char *lines[32]; // code, kinds, code, kinds, ... NULL
+    const char *lines[40]; // code, kinds, code, kinds, ... NULL
 } TestGolden;
 
 static const TestGolden test_goldens[] = {
@@ -2287,6 +2287,73 @@ static const TestGolden test_goldens[] = {
     { BUFFER_LANG_CSHARP, "C#: contextual keywords", {
         "public async Task F() => await G();",
         "kkkkkk kkkkk tttt tpp pp kkkkk tppp" } },
+    { BUFFER_LANG_JAVASCRIPT, "JS: regex versus division in 18 contexts (the rule carried across lines)", {
+        "x = a / b / c;",
+        "t p t p t p tp",
+        "x = /ab+c/gi;",
+        "t p ssssssssp",
+        "f(/re/);",
+        "tpsssspp",
+        "a = [/a/, /b/];",
+        "t p psssp ssspp",
+        "return /x/.test(s);",
+        "kkkkkk ssspttttptpp",
+        "x = y.length / 2;",
+        "t p tptttttt p np",
+        "x = (a + b) / 2;",
+        "t p pt p tp p np",
+        "x = arr[0] / 2;",
+        "t p tttpnp p np",
+        "if (!/^\\d+$/.test(s)) {}",
+        "kk ppssssssspttttptpp pp",
+        "x = c ? /a/ : /b/;",
+        "t p t p sss p sssp",
+        "a = b++ / 2;",
+        "t p tpp p np",
+        "t = typeof /re/;",
+        "t p kkkkkk ssssp",
+        "x = /[/]/.source;",
+        "t p ssssspttttttp",
+        "}",
+        "p",
+        "/foo/.test(s);",
+        "ssssspttttptpp",
+        "x = a",
+        "t p t",
+        "/ b;",
+        "p tp",
+        "y = this / 2;",
+        "t p kkkk p np" } },
+    { BUFFER_LANG_JAVASCRIPT, "JS: template literals nested two deep, across lines", {
+        "s = `x ${a + `y ${b}",
+        "t p sssppt p ssspptp",
+        "z` + 1} w`;",
+        "ss p npsssp",
+        "x = 1;",
+        "t p np",
+        "t = `a\\`b",
+        "t p sssss",
+        "c ${x}`;",
+        "sspptpsp" } },
+    { BUFFER_LANG_JAVASCRIPT, "JS: strings, every number form, a continued string", {
+        "s = 'abc",
+        "t p ssss",
+        "n = 0x1F + 0b101 + 0o17 + 1_000n + 1.5e-3 + .5;",
+        "t p nnnn p nnnnn p nnnn p nnnnnn p nnnnnn p nnp",
+        "s = \"abc\\",
+        "t p sssss",
+        "def\"; x",
+        "ssssp t" } },
+    { BUFFER_LANG_JAVASCRIPT, "JS: TypeScript words are plain in JavaScript; non-ASCII, control characters", {
+        "let string = interface;",
+        "kkk tttttt p tttttttttp",
+        "const \xC4\x9F = \"\xC3\xA9\"; \x01",
+        "kkkkk tt p ssssp i" } },
+    { BUFFER_LANG_TYPESCRIPT, "TS: keywords and built-in types", {
+        "interface P { name: string; age?: number; }",
+        "kkkkkkkkk t p ttttp yyyyyyp tttpp yyyyyyp p",
+        "let v: unknown = undefined satisfies any;",
+        "kkk tp yyyyyyy p ooooooooo kkkkkkkkk yyyp" } },
     { BUFFER_LANG_JAI, "Jai: non-ASCII identifiers, control characters", {
         "\xC3\xA7" "a\xC4\x9Fr\xC4\xB1 := \"\xC3\xBC\"; \x01",
         "vvvvvvvv pp ssssp i" } },
@@ -2356,7 +2423,21 @@ static const char *test_corpus_cs[] = {
 };
 static const char *test_pieces_cs[] = { "/*", "*/", "\"", "@\"", "$\"", "\"\"\"", "{", "}", "\n", "//", "$$\"\"\"", "$@\"" };
 
+static const char *test_corpus_js[] = {
+    "const re = /ab+c/gi;", "x = a / b / c;", "s = `x ${a + `y ${b}", "z` + 1} w`;", "/* block", "comment */",
+    "function f(a, b) {", "  return a / 2;", "}", "let t = `multi", "line ${x}`;", "s = 'str\\", "continued';",
+    "n = 0x1F + 1_000n;", "if (!/^\\d+$/.test(s)) {}", "// comment", "", "x = a", "/ b;", "y = this / 2;",
+};
+static const char *test_corpus_ts[] = {
+    "interface P { name: string; age?: number; }", "let v: unknown = undefined satisfies any;", "type T = keyof typeof x;",
+    "const re = /ab+c/gi;", "s = `x ${a + `y ${b}", "z` + 1} w`;", "/* block", "comment */", "function f(a: number): number {",
+    "  return a / 2;", "}", "let t = `multi", "line ${x}`;", "",
+};
+static const char *test_pieces_js[] = { "/*", "*/", "`", "${", "}", "\"", "'", "/", "\n", "//", "\\\n", "{", "x" };
+
 static const TestCorpus test_corpora[] = {
+    { BUFFER_LANG_JAVASCRIPT, test_corpus_js, ARRAY_COUNT(test_corpus_js), test_pieces_js, ARRAY_COUNT(test_pieces_js) },
+    { BUFFER_LANG_TYPESCRIPT, test_corpus_ts, ARRAY_COUNT(test_corpus_ts), test_pieces_js, ARRAY_COUNT(test_pieces_js) },
     { BUFFER_LANG_CSHARP, test_corpus_cs, ARRAY_COUNT(test_corpus_cs), test_pieces_cs, ARRAY_COUNT(test_pieces_cs) },
     { BUFFER_LANG_C, test_corpus_c, ARRAY_COUNT(test_corpus_c), test_pieces_c, ARRAY_COUNT(test_pieces_c) },
     { BUFFER_LANG_JAI, test_corpus_jai, ARRAY_COUNT(test_corpus_jai), test_pieces_jai, ARRAY_COUNT(test_pieces_jai) },
