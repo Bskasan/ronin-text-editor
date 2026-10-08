@@ -88,6 +88,9 @@ b32  edit_line_fixed(Buffer *buf, i64 line, Arena *scratch);
 b32  edit_set_indent(Buffer *buf, i64 line, i64 cols);
 i32  edit_detect_tabs(Buffer *buf); // from the first indented lines: 1 tabs, 0 spaces, -1 cannot tell
 void edit_electric_close(CommandContext *ctx); // after typing ) ] }: reindent if it starts the line
+// After typing the character that completes a case or default label (":"; Jai: ";") with only blanks
+// after it: the line is reindented when it is a label (the rule's label: case / default first on the line).
+void edit_electric_label(CommandContext *ctx);
 
 extern const Command CMD_QUOTED_INSERT; // app.c
 extern const Command CMD_UNDO, CMD_UNDO_REDO, CMD_NEWLINE, CMD_INDENT_FOR_TAB_COMMAND, CMD_UNINDENT, CMD_TAB_TO_TAB_STOP;

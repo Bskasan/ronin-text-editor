@@ -2819,8 +2819,8 @@ static b32 test_indent(Test *t) {
     test_view_run(&tv, &CMD_NEWLINE);
     TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "    /* a\n    |"), "RET into a block comment");
     buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT(""));
-    // A label typed after a statement is not reindented by typing it (no electric colon): TAB (\t here).
-    const char *typed = "switch (x) {\ncase 1:\na();\nbreak;\ndefault: {\t\nb();\n}\n}\n";
+    // A label typed after a statement is reindented by the ':' that completes it (electric labels).
+    const char *typed = "switch (x) {\ncase 1:\na();\nbreak;\ndefault: {\nb();\n}\n}\n";
     for (const char *c = typed; *c; c++) {
         if (*c == '\n') test_view_run(&tv, &CMD_NEWLINE);
         else if (*c == '\t') test_view_run(&tv, &CMD_INDENT_FOR_TAB_COMMAND);
@@ -2835,6 +2835,56 @@ static b32 test_indent(Test *t) {
     if (!test_view_close(t, &tv)) return 0;
     LOG("test: ok: indentation: %d rule cases, tabs, detection, newline, closing brace, TAB, backtab, region, M-i, "
         "RET into a comment, a typed switch, preprocessor lines", (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
+// Electric labels: the character that completes a case or default label (':', Jai ';') reindents its
+// line when only blanks follow it, in the same undo group as the character. `before` has point where
+// the character is typed; the previous command was a motion, so the character starts its own group.
+static b32 test_electric_labels(Test *t) {
+    static const struct {
+        BufferLanguage language;
+        const char *what, *before;
+        u32 c;
+        const char *after;
+    } cases[] = {
+        { BUFFER_LANG_C, "C case", "switch (x) {\n    case 0:\n        a();\n        case 1|\n}", ':',
+          "switch (x) {\n    case 0:\n        a();\n    case 1:|\n}" },
+        { BUFFER_LANG_C, "C default", "switch (x) {\n    case 0:\n        a();\n        break;\n        default|\n}", ':',
+          "switch (x) {\n    case 0:\n        a();\n        break;\n    default:|\n}" },
+        { BUFFER_LANG_C, "C label at the right place already", "switch (x) {\n    case 1|\n}", ':', "switch (x) {\n    case 1:|\n}" },
+        { BUFFER_LANG_CPP, "C++ case with blanks after point", "switch (x) {\ncase A::B|  \n}", ':', "switch (x) {\n    case A::B:|  \n}" },
+        { BUFFER_LANG_CSHARP, "C# case", "switch (x) {\n    case 0:\n        a();\n        break;\n        case \"b\"|\n}", ':',
+          "switch (x) {\n    case 0:\n        a();\n        break;\n    case \"b\":|\n}" },
+        { BUFFER_LANG_JAVASCRIPT, "JavaScript default", "switch (x) {\n    case 0:\n        a();\n        default|\n}", ':',
+          "switch (x) {\n    case 0:\n        a();\n    default:|\n}" },
+        { BUFFER_LANG_JAI, "Jai case", "if x == {\n    case 0;\n        a();\n        case 1|\n}", ';',
+          "if x == {\n    case 0;\n        a();\n    case 1;|\n}" },
+        { BUFFER_LANG_JAI, "Jai: ':' completes nothing", "if x == {\n    case 0;\n        a();\n        case 1|\n}", ':',
+          "if x == {\n    case 0;\n        a();\n        case 1:|\n}" },
+        { BUFFER_LANG_C, "C: ';' completes nothing", "switch (x) {\n        case 1|\n}", ';', "switch (x) {\n        case 1;|\n}" },
+        { BUFFER_LANG_C, "not a label (a conditional)", "int f() {\n        x = a ? b |\n}", ':', "int f() {\n        x = a ? b :|\n}" },
+        { BUFFER_LANG_C, "text after point", "switch (x) {\n        case 1| a();\n}", ':', "switch (x) {\n        case 1:| a();\n}" },
+        { BUFFER_LANG_C, "in a string", "switch (x) {\n        f(\"case 1|\");\n}", ':', "switch (x) {\n        f(\"case 1:|\");\n}" },
+        { BUFFER_LANG_FUNDAMENTAL, "Fundamental", "switch (x) {\n        case 1|\n}", ':', "switch (x) {\n        case 1:|\n}" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        TestView tv;
+        if (!test_view_open(t, &tv, cases[i].before, 10, 60)) return 0;
+        tv.buf->language = cases[i].language;
+        String8 before = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        i64 point = view_point(tv.view, &tv.view->cursors[0]);
+        test_view_run(&tv, &CMD_FORWARD_CHAR); // a motion: the character starts a new undo group
+        test_view_run(&tv, &CMD_BACKWARD_CHAR);
+        test_type_char(&tv, cases[i].c);
+        char *got = test_view_marked(t, &tv);
+        TEST_CHECK(t, test_cstr_equal(got, cases[i].after), "electric label: %s: got '%s'", cases[i].what, got);
+        test_view_run(&tv, &CMD_UNDO);
+        TEST_CHECK(t, test_text_is(t, tv.buf, before) && view_point(tv.view, &tv.view->cursors[0]) == point,
+                   "electric label: %s: one undo restores the line and point", cases[i].what);
+        if (!test_view_close(t, &tv)) return 0;
+    }
+    LOG("test: ok: electric labels, %d cases with their undo", (i32)ARRAY_COUNT(cases));
     return 1;
 }
 
@@ -5146,6 +5196,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_set_language(&t);
     arena_reset(&t.arena);
     test_indent(&t);
+    arena_reset(&t.arena);
+    test_electric_labels(&t);
     arena_reset(&t.arena);
     test_edit_commands(&t);
     arena_reset(&t.arena);

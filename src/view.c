@@ -584,7 +584,8 @@ static void cmd_insert(CommandContext *ctx, String8 text) {
     cmd_replace(ctx, p, p, text); // point advances over it
 }
 
-// A closing ) ] } typed as the first non-blank character of a line reindents the line.
+// A closing ) ] } typed as the first non-blank character of a line reindents the line, and so does the
+// character that completes a case or default label.
 static void cmd_self_insert(CommandContext *ctx) {
     if (!ctx->codepoint) return; // bound to a key without a character
     u8 bytes[4];
@@ -592,6 +593,7 @@ static void cmd_self_insert(CommandContext *ctx) {
     cmd_insert(ctx, str8(bytes, n));
     u32 c = ctx->codepoint;
     if (c == ')' || c == ']' || c == '}') edit_electric_close(ctx);
+    else edit_electric_label(ctx);
 }
 
 static void cmd_delete_backward_char(CommandContext *ctx) {
