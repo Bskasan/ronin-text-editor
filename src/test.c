@@ -4162,6 +4162,26 @@ static b32 test_current_is(App *app, const char *name) {
     return str8_equal(test_current(app)->name, str8_cstr(name));
 }
 
+// set-language through M-x: the language, its states, the mode line; Fundamental gives the states back.
+static b32 test_set_language(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "set-language: app_create failed");
+    Buffer *b = test_current(app);
+    buffer_replace(b, 0, 0, STR8_LIT("let x = `a\nb`;\n"));
+    app_dev_feed(app, "M-x s e t - l a n g u a g e RET J a v a S c r i p t RET", &t->arena);
+    TEST_CHECK(t, b->language == BUFFER_LANG_JAVASCRIPT && b->states_on && test_echo_has(app, "Language: JavaScript"),
+               "set-language: JavaScript (%d, states %d)", b->language, b->states_on);
+    TEST_CHECK(t, syntax_line_ready(b, 1) && (buffer_line_state(b, 1) & SYNTAX_STATE_LITERAL), "set-language: states computed (line 1 in the template)");
+    app_dev_feed(app, "M-x s e t - l a n g u a g e RET c o b o l RET", &t->arena);
+    TEST_CHECK(t, app->mini.active && b->language == BUFFER_LANG_JAVASCRIPT, "set-language: no such language is refused");
+    app_dev_feed(app, "C-g M-x s e t - l a n g u a g e RET F u n d RET", &t->arena);
+    TEST_CHECK(t, !app->mini.active && b->language == BUFFER_LANG_FUNDAMENTAL && !b->states_on && buffer_states_memory(b) == 0,
+               "set-language: Fundamental gives the states back");
+    if (!test_app_destroy(t, app, "set-language")) return 0;
+    LOG("test: ok: set-language (a language, its states, a refused name, Fundamental)");
+    return 1;
+}
+
 // Unique buffer names, switch-to-buffer, kill-buffer, through the keys.
 static b32 test_buffers(Test *t) {
     String8 root = str8_fmt(&t->arena, "%S\\p7buf", t->tmp_dir);
@@ -4943,6 +4963,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_match(&t);
     arena_reset(&t.arena);
     test_show_paren(&t);
+    arena_reset(&t.arena);
+    test_set_language(&t);
     arena_reset(&t.arena);
     test_indent(&t);
     arena_reset(&t.arena);
