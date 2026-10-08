@@ -130,6 +130,7 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "line_height", offsetof(Settings, line_height), 80, 300 },
     { "tab_width", offsetof(Settings, tab_width), 1, 16 },
     { "undo_limit_mb", offsetof(Settings, undo_limit_mb), 1, 2048 },
+    { "kill_ring_max", offsetof(Settings, kill_ring_max), 1, KILL_RING_CAP },
 };
 
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {

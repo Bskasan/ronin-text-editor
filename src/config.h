@@ -22,6 +22,7 @@ struct Settings {
     i32 undo_limit_mb;        // per buffer
     b32 transient_mark_mode;  // the region is highlighted (and region commands need it active)
     b32 delete_selection_mode; // typing replaces an active region
+    i32 kill_ring_max;
 };
 
 typedef struct Theme { // 0xRRGGBB

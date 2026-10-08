@@ -1021,6 +1021,7 @@ typedef struct TestView {
     View *view;
     Echo echo;
     CommandContext ctx;
+    KillRing *kills;
 } TestView;
 
 // `marked` is the text with '|' at each cursor (in order; the first is the primary).
@@ -1047,11 +1048,15 @@ static b32 test_view_open(Test *t, TestView *tv, const char *marked, i32 rows, i
     tv->ctx.view = tv->view;
     tv->ctx.echo = &tv->echo;
     tv->ctx.settings = &test_settings;
+    tv->kills = PUSH_STRUCT(&t->arena, KillRing);
+    kill_init(tv->kills, 60);
+    tv->ctx.kills = tv->kills;
     view_ensure_visible(tv->view);
     return 1;
 }
 
 static b32 test_view_close(Test *t, TestView *tv) {
+    kill_destroy(tv->kills);
     view_destroy(tv->view);
     i64 live = tv->buf->marker_live;
     buffer_destroy(tv->buf);
@@ -1849,6 +1854,147 @@ static b32 test_clipboard(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Kill ring
+
+static b32 test_kill_is(TestView *tv, i32 back, const char *expected) {
+    return str8_equal(kill_entry(tv->kills, back), str8_cstr(expected));
+}
+
+static b32 test_kill(Test *t) {
+    TestView tv;
+    // kill-line: the rest of the line; through the newline when only blanks are left; at the end
+    // of a line the newline; at the end of the buffer a message. C-k C-k appends.
+    if (!test_view_open(t, &tv, "ab|cd\nef   \ngh\nlast", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "ab|\nef   \ngh\nlast") && test_kill_is(&tv, 0, "cd"), "kill-line: rest of the line");
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "ab|ef   \ngh\nlast") && test_kill_is(&tv, 0, "cd\n") && tv.kills->count == 1,
+               "kill-line: at the end of a line the newline, appended");
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "abef|gh\nlast") && test_kill_is(&tv, 0, "   \n") && tv.kills->count == 2,
+               "kill-line: only blanks left: through the newline (a new entry after a motion)");
+    test_view_run(&tv, &CMD_NEXT_LINE);
+    test_view_run(&tv, &CMD_BACKWARD_CHAR);
+    test_view_run(&tv, &CMD_BACKWARD_CHAR);
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "abefgh\nla|") && test_kill_is(&tv, 0, "st"), "kill-line: the last line");
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_echo_is(&tv, "End of buffer") && test_kill_is(&tv, 0, "st"), "kill-line: at the end of the buffer");
+    if (!test_view_close(t, &tv)) return 0;
+    if (!test_view_open(t, &tv, "\xc5\x9f|\xc4\x9f\xc3\xbc \n\xc4\xb1", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_kill_is(&tv, 0, "\xc4\x9f\xc3\xbc "), "kill-line: multi-byte text");
+    if (!test_view_close(t, &tv)) return 0;
+
+    // M-d M-d appends; M-DEL M-DEL prepends; kill-whole-line; kill-region; kill-ring-save.
+    if (!test_view_open(t, &tv, "one two| three four\nfive six\nseven", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_KILL_WORD);
+    test_view_run(&tv, &CMD_KILL_WORD);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "one two|\nfive six\nseven") && test_kill_is(&tv, 0, " three four"),
+               "kill-word twice: appended");
+    test_view_run(&tv, &CMD_MOVE_END_OF_LINE); // not a kill: the next kill starts a new entry
+    test_view_run(&tv, &CMD_BACKWARD_KILL_WORD);
+    test_view_run(&tv, &CMD_BACKWARD_KILL_WORD);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "|\nfive six\nseven") && test_kill_is(&tv, 0, "one two") && tv.kills->count == 2,
+               "backward-kill-word twice: prepended");
+    test_view_run(&tv, &CMD_NEXT_LINE);
+    test_view_run(&tv, &CMD_KILL_WHOLE_LINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "\n|seven") && test_kill_is(&tv, 0, "five six\n"), "kill-whole-line");
+    test_view_run(&tv, &CMD_KILL_WHOLE_LINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "|") && test_kill_is(&tv, 0, "five six\n\nseven"),
+               "kill-whole-line on the last line takes the newline before it, appended");
+    buffer_replace(tv.buf, 0, 0, STR8_LIT("alpha beta"));
+    test_view_run(&tv, &CMD_BEGINNING_OF_BUFFER);
+    test_view_run(&tv, &CMD_KILL_REGION);
+    TEST_CHECK(t, test_echo_is(&tv, "The mark is not set now, so there is no region"), "kill-region without a mark");
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    test_view_run(&tv, &CMD_FORWARD_WORD);
+    test_view_run(&tv, &CMD_KILL_RING_SAVE);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("alpha beta")) && test_kill_is(&tv, 0, "alpha") && !tv.view->cursors[0].mark_active,
+               "kill-ring-save copies and deactivates");
+    test_view_run(&tv, &CMD_KILL_REGION); // M-w then C-w: appends
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT(" beta")) && test_kill_is(&tv, 0, "alphaalpha"), "kill-region after kill-ring-save appends");
+    // yank, yank-pop rotation.
+    test_view_run(&tv, &CMD_END_OF_BUFFER);
+    test_view_run(&tv, &CMD_YANK);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), " betaalphaalpha|"), "yank the newest kill");
+    test_view_run(&tv, &CMD_YANK_POP);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), " betafive six\n\nseven|"), "yank-pop: the next older");
+    test_view_run(&tv, &CMD_YANK_POP);
+    test_view_run(&tv, &CMD_YANK_POP);
+    test_view_run(&tv, &CMD_YANK_POP);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), " betaalphaalpha|"), "yank-pop: the ring wraps around");
+    test_view_run(&tv, &CMD_BACKWARD_CHAR);
+    test_view_run(&tv, &CMD_YANK_POP);
+    TEST_CHECK(t, test_echo_is(&tv, "Previous command was not a yank"), "yank-pop not after a yank");
+    // Undo of a yank.
+    test_view_run(&tv, &CMD_YANK);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT(" betaalphaalpha")), "undo of a yank");
+
+    // The clipboard link: kills go to the (fake) clipboard; a copy by another program is yanked
+    // and becomes the newest kill, once.
+    String8 clip;
+    TEST_CHECK(t, os_clipboard_get(&t->arena, &clip) && str8_equal(clip, STR8_LIT("alphaalpha")), "clipboard: holds the last kill ('%S')", clip);
+    os_dev_clipboard_external(STR8_LIT("from\nelsewhere")); // stored with CRLF, as another program would
+    i32 count = tv.kills->count;
+    test_view_run(&tv, &CMD_END_OF_BUFFER);
+    test_view_run(&tv, &CMD_YANK);
+    TEST_CHECK(t, test_kill_is(&tv, 0, "from\nelsewhere") && tv.kills->count == count + 1, "clipboard: the external copy is the newest kill");
+    test_view_run(&tv, &CMD_YANK);
+    TEST_CHECK(t, tv.kills->count == count + 1, "clipboard: not pushed twice");
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT(" betaalphaalphafrom\nelsewherefrom\nelsewhere")), "clipboard: yanked with LF");
+    // Read-only: the text is copied, the buffer stays.
+    tv.buf->read_only = 1;
+    test_view_run(&tv, &CMD_BEGINNING_OF_BUFFER);
+    test_view_run(&tv, &CMD_KILL_LINE);
+    TEST_CHECK(t, test_kill_is(&tv, 0, " betaalphaalphafrom") && test_echo_is(&tv, "Buffer is read-only: test.c") &&
+                  test_text_is(t, tv.buf, STR8_LIT(" betaalphaalphafrom\nelsewherefrom\nelsewhere")), "kill in a read-only buffer copies");
+    tv.buf->read_only = 0;
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Storage: small entries share one arena, compacted as old ones are dropped; an entry over
+    // 1 MB has its own reservation and appending to it does not move it.
+    KillRing *k = PUSH_STRUCT(&t->arena, KillRing);
+    kill_init(k, 5);
+    u8 *big = PUSH_ARRAY(&t->arena, u8, MB(3));
+    for (i32 i = 0; i < 40; i++) {
+        i64 len = 1000 + i * 3000;
+        u8 *dst = kill_push(k, len);
+        TEST_CHECK(t, dst != NULL, "kill storage: push %d", i);
+        memset(dst, 'a' + i % 26, (size_t)len);
+    }
+    for (i32 b = 0; b < 5; b++) {
+        String8 e = kill_entry(k, b);
+        i32 i = 39 - b;
+        TEST_CHECK(t, e.len == 1000 + i * 3000 && e.data[0] == 'a' + i % 26 && e.data[e.len - 1] == 'a' + i % 26 &&
+                      e.data >= k->small && e.data < k->small + k->small_used, "kill storage: small entry %d after compaction", b);
+    }
+    TEST_CHECK(t, k->count == 5 && k->small_used < (u64)(5 * 120000 * 2), "kill storage: dead bytes compacted (%U used)", k->small_used);
+    u8 *dst = kill_extend(k, MB(1), 0); // the newest grows past 1 MB: its own reservation, once
+    memset(dst, 'Z', MB(1));
+    String8 grown = kill_entry(k, 0);
+    TEST_CHECK(t, grown.len == 1000 + 39 * 3000 + MB(1) && grown.data[0] == 'a' + 39 % 26 && grown.data[grown.len - 1] == 'Z' &&
+                  (grown.data < k->small || grown.data >= k->small + KILL_SMALL_RESERVE), "kill storage: moved to its own reservation");
+    for (i32 i = 0; i < 3; i++) {
+        memset(big, '0' + i, MB(3));
+        u8 *d = kill_extend(k, MB(3), i == 1);
+        memcpy(d, big, MB(3));
+        TEST_CHECK(t, kill_entry(k, 0).data == grown.data, "kill storage: appending to a large entry does not move it");
+    }
+    String8 e = kill_entry(k, 0);
+    TEST_CHECK(t, e.len == grown.len + (i64)MB(9) && e.data[0] == '1' && e.data[MB(3)] == 'a' + 39 % 26 && e.data[e.len - 1] == '2',
+               "kill storage: appended and prepended in place");
+    kill_set_max(k, 2);
+    TEST_CHECK(t, k->count == 2 && kill_entry(k, 0).len == e.len, "kill storage: kill_ring_max drops the oldest");
+    kill_destroy(k);
+    LOG("test: ok: kill ring: kill-line cases, append and prepend, whole line, region, yank and yank-pop, clipboard link, read-only, storage");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 // Every command is found by its own name, names are unique, and unknown names are refused.
@@ -2620,6 +2766,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_region(&t);
     arena_reset(&t.arena);
     test_clipboard(&t);
+    arena_reset(&t.arena);
+    test_kill(&t);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);
