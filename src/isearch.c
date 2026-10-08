@@ -173,6 +173,10 @@ static void isearch_end(CommandContext *ctx, b32 abort) {
     Isearch *is = ctx->isearch;
     View *v = is->view;
     Cursor *c = &v->cursors[0];
+    // Keys typed ahead ("C-s foo RET" in one frame): one slice now usually resolves the pending steps,
+    // so the search ends at the match the user typed for. Never more than a slice: then it ends at the
+    // last step resolved.
+    for (i64 used = 0; !abort && isearch_pending(is) && used < SEARCH_SLICE_BYTES;) used += isearch_work(is, SEARCH_SLICE_BYTES - used);
     IsearchStep *cur = isearch_current(is);
     String8 string = isearch_top(is)->string;
     is->active = 0;
@@ -656,7 +660,10 @@ b32 replace_key(CommandContext *ctx, const Command *command, u32 answer) {
         view_run_command(ctx, &CMD_REPLACE_QUIT);
         return 1;
     }
-    if (rp->state != REPLACE_ASKING) return 1; // searching or replacing all: only C-g counts
+    // An answer typed ahead (in the same frame as the prompt's RET, or before the next match was drawn):
+    // one slice now usually finds the match, so the key is not lost. Never more than a slice.
+    if (rp->state == REPLACE_SEARCHING && answer) replace_work(rp, ctx->scratch, SEARCH_SLICE_BYTES);
+    if (rp->state != REPLACE_ASKING) return 1; // still searching, or replacing all: only C-g counts
     if (answer) {
         ctx->codepoint = answer;
         view_run_command(ctx, &CMD_REPLACE_ANSWER);
