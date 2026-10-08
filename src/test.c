@@ -3047,6 +3047,23 @@ void test_bench_buffer(String8 path, String8 tmp_dir) {
         LOG("bench-buffer: save-as %s flush: %U ms for %D bytes (%s)", flush ? "with" : "without", save_us / 1000,
             buffer_size(buf), buffer_status_text(status));
     }
+
+    // Reverting after a one-line change outside: another buffer edits a line in the middle of the
+    // file the first one now visits and saves it; the first one reads it back (one replace of the
+    // changed middle).
+    Buffer *other = buffer_create(STR8_LIT("bench-other"));
+    if (other && buffer_load_file(other, out) == OS_FILE_OK) {
+        i64 mid = buffer_line_start(other, buffer_line_count(other) / 2);
+        buffer_replace(other, mid, mid + 4, STR8_LIT("EDIT"));
+        buffer_save_opt(other, 0);
+        u64 undo_before = buffer_undo_memory(buf);
+        t0 = os_time_us();
+        status = buffer_revert(buf, 0);
+        u64 revert_us = os_time_us() - t0;
+        LOG("bench-buffer: revert after a one-line change outside: %U ms for %D bytes (%s); undo log %U KB -> %U KB committed",
+            revert_us / 1000, buffer_size(buf), buffer_status_text(status), undo_before / 1024, buffer_undo_memory(buf) / 1024);
+    }
+    if (other) buffer_destroy(other);
     os_file_delete(out);
     os_release(scratch.base);
     buffer_destroy(buf);

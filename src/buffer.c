@@ -283,7 +283,7 @@ static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
 static b32 buffer_reserve_gap(Buffer *buf, i64 need) {
     i64 gap = buf->gap_end - buf->gap_start;
     if (gap >= need) return 1;
-    i64 slack = MIN(buffer_size(buf) / 16, (i64)BUFFER_GAP_MAX);
+    i64 slack = MIN((buffer_size(buf) + need) / 16, (i64)BUFFER_GAP_MAX); // a load (an empty buffer, need = the file) gets it too
     i64 min_cap = buf->text_cap + (need - gap);
     if (min_cap > buf->text_reserved) return 0;
     i64 new_cap = (i64)commit_grow((u64)buf->text_cap, (u64)(min_cap + slack));
@@ -305,7 +305,7 @@ static b32 buffer_reserve_gap(Buffer *buf, i64 need) {
 static b32 buffer_reserve_nl_gap(Buffer *buf, i64 need) {
     i64 gap = buf->nl_back - buf->nl_front;
     if (gap >= need) return 1;
-    i64 slack = MIN(buffer_nl_count(buf) / 16, (i64)(BUFFER_GAP_MAX / sizeof(u32)));
+    i64 slack = MIN((buffer_nl_count(buf) + need) / 16, (i64)(BUFFER_GAP_MAX / sizeof(u32)));
     i64 per_page = (i64)(COMMIT_STEP_MIN / sizeof(u32));
     i64 min_cap = buf->nl_cap + (need - gap);
     if (min_cap > buf->nl_reserved) return 0;
