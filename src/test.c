@@ -1146,6 +1146,7 @@ static b32 test_view_open(Test *t, TestView *tv, const char *marked, i32 rows, i
     tv->ctx.view = tv->view;
     tv->ctx.echo = &tv->echo;
     tv->ctx.settings = &test_settings;
+    tv->ctx.scratch = &t->arena;
     tv->kills = PUSH_STRUCT(&t->arena, KillRing);
     kill_init(tv->kills, 60);
     tv->ctx.kills = tv->kills;
@@ -2585,9 +2586,72 @@ static b32 test_syntax(Test *t, u64 seed) {
     return test_syntax_budget(t, seed);
 }
 
-// Every line of `input` reindented by the rule, top to bottom (as TAB over the whole buffer).
-static b32 test_indent_case(Test *t, const char *what, const char *input, const char *expected, b32 tabs, i32 tab_width) {
-    Buffer *buf = buffer_create(STR8_LIT("indent.c"));
+// Bracket matching on tokens. In `marked`, \x01 is before the bracket asked about and \x02 before
+// its expected match (none: no match). A match found must also lead back.
+static b32 test_match_case(Test *t, BufferLanguage language, const char *what, String8 marked) {
+    u8 *text = PUSH_ARRAY(&t->arena, u8, marked.len);
+    i64 n = 0, at = -1, want = -1;
+    for (i64 i = 0; i < marked.len; i++) {
+        if (marked.data[i] == 1) at = n;
+        else if (marked.data[i] == 2) want = n;
+        else text[n++] = marked.data[i];
+    }
+    Buffer *buf = buffer_create(STR8_LIT("match"));
+    TEST_CHECK(t, buf, "match: buffer_create failed");
+    buf->language = language;
+    buffer_replace(buf, 0, 0, str8(text, n));
+    syntax_catch_up(buf, buffer_line_count(buf) - 1, (u64)I64_MAX, &t->arena);
+    i64 got = syntax_match_bracket(buf, at, &t->arena);
+    i64 back = got >= 0 ? syntax_match_bracket(buf, got, &t->arena) : -1;
+    buffer_destroy(buf);
+    TEST_CHECK(t, got == want && (want < 0 || back == at), "match: %s: from %D: %D (back %D), expected %D", what, at, got, back, want);
+    return 1;
+}
+
+static b32 test_match(Test *t) {
+    static const struct { BufferLanguage language; const char *what, *marked; } cases[] = {
+        { BUFFER_LANG_C, "nested", "f\x01(a(b[1]), {c}\x02)" },
+        { BUFFER_LANG_C, "across lines", "int f() \x01{\n  if (x) {\n    y();\n  }\n\x02}\n" },
+        { BUFFER_LANG_C, "a bracket in a string has no match", "s = \"\x01(\"; )" },
+        { BUFFER_LANG_C, "brackets in strings, chars and comments are skipped", "f\x01(\")\", ')', /* ) */ // )\nx\x02)" },
+        { BUFFER_LANG_C, "none found", "f\x01(a, b\n" },
+        { BUFFER_LANG_C, "a mismatched pair on the way", "f\x01(a]" },
+        { BUFFER_LANG_C, "a preprocessor line's brackets do not count", "\x01{\n#define X }\n#if (A\n\x02}" },
+        { BUFFER_LANG_FUNDAMENTAL, "Fundamental: every bracket counts", "f\x01(\"\x02)\")" },
+        { BUFFER_LANG_JAVASCRIPT, "a brace in a template hole", "s = `${\x01{a: `}`\x02}}`;" },
+        { BUFFER_LANG_JAI, "Jai: a nested comment between", "f :: () \x01{ /* } /* } */ } */ \x02}" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        if (!test_match_case(t, cases[i].language, cases[i].what, str8_cstr(cases[i].marked))) return 0;
+    }
+    // Too far: the match lies beyond SYNTAX_MATCH_MAX.
+    i64 n = SYNTAX_MATCH_MAX + 100;
+    u8 *far = PUSH_ARRAY(&t->arena, u8, n + 3);
+    far[0] = 1;
+    far[1] = '{';
+    for (i64 i = 2; i < n; i += 2) far[i] = 'x', far[i + 1] = '\n';
+    far[n] = '}';
+    if (!test_match_case(t, BUFFER_LANG_C, "too far", str8(far, n + 1))) return 0;
+    // The innermost opener that encloses a position.
+    Buffer *buf = buffer_create(STR8_LIT("enclosing"));
+    buf->language = BUFFER_LANG_C;
+    String8 text = STR8_LIT("switch (x) {\ncase 1: f(a, \"{\");\n  case 2:");
+    buffer_replace(buf, 0, 0, text);
+    syntax_catch_up(buf, 2, (u64)I64_MAX, &t->arena);
+    i64 open = syntax_enclosing_open(buf, buffer_line_start(buf, 2) + 2, &t->arena);
+    i64 none = syntax_enclosing_open(buf, 3, &t->arena);
+    buffer_destroy(buf);
+    TEST_CHECK(t, open == 11 && none == -1, "match: enclosing opener %D (expected 11), none %D", open, none);
+    LOG("test: ok: bracket matching (%d cases, too far, the enclosing opener)", (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
+// Every line of `input` reindented by the rule, top to bottom (as TAB over the whole buffer: blank
+// lines emptied, lines inside multi-line comments and strings left alone).
+static b32 test_indent_case(Test *t, BufferLanguage language, const char *what, const char *input, const char *expected, b32 tabs,
+                            i32 tab_width) {
+    Buffer *buf = buffer_create(STR8_LIT("indent"));
+    buf->language = language;
     buf->indent_tabs = tabs;
     buf->tab_width = tab_width;
     buffer_replace(buf, 0, 0, str8_cstr(input));
@@ -2595,7 +2659,7 @@ static b32 test_indent_case(Test *t, const char *what, const char *input, const 
         i64 s = buffer_line_start(buf, line), e = buffer_line_end(buf, line), p = s;
         while (p < e && (buffer_byte(buf, p) == ' ' || buffer_byte(buf, p) == '\t')) p++;
         if (p == e) buffer_replace(buf, s, e, STR8_LIT(""));
-        else edit_set_indent(buf, line, edit_compute_indent(buf, line, 4));
+        else if (!edit_line_fixed(buf, line, &t->arena)) edit_set_indent(buf, line, edit_compute_indent(buf, line, 4, &t->arena));
     }
     String8 got = buffer_text(buf, &t->arena, 0, buffer_size(buf));
     b32 ok = str8_equal(got, str8_cstr(expected));
@@ -2606,34 +2670,60 @@ static b32 test_indent_case(Test *t, const char *what, const char *input, const 
 }
 
 static b32 test_indent(Test *t) {
-    static const struct { const char *what, *input, *expected; } cases[] = {
-        { "C: nested blocks, else, a call continued over two lines",
+    static const struct { BufferLanguage language; const char *what, *input, *expected; } cases[] = {
+        { BUFFER_LANG_C, "C: nested blocks, else, a call continued over two lines",
           "int f(int a) {\nif (a) {\nreturn g(a,\nb,\nc);\n} else {\nreturn 0;\n}\n}\n",
           "int f(int a) {\n    if (a) {\n        return g(a,\n            b,\n            c);\n    } else {\n        return 0;\n    }\n}\n" },
-        { "C: a line that is only \"));\"",
+        // Phase 8: one level after a line that leaves brackets open, however many (was two here).
+        { BUFFER_LANG_C, "C: a line that is only \"));\"",
           "x = f(g(\na\n));\ny;\n",
-          "x = f(g(\n        a\n));\ny;\n" },
-        { "C: two openers on one line, blank lines, wrong indentation fixed",
+          "x = f(g(\n    a\n));\ny;\n" },
+        { BUFFER_LANG_C, "C: two openers on one line, blank lines, wrong indentation fixed",
           "    foo({\n\n   a,\n\n})\n        bar();\n",
-          "foo({\n\n        a,\n\n})\nbar();\n" },
-        { "C: a negative balance stops at column 0",
+          "foo({\n\n    a,\n\n})\nbar();\n" },
+        { BUFFER_LANG_C, "C: a negative balance stops at column 0",
           "a)));\n}\nb;\n",
           "a)));\n}\nb;\n" },
-        { "Jai: procedure and loop",
+        { BUFFER_LANG_JAI, "Jai: procedure and loop",
           "main :: () {\nfor 0..10 {\nprint(\"%\\n\", it);\n}\n}\n",
           "main :: () {\n    for 0..10 {\n        print(\"%\\n\", it);\n    }\n}\n" },
-        { "JavaScript: array literal with an object, a function",
+        { BUFFER_LANG_JAVASCRIPT, "JavaScript: array literal with an object, a function",
           "const a = [\n1,\n{ b: 2 },\n];\nfunction f() {\nreturn a;\n}\n",
           "const a = [\n    1,\n    { b: 2 },\n];\nfunction f() {\n    return a;\n}\n" },
-        { "brackets closed on the same line do not count",
+        { BUFFER_LANG_C, "brackets closed on the same line do not count",
           "if (a) { b(); }\nc;\n[x] = y[0];\nz;\n",
           "if (a) { b(); }\nc;\n[x] = y[0];\nz;\n" },
+        // Phase 8: on tokens.
+        { BUFFER_LANG_C, "C: brackets in strings, chars and comments do not count",
+          "f(\"(\", '{');\nx;\n/* ( { */\ny;\n// ) }\nz = \"}\";\nw;\n",
+          "f(\"(\", '{');\nx;\n/* ( { */\ny;\n// ) }\nz = \"}\";\nw;\n" },
+        { BUFFER_LANG_JAVASCRIPT, "JavaScript: a callback: one level, and the closing line returns",
+          "foo(function () {\nbar();\n});\nnext();\nf((x) => {\nreturn x;\n});\ny;\n",
+          "foo(function () {\n    bar();\n});\nnext();\nf((x) => {\n    return x;\n});\ny;\n" },
+        { BUFFER_LANG_JAVASCRIPT, "JavaScript: nested callbacks",
+          "a(() => {\nb(function () {\nc([\n1,\n]);\n});\n});\nd;\n",
+          "a(() => {\n    b(function () {\n        c([\n            1,\n        ]);\n    });\n});\nd;\n" },
+        { BUFFER_LANG_C, "C: continued call arguments return to the call's line",
+          "    x = foo(a,\nb,\nc);\nd;\n",
+          "x = foo(a,\n    b,\n    c);\nd;\n" },
+        { BUFFER_LANG_C, "C: } else {",
+          "if (a) {\nb;\n} else {\nc;\n}\nd;\n",
+          "if (a) {\n    b;\n} else {\n    c;\n}\nd;\n" },
+        { BUFFER_LANG_C, "C: lines inside a block comment are left alone; comment-only lines are skipped",
+          "int x;\n/*\n   * keep\n  */\ny;\n",
+          "int x;\n/*\n   * keep\n  */\ny;\n" },
+        { BUFFER_LANG_CPP, "C++: lines inside a raw string are left alone; the next statement returns",
+          "  auto s = R\"(\n  a {\n)\";\nz;\n",
+          "auto s = R\"(\n  a {\n)\";\nz;\n" },
+        { BUFFER_LANG_JAVASCRIPT, "JavaScript: lines inside a template literal are left alone",
+          "s = `\n  ${x} {\n`;\ny;\n",
+          "s = `\n  ${x} {\n`;\ny;\n" },
     };
     for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
-        if (!test_indent_case(t, cases[i].what, cases[i].input, cases[i].expected, 0, 4)) return 0;
+        if (!test_indent_case(t, cases[i].language, cases[i].what, cases[i].input, cases[i].expected, 0, 4)) return 0;
     }
     // Tabs: whole tabs, then spaces for the rest (tab width 8, indent width 4).
-    if (!test_indent_case(t, "tabs", "a {\nb {\nc {\nd;\n}\n}\n}\n",
+    if (!test_indent_case(t, BUFFER_LANG_C, "tabs", "a {\nb {\nc {\nd;\n}\n}\n}\n",
                           "a {\n    b {\n\tc {\n\t    d;\n\t}\n    }\n}\n", 1, 8)) return 0;
     // Detection from the first indented lines.
     Buffer *buf = buffer_create(STR8_LIT("d.c"));
@@ -4758,6 +4848,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_kill(&t);
     arena_reset(&t.arena);
     test_syntax(&t, seed);
+    arena_reset(&t.arena);
+    test_match(&t);
     arena_reset(&t.arena);
     test_indent(&t);
     arena_reset(&t.arena);

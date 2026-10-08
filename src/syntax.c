@@ -294,6 +294,195 @@ b32 syntax_catch_up(Buffer *buf, i64 need_line, u64 budget_us, Arena *scratch) {
     return buf->state_valid >= need_line;
 }
 
+// ---------------------------------------------------------------------------
+// Brackets and lines on tokens
+
+static b32 syn_opener(u8 c) {
+    return c == '(' || c == '[' || c == '{';
+}
+
+static b32 syn_closer(u8 c) {
+    return c == ')' || c == ']' || c == '}';
+}
+
+static u8 syn_partner(u8 c) {
+    switch (c) {
+    case '(': return ')';
+    case ')': return '(';
+    case '[': return ']';
+    case ']': return '[';
+    case '{': return '}';
+    case '}': return '{';
+    }
+    return 0;
+}
+
+// The stored start state of a line, 0 when it has none yet.
+static u32 syn_state_of(Buffer *buf, i64 line) {
+    return buf->states_on && line < buf->state_known ? buffer_line_state(buf, line) : 0;
+}
+
+// A line lexed for brackets: its text, the kind of each byte (code, comment or string), whether
+// it is a C or C++ preprocessor line, and its end state.
+typedef struct SynLine {
+    i64 start;
+    String8 text;
+    SyntaxTokens toks;
+    b32 directive;
+    u32 end;
+} SynLine;
+
+static void syn_line(Buffer *buf, i64 line, u32 state, Arena *scratch, SynLine *l) {
+    l->start = buffer_line_start(buf, line);
+    l->text = buffer_text(buf, scratch, l->start, buffer_line_end(buf, line));
+    l->toks.cap = (i32)MIN(l->text.len + 2, (i64)SYNTAX_MATCH_MAX + 2);
+    l->toks.tokens = PUSH_ARRAY(scratch, SyntaxToken, l->toks.cap);
+    l->toks.count = 0;
+    b32 lexer = syntax_has_lexer(buf->language);
+    l->end = lexer ? syntax_lex(buf->language, state, l->text, &l->toks) : 0;
+    l->directive = 0;
+    if (buf->language == BUFFER_LANG_C || buf->language == BUFFER_LANG_CPP) {
+        i64 first = syn_skip_blanks(l->text.data, l->text.len, 0);
+        l->directive = (state & SYNTAX_STATE_DIRECTIVE) != 0;
+        for (i32 k = 0; !l->directive && k < l->toks.count && (i64)l->toks.tokens[k].start <= first; k++) {
+            l->directive = (i64)l->toks.tokens[k].start == first && l->toks.tokens[k].kind == SYN_DIRECTIVE;
+        }
+    }
+}
+
+// The kind of byte i of a lexed line; *k is a cursor into its tokens (bytes visited in order).
+static u32 syn_kind_at(SynLine *l, i32 *k, i64 i) {
+    SyntaxTokens *t = &l->toks;
+    if (*k > 0 && (i64)t->tokens[*k].start > i) *k = 0;
+    while (*k + 1 < t->count && (i64)t->tokens[*k + 1].start <= i) (*k)++;
+    return t->count && (i64)t->tokens[*k].start <= i ? t->tokens[*k].kind : SYN_TEXT;
+}
+
+// Whether byte i is a bracket in code.
+static b32 syn_code_bracket(SynLine *l, i32 *k, i64 i) {
+    u8 c = l->text.data[i];
+    if (l->directive || (!syn_opener(c) && !syn_closer(c))) return 0;
+    u32 kind = syn_kind_at(l, k, i);
+    return kind != SYN_COMMENT && kind != SYN_STRING;
+}
+
+// Walks brackets from `pos` (exclusive) forward or backward with a stack of the brackets expected
+// to close the ones seen. `want` starts it: the partner of a bracket to match, or 0 to find the
+// innermost unclosed opener (backward). Returns the position found, or -1.
+static i64 syn_walk(Buffer *buf, i64 pos, b32 forward, u8 want, Arena *scratch) {
+    u64 mark = arena_pos(scratch);
+    u8 *stack = PUSH_ARRAY(scratch, u8, SYNTAX_MATCH_MAX + 1);
+    i64 depth = 0;
+    if (want) stack[depth++] = want;
+    i64 line = buffer_line_of(buf, pos), count = buffer_line_count(buf), budget = SYNTAX_MATCH_MAX;
+    u32 state = syn_state_of(buf, line);
+    i64 found = -1;
+    b32 done = 0;
+    for (; line >= 0 && line < count && !done; line += forward ? 1 : -1) {
+        u64 line_mark = arena_pos(scratch);
+        i64 len = buffer_line_end(buf, line) - buffer_line_start(buf, line);
+        if (len + 1 > budget) break;
+        budget -= len + 1;
+        SynLine l;
+        syn_line(buf, line, forward ? state : syn_state_of(buf, line), scratch, &l);
+        state = l.end;
+        i32 k = 0;
+        i64 lo = 0, hi = l.text.len;
+        if (forward && l.start <= pos) lo = pos - l.start + 1;
+        if (!forward && l.start + l.text.len >= pos) hi = pos - l.start;
+        // The line's brackets in code, in order (the token cursor goes forward).
+        i64 *at = PUSH_ARRAY(scratch, i64, hi - lo + 1);
+        i64 n = 0;
+        for (i64 i = lo; i < hi; i++) if (syn_code_bracket(&l, &k, i)) at[n++] = i;
+        for (i64 j = 0; j < n && !done; j++) {
+            i64 i = forward ? at[j] : at[n - 1 - j];
+            u8 c = l.text.data[i];
+            if (forward ? syn_opener(c) : syn_closer(c)) { // opens a pair (in the walking direction)
+                stack[depth++] = syn_partner(c);
+                continue;
+            }
+            if (!depth) { // nothing open: only the innermost-opener walk ends here
+                found = !want ? l.start + i : -1;
+                done = 1;
+                continue;
+            }
+            if (stack[depth - 1] != c) { // a mismatched pair
+                done = 1;
+                continue;
+            }
+            if (--depth == 0 && want) {
+                found = l.start + i;
+                done = 1;
+            }
+        }
+        arena_pop_to(scratch, line_mark);
+    }
+    arena_pop_to(scratch, mark);
+    return found >= 0 ? found : -1;
+}
+
+i64 syntax_match_bracket(Buffer *buf, i64 pos, Arena *scratch) {
+    if (pos < 0 || pos >= buffer_size(buf)) return -1;
+    u8 c = buffer_byte(buf, pos);
+    if (!syn_opener(c) && !syn_closer(c)) return -1;
+    // Only a bracket in code has a match.
+    u64 mark = arena_pos(scratch);
+    i64 line = buffer_line_of(buf, pos);
+    SynLine l;
+    syn_line(buf, line, syn_state_of(buf, line), scratch, &l);
+    i32 k = 0;
+    b32 code = syn_code_bracket(&l, &k, pos - l.start);
+    arena_pop_to(scratch, mark);
+    if (!code) return -1;
+    return syn_walk(buf, pos, syn_opener(c), syn_partner(c), scratch);
+}
+
+i64 syntax_enclosing_open(Buffer *buf, i64 pos, Arena *scratch) {
+    return syn_walk(buf, pos, 0, 0, scratch);
+}
+
+void syntax_line_info(Buffer *buf, i64 line, Arena *scratch, SyntaxLine *info) {
+    u64 mark = arena_pos(scratch);
+    u32 state = syn_state_of(buf, line);
+    SynLine l;
+    syn_line(buf, line, state, scratch, &l);
+    *info = (SyntaxLine){ .leading_closer = -1, .head = -1, .head_end = -1, .last_unmatched = -1 };
+    info->directive = l.directive;
+    info->in_literal = syntax_has_lexer(buf->language) && (state & SYNTAX_STATE_LITERAL);
+    i32 k = 0;
+    i64 depth = 0;
+    b32 leading = 1; // still at the closers that start the line
+    for (i64 i = 0; i < l.text.len; i++) {
+        u8 c = l.text.data[i];
+        if (syn_is_blank(c)) continue;
+        u32 kind = syn_kind_at(&l, &k, i);
+        if (kind == SYN_COMMENT) continue;
+        info->code = 1;
+        info->last = c;
+        b32 bracket = syn_code_bracket(&l, &k, i);
+        if (leading && bracket && syn_closer(c)) {
+            if (info->leading_closer < 0) info->leading_closer = l.start + i;
+        } else if (leading) {
+            leading = 0;
+            info->head = l.start + i;
+            info->head_kind = kind;
+            info->head_end = syn_is_ident(c) ? l.start + syn_ident_end(l.text.data, l.text.len, i) : l.start + i + 1;
+        }
+        if (!bracket) continue;
+        if (syn_opener(c)) depth++;
+        else if (depth) depth--;
+        else info->last_unmatched = l.start + i;
+    }
+    info->open = (i32)MIN(depth, (i64)0x7FFFFFFF);
+    arena_pop_to(scratch, mark);
+}
+
+b32 syntax_word_is(Buffer *buf, i64 start, i64 end, const char *word) {
+    i64 i = 0;
+    for (; start + i < end; i++) if (!word[i] || (u8)word[i] != buffer_byte(buf, start + i)) return 0;
+    return word[i] == 0;
+}
+
 b32 syntax_line_tokens(Buffer *buf, i64 line, String8 text, SyntaxTokens *out) {
     out->count = 0;
     if (!buf->states_on || buf->states_language != (i32)buf->language || line >= buf->state_known) return 0;

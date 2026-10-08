@@ -53,16 +53,25 @@ void    kill_to_clipboard(KillRing *k); // after a command that killed: the clip
 void    kill_from_clipboard(KillRing *k); // before yank: a clipboard changed elsewhere becomes the newest entry
 
 // ---------------------------------------------------------------------------
-// Indentation, rule based (no parser): a line's indentation is the indentation of the previous
-// non-blank line, plus that line's net bracket balance (its ( [ { minus its ) ] }, not counting
-// the closing brackets that start it: they were applied to its own indentation), minus one
-// level per closing bracket that starts the current line; never below column 0. A level is
-// indent_width columns. Brackets in strings and comments count too, for now (Phase 8).
+// Indentation by rules on tokens (no parser): brackets match on tokens (syntax.h), so brackets in
+// comments and strings do not count. For a line L, with P the previous line that has code (blank
+// and comment-only lines are skipped):
+//   - L starts inside a multi-line comment or string: TAB leaves it; RET into one gets the
+//     previous line's indentation.
+//   - L starts with a closer: the indentation of the line holding its matching opener.
+//   - P leaves a bracket open: P's indentation plus one level, however many it opened.
+//   - Otherwise the indentation of the line P's statement started on: where the opener of P's
+//     last unmatched closer is (a line that closes a bracket opened earlier returns to that
+//     line's indentation), or P itself.
+// Never below column 0. A level is indent_width columns.
 
 #define EDIT_INDENT_MAX 512 // columns
+#define EDIT_SYNC_US 250    // indentation brings lexer states up to its line within this, then uses what is stored
 
 i64  edit_indent_cols(Buffer *buf, i64 line);                 // columns of the line's leading blanks
-i64  edit_compute_indent(Buffer *buf, i64 line, i64 indent_width);
+i64  edit_compute_indent(Buffer *buf, i64 line, i64 indent_width, Arena *scratch);
+// A line TAB leaves where it is: it has text and starts inside a multi-line comment or string.
+b32  edit_line_fixed(Buffer *buf, i64 line, Arena *scratch);
 // Rewrites the line's leading blanks for `cols` (tabs then spaces with buf->indent_tabs), only if
 // they differ. False if the buffer refused the edit.
 b32  edit_set_indent(Buffer *buf, i64 line, i64 cols);
