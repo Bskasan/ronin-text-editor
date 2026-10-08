@@ -332,7 +332,21 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
 // ---------------------------------------------------------------------------
 // Reloading
 
+void config_notify(ConfigSource *src, u64 now_us) {
+    src->settling = 1;
+    src->settle_at_us = now_us + (u64)CONFIG_SETTLE_MS * 1000;
+}
+
+b32 config_pending(ConfigSource *src) {
+    return src->settling || src->attempts > 0;
+}
+
 ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, u64 now_us) {
+    if (src->settling && !force) {
+        if (now_us < src->settle_at_us) return CONFIG_POLL_UNCHANGED;
+        src->settling = 0;
+    }
+    if (force) src->settling = 0;
     if (src->attempts > 0) {
         if (!force && now_us < src->retry_at_us) return CONFIG_POLL_UNCHANGED;
     } else if (!force) {
@@ -354,7 +368,13 @@ ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, 
     return CONFIG_POLL_LOADED;
 }
 
+static u32 config_ms_until(u64 at_us, u64 now_us) {
+    return now_us >= at_us ? 0 : (u32)((at_us - now_us + 999) / 1000);
+}
+
 u32 config_wait_ms(ConfigSource *src, u64 now_us) {
-    if (src->attempts == 0) return CONFIG_WAIT_INFINITE;
-    return now_us >= src->retry_at_us ? 0 : (u32)((src->retry_at_us - now_us + 999) / 1000);
+    u32 wait = CONFIG_WAIT_INFINITE;
+    if (src->settling) wait = config_ms_until(src->settle_at_us, now_us);
+    if (src->attempts > 0) wait = MIN(wait, config_ms_until(src->retry_at_us, now_us));
+    return wait;
 }
