@@ -1681,6 +1681,10 @@ void app_dev_filter_stats(App *app, u64 *filters, u64 *last_us, i64 *matches) {
     *matches = app->mini.match_count;
 }
 
+String8 app_dev_replace_prompt(App *app, Arena *arena) {
+    return app->replace.state == REPLACE_OFF ? str8(NULL, 0) : replace_prompt(&app->replace, arena);
+}
+
 String8 app_dev_prompt(App *app) {
     return app->mini.active ? app->mini.prompt : str8(NULL, 0);
 }
