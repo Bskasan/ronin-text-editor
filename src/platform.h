@@ -273,6 +273,11 @@ i32  app_dev_bench_frame(App *app, FrameInput *input, Renderer *r, u64 *build_us
 void test_bench_syntax(void);                                  // --bench-syntax: lexing throughput per language
 String8 test_bench_syntax_file(Arena *arena, String8 tmp_dir); // --bench-syntax: generates the 100 MB C file once
 void app_dev_set_language(App *app, i32 language);             // the active view's buffer (a BufferLanguage)
+void app_dev_append(App *app, String8 text);                  // --bench-search: appended to the active buffer, not undoable
+void app_dev_show_scratch(App *app, String8 text);            // --bench-search: *scratch* with this text, point at 0
+i64  app_dev_point(App *app);                                 // the active view's point
+b32  app_dev_isearch_failing(App *app);                        // an isearch is active, done, and failing
+i64  app_dev_size(App *app);                                  // the size of its buffer
 #endif
 
 #endif // PLATFORM_H

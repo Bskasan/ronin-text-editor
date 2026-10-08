@@ -76,6 +76,7 @@ typedef struct Platform {
     b32 bench_edit;
     b32 bench_complete;
     b32 bench_syntax;
+    b32 bench_search;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -686,7 +687,7 @@ void os_fatal(String8 message) {
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
-                       g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax)) interactive = 0;
+                       g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -1790,6 +1791,99 @@ static void win32_bench_syntax(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-search: `keys` (--keys notation) through the app, one event per frame, then frames without
+// events until no search work is pending. Returns the time from the first event to the last frame.
+static u64 win32_bench_search_keys(Platform *p, const char *keys, BenchStat *st) {
+    Event events[256];
+    i32 n = app_dev_key_events(p->app, str8_cstr(keys), events, ARRAY_COUNT(events));
+    u64 t0 = os_time_us();
+    for (i32 i = 0; i < n; i++) win32_bench_view_step(p, events[i], st);
+    while (app_wants_frame(p->app) && st->count < 10000000) {
+        win32_bench_pump();
+        p->event_count = 0;
+        FrameInput input = win32_frame_input(p);
+        app_update_and_render(p->app, &input, p->renderer);
+        arena_reset(&p->scratch);
+        win32_bench_record(p, st);
+    }
+    return os_time_us() - t0;
+}
+
+// --bench-search: isearch on the 100 MB file for a needle only at its very end and one that does not
+// occur, each folded and exact (typed one key per frame, then the frames until the search is done);
+// keystroke latency of isearch on src/app.c; replace-string over 1,000,000 occurrences, then the undo
+// of that one group and its undo-redo.
+static void win32_bench_search(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    app_dev_append(p->app, STR8_LIT("Needle_At_The_End\n"));
+    i64 size = app_dev_size(p->app);
+    LOG("bench-search: %D bytes, %D lines; frames = typing the needle, then until the search is done; build = command + "
+        "frame build (search slices included), Present(0, 0) not counted", size, app_dev_line_count(p->app));
+    // Each needle typed (one key per frame) and pasted at once (C-y of the clipboard: one search step).
+    static const struct { const char *keys, *needle, *what; b32 found, exact; } runs[] = {
+        { "n e e d l e _ a t _ t h e _ e n d", "needle_at_the_end", "needle at the end, folded", 1, 0 },
+        { "N e e d l e _ A t _ T h e _ E n d", "Needle_At_The_End", "needle at the end, exact", 1, 1 },
+        { "n e v e r _ h e r e _ a t _ a l l", "never_here_at_all", "needle not in the file, folded", 0, 0 },
+        { "N e v e r _ H e r e _ A t _ A l l", "Never_Here_At_All", "needle not in the file, exact", 0, 1 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(runs); i++) {
+        for (i32 pasted = 0; pasted < 2; pasted++) {
+            app_dev_goto_line(p->app, 0);
+            win32_bench_keys(p, "C-s");
+            if (pasted) os_dev_clipboard_external(str8_cstr(runs[i].needle));
+            BenchStat st = { 0 };
+            r_dev_take_frame_stats(p->renderer);
+            // Pasting lowercases while the search folds (a yank keeps it folded): M-c first makes the exact search exact.
+            const char *paste = runs[i].exact ? "M-c C-y" : "C-y";
+            u64 total = win32_bench_search_keys(p, pasted ? paste : runs[i].keys, &st);
+            b32 ok = runs[i].found ? app_dev_point(p->app) == size - 1 : app_dev_isearch_failing(p->app);
+            LOG("bench-search: %s, %s: %U ms in %U frames; longest frame build %U us, avg %U us; Present avg %U us; %s", runs[i].what,
+                pasted ? (runs[i].exact ? "pasted (M-c C-y, one step)" : "pasted (C-y, one step)") : "typed (34 events)", total / 1000, st.count, st.build_max,
+                st.build_sum / MAX(st.count, 1), st.present_sum / MAX(st.count, 1), ok ? "result right" : "RESULT WRONG");
+            win32_bench_keys(p, runs[i].found ? "RET" : "C-g");
+            if (!runs[i].found) win32_bench_keys(p, "C-g");
+        }
+    }
+
+    // Keystroke latency on an ordinary source file: C-s, typing, repeating, DEL, RET; 50 rounds.
+    String8 source = str8_fmt(&p->perm, "%S\\..\\src\\app.c", p->exe_dir);
+    if (app_dev_visit(p->app, source)) {
+        BenchStat st = { 0 };
+        r_dev_take_frame_stats(p->renderer);
+        for (i32 round = 0; round < 50; round++) {
+            win32_bench_search_keys(p, "C-s v i e w C-s C-s C-s C-s C-r DEL DEL DEL _ d r a w RET", &st);
+            app_dev_goto_line(p->app, round * 30);
+        }
+        win32_bench_log(p, "bench-search", "isearch keystrokes on src/app.c (C-s, typing, repeats, DEL, RET; with lazy highlight)", &st);
+    }
+
+    // replace-string over 1,000,000 occurrences ("foo bar\n" x 1,000,000 in *scratch*), its undo and undo-redo.
+    i64 lines = 1000000;
+    u8 *text = PUSH_ARRAY(&p->perm, u8, lines * 8);
+    for (i64 i = 0; i < lines; i++) memcpy(text + i * 8, "foo bar\n", 8);
+    app_dev_show_scratch(p->app, str8(text, lines * 8));
+    u64 undo_before = app_dev_memory(p->app).undo;
+    BenchStat st = { 0 };
+    r_dev_take_frame_stats(p->renderer);
+    win32_bench_keys(p, "M-x");
+    win32_bench_search_keys(p, "r e p l a c e - s t r i n g RET f o o RET b a z", &st);
+    st = (BenchStat){ 0 };
+    u64 total = win32_bench_search_keys(p, "RET", &st);
+    AppDevMemory m = app_dev_memory(p->app);
+    LOG("bench-search: replace-string foo -> baz, 1,000,000 occurrences in 8 MB: %U ms in %U frames; longest frame build %U us, "
+        "avg %U us; undo log %U KB committed (+%U KB)", total / 1000, st.count, st.build_max, st.build_sum / MAX(st.count, 1),
+        m.undo / 1024, (m.undo - undo_before) / 1024);
+    st = (BenchStat){ 0 };
+    total = win32_bench_search_keys(p, "C-/", &st);
+    LOG("bench-search: the one undo of those 1,000,000 replacements: %U ms in %U frame(s), longest frame build %U us", total / 1000,
+        st.count, st.build_max);
+    st = (BenchStat){ 0 };
+    total = win32_bench_search_keys(p, "C-?", &st);
+    LOG("bench-search: its undo-redo: %U ms in %U frame(s), longest frame build %U us", total / 1000, st.count, st.build_max);
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 // --bench-complete: filtering and ranking 10,000 and 100,000 candidates, per keystroke that changes the
 // input (typing, deleting, clearing), three rounds of a scripted input. Filter = the matcher and the
 // ranking alone; build = the command and the frame build (Present separately, not counted).
@@ -1841,6 +1935,7 @@ static void win32_bench_complete(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+           p->bench_search ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -1948,6 +2043,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-search"))) { p->bench_search = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -1984,7 +2080,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
-                                   : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax"
+                                   : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -1993,7 +2089,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer || p->bench_view || p->bench_edit) { // generated before the app opens it; measured after startup
+    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search) { // generated before the app opens it; measured after startup
         p->file_path = test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
     }
     if (p->bench_syntax) p->file_path = test_bench_syntax_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
@@ -2054,7 +2150,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
-                             p->bench_syntax); // defaults
+                             p->bench_syntax || p->bench_search); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -2168,6 +2264,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_syntax && !p->quit) {
         win32_bench_syntax(p);
+        p->quit = 1;
+    }
+    if (p->bench_search && !p->quit) {
+        win32_bench_search(p);
         p->quit = 1;
     }
     if (p->bench_complete && !p->quit) {

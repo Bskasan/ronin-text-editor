@@ -1596,6 +1596,40 @@ void app_dev_smoke_isearch(App *app) {
     app->force_focus = 1;
 }
 
+// --bench-search: text appended to the active buffer, not undoable (as if loaded).
+void app_dev_append(App *app, String8 text) {
+    Buffer *buf = app_active_view(app)->buffer;
+    buffer_undo_enable(buf, 0);
+    buffer_replace(buf, buffer_size(buf), buffer_size(buf), text);
+    buffer_undo_enable(buf, 1);
+}
+
+// --bench-search: *scratch* with `text` (not undoable) in the active view, point at the start.
+void app_dev_show_scratch(App *app, String8 text) {
+    Buffer *buf = buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*"));
+    View *v = app_active_view(app);
+    view_switch_buffer(v, &app->buffers, buf);
+    buffer_undo_enable(buf, 0);
+    buffer_replace(buf, 0, buffer_size(buf), text);
+    buffer_undo_enable(buf, 1);
+    view_set_point(v, &v->cursors[0], 0);
+    view_ensure_visible(v);
+}
+
+b32 app_dev_isearch_failing(App *app) {
+    Isearch *is = &app->isearch;
+    return is->active && !isearch_pending(is) && !isearch_top(is)->success;
+}
+
+i64 app_dev_point(App *app) {
+    View *v = app_active_view(app);
+    return view_point(v, &v->cursors[0]);
+}
+
+i64 app_dev_size(App *app) {
+    return buffer_size(app_active_view(app)->buffer);
+}
+
 void app_dev_set_language(App *app, i32 language) {
     Buffer *buf = app_active_view(app)->buffer;
     buf->language = (BufferLanguage)language;
