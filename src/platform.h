@@ -22,6 +22,7 @@ void  os_set_unsaved_files(b32 any);
 String8 os_exe_dir(Arena *arena);                  // the directory of the executable, no trailing separator
 String8 os_get_env(Arena *arena, String8 name);    // empty when not set
 b32   os_make_dir(String8 path);                   // true if it exists afterwards (the parent must exist)
+String8 os_key_name(Arena *arena, u32 scancode);  // the keyboard's name for a key (Event.scancode), empty if none
 #if TEAL_DEV
 void  os_log_write(String8 text);
 // Startup timeline: records the time of a stage (a static string) of the first startup; the
@@ -139,6 +140,7 @@ enum {
     MOD_CTRL  = 1 << 0,
     MOD_ALT   = 1 << 1,
     MOD_SHIFT = 1 << 2,
+    MOD_ALTGR = 1 << 3, // AltGr is held: information only (its Ctrl and Alt are not chord modifiers)
 };
 
 typedef enum MouseButton {
@@ -171,6 +173,8 @@ typedef struct Event {
     // EVENT_TEXT: the character typed. EVENT_KEY_DOWN: the character the key produces with the
     // current Shift / AltGr state, Ctrl and Alt ignored (a dead key gives its spacing accent); 0 if none.
     u32 codepoint;
+    b32 dead;          // EVENT_KEY_DOWN: a dead key; its accent composes with the next key
+    b32 no_text;       // EVENT_KEY_DOWN: no text event follows (the key types nothing with this state)
     MouseButton button;// EVENT_MOUSE_DOWN / UP
     i32 clicks;        // EVENT_MOUSE_DOWN: 1, 2 (double click) or 3 (triple), by the system's double-click time and area
     i32 x, y;          // mouse events, client pixels

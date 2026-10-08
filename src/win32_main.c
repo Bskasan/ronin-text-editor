@@ -879,6 +879,7 @@ static u32 win32_mods(Platform *p) {
     u32 mods = 0;
     if (GetKeyState(VK_SHIFT) & 0x8000) mods |= MOD_SHIFT;
     if (p->altgr) {
+        mods |= MOD_ALTGR;
         if (GetKeyState(VK_RCONTROL) & 0x8000) mods |= MOD_CTRL;
         if (GetKeyState(VK_LMENU) & 0x8000) mods |= MOD_ALT;
     } else {
@@ -922,6 +923,13 @@ static void win32_drop_dead_key(void) {
     // Flag 0x4 only looks: a space gives itself unless an accent is pending.
     if (ToUnicodeEx(VK_SPACE, scan, state, buf, ARRAY_COUNT(buf), 0x4, hkl) == 1 && buf[0] == ' ') return;
     ToUnicodeEx(VK_SPACE, scan, state, buf, ARRAY_COUNT(buf), 0, hkl);
+}
+
+String8 os_key_name(Arena *arena, u32 scancode) {
+    WCHAR name[64];
+    LONG lp = (LONG)((scancode & 0xFF) << 16 | ((scancode & KF_EXTENDED) ? 1 << 24 : 0));
+    int n = GetKeyNameTextW(lp, name, ARRAY_COUNT(name));
+    return str8_from_str16(arena, (u16 *)name, MAX(n, 0));
 }
 
 static Key win32_map_vk(u32 vk) {
@@ -1093,6 +1101,12 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // digits enter a character code), nor do IME and injected characters.
             if (!win32_is_modifier_vk(vk)) {
                 b32 no_chord = (vk >= VK_NUMPAD0 && vk <= VK_DIVIDE) || vk == VK_PROCESSKEY || vk == VK_PACKET;
+                // TranslateMessage ran first: the key's characters, if any, are already queued.
+                MSG next;
+                b32 dead = PeekMessageW(&next, hwnd, WM_DEADCHAR, WM_DEADCHAR, PM_NOREMOVE) ||
+                           PeekMessageW(&next, hwnd, WM_SYSDEADCHAR, WM_SYSDEADCHAR, PM_NOREMOVE);
+                b32 text = PeekMessageW(&next, hwnd, WM_CHAR, WM_CHAR, PM_NOREMOVE) ||
+                           PeekMessageW(&next, hwnd, WM_SYSCHAR, WM_SYSCHAR, PM_NOREMOVE);
                 Event e = {
                     .kind = EVENT_KEY_DOWN,
                     .key = win32_map_vk(vk),
@@ -1100,6 +1114,8 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     .scancode = (u32)(HIWORD(lp) & (KF_EXTENDED | 0xFF)),
                     .repeat = (HIWORD(lp) & KF_REPEAT) != 0,
                     .codepoint = no_chord ? 0 : win32_key_char(p, vk, (u32)(HIWORD(lp) & 0xFF), NULL),
+                    .dead = dead,
+                    .no_text = !dead && !text,
                 };
                 win32_push_event(p, e);
                 p->redraw = 1;
@@ -1338,11 +1354,12 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
     }
     if (!dn) dn = fmt_buf(down, sizeof(down), "none");
     u32 mods = win32_mods(p);
-    u8 m[4];
+    u8 m[5];
     i32 mn = 0;
     if (mods & MOD_CTRL) m[mn++] = 'C';
     if (mods & MOD_ALT) m[mn++] = 'M';
     if (mods & MOD_SHIFT) m[mn++] = 'S';
+    if (mods & MOD_ALTGR) m[mn++] = 'G';
     if (!mn) m[mn++] = '-';
     String8 state = str8_fmt(a, "down %S, caps %d | teal mods %S, altgr %d%s | layout 0x%08X", str8(down, dn),
                              (GetKeyState(VK_CAPITAL) & 1) != 0, str8(m, mn), p->altgr,
