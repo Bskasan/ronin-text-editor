@@ -285,6 +285,70 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf) {
     v->recenter_row = -1;
 }
 
+void view_set_mark(View *v, Cursor *c, i64 pos, b32 active) {
+    buffer_marker_set(v->buffer, c->mark, pos);
+    c->mark_set = 1;
+    c->mark_active = active;
+    c->mark_shift = 0;
+}
+
+void view_deactivate_mark(View *v) {
+    for (i32 i = 0; i < v->cursor_count; i++) v->cursors[i].mark_active = v->cursors[i].mark_shift = 0;
+}
+
+b32 view_region(View *v, Cursor *c, i64 *start, i64 *end) {
+    if (!c->mark_set) return 0;
+    i64 p = view_point(v, c), m = buffer_marker_get(v->buffer, c->mark);
+    *start = MIN(p, m);
+    *end = MAX(p, m);
+    return 1;
+}
+
+b32 view_region_active(View *v, Cursor *c, const Settings *settings) {
+    (void)v;
+    return settings->transient_mark_mode && c->mark_set && c->mark_active;
+}
+
+// Deletes the cursor's region (delete-active-region, delete_selection_mode).
+static void view_delete_region(CommandContext *ctx, Cursor *c) {
+    View *v = ctx->view;
+    i64 start, end;
+    if (!view_region(v, c, &start, &end)) return;
+    if (v->buffer->read_only && !v->buffer->inhibit_read_only) {
+        echo_message(ctx->echo, "Buffer is read-only: %S", v->buffer->name);
+        return;
+    }
+    buffer_replace(v->buffer, start, end, STR8_LIT(""));
+}
+
+// Shift-select (Emacs' handle-shift-selection): a shift-translated motion activates the mark at
+// point first (unless a region is already active, which it then extends); an unshifted motion
+// ends a region that shift started.
+static void view_shift_select(CommandContext *ctx, Cursor *c) {
+    View *v = ctx->view;
+    if (ctx->shift_translated) {
+        if (!c->mark_active) {
+            view_set_mark(v, c, view_point(v, c), 1);
+            c->mark_shift = 1;
+        }
+    } else if (c->mark_active && c->mark_shift) {
+        c->mark_active = c->mark_shift = 0;
+    }
+}
+
+// One cursor's turn of a command, with the region rules its flags ask for.
+static void view_run_for_cursor(CommandContext *ctx, const Command *cmd, Cursor *c) {
+    ctx->cursor = c;
+    if (cmd->flags & COMMAND_MOTION) view_shift_select(ctx, c);
+    b32 active = view_region_active(ctx->view, c, ctx->settings);
+    if (active && (cmd->flags & COMMAND_REGION_DELETE)) {
+        view_delete_region(ctx, c);
+        return;
+    }
+    if (active && (cmd->flags & COMMAND_REGION_REPLACE) && ctx->settings->delete_selection_mode) view_delete_region(ctx, c);
+    cmd->fn(ctx);
+}
+
 void view_run_command(CommandContext *ctx, const Command *cmd) {
     View *v = ctx->view;
     ctx->this_command = cmd;
@@ -294,15 +358,12 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
                           : (cmd->flags & COMMAND_MERGE_DELETE) ? BUFFER_UNDO_MERGE_DELETE : BUFFER_UNDO_MERGE_NONE;
     buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, &v->cursors[0]));
     if (cmd->flags & COMMAND_ONCE) {
-        ctx->cursor = &v->cursors[0];
-        cmd->fn(ctx);
+        view_run_for_cursor(ctx, cmd, &v->cursors[0]);
     } else {
-        for (i32 i = 0; i < v->cursor_count; i++) {
-            ctx->cursor = &v->cursors[i];
-            cmd->fn(ctx);
-        }
+        for (i32 i = 0; i < v->cursor_count; i++) view_run_for_cursor(ctx, cmd, &v->cursors[i]);
     }
     ctx->cursor = NULL;
+    if (cmd->flags & COMMAND_EDIT) view_deactivate_mark(ctx->view); // the view may have changed buffers
     view_ensure_visible(v);
     ctx->last_command = cmd;
 }
@@ -490,8 +551,44 @@ static void cmd_delete_char(CommandContext *ctx) {
 // Commands on the whole View (COMMAND_ONCE)
 
 // The keymap also uses it to cancel a pending prefix (KEY_RESULT_QUIT).
+// Also deactivates the mark (of every cursor).
 static void cmd_keyboard_quit(CommandContext *ctx) {
+    view_deactivate_mark(ctx->view);
     echo_message(ctx->echo, "Quit");
+}
+
+// ---------------------------------------------------------------------------
+// Mark commands
+
+// Repeated at once, it deactivates the mark again (Emacs' C-SPC C-SPC).
+static void cmd_set_mark_command(CommandContext *ctx) {
+    Cursor *c = ctx->cursor;
+    if (ctx->last_command == &CMD_SET_MARK_COMMAND && c->mark_active) {
+        c->mark_active = c->mark_shift = 0;
+        echo_message(ctx->echo, "Mark deactivated");
+        return;
+    }
+    view_set_mark(ctx->view, c, cmd_point(ctx), 1);
+    echo_message(ctx->echo, "Mark set");
+}
+
+static void cmd_exchange_point_and_mark(CommandContext *ctx) {
+    View *v = ctx->view;
+    Cursor *c = ctx->cursor;
+    if (!c->mark_set) {
+        echo_message(ctx->echo, "No mark set in this buffer");
+        return;
+    }
+    i64 p = cmd_point(ctx), m = buffer_marker_get(v->buffer, c->mark);
+    view_set_mark(v, c, p, 1);
+    cmd_goto(ctx, m);
+}
+
+static void cmd_mark_whole_buffer(CommandContext *ctx) {
+    View *v = ctx->view;
+    view_set_mark(v, ctx->cursor, buffer_size(v->buffer), 1);
+    cmd_goto(ctx, 0);
+    echo_message(ctx->echo, "Mark set");
 }
 
 static void cmd_save_buffer(CommandContext *ctx) {
@@ -533,24 +630,31 @@ static void cmd_recenter_top_bottom(CommandContext *ctx) {
     view_set_top_line(v, MAX(line - row, 0));
 }
 
-const Command CMD_FORWARD_CHAR           = { "forward-char", cmd_forward_char, 0 };
-const Command CMD_BACKWARD_CHAR          = { "backward-char", cmd_backward_char, 0 };
-const Command CMD_NEXT_LINE              = { "next-line", cmd_next_line, 0 };
-const Command CMD_PREVIOUS_LINE          = { "previous-line", cmd_previous_line, 0 };
-const Command CMD_MOVE_BEGINNING_OF_LINE = { "move-beginning-of-line", cmd_move_beginning_of_line, 0 };
-const Command CMD_MOVE_END_OF_LINE       = { "move-end-of-line", cmd_move_end_of_line, 0 };
-const Command CMD_FORWARD_WORD           = { "forward-word", cmd_forward_word, 0 };
-const Command CMD_BACKWARD_WORD          = { "backward-word", cmd_backward_word, 0 };
-const Command CMD_FORWARD_PARAGRAPH      = { "forward-paragraph", cmd_forward_paragraph, 0 };
-const Command CMD_BACKWARD_PARAGRAPH     = { "backward-paragraph", cmd_backward_paragraph, 0 };
-const Command CMD_BEGINNING_OF_BUFFER    = { "beginning-of-buffer", cmd_beginning_of_buffer, 0 };
-const Command CMD_END_OF_BUFFER          = { "end-of-buffer", cmd_end_of_buffer, 0 };
-const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_command, COMMAND_ONCE };
-const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE };
+#define MOTION COMMAND_MOTION
+#define EDIT COMMAND_EDIT
+const Command CMD_FORWARD_CHAR           = { "forward-char", cmd_forward_char, MOTION };
+const Command CMD_BACKWARD_CHAR          = { "backward-char", cmd_backward_char, MOTION };
+const Command CMD_NEXT_LINE              = { "next-line", cmd_next_line, MOTION };
+const Command CMD_PREVIOUS_LINE          = { "previous-line", cmd_previous_line, MOTION };
+const Command CMD_MOVE_BEGINNING_OF_LINE = { "move-beginning-of-line", cmd_move_beginning_of_line, MOTION };
+const Command CMD_MOVE_END_OF_LINE       = { "move-end-of-line", cmd_move_end_of_line, MOTION };
+const Command CMD_FORWARD_WORD           = { "forward-word", cmd_forward_word, MOTION };
+const Command CMD_BACKWARD_WORD          = { "backward-word", cmd_backward_word, MOTION };
+const Command CMD_FORWARD_PARAGRAPH      = { "forward-paragraph", cmd_forward_paragraph, MOTION };
+const Command CMD_BACKWARD_PARAGRAPH     = { "backward-paragraph", cmd_backward_paragraph, MOTION };
+const Command CMD_BEGINNING_OF_BUFFER    = { "beginning-of-buffer", cmd_beginning_of_buffer, MOTION };
+const Command CMD_END_OF_BUFFER          = { "end-of-buffer", cmd_end_of_buffer, MOTION };
+const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_command, COMMAND_ONCE | MOTION };
+const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE | MOTION };
 const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
-const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, COMMAND_MERGE_INSERT };
-const Command CMD_NEWLINE                = { "newline", cmd_newline, 0 };
-const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, COMMAND_MERGE_DELETE };
-const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, COMMAND_MERGE_DELETE };
+const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE };
+const Command CMD_NEWLINE                = { "newline", cmd_newline, EDIT | COMMAND_REGION_REPLACE };
+const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
+const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
 const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE };
+const Command CMD_SET_MARK_COMMAND       = { "set-mark-command", cmd_set_mark_command, 0 };
+const Command CMD_EXCHANGE_POINT_AND_MARK = { "exchange-point-and-mark", cmd_exchange_point_and_mark, 0 };
+const Command CMD_MARK_WHOLE_BUFFER      = { "mark-whole-buffer", cmd_mark_whole_buffer, COMMAND_ONCE };
+#undef MOTION
+#undef EDIT

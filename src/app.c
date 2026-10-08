@@ -283,6 +283,28 @@ static String8 app_mode_line_text(View *v, Arena *arena) {
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol));
 }
 
+// The selection color behind the cells of an active region on the visible rows; on a line whose
+// newline is selected it extends to the right edge of the window. Text is drawn over it.
+static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor *c, i32 draw_rows) {
+    i64 start, end;
+    if (!view_region_active(v, c, &app->config->settings) || !view_region(v, c, &start, &end) || start == end) return;
+    Buffer *buf = v->buffer;
+    i64 top = view_top_line(v), count = buffer_line_count(buf);
+    i32 x0 = v->x + l->pad, right = v->x + v->w;
+    Color color = COLOR_HEX(app->config->theme.selection);
+    for (i32 row = 0; row < draw_rows && top + row < count; row++) {
+        i64 line = top + row, ls = buffer_line_start(buf, line), le = buffer_line_end(buf, line);
+        if (end <= ls || start > le) continue;
+        i64 a = MAX(start, ls), b = MIN(end, le);
+        i64 ca = view_column_of(buf, a) - v->left_col, cb = view_column_of(buf, b) - v->left_col;
+        b32 newline = end > le; // the line's newline is in the region
+        f32 xa = (f32)(x0 + (i32)MAX(ca, 0) * l->cell_w);
+        f32 xb = newline ? (f32)right : (f32)MIN(x0 + (i32)MAX(cb, 0) * l->cell_w, right);
+        f32 y = (f32)(v->y + row * l->line_h);
+        if (xb > xa) r_push_rect(r, (Rect){ xa, y, xb, y + (f32)l->line_h }, color);
+    }
+}
+
 static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, View *v, b32 active) {
     Buffer *buf = v->buffer;
     i32 line_h = l->line_h;
@@ -291,6 +313,7 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, V
     // Only the visible lines (the partial one above the mode line too, which covers it).
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
+    for (i32 k = 0; k < v->cursor_count; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
         app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, in->scratch);
     }
@@ -1052,6 +1075,14 @@ i32 app_dev_font_setups(App *app) {
     return app->font->setup_count;
 }
 
+// Smoke stage 2: the region from line 0, column 5 to the start of line 2, active.
+void app_dev_smoke_region(App *app) {
+    View *v = app->views[0];
+    Buffer *buf = v->buffer;
+    view_set_mark(v, &v->cursors[0], 5, 1);
+    view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
+}
+
 void app_dev_force_focus(App *app, i32 focused) {
     app->force_focus = focused;
 }
@@ -1102,6 +1133,23 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
                        .rgb = app->config->theme.text, .what = "buffer: mode line buffer name (cells 8-16)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + (cells + 1) * cw, .y0 = mode_y, .x1 = in->width, .y1 = mode_y + lh,
                        .rgb = app->config->theme.text, .what = "buffer: mode line empty after its text");
+    } else if (stage == 2) {
+        // The region of app_dev_smoke_region: line 0 from column 5 with its newline, all of line 1.
+        Theme *th = &app->config->theme;
+        i32 lx = in->width - 1;
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = lh, .x1 = x + 3 * cw, .y1 = 2 * lh, .rgb = th->selection,
+                       .what = "region: selected tab cells (line 1, columns 0-2)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(4, 1), .rgb = th->selection,
+                       .what = "region: '|' drawn over the selection (line 1, column 4)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = lx, .y0 = 0, .x1 = lx + 1, .y1 = lh, .rgb = th->selection,
+                       .what = "region: line 0's newline selected: the selection reaches the window edge");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = lx, .y0 = lh, .x1 = lx + 1, .y1 = 2 * lh, .rgb = th->selection,
+                       .what = "region: line 1's newline selected: the selection reaches the window edge");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 2 * cw, .y0 = 2 * lh, .x1 = in->width, .y1 = 3 * lh, .rgb = th->background,
+                       .what = "region: line 2 (after the region) is not selected, edge included");
+        // The space at column 3 of line 0, its middle third (away from the neighbors' ClearType fringes).
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 3 * cw + cw / 3, .y0 = 0, .x1 = x + 3 * cw + 2 * cw / 3, .y1 = lh,
+                       .rgb = th->background, .what = "region: the space at column 3 of line 0 (before the region) is not selected");
     } else {
         // Filled cursor on the clicked 'x' (line 0, column 4), the glyph in the background color.
         APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + 4 * cw, .y0 = 0, .rgb = app->config->theme.cursor,

@@ -201,7 +201,8 @@ typedef struct DevProbe {
 
 i32  app_dev_probes(App *app, FrameInput *input, DevProbe *out, i32 cap); // the --sample frame
 void app_dev_smoke_buffer_view(App *app); // leaves the sample and shows a known buffer, focus forced off
-i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click
+void app_dev_smoke_region(App *app);      // stage 2: an active region over lines 0-1
+i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region
 void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
 void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
 b32  app_dev_atlas_has_coverage(App *app);

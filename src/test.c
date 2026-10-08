@@ -1013,7 +1013,8 @@ static b32 test_columns(Test *t, u64 seed) {
 // View: commands, scrolling, fuzz
 
 // The built-in defaults that matter to view commands (word bytes, fsync on save).
-static const Settings test_settings = { .font_size = 12, .line_height = 100, .tab_width = 4, .fsync_on_save = 1 };
+static const Settings test_settings = { .font_size = 12, .line_height = 100, .tab_width = 4, .fsync_on_save = 1,
+                                        .undo_limit_mb = 64, .transient_mark_mode = 1 };
 
 typedef struct TestView {
     Buffer *buf;
@@ -1706,6 +1707,103 @@ static b32 test_undo_commands(Test *t, u64 seed) {
     TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "a|b|c|"), "undo: one undo reverts all three cursors' edits");
     if (!test_view_close(t, &tv)) return 0;
     LOG("test: ok: undo commands: the Emacs chain, undo-redo, %d commands undone, merging at 20, point, three cursors", (i32)K);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Mark and region: shift-select and the region rules of the driver
+
+static void test_run_shift(TestView *tv, const Command *cmd) {
+    tv->ctx.shift_translated = 1;
+    test_view_run(tv, cmd);
+    tv->ctx.shift_translated = 0;
+}
+
+// "abc" with the region marked: '[' at the mark when active (']' when only set), '|' at point.
+static b32 test_region_is(Test *t, TestView *tv, const char *expected) {
+    Cursor *c = &tv->view->cursors[0];
+    i64 size = buffer_size(tv->buf), p = view_point(tv->view, c), m = buffer_marker_get(tv->buf, c->mark);
+    char *out = PUSH_ARRAY(&t->arena, char, size + 3);
+    i64 n = 0;
+    for (i64 i = 0; i <= size; i++) {
+        if (c->mark_set && i == m) out[n++] = c->mark_active ? '[' : ']';
+        if (i == p) out[n++] = '|';
+        if (i < size) out[n++] = (char)buffer_byte(tv->buf, i);
+    }
+    out[n] = 0;
+    if (test_cstr_equal(out, expected)) return 1;
+    LOG("test: region is '%s', expected '%s'", out, expected);
+    return 0;
+}
+
+static b32 test_region(Test *t) {
+    TestView tv;
+    if (!test_view_open(t, &tv, "|abcdef", 10, 40)) return 0;
+    // Shift + motion activates the mark at point, unshifted motion ends it.
+    test_run_shift(&tv, &CMD_FORWARD_CHAR);
+    test_run_shift(&tv, &CMD_FORWARD_CHAR);
+    TEST_CHECK(t, test_region_is(t, &tv, "[ab|cdef") && tv.view->cursors[0].mark_shift, "region: S-<right> twice");
+    test_run_shift(&tv, &CMD_BACKWARD_CHAR);
+    TEST_CHECK(t, test_region_is(t, &tv, "[a|bcdef"), "region: S-<left> keeps the shift mark");
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    TEST_CHECK(t, test_region_is(t, &tv, "]ab|cdef"), "region: an unshifted motion deactivates a shift region");
+    // C-SPC then shifted motions extend; an unshifted motion keeps a C-SPC region.
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    TEST_CHECK(t, test_echo_is(&tv, "Mark set"), "region: Mark set");
+    test_run_shift(&tv, &CMD_FORWARD_CHAR);
+    test_view_run(&tv, &CMD_FORWARD_CHAR);
+    TEST_CHECK(t, test_region_is(t, &tv, "ab[cd|ef") && !tv.view->cursors[0].mark_shift, "region: C-SPC region extends and stays");
+    test_view_run(&tv, &CMD_KEYBOARD_QUIT);
+    TEST_CHECK(t, test_region_is(t, &tv, "ab]cd|ef"), "region: C-g deactivates");
+    // C-SPC C-SPC: set, then deactivated.
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    TEST_CHECK(t, test_region_is(t, &tv, "abcd]|ef") && test_echo_is(&tv, "Mark deactivated"), "region: C-SPC C-SPC");
+    // exchange-point-and-mark activates; mark-whole-buffer.
+    test_view_run(&tv, &CMD_BACKWARD_CHAR);
+    test_view_run(&tv, &CMD_BACKWARD_CHAR);
+    test_view_run(&tv, &CMD_EXCHANGE_POINT_AND_MARK);
+    TEST_CHECK(t, test_region_is(t, &tv, "ab[cd|ef"), "region: exchange-point-and-mark");
+    test_view_run(&tv, &CMD_MARK_WHOLE_BUFFER);
+    TEST_CHECK(t, test_region_is(t, &tv, "|abcdef["), "region: mark-whole-buffer");
+    // Typing with an active region inserts at point and deactivates (delete_selection_mode off).
+    test_view_run(&tv, &CMD_FORWARD_CHAR); // a C-x h region stays active over a motion
+    test_type_char(&tv, 'X');
+    TEST_CHECK(t, test_region_is(t, &tv, "aX|bcdef]"), "region: typing inserts and deactivates");
+    // DEL with an active region deletes the region (delete-active-region); undo restores it.
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    test_run_shift(&tv, &CMD_FORWARD_CHAR);
+    test_run_shift(&tv, &CMD_FORWARD_CHAR);
+    test_view_run(&tv, &CMD_DELETE_BACKWARD_CHAR);
+    TEST_CHECK(t, test_region_is(t, &tv, "aX]|def"), "region: DEL deletes the active region");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("aXbcdef")) && !tv.view->cursors[0].mark_active, "region: undo restores, mark inactive");
+    // delete_selection_mode: typing replaces the region.
+    Settings dsm = test_settings;
+    dsm.delete_selection_mode = 1;
+    tv.ctx.settings = &dsm;
+    test_view_run(&tv, &CMD_BEGINNING_OF_BUFFER);
+    test_run_shift(&tv, &CMD_FORWARD_WORD);
+    test_type_char(&tv, 'Y');
+    TEST_CHECK(t, test_region_is(t, &tv, "]Y|"), "region: delete_selection_mode replaces the region");
+    // Without transient mark mode, DEL deletes one character even with the mark active.
+    Settings no_tmm = test_settings;
+    no_tmm.transient_mark_mode = 0;
+    tv.ctx.settings = &no_tmm;
+    buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT("abc"));
+    test_view_run(&tv, &CMD_BEGINNING_OF_BUFFER);
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    test_view_run(&tv, &CMD_END_OF_BUFFER);
+    test_view_run(&tv, &CMD_DELETE_BACKWARD_CHAR);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("ab")), "region: without transient mark mode DEL deletes one character");
+    tv.ctx.settings = &test_settings;
+    // No mark yet: exchange-point-and-mark says so.
+    if (!test_view_close(t, &tv)) return 0;
+    if (!test_view_open(t, &tv, "a|b", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_EXCHANGE_POINT_AND_MARK);
+    TEST_CHECK(t, test_echo_is(&tv, "No mark set in this buffer"), "region: exchange without a mark");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: mark and region: shift-select, C-SPC, C-g, C-x C-x, C-x h, typing, delete-active-region, delete_selection_mode");
     return 1;
 }
 
@@ -2477,6 +2575,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_undo_buffer(&t, seed);
     arena_reset(&t.arena);
     test_undo_commands(&t, seed);
+    arena_reset(&t.arena);
+    test_region(&t);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);

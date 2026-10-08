@@ -135,6 +135,8 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {
     { "underscore_is_word", offsetof(Settings, underscore_is_word) },
     { "fsync_on_save", offsetof(Settings, fsync_on_save) },
+    { "transient_mark_mode", offsetof(Settings, transient_mark_mode) },
+    { "delete_selection_mode", offsetof(Settings, delete_selection_mode) },
 };
 
 static void config_setting(ConfigParser *p, String8 name, String8 value) {

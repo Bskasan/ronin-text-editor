@@ -20,6 +20,8 @@ struct Settings {
     b32 underscore_is_word;
     b32 fsync_on_save;
     i32 undo_limit_mb;        // per buffer
+    b32 transient_mark_mode;  // the region is highlighted (and region commands need it active)
+    b32 delete_selection_mode; // typing replaces an active region
 };
 
 typedef struct Theme { // 0xRRGGBB
