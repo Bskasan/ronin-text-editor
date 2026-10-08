@@ -3663,6 +3663,154 @@ static b32 test_config(Test *t, u64 seed) {
 #define TEST_BENCH_SIZE MB(100)
 
 // build\tmp\bench_100mb.txt: ~100 MB of code-like lines (~2 M), generated once.
+// --bench-syntax: source-like text per language (a block of realistic code repeated, '~' replaced by
+// a running number), lexed for throughput.
+static const char *test_bench_syntax_blocks[] = {
+    /* Fundamental */ "",
+    /* Jai */
+    "// item ~: a procedure and its data\n"
+    "Vector~ :: struct { x, y: float; }\n"
+    "proc_~ :: (v: Vector~, count: int) -> float {\n"
+    "    /* nested /* comment */ still comment */\n"
+    "    s := \"string ~ with \\\"quotes\\\"\\n\";\n"
+    "    for i: 0..count-1 { if i == 3 continue; }\n"
+    "    return v.x * 0x1F + 1_000 + 0h3F80_0000;\n"
+    "}\n"
+    "TEXT_~ :: #string DONE\n"
+    "here-string text /* not a comment */\n"
+    "DONE\n",
+    /* C */
+    "/* Block ~: a comment that spans\n"
+    " * two lines. */\n"
+    "static int count_~(const char *s, int n) {\n"
+    "    int total = 0; // running total\n"
+    "    for (int i = 0; i < n; i++) {\n"
+    "        if (s[i] == '\\n' || s[i] == '\"') total += 0x1F;\n"
+    "    }\n"
+    "    return total > 100 ? total : -1;\n"
+    "}\n"
+    "#define LIMIT_~ (1024 * 64) \\\n"
+    "    /* continued */\n",
+    /* C++ */
+    "// item ~\n"
+    "template <typename T> struct Box~ { T value; };\n"
+    "auto text_~ = R\"x(raw \"string\" ~)x\";\n"
+    "constexpr uint64_t mask_~ = 0xFFFF'0000ull;\n"
+    "void use_~() {\n"
+    "    auto b = Box~<int>{42};\n"
+    "    if (b.value > 1'000) return; /* done */\n"
+    "}\n",
+    /* C# */
+    "/// <summary>Item ~</summary>\n"
+    "public class Item~ {\n"
+    "    private string name = @\"C:\\path\\~ \"\"quoted\"\"\";\n"
+    "    public int Count { get; set; } = 0x1F;\n"
+    "    public string Describe() => $\"Item {Count} of {name.Length + 1}\";\n"
+    "    /* block\n"
+    "       comment */\n"
+    "}\n",
+    /* JavaScript */
+    "// item ~\n"
+    "const re~ = /ab+c\\d/gi;\n"
+    "function f~(a, b) {\n"
+    "    const s = `value ${a + b} and ${`inner ${a}`}`;\n"
+    "    return a / b > 2 ? s : 'none';\n"
+    "}\n"
+    "/* block ~\n"
+    "   comment */\n",
+    /* TypeScript */
+    "// item ~\n"
+    "interface Shape~ { name: string; area(): number; }\n"
+    "export function area~(s: Shape~, scale: number = 1.5): number {\n"
+    "    const label = `shape ${s.name} at ${scale}`;\n"
+    "    return s.area() * scale / 2;\n"
+    "}\n"
+    "/* block ~\n"
+    "   comment */\n",
+};
+
+// `size` bytes (whole blocks) of source-like text in a language.
+static String8 test_bench_syntax_text(Arena *arena, BufferLanguage language, i64 size) {
+    u8 *out = PUSH_ARRAY(arena, u8, size + KB(4));
+    String8 block = str8_cstr(test_bench_syntax_blocks[language]);
+    i64 n = 0;
+    for (i64 k = 0; n < size; k++) {
+        u8 num[24];
+        i64 len = fmt_buf(num, sizeof(num), "%D", k);
+        for (i64 i = 0; i < block.len; i++) {
+            if (block.data[i] == '~') {
+                memcpy(out + n, num, (size_t)len);
+                n += len;
+            } else {
+                out[n++] = block.data[i];
+            }
+        }
+    }
+    return str8(out, n);
+}
+
+// Lexing throughput per language on ~100 MB: the lexers alone (state only, as catch-up; with tokens,
+// as drawing) and catch-up over a buffer (line text, clock checks, state stores).
+void test_bench_syntax(void) {
+    syntax_init();
+    Arena arena = arena_create(GB(1));
+    for (i32 lang = BUFFER_LANG_JAI; lang <= BUFFER_LANG_TYPESCRIPT; lang++) {
+        u64 mark = arena_pos(&arena);
+        String8 text = test_bench_syntax_text(&arena, (BufferLanguage)lang, MB(100));
+        SyntaxToken *tokens = PUSH_ARRAY(&arena, SyntaxToken, KB(64));
+        u64 best_state = ~(u64)0, best_tokens = ~(u64)0;
+        i64 lines = 0;
+        for (i32 pass = 0; pass < 3; pass++) {
+            for (i32 with_tokens = 0; with_tokens < 2; with_tokens++) {
+                SyntaxTokens out = { tokens, 0, KB(64) };
+                u64 t0 = os_time_us();
+                u32 state = 0;
+                lines = 0;
+                for (i64 i = 0; i < text.len;) {
+                    i64 e = i;
+                    while (e < text.len && text.data[e] != '\n') e++;
+                    state = syntax_lex((BufferLanguage)lang, state, str8(text.data + i, e - i), with_tokens ? &out : NULL);
+                    i = e + 1;
+                    lines++;
+                }
+                u64 us = MAX(os_time_us() - t0, (u64)1);
+                if (with_tokens) best_tokens = MIN(best_tokens, us);
+                else best_state = MIN(best_state, us);
+                if (state == 0xFFFFFFFF) LOG("bench-syntax: impossible state"); // keeps the loop from being optimized away
+            }
+        }
+        Buffer *buf = buffer_create(STR8_LIT("bench"));
+        buffer_undo_enable(buf, 0);
+        buffer_replace(buf, 0, 0, text);
+        buf->language = (BufferLanguage)lang;
+        Arena scratch = arena_create(MB(64));
+        u64 t0 = os_time_us();
+        syntax_catch_up(buf, buffer_line_count(buf) - 1, (u64)I64_MAX, &scratch);
+        u64 catch_us = MAX(os_time_us() - t0, (u64)1);
+        u64 states = buffer_states_memory(buf);
+        os_release(scratch.base);
+        buffer_destroy(buf);
+        f64 mb = (f64)text.len / (1024.0 * 1024.0);
+        LOG("bench-syntax: %s: %D MB, %D lines: lexer %D MB/s (state only), %D MB/s (with tokens); catch-up %D MB/s (%U ms); "
+            "states %U KB committed", buffer_language_name((BufferLanguage)lang), (i64)mb, lines, (i64)(mb * 1e6 / (f64)best_state),
+            (i64)(mb * 1e6 / (f64)best_tokens), (i64)(mb * 1e6 / (f64)catch_us), catch_us / 1000, states / 1024);
+        arena_pop_to(&arena, mark);
+    }
+    os_release(arena.base);
+}
+
+// build\tmp\bench_syntax_100mb.c: ~100 MB of C, generated once (the frames of --bench-syntax).
+String8 test_bench_syntax_file(Arena *arena, String8 tmp_dir) {
+    String8 path = str8_fmt(arena, "%S\\bench_syntax_100mb.c", tmp_dir);
+    OsFileInfo info;
+    if (os_file_info(path, &info) == OS_FILE_OK && info.size >= (i64)TEST_BENCH_SIZE) return path;
+    Arena scratch = arena_create(GB(1));
+    String8 text = test_bench_syntax_text(&scratch, BUFFER_LANG_C, (i64)TEST_BENCH_SIZE);
+    if (!os_write_file(path, text)) LOG("bench-syntax: cannot write %S", path);
+    os_release(scratch.base);
+    return path;
+}
+
 String8 test_bench_buffer_file(Arena *arena, String8 tmp_dir) {
     String8 path = str8_fmt(arena, "%S\\bench_100mb.txt", tmp_dir);
     OsFileInfo info;

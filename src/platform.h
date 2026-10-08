@@ -260,12 +260,15 @@ typedef struct AppDevMemory {
     u64 undo;        // the active buffer's undo log and group index, committed
     u64 kill_ring;   // the kill ring's committed bytes (shared arena and large entries)
     u64 buffer;      // the active buffer itself: the sum of the five below
-    u64 meta, text, line_index, markers, undo_log;
+    u64 meta, text, line_index, markers, undo_log, states;
 } AppDevMemory;
 AppDevMemory app_dev_memory(App *app);
 String8 test_bench_buffer_file(Arena *arena, String8 tmp_dir); // --bench-buffer: generates the 100 MB file once
 void test_bench_buffer(String8 path, String8 tmp_dir);         // load, inserts, lookups, save
 i32  app_dev_bench_frame(App *app, FrameInput *input, Renderer *r, u64 *build_us, u64 *submit_us); // returns glyphs drawn
+void test_bench_syntax(void);                                  // --bench-syntax: lexing throughput per language
+String8 test_bench_syntax_file(Arena *arena, String8 tmp_dir); // --bench-syntax: generates the 100 MB C file once
+void app_dev_set_language(App *app, i32 language);             // the active view's buffer (a BufferLanguage)
 #endif
 
 #endif // PLATFORM_H
