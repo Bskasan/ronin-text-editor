@@ -22,6 +22,7 @@
 #include "syntax.c"
 #include "lex_c.c"
 #include "lex_jai.c"
+#include "lex_cs.c"
 #include "view.c"
 #include "edit.c"
 #include "keymap.c"

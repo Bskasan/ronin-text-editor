@@ -167,6 +167,8 @@ static u32 lex_c(u32 state, u8 *s, i64 n, SyntaxTokens *out);
 static void lex_c_init(void);
 static u32 lex_jai(u32 state, u8 *s, i64 n, SyntaxTokens *out);
 static void lex_jai_init(void);
+static u32 lex_cs(u32 state, u8 *s, i64 n, SyntaxTokens *out);
+static void lex_cs_init(void);
 
 // ---------------------------------------------------------------------------
 // Languages
@@ -179,7 +181,7 @@ static SyntaxLexFn *syntax_lexer(BufferLanguage language) {
     case BUFFER_LANG_JAI:         return lex_jai;
     case BUFFER_LANG_C:           return lex_c;
     case BUFFER_LANG_CPP:         return lex_c;
-    case BUFFER_LANG_CSHARP:      return NULL;
+    case BUFFER_LANG_CSHARP:      return lex_cs;
     case BUFFER_LANG_JAVASCRIPT:  return NULL;
     case BUFFER_LANG_TYPESCRIPT:  return NULL;
     }
@@ -192,6 +194,7 @@ void syntax_init(void) {
     if (syntax_ready) return;
     lex_c_init();
     lex_jai_init();
+    lex_cs_init();
     syntax_ready = 1;
 }
 

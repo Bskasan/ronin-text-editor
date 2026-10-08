@@ -2247,6 +2247,46 @@ static const TestGolden test_goldens[] = {
     { BUFFER_LANG_JAI, "Jai: keywords and constants", {
         "for it, i: items { if it == null continue; }",
         "kkk kkp vp ttttt p kk kk pp oooo kkkkkkkkp p" } },
+    { BUFFER_LANG_CSHARP, "C#: a verbatim string across lines", {
+        "s = @\"C:\\path \"\"quoted\"\"",
+        "t p sssssssssssssssssssss",
+        "still\"; int x;",
+        "ssssssp yyy tp" } },
+    { BUFFER_LANG_CSHARP, "C#: an interpolated string with holes, escaped braces, a string in a hole", {
+        "var s = $\"a {x + 1} b {{c}} {f(\"q\")}\";",
+        "kkk t p sssspt p npsssssssssptpsssppsp" } },
+    { BUFFER_LANG_CSHARP, "C#: a raw string across lines", {
+        "var r = \"\"\"",
+        "kkk t p sss",
+        "  \"quoted\" and \"\" two",
+        "sssssssssssssssssssss",
+        "  \"\"\";",
+        "  sssp",
+        "int y;",
+        "yyy tp" } },
+    { BUFFER_LANG_CSHARP, "C#: an interpolated raw string with two dollars", {
+        "x = $$\"\"\"{{a}} {b}\"\"\";",
+        "t p ssssspptppsssssssp" } },
+    { BUFFER_LANG_CSHARP, "C#: preprocessor lines, chars, numbers, a verbatim identifier", {
+        "#region Helpers",
+        "ddddddd ttttttt",
+        "char c = '\\''; decimal d = 1_000.5m; var h = 0xFF_FFu; var @class = 1;",
+        "yyyy t p ssssp yyyyyyy t p nnnnnnnnp kkk t p nnnnnnnnp kkk tttttt p np",
+        "#if DEBUG && !RELEASE // c",
+        "ddd ttttt pp pttttttt cccc" } },
+    { BUFFER_LANG_CSHARP, "C#: an unterminated regular string ends at the end of the line", {
+        "s = \"a\\\"b",
+        "t p sssss",
+        "int y;",
+        "yyy tp" } },
+    { BUFFER_LANG_CSHARP, "C#: an interpolated verbatim string with holes across lines", {
+        "s = $@\"line {x}",
+        "t p ssssssssptp",
+        "more {y} end\";",
+        "sssssptpsssssp" } },
+    { BUFFER_LANG_CSHARP, "C#: contextual keywords", {
+        "public async Task F() => await G();",
+        "kkkkkk kkkkk tttt tpp pp kkkkk tppp" } },
     { BUFFER_LANG_JAI, "Jai: non-ASCII identifiers, control characters", {
         "\xC3\xA7" "a\xC4\x9Fr\xC4\xB1 := \"\xC3\xBC\"; \x01",
         "vvvvvvvv pp ssssp i" } },
@@ -2308,7 +2348,16 @@ static const char *test_corpus_jai[] = {
 };
 static const char *test_pieces_jai[] = { "/*", "*/", "\"", "#string X\n", "X\n", "\n", "//", ":", "::", "#string DONE", "DONE" };
 
+static const char *test_corpus_cs[] = {
+    "#region Helpers", "#if DEBUG", "#endif", "/* a block", " comment */", "class C {", "    string s = @\"C:\\path \"\"q\"\"",
+    "still verbatim\";", "    var r = \"\"\"", "      raw \"\" text", "      \"\"\";", "    var i = $\"a {x + 1} b {{c}} {f(\"q\")}\";",
+    "    var v = $@\"line {", "        x + 1", "    } end\";", "    var w = $$\"\"\"{{a}} {b}\"\"\";", "    char c = '\\'';",
+    "    decimal d = 1_000.5m; // c", "}", "    s = \"open", "",
+};
+static const char *test_pieces_cs[] = { "/*", "*/", "\"", "@\"", "$\"", "\"\"\"", "{", "}", "\n", "//", "$$\"\"\"", "$@\"" };
+
 static const TestCorpus test_corpora[] = {
+    { BUFFER_LANG_CSHARP, test_corpus_cs, ARRAY_COUNT(test_corpus_cs), test_pieces_cs, ARRAY_COUNT(test_pieces_cs) },
     { BUFFER_LANG_C, test_corpus_c, ARRAY_COUNT(test_corpus_c), test_pieces_c, ARRAY_COUNT(test_pieces_c) },
     { BUFFER_LANG_JAI, test_corpus_jai, ARRAY_COUNT(test_corpus_jai), test_pieces_jai, ARRAY_COUNT(test_pieces_jai) },
 };
