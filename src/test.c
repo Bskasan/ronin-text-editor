@@ -3924,6 +3924,48 @@ static b32 test_disk(Test *t) {
     return 1;
 }
 
+// The end of the Windows session: the unsaved flag the platform answers from, and the app's chain.
+static b32 test_end_session(Test *t) {
+    String8 path = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p7end.txt", t->tmp_dir));
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("end\n")), "end session: cannot write");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "end session: app_create failed");
+    app_dev_feed(app, "a b c", &t->arena);
+    TEST_CHECK(t, !os_dev_unsaved_files(), "end session: *scratch* does not count");
+    app_dev_visit(app, path);
+    app_dev_feed(app, "x", &t->arena);
+    TEST_CHECK(t, os_dev_unsaved_files(), "end session: a modified file buffer counts");
+    app_dev_feed(app, "C-/", &t->arena);
+    TEST_CHECK(t, !os_dev_unsaved_files(), "end session: undo back to the saved state");
+    app_dev_feed(app, "x", &t->arena);
+    Event end = { .kind = EVENT_END_SESSION };
+    app_dev_feed_events(app, &end, 1, &t->arena);
+    String8 q = str8_fmt(&t->arena, "Save file %S? (y, n, !, q) ", test_slashes(t, path));
+    TEST_CHECK(t, app->mini.active && str8_equal(app->mini.prompt, q), "end session: asks to save '%S'", app->mini.prompt);
+    app_dev_feed(app, "n", &t->arena);
+    app_dev_feed_events(app, &end, 1, &t->arena); // Windows asks again: the chain is not restarted
+    TEST_CHECK(t, app->mini.active && app->mini.kind == MINI_YES_NO, "end session: a repeated query restarted the chain");
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !app->mini.active && !app->quit && os_dev_unsaved_files(), "end session: abort keeps the flag, no exit");
+    // A query while another prompt is open: that prompt is aborted, the chain starts.
+    app_dev_feed(app, "C-x b", &t->arena);
+    app_dev_feed_events(app, &end, 1, &t->arena);
+    TEST_CHECK(t, app->mini.active && str8_equal(app->mini.prompt, q), "end session: replaces an open prompt");
+    TEST_CHECK(t, !app_dev_feed(app, "y", &t->arena) && app->quit && test_file_is(t, path, "xend\n"), "end session: saved, then exit");
+    if (!test_app_destroy(t, app, "end session")) return 0;
+    app = test_app_create(t);
+    TEST_CHECK(t, app, "end session: app_create failed");
+    app_dev_visit(app, path);
+    app_dev_feed(app, "z", &t->arena);
+    app_dev_feed_events(app, &end, 1, &t->arena);
+    TEST_CHECK(t, !app_dev_feed(app, "n y e s RET", &t->arena) && app->quit && test_file_is(t, path, "xend\n"),
+               "end session: exit anyway without saving");
+    if (!test_app_destroy(t, app, "end session")) return 0;
+    os_set_unsaved_files(0);
+    LOG("test: ok: end of session (the unsaved flag, the chain, a repeated query, abort, an open prompt, both exits)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -4095,6 +4137,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_revert(&t);
     arena_reset(&t.arena);
     test_disk(&t);
+    arena_reset(&t.arena);
+    test_end_session(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

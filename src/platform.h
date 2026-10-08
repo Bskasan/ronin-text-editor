@@ -16,6 +16,9 @@ void  os_fatal(String8 message); // does not return
 u64   os_time_us(void);              // monotonic microseconds
 void  os_set_window_title(String8 title);
 void  os_set_caption_color(u32 rgb); // the title bar (Windows 11; ignored elsewhere)
+// Whether some file-visiting buffer has unsaved changes. The window procedure answers Windows'
+// end-of-session query from it at once; false also removes the shutdown block reason.
+void  os_set_unsaved_files(b32 any);
 String8 os_exe_dir(Arena *arena);                  // the directory of the executable, no trailing separator
 String8 os_get_env(Arena *arena, String8 name);    // empty when not set
 b32   os_make_dir(String8 path);                   // true if it exists afterwards (the parent must exist)
@@ -104,6 +107,7 @@ void    os_unwatch(OsWatch watch);
 #if TEAL_DEV
 b32     os_dev_watch_wait(OsWatch watch, u32 timeout_ms); // true when it signalled (then re-armed)
 i32     os_dev_watch_count(void);                         // watches still open
+b32     os_dev_unsaved_files(void);                       // what the app last reported (os_set_unsaved_files)
 OsFileStatus os_dev_lock_file(String8 path, OsFile *file); // opened without sharing: readers get a sharing violation
 #endif
 
@@ -152,6 +156,7 @@ typedef enum EventKind {
     EVENT_CLOSE,
     EVENT_DIR_CHANGED, // a watched directory changed (`watch`)
     EVENT_WAKEUP,      // the wait timeout the app asked for (app_wait_ms) elapsed
+    EVENT_END_SESSION, // Windows is shutting down or logging off and unsaved files blocked it
 } EventKind;
 
 typedef struct Event {
@@ -239,6 +244,7 @@ b32  app_dev_feed(App *app, const char *keys, Arena *scratch);               // 
 void app_dev_use_config(App *app, String8 path); // switches to this config file and reloads it (as C-c r)
 b32  app_dev_visit(App *app, String8 path);      // visits a file in the active view
 i32  app_dev_font_setups(App *app);              // font set-ups so far (the startup does exactly one)
+String8 app_dev_prompt(App *app);                // the open prompt, empty when the minibuffer is not active
 i64  app_dev_line_count(App *app);
 u64  app_dev_build_us(App *app); // the last frame, from its start to r_end_frame
 u64  os_dev_private_bytes(void);  // the process's committed private memory

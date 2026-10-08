@@ -75,6 +75,8 @@ typedef struct Platform {
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
+    b32 unsaved;      // some file buffer has unsaved changes (os_set_unsaved_files)
+    b32 block_reason; // a shutdown block reason is registered
     String8 keys; // --keys: injected after startup
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
 #endif
@@ -609,6 +611,27 @@ void os_set_window_title(String8 title) {
 #endif
 }
 
+// While unsaved files remain after Windows asked to end the session, the shutdown screen lists teal
+// with this reason.
+static void win32_block_shutdown(Platform *p, b32 block) {
+    if (block == p->block_reason || !p->hwnd) return;
+    if (block) p->block_reason = ShutdownBlockReasonCreate(p->hwnd, L"Unsaved changes in teal") != 0;
+    else p->block_reason = !ShutdownBlockReasonDestroy(p->hwnd);
+}
+
+void os_set_unsaved_files(b32 any) {
+    Platform *p = g_platform;
+    if (!p) return;
+    p->unsaved = any;
+    if (!any) win32_block_shutdown(p, 0);
+}
+
+#if TEAL_DEV
+b32 os_dev_unsaved_files(void) {
+    return g_platform && g_platform->unsaved;
+}
+#endif
+
 void os_set_caption_color(u32 rgb) {
     Platform *p = g_platform;
     if (!p || !p->hwnd) return;
@@ -874,6 +897,27 @@ static b32 win32_is_key_message(UINT msg) {
 static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     Platform *p = g_platform;
     switch (msg) {
+    // Shutdown or logoff. With unsaved files: refuse, give the reason, and let the app ask what to save
+    // (the save-buffers-kill-terminal chain); it removes the reason once nothing is unsaved or it exits.
+    case WM_QUERYENDSESSION:
+        if (!p->unsaved) return TRUE;
+        win32_block_shutdown(p, 1);
+        {
+            Event e = { .kind = EVENT_END_SESSION };
+            win32_push_event(p, e);
+        }
+        p->redraw = 1;
+        return FALSE;
+
+    case WM_ENDSESSION:
+        win32_block_shutdown(p, 0);
+        if (wp) { // the session ends: the process is terminated after this returns; release, write nothing
+            r_shutdown(p->renderer);
+            app_shutdown(p->app);
+            ExitProcess(0);
+        }
+        return 0; // the shutdown was cancelled
+
     case WM_CLOSE: {
         Event e = { .kind = EVENT_CLOSE };
         win32_push_event(p, e);
@@ -1246,6 +1290,51 @@ static b32 win32_smoke_keys(Platform *p, String8 path, String8 initial, String8 
     b32 ok = len >= 0 && str8_equal(str8(bytes, len), expected);
     LOG("smoke: %s: --keys \"%S\" saved %D bytes:\n%S\n(expected:\n%S)", ok ? "ok" : "FAIL", keys, len, str8(bytes, MAX(len, 0)), expected);
     return ok;
+}
+
+static void win32_smoke_feed(Platform *p, const char *keys) {
+    Event events[64];
+    i32 n = app_dev_key_events(p->app, str8_cstr(keys), events, ARRAY_COUNT(events));
+    for (i32 i = 0; i < n; i++) win32_push_event(p, events[i]);
+    win32_frame(p);
+}
+
+static b32 win32_smoke_has_reason(Platform *p) {
+    WCHAR reason[128];
+    DWORD len = ARRAY_COUNT(reason);
+    return ShutdownBlockReasonQuery(p->hwnd, reason, &len) != 0;
+}
+
+// Smoke: Windows' end-of-session query sent to our own window (no real shutdown). With an unsaved
+// file it is refused with a block reason and the save question opens; a repeated query keeps that
+// chain; an abort keeps the reason until Windows cancels; once everything is saved it is allowed.
+static i32 win32_smoke_end_session(Platform *p) {
+    String8 path = str8_fmt(&p->perm, "%S\\tmp\\smoke_end.txt", p->exe_dir);
+    if (!os_write_file(path, STR8_LIT("end\n")) || !app_dev_visit(p->app, path)) {
+        LOG("smoke: FAIL: cannot set up %S", path);
+        return EXIT_TEST;
+    }
+    win32_smoke_feed(p, "x");
+    LRESULT refused = SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
+    b32 reason = win32_smoke_has_reason(p);
+    win32_frame(p);
+    String8 prompt = str8_copy(&p->perm, app_dev_prompt(p->app));
+    b32 ok1 = !refused && reason && prompt.len > 10 && memcmp(prompt.data, "Save file ", 10) == 0;
+    SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
+    win32_frame(p);
+    b32 ok2 = str8_equal(app_dev_prompt(p->app), prompt);
+    win32_smoke_feed(p, "C-g");
+    b32 ok3 = !app_dev_prompt(p->app).len && win32_smoke_has_reason(p);
+    SendMessageW(p->hwnd, WM_ENDSESSION, FALSE, ENDSESSION_LOGOFF); // the user cancelled the shutdown
+    b32 ok4 = !win32_smoke_has_reason(p);
+    win32_smoke_feed(p, "C-x C-s");
+    LRESULT allowed = SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
+    b32 ok5 = allowed && !win32_smoke_has_reason(p) && !app_dev_prompt(p->app).len;
+    b32 ok = ok1 && ok2 && ok3 && ok4 && ok5;
+    LOG("smoke: %s: end of session: refused with a reason and the save question '%S' %d, a repeated query keeps it %d, "
+        "an abort keeps the reason %d, a cancelled shutdown removes it %d, allowed once saved %d", ok ? "ok" : "FAIL", prompt,
+        ok1, ok2, ok3, ok4, ok5);
+    return ok ? EXIT_OK : EXIT_TEST;
 }
 
 // Smoke, after the probe frames: the font was set up once; a config with another background is
@@ -1932,6 +2021,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 2);
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
+                if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);
                 p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3 != EXIT_OK ? code3
                              : code4 != EXIT_OK ? code4 : code5;
                 p->quit = 1;
@@ -1943,6 +2033,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->redraw) win32_frame(p);
     }
 
+    win32_block_shutdown(p, 0); // "exit anyway": Windows' shutdown screen can go on
     u32 leaks = r_shutdown(p->renderer);
     i32 font_refs = app_shutdown(p->app); // DirectWrite references + unreleased buffers
     DestroyWindow(p->hwnd);
