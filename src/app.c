@@ -87,6 +87,7 @@ struct App {
     CommandContext ctx;          // keeps last_command between events
     KeyInput keys;               // the key sequence state
     Minibuffer mini;             // prompts; while active its keymap comes before the global one
+    Arena files_arena;           // files.c: paths being built; reset by each use
     Config *config;              // in config_arenas[config_slot]
     Arena config_arenas[2];      // a load parses into the other arena, then switches
     i32 config_slot;
@@ -817,6 +818,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);
+    app->files_arena = arena_create(GB(1));
     app->ctx.mini = &app->mini;
     app->ctx.app = app;
     app->ctx.echo = &app->echo;
@@ -842,6 +844,7 @@ i32 app_shutdown(App *app) {
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
     for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
     leaks += minibuffer_destroy(&app->mini);
+    os_release(app->files_arena.base);
     leaks += buffer_list_destroy(&app->buffers);
     kill_destroy(&app->kills);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);

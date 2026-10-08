@@ -1391,6 +1391,7 @@ static b32 test_view_edit_limits(Test *t) {
     buffer_set_path(tv.buf, os_full_path(&t->arena, path));
     test_view_run(&tv, &CMD_SAVE_BUFFER);
     String8 want = str8_fmt(&t->arena, "Wrote %S", tv.buf->path), written;
+    for (i64 i = 0; i < want.len; i++) if (want.data[i] == '\\') want.data[i] = '/'; // paths are shown with forward slashes
     TEST_CHECK(t, str8_equal(str8(tv.echo.text, tv.echo.len), want), "save-buffer: \"%S\"", str8(tv.echo.text, tv.echo.len));
     TEST_CHECK(t, !tv.buf->modified && test_read_file(t, path, &written) && str8_equal(written, STR8_LIT("abc\ndy")),
                "save-buffer: the file does not hold the text");
@@ -3466,6 +3467,113 @@ static b32 test_buffers(Test *t) {
     return 1;
 }
 
+// A path with forward slashes, as prompts show it.
+static String8 test_slashes(Test *t, String8 path) {
+    String8 s = str8_copy(&t->arena, path);
+    for (i64 i = 0; i < s.len; i++) if (s.data[i] == '\\') s.data[i] = '/';
+    return s;
+}
+
+static b32 test_file_is(Test *t, String8 path, const char *expected) {
+    String8 got;
+    return test_read_file(t, path, &got) && str8_equal(got, str8_cstr(expected));
+}
+
+// find-file, write-file and save-buffer without a file, against a small tree.
+static b32 test_find_write(Test *t) {
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p7files", t->tmp_dir));
+    String8 src = str8_fmt(&t->arena, "%S\\src", root);
+    os_make_dir(root);
+    os_make_dir(src);
+    os_make_dir(str8_fmt(&t->arena, "%S\\sub", src));
+    String8 app_c = str8_fmt(&t->arena, "%S\\app.c", src);
+    String8 written[] = { str8_fmt(&t->arena, "%S\\w.txt", src), str8_fmt(&t->arena, "%S\\nofile.txt", src),
+                          str8_fmt(&t->arena, "%S\\new.c", src), str8_fmt(&t->arena, "%S\\*scratch*", src) };
+    for (i32 i = 0; i < ARRAY_COUNT(written); i++) os_file_delete(written[i]);
+    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\top.txt", root), STR8_LIT("top\n")) && os_write_file(app_c, STR8_LIT("app\n")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\apple.txt", src), STR8_LIT("apple\n")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\sub\\deep.c", src), STR8_LIT("deep\n")), "find/write: cannot write the tree");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "find/write: app_create failed");
+    Minibuffer *mb = &app->mini;
+    app_dev_visit(app, str8_fmt(&t->arena, "%S\\top.txt", root));
+
+    // The initial input: the buffer's directory, forward slashes, a trailing slash.
+    app_dev_feed(app, "C-x C-f", &t->arena);
+    String8 want = str8_fmt(&t->arena, "%S/", test_slashes(t, root));
+    TEST_CHECK(t, mb->active && str8_equal(minibuffer_input(mb, &t->arena), want) && mb->match_count == 2 &&
+                  str8_equal(mb->cands[mb->matches[0]].text, STR8_LIT("src")) && (mb->cands[mb->matches[0]].flags & CANDIDATE_DIR),
+               "find/write: initial input '%S', directories first", minibuffer_input(mb, &t->arena));
+    // A partial name: prefix matches; RET opens the selected one.
+    app_dev_feed(app, "s r c / a p", &t->arena);
+    TEST_CHECK(t, mb->match_count == 2 && str8_equal(mb->cands[mb->matches[0]].text, STR8_LIT("app.c")), "find/write: 'ap' in src");
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current_is(app, "app.c"), "find/write: app.c opened");
+    // RET on a directory descends; DEL after a slash goes up a component.
+    app_dev_feed(app, "C-x C-f s u RET", &t->arena);
+    TEST_CHECK(t, mb->active && str8_equal(minibuffer_input(mb, &t->arena), str8_fmt(&t->arena, "%S/src/sub/", test_slashes(t, root))),
+               "find/write: descended into sub");
+    app_dev_feed(app, "d RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "deep.c"), "find/write: deep.c opened");
+    app_dev_feed(app, "C-x C-f DEL DEL", &t->arena);
+    TEST_CHECK(t, str8_equal(minibuffer_input(mb, &t->arena), want), "find/write: DEL DEL up to the root of the tree");
+    // A typed directory is not opened; C-j takes the input as typed.
+    app_dev_feed(app, "s r c C-j", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current_is(app, "deep.c") &&
+                  test_echo_has(app, (const char *)str8_fmt(&t->arena, "%S/src is a directory%c", test_slashes(t, root), 0).data),
+               "find/write: a directory is not visited ('%S')", str8(app->echo.text, app->echo.len));
+    // "~/" after a directory starts over at the profile directory; the shadowed prefix is ignored.
+    app_dev_feed(app, "C-x C-f ~ /", &t->arena);
+    String8 home = os_full_path(&t->arena, os_get_env(&t->arena, STR8_LIT("USERPROFILE")));
+    TEST_CHECK(t, str8_equal(mb->cand_key, home) || str8_equal(mb->cand_key, str8_fmt(&t->arena, "%S\\", home)),
+               "find/write: ~/ lists '%S', expected '%S'", mb->cand_key, home);
+    app_dev_feed(app, "C-g", &t->arena);
+    // A name that does not exist: a new-file buffer visiting it.
+    app_dev_feed(app, "C-x C-f DEL n e w . c RET", &t->arena);
+    Buffer *nb = test_current(app);
+    TEST_CHECK(t, str8_equal(nb->name, STR8_LIT("new.c")) && nb->path.len && test_echo_has(app, "(New file)") &&
+                  test_file_absent(written[2]), "find/write: a new file");
+
+    // write-file: a new name writes and visits it.
+    app_dev_feed(app, "h e l l o C-x C-w", &t->arena);
+    TEST_CHECK(t, str8_equal(mb->prompt, STR8_LIT("Write file: ")) && mb->kind == MINI_CHOICE, "find/write: write prompt");
+    app_dev_feed(app, "w . t x t RET", &t->arena);
+    TEST_CHECK(t, !mb->active && test_current_is(app, "w.txt") && !nb->modified && test_file_is(t, written[0], "hello"),
+               "find/write: written to w.txt ('%S')", str8(app->echo.text, app->echo.len));
+    // An existing file: n and C-g leave it, y overwrites.
+    app_dev_feed(app, "C-x C-w a p p . c RET", &t->arena);
+    TEST_CHECK(t, mb->active && mb->kind == MINI_KEY && str8_equal(mb->prompt, STR8_LIT("File exists; overwrite? (y or n) ")),
+               "find/write: overwrite question");
+    app_dev_feed(app, "n", &t->arena);
+    TEST_CHECK(t, !mb->active && test_file_is(t, app_c, "app\n") && test_current_is(app, "w.txt"), "find/write: n keeps app.c");
+    app_dev_feed(app, "C-x C-w a p p . c RET C-g", &t->arena);
+    TEST_CHECK(t, !mb->active && test_file_is(t, app_c, "app\n") && test_current_is(app, "w.txt") && test_echo_has(app, "Quit"),
+               "find/write: C-g keeps app.c");
+    app_dev_feed(app, "C-x C-w a p p . c RET y", &t->arena);
+    TEST_CHECK(t, !mb->active && test_file_is(t, app_c, "hello") && str8_equal(test_current(app)->path, app_c),
+               "find/write: y overwrites app.c");
+    // save-buffer without a file runs the write-file prompt; a directory means the buffer's name in it.
+    app_dev_feed(app, "C-x b n o f i l e . t x t RET z z C-x C-s", &t->arena);
+    TEST_CHECK(t, mb->active && str8_equal(mb->prompt, STR8_LIT("Write file: ")), "find/write: save-buffer asks for a file");
+    app_dev_feed(app, "C-a C-k", &t->arena);
+    for (i64 i = 0; i < src.len; i++) {
+        Event e[2];
+        u8 c = src.data[i];
+        const char *err;
+        u8 tok[2] = { c, 0 };
+        i32 n = key_dev_events(str8(tok, 1), e, &err);
+        app_dev_feed_events(app, e, n, &t->arena);
+    }
+    app_dev_feed(app, "\\ C-j", &t->arena);
+    TEST_CHECK(t, !mb->active && test_file_is(t, written[1], "zz") && test_current_is(app, "nofile.txt"),
+               "find/write: saved into the directory under the buffer's name ('%S')", str8(app->echo.text, app->echo.len));
+    if (!test_app_destroy(t, app, "find/write")) return 0;
+    for (i32 i = 0; i < ARRAY_COUNT(written); i++) os_file_delete(written[i]);
+    LOG("test: ok: find-file (initial directory, partial names, descend, updir, directories, ~/, new files), write-file, "
+        "save-buffer without a file");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3627,6 +3735,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_completion(&t);
     arena_reset(&t.arena);
     test_buffers(&t);
+    arena_reset(&t.arena);
+    test_find_write(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
