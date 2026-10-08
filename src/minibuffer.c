@@ -634,3 +634,22 @@ static void cmd_execute_extended_command(CommandContext *ctx) {
 }
 
 const Command CMD_EXECUTE_EXTENDED_COMMAND = { "execute-extended-command", cmd_execute_extended_command, COMMAND_ONCE };
+
+// ---------------------------------------------------------------------------
+// goto-line: LINE or LINE:COLUMN, 1-based as on the command line (COLUMN is a visual column); both
+// are clamped. The driver recenters the window when the line is off screen.
+
+static void minibuffer_goto_line_done(CommandContext *ctx, MiniResult *r) {
+    i64 line = MAX(r->number[0], 1) - 1;
+    i64 col = r->numbers == 2 ? MAX(r->number[1], 1) - 1 : 0;
+    view_deactivate_mark(ctx->view);
+    view_goto_line_column(ctx->view, line, col);
+}
+
+static void cmd_goto_line(CommandContext *ctx) {
+    MiniRequest req = { .kind = MINI_NUMBER, .prompt = STR8_LIT("Goto line: "), .history = MINI_HISTORY_LINE,
+                        .done = minibuffer_goto_line_done };
+    minibuffer_read(ctx, &req);
+}
+
+const Command CMD_GOTO_LINE = { "goto-line", cmd_goto_line, COMMAND_ONCE };

@@ -3574,6 +3574,46 @@ static b32 test_find_write(Test *t) {
     return 1;
 }
 
+// goto-line: N, N:M, clamped, refused junk, abort.
+static b32 test_goto_line(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "goto-line: app_create failed");
+    View *v = app->views[0];
+    Buffer *buf = v->buffer;
+    for (i32 i = 1; i <= 100; i++) {
+        u8 line[32];
+        i64 n = fmt_buf(line, sizeof(line), "\tline %d\n", i);
+        buffer_replace(buf, buffer_size(buf), buffer_size(buf), str8(line, n));
+    }
+    app_dev_feed(app, "M-<", &t->arena);
+    static const struct { const char *keys; i64 line, col; } cases[] = {
+        { "M-g g 5 0 RET", 49, 0 },
+        { "M-g M-g 1 0 : 6 RET", 9, 5 },  // column 6 is the visual column after the tab (4 wide), 'i'
+        { "M-g g 9 9 9 9 RET", 100, 0 },  // clamped to the last line (empty, after the last newline)
+        { "M-g g 0 RET", 0, 0 },
+        { "M-g g SPC 3 : 9 9 9 SPC RET", 2, 10 }, // the column clamped to the line's end
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        app_dev_feed(app, cases[i].keys, &t->arena);
+        i64 p = view_point(v, &v->cursors[0]);
+        i64 line = buffer_line_of(buf, p), col = view_column_of(buf, p);
+        TEST_CHECK(t, !app->mini.active && line == cases[i].line && col == cases[i].col && line >= view_top_line(v) &&
+                      line < view_top_line(v) + v->rows, "goto-line: '%s' gave line %D column %D", cases[i].keys, line, col);
+    }
+    i64 before = view_point(v, &v->cursors[0]);
+    app_dev_feed(app, "M-g g a b c RET", &t->arena);
+    TEST_CHECK(t, app->mini.active && test_echo_has(app, "Please enter a number"), "goto-line: junk refused");
+    app_dev_feed(app, "C-g", &t->arena);
+    app_dev_feed(app, "M-g g 4 0 C-g", &t->arena);
+    TEST_CHECK(t, !app->mini.active && view_point(v, &v->cursors[0]) == before, "goto-line: abort leaves point");
+    app_dev_feed(app, "M-g g M-p", &t->arena);
+    TEST_CHECK(t, test_input_is(t, app, " 3:999 "), "goto-line: history");
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "goto-line")) return 0;
+    LOG("test: ok: goto-line (N, N:M, clamping, junk, abort, history)");
+    return 1;
+}
+
 // os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
 static b32 test_list_dir(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
@@ -3737,6 +3777,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_buffers(&t);
     arena_reset(&t.arena);
     test_find_write(&t);
+    arena_reset(&t.arena);
+    test_goto_line(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
