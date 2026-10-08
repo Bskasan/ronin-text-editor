@@ -2124,25 +2124,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
         os_dev_stage("cloaked");
 #endif
-#if TEAL_DEV
-        ShowWindow(p->hwnd, p->smoke ? SW_SHOWNOACTIVATE : SW_SHOW);
-#else
-        ShowWindow(p->hwnd, SW_SHOW);
-#endif
+        // Shown without activation: activating gives the window the focus, which sets up the IME
+        // and text services (~10 ms) and is not needed to draw. Showing renders the first frame
+        // (WM_SIZE); the window is activated once it is on screen.
+        ShowWindow(p->hwnd, SW_SHOWNA);
 #if TEAL_DEV
         os_dev_stage("window shown (cloaked)");
 #endif
-        win32_frame(p);
-#if TEAL_DEV
-        os_dev_stage("first frame built and presented");
-#endif
+        if (p->frame_count == 0) win32_frame(p);
         cloak = FALSE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if TEAL_DEV
         os_dev_stage("uncloaked");
+        if (!p->smoke) SetForegroundWindow(p->hwnd); // the smoke never takes the focus
+        os_dev_stage("activated");
         p->stages_logged = 1;
         win32_dev_log_stages(p);
         win32_inject_keys(p);
+#else
+        SetForegroundWindow(p->hwnd);
 #endif
     }
 
