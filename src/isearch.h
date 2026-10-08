@@ -114,6 +114,7 @@ struct Replace {
     i64 point;           // where point is (and goes when the session ends): the match asked about, or after the last replacement
     i64 count;            // replacements made
     i64 match_start, match_end; // the match asked about
+    u64 match_edits;      // the buffer's edit_count when it was found (an outside change, such as a revert, makes it stale)
     i64 all_from;         // REPLACE_ALL began here (progress)
     Search search;
     Arena pair_arena;     // the last pair, for an empty answer to the first prompt

@@ -501,6 +501,7 @@ i64 replace_work(Replace *rp, Arena *scratch, i64 budget) {
         if (rp->state == REPLACE_SEARCHING) { // query-replace: ask about it
             rp->state = REPLACE_ASKING;
             rp->point = rp->match_end;
+            rp->match_edits = buf->edit_count;
             view_set_point(rp->view, &rp->view->cursors[0], rp->point);
             break;
         }
@@ -604,6 +605,12 @@ static void cmd_replace_answer(CommandContext *ctx) {
     Replace *rp = ctx->replace;
     if (!rp || rp->state != REPLACE_ASKING) return;
     view_set_point(rp->view, &rp->view->cursors[0], rp->point); // back on the match, wherever the wheel left point
+    if (rp->view->buffer->edit_count != rp->match_edits) { // changed outside since (a revert): look for the match again
+        rp->next = MIN(rp->match_start, buffer_size(rp->view->buffer));
+        replace_search_on(rp);
+        rp->state = REPLACE_SEARCHING;
+        return;
+    }
     switch (ctx->codepoint) {
     case 'y':
     case ' ':
