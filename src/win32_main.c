@@ -199,6 +199,47 @@ String8 os_full_path(Arena *arena, String8 path) {
     return result;
 }
 
+OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *count) {
+    typedef struct Node { struct Node *next; OsDirEntry e; } Node;
+    *entries = NULL;
+    *count = 0;
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    b32 slash = dir.len && (dir.data[dir.len - 1] == '\\' || dir.data[dir.len - 1] == '/');
+    WCHAR *pattern = win32_path16(str8_fmt(scratch, slash ? "%S*" : "%S\\*", dir));
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        arena_pop_to(scratch, mark);
+        return error == ERROR_FILE_NOT_FOUND ? OS_FILE_OK : win32_file_status(error); // an empty directory (a root)
+    }
+    // The names go into `arena` as they come, the nodes into scratch; then one array.
+    Node *first = NULL, *last = NULL;
+    i64 n = 0;
+    do {
+        WCHAR *name = fd.cFileName;
+        if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+        i64 len = 0;
+        while (name[len]) len++;
+        Node *node = PUSH_STRUCT(scratch, Node);
+        node->e.name = str8_from_str16(arena, (u16 *)name, len);
+        node->e.is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if (last) last->next = node;
+        else first = node;
+        last = node;
+        n++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    OsDirEntry *out = PUSH_ARRAY(arena, OsDirEntry, n);
+    i64 i = 0;
+    for (Node *node = first; node; node = node->next) out[i++] = node->e;
+    arena_pop_to(scratch, mark);
+    *entries = out;
+    *count = n;
+    return OS_FILE_OK;
+}
+
 static void win32_fill_info(OsFileInfo *info, BY_HANDLE_FILE_INFORMATION *bhfi) {
     info->exists = 1;
     info->is_dir = (bhfi->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;

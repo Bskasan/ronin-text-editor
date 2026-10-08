@@ -3053,6 +3053,32 @@ static b32 test_headless_app(Test *t) {
     return 1;
 }
 
+// os_list_dir on a small tree: every entry once, directories flagged, "." and ".." left out.
+static b32 test_list_dir(Test *t) {
+    String8 dir = str8_fmt(&t->arena, "%S\\list", t->tmp_dir);
+    os_make_dir(dir);
+    os_make_dir(str8_fmt(&t->arena, "%S\\sub", dir));
+    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\a.txt", dir), STR8_LIT("a")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\B.c", dir), STR8_LIT("b")), "list dir: cannot write the files");
+    OsDirEntry *e;
+    i64 n;
+    TEST_CHECK(t, os_list_dir(&t->arena, dir, &e, &n) == OS_FILE_OK && n == 3, "list dir: %D entries, expected 3", n);
+    i32 seen = 0;
+    for (i64 i = 0; i < n; i++) {
+        if (str8_equal(e[i].name, STR8_LIT("a.txt")) && !e[i].is_dir) seen |= 1;
+        if (str8_equal(e[i].name, STR8_LIT("B.c")) && !e[i].is_dir) seen |= 2;
+        if (str8_equal(e[i].name, STR8_LIT("sub")) && e[i].is_dir) seen |= 4;
+    }
+    TEST_CHECK(t, seen == 7, "list dir: entries or flags wrong (%d)", seen);
+    TEST_CHECK(t, os_list_dir(&t->arena, str8_fmt(&t->arena, "%S/", dir), &e, &n) == OS_FILE_OK && n == 3,
+               "list dir: a trailing separator");
+    TEST_CHECK(t, os_list_dir(&t->arena, str8_fmt(&t->arena, "%S\\sub", dir), &e, &n) == OS_FILE_OK && n == 0, "list dir: empty");
+    TEST_CHECK(t, os_list_dir(&t->arena, str8_fmt(&t->arena, "%S\\nope", dir), &e, &n) == OS_FILE_NOT_FOUND && n == 0,
+               "list dir: a missing directory");
+    LOG("test: ok: directory listing");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -3119,6 +3145,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_hot_reload(&t);
     arena_reset(&t.arena);
     test_headless_app(&t);
+    arena_reset(&t.arena);
+    test_list_dir(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
