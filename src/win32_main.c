@@ -95,6 +95,7 @@ typedef struct Platform {
     i32 dev_keymenu;      // WM_SYSCOMMAND SC_KEYMENU received
     b32 idle_check;       // --idle-check: shown without focus, idle; CPU time, frames and wakeups measured
     b32 clipboard_check;  // --clipboard-check: the real clipboard through the app, saved and put back
+    String8 dpi_check;    // --dpi-check <dir>: WM_DPICHANGED to 125% and back, a screenshot at each step
     b32 clip_no_history;  // what teal puts on the clipboard stays out of clipboard history (the check's text)
     u64 idle_wakeups;     // passes of the main loop
     u64 idle_start_cpu, idle_start_wakeups;
@@ -2481,8 +2482,55 @@ static i32 win32_dev_clipboard_check(Platform *p) {
     return ok ? EXIT_OK : EXIT_TEST;
 }
 
+// --dpi-check <dir>: the window (hidden) gets WM_DPICHANGED as when it moves to a 125% display and
+// back, with the rectangle Windows suggests; a screenshot at each step (dpi_100.png, dpi_125.png,
+// dpi_back.png). The font must be set up again at each change, the client area must scale, and the
+// frame after coming back must equal the first one pixel for pixel.
+static i32 win32_dev_dpi_capture(Platform *p, const char *name, u8 **pixels, i32 *w, i32 *h) {
+    for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p);
+    r_request_capture(p->renderer);
+    p->redraw = 1;
+    win32_frame(p);
+    *pixels = r_read_capture(p->renderer, &p->perm, w, h); // kept: compared later
+    String8 path = str8_fmt(&p->scratch, "%S\\%s", p->dpi_check, name);
+    return *pixels && win32_write_png(p, path, *pixels, *w, *h);
+}
+
+static void win32_dev_dpi_send(Platform *p, u32 dpi) {
+    RECT r;
+    GetWindowRect(p->hwnd, &r);
+    i32 w = MulDiv(r.right - r.left, (i32)dpi, (i32)p->dpi), h = MulDiv(r.bottom - r.top, (i32)dpi, (i32)p->dpi);
+    RECT suggested = { r.left, r.top, r.left + w, r.top + h };
+    SendMessageW(p->hwnd, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), (LPARAM)&suggested);
+}
+
+static i32 win32_dev_dpi_check(Platform *p) {
+    app_dev_force_focus(p->app, 1);
+    u32 dpi0 = p->dpi, dpi1 = dpi0 * 5 / 4;
+    u8 *a, *b, *c;
+    i32 wa, ha, wb, hb, wc, hc;
+    i32 setups0 = app_dev_font_setups(p->app);
+    b32 ok = win32_dev_dpi_capture(p, "dpi_100.png", &a, &wa, &ha);
+    win32_dev_dpi_send(p, dpi1);
+    i32 setups1 = app_dev_font_setups(p->app);
+    ok = win32_dev_dpi_capture(p, "dpi_125.png", &b, &wb, &hb) && ok;
+    win32_dev_dpi_send(p, dpi0);
+    i32 setups2 = app_dev_font_setups(p->app);
+    ok = win32_dev_dpi_capture(p, "dpi_back.png", &c, &wc, &hc) && ok;
+    if (!ok) return EXIT_OUTPUT_FILE;
+    b32 scaled = wb * 4 >= wa * 5 - wa / 10 && wb * 4 <= wa * 5 + wa / 10 && hb * 4 >= ha * 5 - ha / 10; // the frame scales too
+    b32 same = wa == wc && ha == hc && memcmp(a, c, (size_t)wa * ha * 4) == 0;
+    b32 fonts = setups1 == setups0 + 1 && setups2 == setups1 + 1;
+    b32 pass = scaled && same && fonts;
+    LOG("dpi-check: %s: %u -> %u -> %u dpi: client %dx%d -> %dx%d -> %dx%d (scaled %d), font set up again at each change %d "
+        "(%d, %d, %d), the frame after coming back equals the first %d", pass ? "PASS" : "FAIL", dpi0, dpi1, dpi0, wa, ha, wb, hb,
+        wc, hc, scaled, fonts, setups0, setups1, setups2, same);
+    arena_reset(&p->scratch);
+    return pass ? EXIT_OK : EXIT_PIXEL_MISMATCH;
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->idle_check || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    return p->smoke || p->idle_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
            p->bench_search ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -2601,6 +2649,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--clipboard-check"))) { p->clipboard_check = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--dpi-check")) && has_value) { p->dpi_check = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
             p->render_mode_forced = 1;
@@ -2772,6 +2821,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     if (p->screenshot_path.len || p->atlas_path.len) {
         p->exit_code = win32_write_outputs(p);
+        p->quit = 1;
+    }
+    if (p->dpi_check.len) {
+        p->exit_code = win32_dev_dpi_check(p);
         p->quit = 1;
     }
 #endif
