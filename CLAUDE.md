@@ -103,6 +103,8 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # per extra buffer
     build/teal_bench.exe --bench-complete                 # filter and rank 10,000 / 100,000 candidates
                                                           # per keystroke (avg, worst)
+    build/teal_bench.exe --bench-syntax                   # lexing MB/s per language; 100 MB C file: "/*" on
+                                                          # line 1 then M-> (frames until colored), typing
     build/teal_debug.exe <file> --keys ".." --touch <file> --screenshot ..   # rewrite the file after the
                                                           # keys and activate the app (changed on disk)
 
@@ -183,7 +185,10 @@ completion and M-x, unique names, switch-to-buffer and kill-buffer, find-file an
 goto-line, save-some-buffers and quitting (every answer, aborts at every link, the close button),
 revert (one replace, markers, undo and undo-redo, line endings, no-ops, whole characters),
 changed on disk (activation, watch and settle, modified, the save guard, deleted, auto_revert off,
-watches released) and the end of the session. A failed dev ASSERT logs its
+watches released) and the end of the session. Phase 8: line states following their lines (a differential fuzz),
+golden tokens per language, incremental equals full under random edits and partial catch-ups, the
+catch-up budget with a deterministic clock, bracket matching, the indentation table on tokens, typed
+RET cases, show-paren, set-language, and highlighting after an auto-revert. A failed dev ASSERT logs its
 file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
@@ -203,6 +208,8 @@ number/constant).
 | selection        | #0000ff |   | number/constant | #7ad0c6 |
 | type             | #8cde94 |   | variable        | #c1d1e3 |
 | prompt           | #0fdfaf |   | completion_match | #ffffff |
-| completion_selection | #0000ff | |                |         |
+| completion_selection | #0000ff | | function        | #ffffff |
+| directive        | #8cde94 |   | constant        | #7ad0c6 |
+| paren_match (background) | #4f94cd | |              |         |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.

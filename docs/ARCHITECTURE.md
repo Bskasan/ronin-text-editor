@@ -12,6 +12,8 @@
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
 | `src/font.h/.c` | metrics, CPU glyph atlas (shelf packer), glyph cache, `font_draw_text` |
 | `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, the undo log (groups, state ids, undo / redo, limit), markers, language from the extension, file load (encodings, line endings) and save |
+| `src/syntax.h/.c` | token kinds, the line lexer interface, keyword tables, the catch-up of line states (budget, convergence), bracket matching and line summaries on tokens (indentation, show-paren) |
+| `src/lex_c.c`, `lex_jai.c`, `lex_cs.c`, `lex_js.c` | the lexers: C and C++ (one), Jai, C#, JavaScript and TypeScript (one) |
 | `src/command.h/.c` | `Command` and `CommandContext`; the table of every command, lookup by Emacs name |
 | `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), the command driver `view_run_command` (undo boundaries, shift-select, region rules, kill appending, clipboard), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
 | `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link), undo / undo-redo, kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
@@ -203,6 +205,32 @@ memory, startup and size.
 - Release exe 260,096 bytes (219,648 after Phase 6); the same six DLLs; user32 adds
   ShutdownBlockReasonCreate and ShutdownBlockReasonDestroy.
 
+## Measurements (Phase 8)
+
+`build\teal_bench.exe --bench-syntax`, same machine (2560x1440 at 144 Hz), ~100 MB of generated source per language:
+
+| language | lexer, state only | lexer, with tokens | catch-up over a buffer |
+|---|---|---|---|
+| Jai | 688 MB/s | 644 MB/s | 794 MB/s |
+| C | 548-565 MB/s | 519-540 MB/s | 540-642 MB/s |
+| C++ | 526 MB/s | 504 MB/s | 598 MB/s |
+| C# | 581 MB/s | 550 MB/s | 601 MB/s |
+| JavaScript | 487 MB/s | 460 MB/s | 498 MB/s |
+| TypeScript | 452 MB/s | 439 MB/s | 511 MB/s |
+
+- 100 MB C file (3.5 M lines): "/*" typed on line 1 (40 us), then M->: 79-88 frames of ~2 ms (longest
+  2.05 ms) until the colors are right, 164-197 ms with Present(0, 0), ~0.6 s at one frame per 144 Hz
+  refresh. The whole file had never been lexed (states are computed only as far as a view needs).
+- Typing (10,000 self-inserts at line 1,000,000, command + frame build, alternated runs): Phase 7
+  bench-view 24-33 us; Phase 8 highlighted C 22-33 us, the same buffer in Fundamental 17-28 us. Worst
+  ~2.1 ms: the first insert moving the gap from the top (5-6 ms in bench-view).
+- Idle after catching up 50 MB (opened at line 1,000,000): 0 ms CPU over 10 s.
+- Memory (release, private bytes idle, 3 runs): *scratch* 75.8-77.6 MB; src\keymap.c 75.9-77.6 MB; the
+  100 MB .txt 192.4-193.6 MB; the 100 MB .c 216.4-217.7 MB (3.5 M lines: line index and states 17 MB
+  each; states are committed with the index, 4 bytes per line, only for languages with a lexer).
+- Startup (release, 7 runs) 198 ms median (193 in Phase 7). Release exe 296,448 bytes (260,096 after
+  Phase 7); the same imports.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -212,7 +240,7 @@ memory, startup and size.
 - [x] 5. Commands, keymap with prefix keys, config file, hot reload
 - [x] 6. Editing: mark/region, kill ring, undo/redo, auto-indent
 - [x] 7. Minibuffer, prompts, file and buffer commands (goto-line and buffer switching from 9)
-- [ ] 8. Lexers and incremental highlighting; token-aware indentation: bracket matching on tokens
+- [x] 8. Lexers and incremental highlighting; token-aware indentation: bracket matching on tokens
   replaces bracket counting. A line that starts with a closer takes the indentation of the line
   holding its matching opener; a line after one that leaves any bracket open gets one level more,
   however many it opened (fixes `f((x) => {` giving two levels).
@@ -595,6 +623,37 @@ memory, startup and size.
   away when nothing is unsaved, on "exit anyway", or when Windows cancels the shutdown.
   WM_ENDSESSION(TRUE) releases and exits without writing anything.
 
+### Highlighting, token-aware indentation (Phase 8)
+
+- Hand-written lexers, one per language family (C/C++ share one, as do JavaScript/TypeScript). No
+  regex engine, no parser, no grammar. Keyword lookup is an open-addressing table filled once at
+  startup; it allocates nothing.
+- Highlighting is line based: each line has a u32 lexer state for its start; tokens are never
+  stored, visible lines are lexed when drawn. Where a delimiter cannot fit in the state (a C++ raw
+  string delimiter, a Jai here-string terminator) the state holds a hash of it; JS templates and C#
+  interpolations keep a small stack of contexts (the innermost 5 / 3 carried across lines).
+- The states live in the buffer, in an array paired with the newline index (same gap, same
+  indexes), committed only for languages with a lexer. buffer_replace keeps them with their lines
+  and tracks state_valid, state_dirty and state_known; buffer.c never interprets a state.
+- Incremental and lazy: catch-up lexes from the first untrusted line and stops when a line's new
+  start state equals the stored one after the last changed line (and after the last line written by
+  an interrupted pass); only as far as some view needs; at most ~2 ms per frame (the clock read every
+  64 lines or 16 KB); while catching up, lines are drawn with their previous states (plain if none)
+  and another frame is requested; nothing runs when nothing is pending.
+- Beyond 20,000 bytes into a line text is drawn plain; the line's end state is still lexed whole
+  (a very long line costs its full lex on each edit).
+- Not highlighted by choice: calls, ordinary identifiers, JSX. C/C++ function names: the identifier
+  directly before the first '(' on a line that starts in column 0 with a word (not a keyword; a
+  lone word ending in ';' is a call). C/C++ preprocessor lines: only the directive word is a
+  directive; the name of #define is a function.
+- Indentation on tokens (edit.h has the rules): brackets match on tokens, bounded to 256 KB;
+  closers return to their opener's line; one level after a line leaving brackets open; brace-less
+  bodies, else binding, case labels; lines inside multi-line comments and strings and C/C++
+  preprocessor lines are left alone by TAB. Indentation brings states up to its line first (250 us).
+  No electric colon: a label typed after another label needs TAB.
+- show_paren_mode: the closer before point wins, else the opener at point; same matcher; cached per
+  view.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -633,3 +692,7 @@ memory, startup and size.
 - Slow directory listings (network shares) block the UI while find-file lists a directory.
 - Revert: map positions through a line diff of the old and new text, so a marker in an unchanged
   line that moved keeps its place in it (now: line and column inside the replaced range).
+- JSX tags in JavaScript / TypeScript highlighting.
+- Resumable lexing inside very long lines (a 5 MB minified line costs ~10 ms per keystroke).
+- Electric reindent (a line typed as case/default/'#' reindented on ':' / RET, as Emacs'
+  electric-indent-mode) - needs a decision on RET reindenting the line it leaves.
