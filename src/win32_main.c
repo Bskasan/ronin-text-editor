@@ -940,8 +940,13 @@ static Key win32_map_vk(u32 vk) {
     case VK_OEM_102:    return KEY_OEM_102;
     case VK_PAUSE:      return KEY_PAUSE;
     case VK_APPS:       return KEY_APPS;
-    default:            return KEY_NONE; // modifiers, numpad, IME, media keys
+    default:            return KEY_NONE; // modifiers, keypad digits and operators, VK_OEM_8, IME, media keys
     }
+}
+
+static b32 win32_is_modifier_vk(u32 vk) {
+    return vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL ||
+           vk == VK_NUMLOCK || vk == VK_SCROLL;
 }
 
 static b32 win32_is_key_message(UINT msg) {
@@ -1064,15 +1069,19 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (vk == VK_MENU && extended && !down) p->altgr = 0;
 
         if (down) {
-            Key key = win32_map_vk(vk);
-            if (key != KEY_NONE) {
+            // Every key but the modifiers sends its KEY_DOWN, also one teal has no Key for (VK_OEM_8,
+            // the keypad's digits and operators, media keys): a chord if it types a character, and in
+            // any case the end of the previous chord's text. The keypad makes no chords (Alt + keypad
+            // digits enter a character code), nor do IME and injected characters.
+            if (!win32_is_modifier_vk(vk)) {
+                b32 no_chord = (vk >= VK_NUMPAD0 && vk <= VK_DIVIDE) || vk == VK_PROCESSKEY || vk == VK_PACKET;
                 Event e = {
                     .kind = EVENT_KEY_DOWN,
-                    .key = key,
+                    .key = win32_map_vk(vk),
                     .mods = win32_mods(p),
                     .scancode = (u32)(HIWORD(lp) & (KF_EXTENDED | 0xFF)),
                     .repeat = (HIWORD(lp) & KF_REPEAT) != 0,
-                    .codepoint = win32_key_char(p, vk, (u32)(HIWORD(lp) & 0xFF), NULL),
+                    .codepoint = no_chord ? 0 : win32_key_char(p, vk, (u32)(HIWORD(lp) & 0xFF), NULL),
                 };
                 win32_push_event(p, e);
                 p->redraw = 1;
@@ -1319,11 +1328,9 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
         i32 ret;
         u32 c = win32_key_char(p, vk, scan, &ret);
         if (!pushed) {
-            b32 modifier = vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL;
             outcome = up ? STR8_LIT("key up: no event")
                     : (vk == VK_CONTROL && !(HIWORD(lp) & KF_EXTENDED) && p->altgr) ? STR8_LIT("dropped: the synthetic Left Ctrl of AltGr")
-                    : modifier ? STR8_LIT("no event: a modifier")
-                    : win32_map_vk(vk) == KEY_NONE ? STR8_LIT("no event: teal has no Key for this virtual key")
+                    : win32_is_modifier_vk(vk) ? STR8_LIT("no event: a modifier")
                     : STR8_LIT("no event");
             if (msg == WM_SYSKEYDOWN && vk == VK_F4 && !p->altgr) outcome = str8_fmt(a, "%S; passed to DefWindowProc (Alt+F4 closes)", outcome);
         }
@@ -1381,6 +1388,41 @@ static i32 win32_dev_test_mods(Platform *p) {
     p->altgr = altgr;
     if (!failures) LOG("test: ok: win32 modifiers (Alt, Right Alt without AltGr, Ctrl, Ctrl+Alt, Alt+Shift, Ctrl+Shift from the thread's key state)");
     return failures;
+}
+
+// --test: messages handed to the window procedure as the message loop would (TranslateMessage's
+// characters included), the events through a headless app. A key teal has no Key for, typed right
+// after a chord: its text arrives.
+static i32 win32_dev_test_keys(Platform *p) {
+    Arena arena = arena_create(MB(256));
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1 };
+    App *app = app_create(&arena, &args);
+    if (!app) {
+        LOG("test: FAIL: win32 keys: app_create failed");
+        return 1;
+    }
+    app_dev_feed_events(app, NULL, 0, &arena);
+    BYTE saved[256], state[256] = { 0 };
+    GetKeyboardState(saved);
+    i32 count = p->event_count;
+    state[VK_CONTROL] = state[VK_LCONTROL] = 0x80; // C-l: a chord
+    SetKeyboardState(state);
+    win32_handle_message(NULL, WM_KEYDOWN, 'L', (LPARAM)(1 | 0x26 << 16));
+    win32_handle_message(NULL, WM_CHAR, 0x0C, (LPARAM)(1 | 0x26 << 16));
+    memset(state, 0, sizeof(state));
+    state[VK_NUMLOCK] = 1; // keypad 4 with NumLock on
+    SetKeyboardState(state);
+    win32_handle_message(NULL, WM_KEYDOWN, VK_NUMPAD4, (LPARAM)(1 | 0x4B << 16));
+    win32_handle_message(NULL, WM_CHAR, '4', (LPARAM)(1 | 0x4B << 16));
+    SetKeyboardState(saved);
+    app_dev_feed_events(app, p->events + count, p->event_count - count, &arena);
+    p->event_count = count;
+    i64 size = app_dev_size(app);
+    i32 leaks = app_shutdown(app);
+    b32 ok = size == 1 && leaks == 0;
+    if (ok) LOG("test: ok: win32 keys (keypad 4 right after C-l types its 4)");
+    else LOG("test: FAIL: win32 keys: keypad 4 right after C-l: the buffer has %D byte(s), expected 1; %d leak(s)", size, leaks);
+    return ok ? 0 : 1;
 }
 
 // --log-keys at startup: the layouts loaded in this session, the active one and its key table.
@@ -2347,6 +2389,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         failures += win32_dev_test_mods(p);
+        failures += win32_dev_test_keys(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
