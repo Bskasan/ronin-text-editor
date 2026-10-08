@@ -56,6 +56,7 @@ b32 buffer_destroy(Buffer *buf) {
     ok &= os_release(buf->markers);
     ok &= os_release(buf->undo.log);
     ok &= os_release(buf->undo.groups);
+    if (buf->line_state) ok &= os_release(buf->line_state);
     ok &= os_release(meta.base);
     return ok;
 }
@@ -315,8 +316,11 @@ static b32 buffer_reserve_nl_gap(Buffer *buf, i64 need) {
         new_cap = MIN((i64)ALIGN_UP_POW2((u64)min_cap, (u64)per_page), buf->nl_reserved);
         if (!os_commit(buf->nl + buf->nl_cap, (u64)(new_cap - buf->nl_cap) * sizeof(u32))) return 0;
     }
+    // The lexer states follow the index: same capacity, same layout.
+    if (buf->states_on && !os_commit(buf->line_state + buf->nl_cap, (u64)(new_cap - buf->nl_cap) * sizeof(u32))) return 0;
     i64 after = buf->nl_cap - buf->nl_back;
     memmove(buf->nl + new_cap - after, buf->nl + buf->nl_back, (size_t)after * sizeof(u32));
+    if (buf->states_on) memmove(buf->line_state + new_cap - after, buf->line_state + buf->nl_back, (size_t)after * sizeof(u32));
     buf->nl_back = new_cap - after;
     buf->nl_cap = new_cap;
     return 1;
@@ -331,25 +335,83 @@ static void buffer_move_gap(Buffer *buf, i64 pos) {
         memmove(buf->text + buf->gap_end - n, buf->text + pos, (size_t)n);
         buf->gap_start -= n;
         buf->gap_end -= n;
+        i64 front = buf->nl_front;
         while (buf->nl_front > 0 && (i64)buf->nl[buf->nl_front - 1] >= pos) {
             u32 abs = buf->nl[--buf->nl_front];
             buf->nl[--buf->nl_back] = (u32)(size - abs);
         }
+        if (buf->states_on) memmove(buf->line_state + buf->nl_back, buf->line_state + buf->nl_front, (size_t)(front - buf->nl_front) * sizeof(u32));
     } else if (pos > buf->gap_start) {
         i64 n = pos - buf->gap_start;
         memmove(buf->text + buf->gap_start, buf->text + buf->gap_end, (size_t)n);
         buf->gap_start += n;
         buf->gap_end += n;
+        i64 back = buf->nl_back, front = buf->nl_front;
         while (buf->nl_back < buf->nl_cap && size - (i64)buf->nl[buf->nl_back] < pos) {
             u32 from_end = buf->nl[buf->nl_back++];
             buf->nl[buf->nl_front++] = (u32)(size - from_end);
         }
+        if (buf->states_on) memmove(buf->line_state + front, buf->line_state + back, (size_t)(buf->nl_back - back) * sizeof(u32));
     }
 }
 
 // ---------------------------------------------------------------------------
 // The one modification function
 
+// ---------------------------------------------------------------------------
+// Lexer states
+
+b32 buffer_states_enable(Buffer *buf, b32 on) {
+    if (!on) {
+        if (buf->states_on) os_decommit(buf->line_state, (u64)buf->nl_cap * sizeof(u32));
+        buf->states_on = 0;
+        return 1;
+    }
+    if (!buf->states_on) {
+        if (!buf->line_state) buf->line_state = (u32 *)os_reserve((u64)buf->nl_reserved * sizeof(u32));
+        if (!buf->line_state || (buf->nl_cap && !os_commit(buf->line_state, (u64)buf->nl_cap * sizeof(u32)))) return 0;
+        buf->states_on = 1;
+    }
+    buf->state_valid = 0; // only line 0 (state 0) is known
+    buf->state_dirty = -1;
+    buf->state_known = 1;
+    return 1;
+}
+
+// The slot of the start state of `line` (>= 1): the entry of the newline before it.
+static i64 buffer_state_slot(Buffer *buf, i64 line) {
+    i64 k = line - 1;
+    return k < buf->nl_front ? k : buf->nl_back + (k - buf->nl_front);
+}
+
+u32 buffer_line_state(Buffer *buf, i64 line) {
+    if (line <= 0 || !buf->states_on) return 0;
+    ASSERT(line < buffer_line_count(buf));
+    return buf->line_state[buffer_state_slot(buf, line)];
+}
+
+void buffer_set_line_state(Buffer *buf, i64 line, u32 state) {
+    ASSERT(buf->states_on && line >= 1 && line < buffer_line_count(buf));
+    buf->line_state[buffer_state_slot(buf, line)] = state;
+}
+
+u64 buffer_states_memory(Buffer *buf) {
+    return buf->states_on ? (u64)buf->nl_cap * sizeof(u32) : 0;
+}
+
+// Old lines [a, a + removed] became [a, a + inserted]. Line a starts as before; every later state
+// is untrusted until lexed again, and states may converge only after the changed lines.
+static void buffer_states_edited(Buffer *buf, i64 a, i64 removed, i64 inserted) {
+    i64 delta = inserted - removed;
+    if (buf->state_valid > a) buf->state_valid = a;
+    i64 d = buf->state_dirty;
+    if (d > a + removed) d += delta;
+    buf->state_dirty = MAX(d, a + inserted);
+    i64 c = buf->state_known;
+    if (c > a + removed) c += delta;      // known through the edit: shifted
+    else if (c > a) c = a + inserted + 1; // known into it: the new lines have line a's state as a guess
+    buf->state_known = MIN(c, buffer_line_count(buf));
+}
 // ---------------------------------------------------------------------------
 // Undo log
 
@@ -556,17 +618,24 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
     // Put the gap inside [start, end], then widen it over the range.
     if (buf->gap_start < start) buffer_move_gap(buf, start);
     else if (buf->gap_start > end) buffer_move_gap(buf, end);
-    while (buf->nl_back < buf->nl_cap && size - (i64)buf->nl[buf->nl_back] < end) buf->nl_back++;
-    while (buf->nl_front > 0 && (i64)buf->nl[buf->nl_front - 1] >= start) buf->nl_front--;
+    i64 removed_lines = 0;
+    while (buf->nl_back < buf->nl_cap && size - (i64)buf->nl[buf->nl_back] < end) buf->nl_back++, removed_lines++;
+    while (buf->nl_front > 0 && (i64)buf->nl[buf->nl_front - 1] >= start) buf->nl_front--, removed_lines++;
     buf->gap_end += end - buf->gap_start;
     buf->gap_start = start;
     // Remaining back entries keep their value: position and size both dropped by end - start.
 
     memcpy(buf->text + buf->gap_start, text.data, (size_t)text.len);
+    i64 first_line = buf->nl_front; // the line of `start`: the newlines before it
+    u32 guess = buf->states_on && first_line > 0 ? buf->line_state[first_line - 1] : 0;
     for (i64 i = 0; i < text.len; i++) {
-        if (text.data[i] == '\n') buf->nl[buf->nl_front++] = (u32)(start + i);
+        if (text.data[i] == '\n') {
+            if (buf->states_on) buf->line_state[buf->nl_front] = guess; // drawn with it until lexed
+            buf->nl[buf->nl_front++] = (u32)(start + i);
+        }
     }
     buf->gap_start += text.len;
+    if (buf->states_on) buffer_states_edited(buf, first_line, removed_lines, new_lines);
     if (buf->marker_live) buffer_adjust_markers(buf, start, end, text.len);
 
     if (buf->undo.enabled) {
