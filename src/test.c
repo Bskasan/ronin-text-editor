@@ -4459,6 +4459,218 @@ static b32 test_isearch(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// query-replace and replace-string
+
+static b32 test_replace_text(Test *t, App *app, const char *what, const char *want) {
+    String8 got = test_app_text(t, app);
+    TEST_CHECK(t, str8_equal(got, str8_cstr(want)), "replace: %s: '%S', want '%s'", what, got, want);
+    return 1;
+}
+
+static b32 test_replace(Test *t) {
+    // Case conversion (Emacs' replace-match).
+    static const struct { const char *to, *match, *want; } cases[] = {
+        { "bar", "foo", "bar" }, { "bar", "Foo", "Bar" }, { "bar", "FOO", "BAR" }, { "bar baz", "Foo Bar", "Bar Baz" },
+        { "bar", "fOO", "bar" }, { "bar", "Foo-bar", "bar" }, { "bar", "X", "BAR" }, { "xy", "A B", "XY" },
+        { "bar", "F1", "BAR" }, { "bar", "1foo", "bar" }, { "\xc4\xb1\xc5\x9f\xc4\xb1k", "Foo", "I\xc5\x9f\xc4\xb1k" },
+        { "\xc3\xa7" "ay", "FOO", "\xc3\x87" "AY" }, { "a-b", "Foo", "A-B" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        String8 got = replace_case(&t->arena, str8_cstr(cases[i].to), str8_cstr(cases[i].match));
+        TEST_CHECK(t, str8_equal(got, str8_cstr(cases[i].want)), "replace: case conversion %d: '%s' for '%s' gave '%S', want '%s'", i,
+                   cases[i].to, cases[i].match, got, cases[i].want);
+    }
+
+    // Every answer.
+    App *app = test_search_app(t, STR8_LIT("a foo b foo c foo d foo e foo f foo\n"), 0);
+    TEST_CHECK(t, app, "replace: app_create failed");
+    Replace *rp = &app->replace;
+    View *v = app->views[0];
+    app_dev_feed(app, "M-%", &t->arena);
+    TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Query replace: ")), "replace: the first prompt '%S'", app_dev_prompt(app));
+    app_dev_feed(app, "f o o RET", &t->arena);
+    TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Query replace foo with: ")), "replace: the second prompt '%S'", app_dev_prompt(app));
+    app_dev_feed(app, "b a r RET", &t->arena);
+    String8 q = replace_prompt(rp, &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && test_app_point(app) == 5 && str8_equal(q, STR8_LIT("Query replacing foo with bar: (y, n, !, q, .)")),
+               "replace: asking at the first match: '%S', point %D", q, test_app_point(app));
+    app_dev_feed(app, "y", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && test_app_point(app) == 11, "replace: y replaces and asks at the next (%D)", test_app_point(app));
+    app_dev_feed(app, "SPC n DEL", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && test_app_point(app) == 29, "replace: SPC replaces, n and DEL skip (%D)", test_app_point(app));
+    app_dev_feed(app, ".", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 29 && test_app_echo_is(app, "Replaced 3 occurrences"),
+               "replace: . replaces this one and stops");
+    if (!test_replace_text(t, app, "y SPC n DEL .", "a bar b bar c foo d foo e bar f foo\n")) return 0;
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-%", &t->arena);
+    TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Query replace (default foo -> bar): ")), "replace: the default '%S'", app_dev_prompt(app));
+    app_dev_feed(app, "RET q", &t->arena); // an empty answer repeats the last pair
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 17 && test_app_echo_is(app, "Replaced 0 occurrences"),
+               "replace: the last pair again, q stops at the match (%D)", test_app_point(app));
+    app_dev_feed(app, "M-% RET RET", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 23, "replace: RET stops (%D)", test_app_point(app));
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% RET !", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 35 && test_app_echo_is(app, "Replaced 3 occurrences"), "replace: ! replaces the rest");
+    if (!test_replace_text(t, app, "!", "a bar b bar c bar d bar e bar f bar\n")) return 0;
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("x1 x2 x3\n"));
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% x RET y RET y C-g", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 4 && test_app_echo_is(app, "Quit"), "replace: C-g stops, keeping what was done");
+    if (!test_replace_text(t, app, "C-g", "y1 x2 x3\n")) return 0;
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% RET C-f", &t->arena); // another key ends the session, then runs
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 5 && test_app_echo_is(app, "Replaced 0 occurrences"),
+               "replace: C-f ends the session at the match, then runs (%D)", test_app_point(app));
+    // One undo takes back the whole session (point where it started); undo-redo applies it again.
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("foo foo foo foo\n"));
+    view_set_point(v, &v->cursors[0], 2);
+    app_dev_feed(app, "C-f", &t->arena); // a command: the edit above is its own group
+    app_dev_feed(app, "M-% f o o RET b a r RET y n y", &t->arena); // the last y finds no more: the session ends
+    if (!test_replace_text(t, app, "before undo", "foo bar foo bar\n")) return 0;
+    app_dev_feed(app, "C-/", &t->arena);
+    if (!test_replace_text(t, app, "one undo", "foo foo foo foo\n")) return 0;
+    TEST_CHECK(t, test_app_point(app) == 3, "replace: undo puts point where the session started (%D)", test_app_point(app));
+    app_dev_feed(app, "C-?", &t->arena);
+    if (!test_replace_text(t, app, "undo-redo", "foo bar foo bar\n")) return 0;
+    // The region only; case conversion through the app; a capital in the search string is exact.
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("foo foo foo foo\n"));
+    view_set_mark(v, &v->cursors[0], 4, 1);
+    view_set_point(v, &v->cursors[0], 11);
+    app_dev_feed(app, "M-%", &t->arena);
+    TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Query replace in region (default foo -> bar): ")), "replace: the region prompt");
+    app_dev_feed(app, "x RET RET", &t->arena); // "x": nothing in the region
+    TEST_CHECK(t, test_app_echo_is(app, "Replaced 0 occurrences"), "replace: x in the region");
+    view_set_mark(v, &v->cursors[0], 4, 1);
+    view_set_point(v, &v->cursors[0], 11);
+    app_dev_feed(app, "M-% f o o RET x RET !", &t->arena);
+    if (!test_replace_text(t, app, "region", "foo x x foo\n")) return 0;
+    TEST_CHECK(t, !v->cursors[0].mark_active, "replace: the region is deactivated");
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("foo Foo FOO\n"));
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% f o o RET b a r RET !", &t->arena);
+    if (!test_replace_text(t, app, "case conversion", "bar Bar BAR\n")) return 0;
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% b a r RET B a z RET !", &t->arena); // a capital in the replacement: no conversion
+    if (!test_replace_text(t, app, "replacement with a capital", "Baz Baz Baz\n")) return 0;
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("foo Foo FOO\n"));
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% F o o RET b a r RET !", &t->arena); // a capital in the search string: exact
+    if (!test_replace_text(t, app, "exact search", "foo bar FOO\n")) return 0;
+    // replace-string; no matches; a replacement containing the search string; a read-only buffer.
+    buffer_replace(v->buffer, 0, buffer_size(v->buffer), STR8_LIT("a a a\n"));
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-x r e p l a c e - s t r i n g RET a RET a a RET", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_echo_is(app, "Replaced 3 occurrences"), "replace: replace-string, a -> aa");
+    if (!test_replace_text(t, app, "replace-string a -> aa", "aa aa aa\n")) return 0;
+    app_dev_feed(app, "M-% z z z RET y RET", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_echo_is(app, "Replaced 0 occurrences"), "replace: no matches");
+    v->buffer->read_only = 1;
+    app_dev_feed(app, "M-%", &t->arena);
+    TEST_CHECK(t, !app->mini.active && test_app_echo_is(app, "Buffer is read-only: *scratch*"), "replace: a read-only buffer");
+    v->buffer->read_only = 0;
+    if (!test_app_destroy(t, app, "replace")) return 0;
+    app = test_search_app(t, STR8_LIT("foo\n"), 0);
+    app_dev_feed(app, "M-% RET", &t->arena);
+    TEST_CHECK(t, !app->mini.active && app->replace.state == REPLACE_OFF && test_app_echo_is(app, "Empty search string"),
+               "replace: an empty search string without a last pair");
+    if (!test_app_destroy(t, app, "replace empty")) return 0;
+
+    // The wheel while asking: the answer acts on the session's own match.
+    u8 *lines = PUSH_ARRAY(&t->arena, u8, 200 * 13);
+    for (i32 i = 0; i < 200; i++) fmt_buf(lines + i * 13, 14, "foo line %03d\n", i);
+    app = test_search_app(t, str8(lines, 200 * 13), 0);
+    rp = &app->replace;
+    v = app->views[0];
+    app_dev_feed(app, "M-% f o o RET b a r RET", &t->arena);
+    test_app_wheel(t, app, -10);
+    TEST_CHECK(t, test_app_point(app) > 13 * 20, "replace: the wheel dragged point (%D)", test_app_point(app));
+    app_dev_feed(app, "y", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && test_app_point(app) == 16 && view_top_line(v) <= 1,
+               "replace: wheel then y: the next question at line 1 (%D)", test_app_point(app));
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "n", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && test_app_point(app) == 29, "replace: wheel then n: line 1 skipped (%D)", test_app_point(app));
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, "q", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 29, "replace: wheel then q: point at the match (%D)", test_app_point(app));
+    String8 text = test_app_text(t, app);
+    TEST_CHECK(t, mem_equal(text.data, "bar line 000\nfoo line 001\nfoo line 002\n", 39), "replace: the wheel: the right lines replaced");
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% RET", &t->arena);
+    test_app_wheel(t, app, -10);
+    app_dev_feed(app, ".", &t->arena);
+    text = test_app_text(t, app);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_point(app) == 16 && mem_equal(text.data, "bar line 000\nbar line 001\nfoo line 002\n", 39),
+               "replace: wheel then .: replaced, point after it (%D)", test_app_point(app));
+    if (!test_app_destroy(t, app, "replace wheel")) return 0;
+
+    // Replace-all across frames: a fixed number of positions per frame; keys wait; C-g stops it midway.
+    i64 n = 20000;
+    u8 *foos = PUSH_ARRAY(&t->arena, u8, n * 4);
+    for (i64 i = 0; i < n; i++) memcpy(foos + i * 4, "foo\n", 4);
+    String8 original = str8(foos, n * 4);
+    app = test_search_app(t, original, 0);
+    rp = &app->replace;
+    v = app->views[0];
+    app->dev_work_budget = 4096;
+    app_dev_feed(app, "M-% f o o RET b a r RET !", &t->arena);
+    q = replace_prompt(rp, &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ALL && app_wants_frame(app) && str8_starts_with(q, STR8_LIT("Replacing... ")) && rp->count > 0 &&
+                  rp->count < n, "replace-all: running after the first frame ('%S', %D)", q, rp->count);
+    i64 point = test_app_point(app);
+    app_dev_feed(app, "x C-f RET y M-x", &t->arena); // ignored meanwhile
+    text = test_app_text(t, app);
+    b32 clean = text.len == n * 4 + 0 && rp->state == REPLACE_ALL && !app->mini.active;
+    for (i64 i = 0; clean && i < text.len; i++) clean = text.data[i] != 'x' && text.data[i] != 'y';
+    TEST_CHECK(t, clean && test_app_point(app) == point && buffer_line_count(v->buffer) == n + 1, "replace-all: keys meanwhile change nothing");
+    for (i32 k = 0; k < 40; k++) app_dev_feed_events(app, NULL, 0, &t->arena);
+    i64 partial = rp->count;
+    TEST_CHECK(t, rp->state == REPLACE_ALL && partial > 0 && partial < n, "replace-all: midway (%D of %D)", partial, n);
+    app_dev_feed(app, "C-g", &t->arena);
+    text = test_app_text(t, app);
+    i64 bars = 0, rest_ok = 1;
+    for (i64 i = 0; i < n; i++) {
+        if (mem_equal(text.data + i * 4, "bar\n", 4)) bars += i == bars;
+        else rest_ok &= mem_equal(text.data + i * 4, "foo\n", 4) && i >= bars;
+    }
+    char want[64];
+    test_cstr(want, sizeof(want), "Replaced %D occurrences (stopped)", partial);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && bars == partial && rest_ok && test_app_echo_is(app, want) && !app_wants_frame(app),
+               "replace-all: C-g stops after %D, the rest untouched", partial);
+    String8 stopped = str8_copy(&t->arena, text);
+    app_dev_feed(app, "C-/", &t->arena);
+    TEST_CHECK(t, str8_equal(test_app_text(t, app), original) && test_app_point(app) == 0, "replace-all: one undo restores the original text");
+    app_dev_feed(app, "C-?", &t->arena);
+    TEST_CHECK(t, str8_equal(test_app_text(t, app), stopped), "replace-all: undo-redo applies exactly the partial replacement again");
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-% RET", &t->arena);
+    test_app_pump(t, app); // the first match is behind the replaced part: searched in slices
+    TEST_CHECK(t, rp->state == REPLACE_ASKING && rp->match_start == partial * 4, "replace-all: asking after the replaced part");
+    app_dev_feed(app, "!", &t->arena);
+    i32 frames = test_app_pump(t, app);
+    test_cstr(want, sizeof(want), "Replaced %D occurrences", n - partial);
+    TEST_CHECK(t, rp->state == REPLACE_OFF && test_app_echo_is(app, want) && frames > 10, "replace-all: to the end (%d frames)", frames);
+    view_set_point(v, &v->cursors[0], 0);
+    app_dev_feed(app, "M-x r e p l a c e - s t r i n g RET b a r RET b a z RET", &t->arena);
+    TEST_CHECK(t, rp->state == REPLACE_ALL && str8_starts_with(replace_prompt(rp, &t->arena), STR8_LIT("Replacing... ")),
+               "replace-all: replace-string runs across frames too");
+    test_app_pump(t, app);
+    text = test_app_text(t, app);
+    b32 all = text.len == n * 4;
+    for (i64 i = 0; all && i < n; i++) all = mem_equal(text.data + i * 4, "baz\n", 4);
+    test_cstr(want, sizeof(want), "Replaced %D occurrences", n);
+    TEST_CHECK(t, all && test_app_echo_is(app, want), "replace-all: replace-string to the end");
+    app->dev_work_budget = 0;
+    if (!test_app_destroy(t, app, "replace-all")) return 0;
+    LOG("test: ok: replace: %d case conversions, every answer, the last pair, C-g, another key, one undo and undo-redo, the region, "
+        "case conversion, exact search, replace-string, a -> aa, no matches, read-only, an empty search string, the wheel, "
+        "replace-all stopped at %D of %D and undone in one step", (i32)ARRAY_COUNT(cases), partial, n);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // The minibuffer: prompts opened directly, keys through the headless app.
 
 typedef struct TestPromptLog {
@@ -5627,6 +5839,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_headless_app(&t);
     arena_reset(&t.arena);
     test_isearch(&t);
+    arena_reset(&t.arena);
+    test_replace(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
