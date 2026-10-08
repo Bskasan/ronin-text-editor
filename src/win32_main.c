@@ -81,6 +81,10 @@ typedef struct Platform {
     String8 config_path;
     String8 keys; // --keys: injected after startup
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
+    const char *stage_what[32]; // os_dev_stage: the startup timeline, logged after the first frame
+    LARGE_INTEGER stage_qpc[32];
+    i32 stage_count;
+    b32 stages_logged;
 #endif
 } Platform;
 
@@ -703,6 +707,32 @@ void os_log_write(String8 text) {
         WriteFile(g_platform->log_file, text.data, (DWORD)text.len, &written, NULL);
     }
 }
+
+void os_dev_stage(const char *what) {
+    Platform *p = g_platform;
+    if (!p || p->stages_logged || p->stage_count == ARRAY_COUNT(p->stage_what)) return;
+    QueryPerformanceCounter(&p->stage_qpc[p->stage_count]);
+    p->stage_what[p->stage_count++] = what;
+}
+
+// The startup timeline: each stage in ms since the process was created, and its own share.
+static void win32_dev_log_stages(Platform *p) {
+    FILETIME created, exited, kernel, user, now_ft;
+    LARGE_INTEGER now, freq;
+    GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+    GetSystemTimePreciseAsFileTime(&now_ft);
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    // The process creation time on the counter's scale.
+    i64 since_created = (win32_filetime_u64(now_ft) - win32_filetime_u64(created)) / 10;
+    i64 created_qpc_us = now.QuadPart * 1000000 / freq.QuadPart - since_created;
+    i64 prev = 0;
+    for (i32 i = 0; i < p->stage_count; i++) {
+        i64 t = p->stage_qpc[i].QuadPart * 1000000 / freq.QuadPart - created_qpc_us;
+        LOG("startup: %5D.%03D ms  +%5D us  %s", t / 1000, t % 1000, t - prev, p->stage_what[i]);
+        prev = t;
+    }
+}
 #endif
 
 // ---------------------------------------------------------------------------
@@ -775,6 +805,9 @@ static void win32_frame(Platform *p) {
     if (p->in_frame || !p->renderer || !p->app) return;
     p->in_frame = 1;
 
+#if TEAL_DEV
+    if (p->frame_count == 0) os_dev_stage("first frame: start");
+#endif
     FrameInput input = win32_frame_input(p);
     if (!app_update_and_render(p->app, &input, p->renderer)) p->quit = 1;
     p->event_count = 0;
@@ -1885,6 +1918,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->seed = 0x7ea1;
 #endif
     g_platform = p;
+#if TEAL_DEV
+    os_dev_stage("WinMain entered");
+#endif
 
     String8 *args;
     i32 arg_count = win32_parse_args(&p->perm, &args);
@@ -1965,6 +2001,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // Argument parsing above takes microseconds; the device thread starts right after it.
     Renderer *renderer = r_alloc(&p->perm); // allocated here, before the worker starts
     HANDLE device_thread = CreateThread(NULL, 0, win32_device_thread, renderer, 0, NULL);
+#if TEAL_DEV
+    os_dev_stage("arguments parsed, device thread started");
+#endif
 
 
     WNDCLASSEXW wc = {
@@ -2005,11 +2044,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     GetClientRect(p->hwnd, &client);
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
+#if TEAL_DEV
+    os_dev_stage("window created (hidden), sized for its DPI");
+#endif
 
     AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
                          .file_path = p->file_path, .goto_line = p->goto_line, .goto_col = p->goto_col };
 #if TEAL_DEV
-
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
                              p->bench_syntax); // defaults
@@ -2018,6 +2059,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
 #endif
     p->app = app_create(&p->perm, &app_args);
+#if TEAL_DEV
+    os_dev_stage("app created");
+#endif
 #if TEAL_DEV
     LOG("memory: private bytes with the app (config, font and atlas, buffers): %U KB", os_dev_private_bytes() / 1024);
 #endif
@@ -2041,6 +2085,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         r_create_device(renderer); // no thread: create it here
     }
 #if TEAL_DEV
+    os_dev_stage("device thread joined");
+#endif
+#if TEAL_DEV
     LOG("startup: device thread %s, main thread waited %U us for it", device_thread ? "used" : "unavailable",
         os_time_us() - join_start);
     LOG("memory: private bytes with the D3D11 device: %U KB", os_dev_private_bytes() / 1024);
@@ -2055,6 +2102,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         os_fatal(STR8_LIT("Could not initialize Direct3D 11."));
     }
     p->renderer = renderer; // from here on WM_SIZE / WM_PAINT may render
+#if TEAL_DEV
+    os_dev_stage("swap chain, pipeline and atlas texture created");
+#endif
 #if TEAL_DEV
     LOG("memory: private bytes with the swap chain, pipeline and atlas texture: %U KB", os_dev_private_bytes() / 1024);
 #endif
@@ -2072,14 +2122,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         BOOL cloak = TRUE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if TEAL_DEV
+        os_dev_stage("cloaked");
+#endif
+#if TEAL_DEV
         ShowWindow(p->hwnd, p->smoke ? SW_SHOWNOACTIVATE : SW_SHOW);
 #else
         ShowWindow(p->hwnd, SW_SHOW);
 #endif
+#if TEAL_DEV
+        os_dev_stage("window shown (cloaked)");
+#endif
         win32_frame(p);
+#if TEAL_DEV
+        os_dev_stage("first frame built and presented");
+#endif
         cloak = FALSE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if TEAL_DEV
+        os_dev_stage("uncloaked");
+        p->stages_logged = 1;
+        win32_dev_log_stages(p);
         win32_inject_keys(p);
 #endif
     }
