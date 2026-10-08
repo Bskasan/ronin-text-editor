@@ -1822,6 +1822,18 @@ static b32 test_hot_reload(Test *t) {
     os_file_close(lock);
     TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_LOADED && c->settings.tab_width == 3,
                "reload: the next poll after the failure loads the file");
+    // Settle: a notification is acted on 50 ms after the last one, so a file truncated and then
+    // written is read once, full, never empty.
+    if (!test_write(t, path, "")) return 0;
+    config_notify(&src, now);
+    TEST_CHECK(t, config_pending(&src) && config_poll(&src, c, &t->arena, 0, now + 10000) == CONFIG_POLL_UNCHANGED &&
+                  config_wait_ms(&src, now + 10000) == CONFIG_SETTLE_MS - 10, "reload: settling: no read before 50 ms");
+    if (!test_write(t, path, "[settings]\ntab_width = 11\n# written after the truncation\n")) return 0;
+    config_notify(&src, now + 30000); // the second notification moves the read to now + 80 ms
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now + 60000) == CONFIG_POLL_UNCHANGED, "reload: settling restarts on a notification");
+    TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now + 80000) == CONFIG_POLL_LOADED && c->settings.tab_width == 11 &&
+                  !config_pending(&src) && config_wait_ms(&src, now + 80000) == CONFIG_WAIT_INFINITE,
+               "reload: settled: the full file is read (tab_width %d)", c->settings.tab_width);
     os_unwatch(w);
     TEST_CHECK(t, os_dev_watch_count() == 0, "reload: the watch was not released");
     LOG("test: ok: hot reload: write, other file, save by rename, sharing violation retried and given up");

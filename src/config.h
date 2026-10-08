@@ -56,8 +56,11 @@ String8 config_file_name(String8 path); // the last path component
 // that is missing for a moment (editors that save through a temporary file and a rename) counts
 // as unchanged. A sharing violation (another program still writing) is retried every
 // CONFIG_RETRY_MS, at most CONFIG_RETRY_ATTEMPTS reads in all; the caller waits with that timeout
-// only while a retry is pending.
+// only while a retry is pending. A notification is not acted on at once: the read waits
+// CONFIG_SETTLE_MS after the last one, so an editor that truncates the file and then writes it
+// is read once it is done, not while it is empty.
 
+#define CONFIG_SETTLE_MS 50
 #define CONFIG_RETRY_MS 100
 #define CONFIG_RETRY_ATTEMPTS 5
 #define CONFIG_WAIT_INFINITE 0xFFFFFFFFu
@@ -76,11 +79,16 @@ typedef struct ConfigSource {
     u64 write_time;
     i32 attempts;        // failed reads in a row; > 0 = a retry is pending
     u64 retry_at_us;
+    b32 settling;        // a change notification arrived; read at settle_at_us
+    u64 settle_at_us;
     OsFileStatus status; // of the last read
 } ConfigSource;
 
-// force: read now (startup, reload-config). Otherwise only a changed file or a due retry is read.
+// force: read now (startup, reload-config). Otherwise only a changed file is read, once a settle
+// delay or a retry is due.
 ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, u64 now_us);
-u32        config_wait_ms(ConfigSource *src, u64 now_us); // until the pending retry, else CONFIG_WAIT_INFINITE
+void       config_notify(ConfigSource *src, u64 now_us);  // a change notification: read CONFIG_SETTLE_MS later
+b32        config_pending(ConfigSource *src);             // a settle delay or a retry is pending
+u32        config_wait_ms(ConfigSource *src, u64 now_us); // until the next pending read, else CONFIG_WAIT_INFINITE
 
 #endif // CONFIG_H

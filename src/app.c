@@ -890,13 +890,13 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
             app_wheel(app, e->x, e->y, e->wheel, e->mods);
             break;
         case EVENT_DIR_CHANGED:
-            if (e->watch == app->config_watch) app_reload_config(app, 0);
+            if (e->watch == app->config_watch) config_notify(&app->config_source, os_time_us());
             break;
         default:
             break;
         }
     }
-    if (app->config_source.attempts > 0) app_reload_config(app, 0); // a retry may be due (EVENT_WAKEUP)
+    if (config_pending(&app->config_source)) app_reload_config(app, 0); // a settle delay or retry may be due (EVENT_WAKEUP)
     app->renderer = NULL;
     if (app->quit) return 0;
     // A command may have changed the font (text scale, config): lay out again.
