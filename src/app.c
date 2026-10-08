@@ -807,6 +807,7 @@ static u32  files_wait_ms(App *app);
 // The config is read before the font, so the font is set up exactly once, as configured.
 App *app_create(Arena *perm, AppArgs *args) {
     App *app = PUSH_STRUCT(perm, App);
+    syntax_init();
     app->forced_render_mode = args->render_mode_forced ? (i32)args->render_mode : -1;
     app->config_arenas[0] = arena_create(APP_CONFIG_RESERVE);
     app->config_arenas[1] = arena_create(APP_CONFIG_RESERVE);

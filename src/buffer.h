@@ -142,6 +142,7 @@ typedef struct Buffer {
     // lines and tracks what an edit made untrustworthy.
     u32 *line_state;
     b32 states_on;
+    i32 states_language; // the BufferLanguage they were computed for (set by the syntax layer)
     i64 state_valid; // lines [0, state_valid] have their correct start state
     i64 state_dirty; // the last line whose text changed since; states may only converge after it (-1: none)
     i64 state_known; // lines [0, state_known) have a stored state (possibly stale); the rest have none
