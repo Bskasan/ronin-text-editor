@@ -165,6 +165,8 @@ static SyntaxKind syn_lookup(SynTable *t, u8 *s, i64 len, SyntaxKind otherwise) 
 
 static u32 lex_c(u32 state, u8 *s, i64 n, SyntaxTokens *out);
 static void lex_c_init(void);
+static u32 lex_jai(u32 state, u8 *s, i64 n, SyntaxTokens *out);
+static void lex_jai_init(void);
 
 // ---------------------------------------------------------------------------
 // Languages
@@ -174,7 +176,7 @@ typedef u32 SyntaxLexFn(u32 state, u8 *s, i64 n, SyntaxTokens *out);
 static SyntaxLexFn *syntax_lexer(BufferLanguage language) {
     switch (language) {
     case BUFFER_LANG_FUNDAMENTAL: return NULL;
-    case BUFFER_LANG_JAI:         return NULL;
+    case BUFFER_LANG_JAI:         return lex_jai;
     case BUFFER_LANG_C:           return lex_c;
     case BUFFER_LANG_CPP:         return lex_c;
     case BUFFER_LANG_CSHARP:      return NULL;
@@ -189,6 +191,7 @@ static b32 syntax_ready;
 void syntax_init(void) {
     if (syntax_ready) return;
     lex_c_init();
+    lex_jai_init();
     syntax_ready = 1;
 }
 
