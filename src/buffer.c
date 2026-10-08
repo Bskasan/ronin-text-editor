@@ -837,6 +837,56 @@ OsFileStatus buffer_load_file(Buffer *buf, String8 path) {
     return OS_FILE_OK;
 }
 
+static b32 buffer_is_continuation(u8 b) {
+    return (b & 0xC0) == 0x80;
+}
+
+OsFileStatus buffer_revert(Buffer *buf, i64 point) {
+    if (!buf->path.len) return OS_FILE_NO_PATH;
+    Buffer *fresh = buffer_create(STR8_LIT(""));
+    if (!fresh) return OS_FILE_OUT_OF_MEMORY;
+    OsFileStatus status = buffer_load_file(fresh, buf->path);
+    if (status != OS_FILE_OK) {
+        buffer_destroy(fresh);
+        return status;
+    }
+    i64 new_size = buffer_size(fresh), old_size = buffer_size(buf);
+    buffer_move_gap(fresh, new_size); // contiguous
+    u8 *nt = fresh->text;
+    String8 o1, o2;
+    buffer_segments(buf, &o1, &o2);
+    // The common prefix, over the old text's two segments.
+    i64 limit = MIN(old_size, new_size), p = 0;
+    while (p < limit && p < o1.len && o1.data[p] == nt[p]) p++;
+    if (p == o1.len) while (p < limit && o2.data[p - o1.len] == nt[p]) p++;
+    // The common suffix, not overlapping the prefix.
+    i64 s = 0;
+    while (s < limit - p && buffer_byte(buf, old_size - 1 - s) == nt[new_size - 1 - s]) s++;
+    // Whole characters only: an edge inside a UTF-8 sequence (of either text) moves outwards.
+    while (p > 0 && ((p < new_size && buffer_is_continuation(nt[p])) || (p < old_size && buffer_is_continuation(buffer_byte(buf, p))))) p--;
+    while (s > 0 && (buffer_is_continuation(nt[new_size - s]) || buffer_is_continuation(buffer_byte(buf, old_size - s)))) s--;
+    if (p < old_size - s || p < new_size - s) {
+        buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, point); // a group of its own
+        b32 inhibit = buf->inhibit_read_only;
+        buf->inhibit_read_only = 1;
+        b32 ok = buffer_replace(buf, p, old_size - s, str8(nt + p, new_size - s - p));
+        buf->inhibit_read_only = inhibit;
+        buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, point); // nothing merges into it afterwards
+        if (!ok) {
+            buffer_destroy(fresh);
+            return OS_FILE_OUT_OF_MEMORY;
+        }
+    }
+    buf->encoding = fresh->encoding;
+    buf->eol = fresh->eol;
+    buf->read_only = fresh->read_only;
+    buf->file_size = fresh->file_size;
+    buf->file_time = fresh->file_time;
+    buffer_mark_saved(buf);
+    buffer_destroy(fresh);
+    return OS_FILE_OK;
+}
+
 // ---------------------------------------------------------------------------
 // Saving
 
