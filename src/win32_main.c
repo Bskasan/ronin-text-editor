@@ -911,6 +911,19 @@ static u32 win32_key_char(Platform *p, u32 vk, u32 scancode, i32 *ret) {
     return c;
 }
 
+// TranslateMessage runs before the window procedure. For a chord on a dead key (M-^ where ^ is dead)
+// it left the accent pending in the thread's keyboard state, and the next key would compose with it
+// (e typing ê, C-h read as C-^). The chord took the key: a pending accent is consumed here.
+static void win32_drop_dead_key(void) {
+    BYTE state[256] = { 0 };
+    WCHAR buf[8];
+    HKL hkl = GetKeyboardLayout(0);
+    UINT scan = MapVirtualKeyExW(VK_SPACE, MAPVK_VK_TO_VSC, hkl);
+    // Flag 0x4 only looks: a space gives itself unless an accent is pending.
+    if (ToUnicodeEx(VK_SPACE, scan, state, buf, ARRAY_COUNT(buf), 0x4, hkl) == 1 && buf[0] == ' ') return;
+    ToUnicodeEx(VK_SPACE, scan, state, buf, ARRAY_COUNT(buf), 0, hkl);
+}
+
 static Key win32_map_vk(u32 vk) {
     if (vk >= 'A' && vk <= 'Z') return (Key)(KEY_A + (vk - 'A'));
     if (vk >= '0' && vk <= '9') return (Key)(KEY_0 + (vk - '0'));
@@ -1090,6 +1103,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 };
                 win32_push_event(p, e);
                 p->redraw = 1;
+                if ((e.mods & (MOD_CTRL | MOD_ALT)) && e.codepoint) win32_drop_dead_key();
             }
             // We handle WM_SYSKEYDOWN ourselves so Alt works as Meta; let only Alt+F4
             // through to DefWindowProc so it still closes the window.
