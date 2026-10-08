@@ -58,7 +58,14 @@ typedef struct Arena {
     u64 pos;
 } Arena;
 
-#define ARENA_COMMIT_GRANULARITY KB(64)
+#define ARENA_RESERVE_GRANULARITY KB(64)
+
+// Commit steps grow with what is already committed: 4 KB, 8, 16, 32, then 64 KB at a time. A
+// small arena or buffer costs a few pages; a large one still commits rarely.
+#define COMMIT_STEP_MIN KB(4)
+#define COMMIT_STEP_MAX KB(64)
+u64 commit_step(u64 committed);           // the power of two in [4 KB, 64 KB] closest below committed
+u64 commit_grow(u64 committed, u64 need); // the next commit size: >= need, at least one step more
 
 Arena arena_create(u64 reserve_size);
 void *arena_push(Arena *arena, u64 size, u64 align); // zeroed

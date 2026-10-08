@@ -4,15 +4,14 @@
 #include <intrin.h>    // _BitScanForward
 
 #define BUFFER_CHUNK KB(64) // fixed buffer for converting reads and writes
-#define BUFFER_COMMIT_GRANULARITY KB(64)
-#define BUFFER_GAP_MIN KB(64)
-#define BUFFER_GAP_MAX MB(64)
+#define BUFFER_RESERVE_GRANULARITY KB(64)
+#define BUFFER_GAP_MAX MB(64) // the most slack a growing gap commits (size / 16 up to this)
 
 // ---------------------------------------------------------------------------
 // Create / destroy
 
 Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
-    text_reserve = (i64)ALIGN_UP_POW2((u64)text_reserve, BUFFER_COMMIT_GRANULARITY);
+    text_reserve = (i64)ALIGN_UP_POW2((u64)text_reserve, BUFFER_RESERVE_GRANULARITY);
     ASSERT(text_reserve <= (i64)BUFFER_TEXT_RESERVE); // line index entries are u32
     u8 *text = (u8 *)os_reserve((u64)text_reserve);
     u32 *nl = (u32 *)os_reserve((u64)text_reserve * sizeof(u32));
@@ -222,12 +221,12 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance) {
         buf->marker_free = buf->markers[slot].next_free;
     } else {
         if (buf->marker_count == buf->marker_cap) {
-            i64 per_commit = (i64)(BUFFER_COMMIT_GRANULARITY / sizeof(BufferMarkerSlot));
-            if (buf->marker_cap + per_commit > buf->marker_reserved ||
-                !os_commit(buf->markers + buf->marker_cap, BUFFER_COMMIT_GRANULARITY)) {
+            u64 bytes = (u64)buf->marker_cap * sizeof(BufferMarkerSlot);
+            u64 grown = commit_grow(bytes, bytes + sizeof(BufferMarkerSlot));
+            if (grown > (u64)buf->marker_reserved * sizeof(BufferMarkerSlot) || !os_commit((u8 *)buf->markers + bytes, grown - bytes)) {
                 os_fatal(STR8_LIT("Out of memory (markers)."));
             }
-            buf->marker_cap += per_commit;
+            buf->marker_cap = (i64)(grown / sizeof(BufferMarkerSlot));
         }
         slot = (u32)buf->marker_count++;
     }
@@ -284,15 +283,14 @@ static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
 static b32 buffer_reserve_gap(Buffer *buf, i64 need) {
     i64 gap = buf->gap_end - buf->gap_start;
     if (gap >= need) return 1;
-    i64 size = buffer_size(buf);
-    i64 slack = CLAMP(size / 16, (i64)BUFFER_GAP_MIN, (i64)BUFFER_GAP_MAX);
+    i64 slack = MIN(buffer_size(buf) / 16, (i64)BUFFER_GAP_MAX);
     i64 min_cap = buf->text_cap + (need - gap);
     if (min_cap > buf->text_reserved) return 0;
-    i64 new_cap = (i64)ALIGN_UP_POW2((u64)(min_cap + slack), BUFFER_COMMIT_GRANULARITY);
+    i64 new_cap = (i64)commit_grow((u64)buf->text_cap, (u64)(min_cap + slack));
     new_cap = MIN(new_cap, buf->text_reserved);
     if (!os_commit(buf->text + buf->text_cap, (u64)(new_cap - buf->text_cap))) {
         // Retry without the slack before giving up.
-        new_cap = (i64)ALIGN_UP_POW2((u64)min_cap, BUFFER_COMMIT_GRANULARITY);
+        new_cap = (i64)ALIGN_UP_POW2((u64)min_cap, COMMIT_STEP_MIN);
         new_cap = MIN(new_cap, buf->text_reserved);
         if (!os_commit(buf->text + buf->text_cap, (u64)(new_cap - buf->text_cap))) return 0;
     }
@@ -307,12 +305,12 @@ static b32 buffer_reserve_gap(Buffer *buf, i64 need) {
 static b32 buffer_reserve_nl_gap(Buffer *buf, i64 need) {
     i64 gap = buf->nl_back - buf->nl_front;
     if (gap >= need) return 1;
-    i64 count = buffer_nl_count(buf);
-    i64 slack = CLAMP(count / 16, (i64)(BUFFER_GAP_MIN / sizeof(u32)), (i64)(BUFFER_GAP_MAX / sizeof(u32)));
-    i64 per_page = (i64)(BUFFER_COMMIT_GRANULARITY / sizeof(u32));
+    i64 slack = MIN(buffer_nl_count(buf) / 16, (i64)(BUFFER_GAP_MAX / sizeof(u32)));
+    i64 per_page = (i64)(COMMIT_STEP_MIN / sizeof(u32));
     i64 min_cap = buf->nl_cap + (need - gap);
     if (min_cap > buf->nl_reserved) return 0;
-    i64 new_cap = MIN((i64)ALIGN_UP_POW2((u64)(min_cap + slack), (u64)per_page), buf->nl_reserved);
+    i64 new_cap = (i64)(commit_grow((u64)buf->nl_cap * sizeof(u32), (u64)(min_cap + slack) * sizeof(u32)) / sizeof(u32));
+    new_cap = MIN(new_cap, buf->nl_reserved);
     if (!os_commit(buf->nl + buf->nl_cap, (u64)(new_cap - buf->nl_cap) * sizeof(u32))) {
         new_cap = MIN((i64)ALIGN_UP_POW2((u64)min_cap, (u64)per_page), buf->nl_reserved);
         if (!os_commit(buf->nl + buf->nl_cap, (u64)(new_cap - buf->nl_cap) * sizeof(u32))) return 0;
@@ -355,8 +353,6 @@ static void buffer_move_gap(Buffer *buf, i64 pos) {
 // ---------------------------------------------------------------------------
 // Undo log
 
-#define BUFFER_UNDO_COMMIT KB(64)
-
 void buffer_mark_saved(Buffer *buf) {
     buf->undo.saved_state = buf->undo.state;
     buf->modified = 0;
@@ -397,7 +393,7 @@ void buffer_undo_boundary(Buffer *buf, BufferUndoMerge merge, b32 consecutive, i
 static b32 buffer_undo_commit(Buffer *buf, u64 need) {
     BufferUndo *u = &buf->undo;
     if (u->log_used + need <= u->log_committed) return 1;
-    u64 new_committed = ALIGN_UP_POW2(u->log_used + need, BUFFER_UNDO_COMMIT);
+    u64 new_committed = commit_grow(u->log_committed, u->log_used + need);
     if (new_committed > BUFFER_UNDO_RESERVE) return 0;
     if (!os_commit(u->log + u->log_committed, new_committed - u->log_committed)) return 0;
     u->log_committed = new_committed;
@@ -408,9 +404,10 @@ static BufferUndoGroup *buffer_undo_new_group(Buffer *buf, i64 point, BufferUndo
     BufferUndo *u = &buf->undo;
     if ((u64)(u->group_count + 1) * sizeof(BufferUndoGroup) > BUFFER_UNDO_GROUP_RESERVE) return NULL;
     if (u->group_count == u->group_committed) {
-        i64 more = (i64)(BUFFER_UNDO_COMMIT / sizeof(BufferUndoGroup));
-        if (!os_commit(u->groups + u->group_committed, (u64)more * sizeof(BufferUndoGroup))) return NULL;
-        u->group_committed += more;
+        u64 bytes = (u64)u->group_committed * sizeof(BufferUndoGroup);
+        u64 grown = MIN(commit_grow(bytes, bytes + sizeof(BufferUndoGroup)), (u64)BUFFER_UNDO_GROUP_RESERVE);
+        if (!os_commit((u8 *)u->groups + bytes, grown - bytes)) return NULL;
+        u->group_committed = (i64)(grown / sizeof(BufferUndoGroup));
     }
     BufferUndoGroup *g = &u->groups[u->group_count++];
     *g = (BufferUndoGroup){ .offset = u->log_used, .last = u->log_used, .point_before = point, .state_before = u->state,
@@ -442,7 +439,7 @@ static b32 buffer_undo_record(Buffer *buf, i64 start, i64 end, i64 inserted) {
 static void buffer_undo_shrink(Buffer *buf) {
     BufferUndo *u = &buf->undo;
     if (u->log_committed <= u->log_used + MB(4)) return;
-    u64 keep = ALIGN_UP_POW2(u->log_used + MB(1), BUFFER_UNDO_COMMIT);
+    u64 keep = ALIGN_UP_POW2(u->log_used + MB(1), COMMIT_STEP_MAX);
     os_decommit(u->log + keep, u->log_committed - keep);
     u->log_committed = keep;
 }

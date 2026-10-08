@@ -3,9 +3,20 @@
 // ---------------------------------------------------------------------------
 // Arena
 
+u64 commit_step(u64 committed) {
+    u64 step = COMMIT_STEP_MIN;
+    while (step < COMMIT_STEP_MAX && step * 2 <= committed) step *= 2;
+    return step;
+}
+
+u64 commit_grow(u64 committed, u64 need) {
+    u64 step = commit_step(committed);
+    return ALIGN_UP_POW2(MAX(need, committed + step), step);
+}
+
 Arena arena_create(u64 reserve_size) {
     Arena arena = {0};
-    reserve_size = ALIGN_UP_POW2(reserve_size, ARENA_COMMIT_GRANULARITY);
+    reserve_size = ALIGN_UP_POW2(reserve_size, ARENA_RESERVE_GRANULARITY);
     arena.base = (u8 *)os_reserve(reserve_size);
     if (!arena.base) os_fatal(STR8_LIT("Out of address space (arena reserve failed)."));
     arena.reserved = reserve_size;
@@ -17,7 +28,7 @@ void *arena_push(Arena *arena, u64 size, u64 align) {
     u64 end = start + size;
     if (end > arena->reserved) os_fatal(STR8_LIT("Arena reservation exhausted."));
     if (end > arena->committed) {
-        u64 new_committed = MIN(ALIGN_UP_POW2(end, ARENA_COMMIT_GRANULARITY), arena->reserved);
+        u64 new_committed = MIN(commit_grow(arena->committed, end), arena->reserved);
         if (!os_commit(arena->base + arena->committed, new_committed - arena->committed)) {
             os_fatal(STR8_LIT("Out of memory (arena commit failed)."));
         }
