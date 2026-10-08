@@ -5,27 +5,28 @@
 | file | role |
 |---|---|
 | `src/teal.c` | the unity translation unit; includes everything below except the .cpp, in order |
-| `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, mini formatter, dev LOG |
+| `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
 | `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
 | `src/font.h/.c` | metrics, CPU glyph atlas (shelf packer), glyph cache, `font_draw_text` |
-| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, markers, language from the extension, file load (encodings, line endings) and save |
+| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, the undo log (groups, state ids, undo / redo, limit), markers, language from the extension, file load (encodings, line endings) and save |
 | `src/command.h/.c` | `Command` and `CommandContext`; the table of every command, lookup by Emacs name |
-| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), `view_run_command`, motion and editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
+| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), the command driver `view_run_command` (undo boundaries, shift-select, region rules, kill appending, clipboard), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
+| `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link), undo / undo-redo, kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
 | `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
-| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap, buffers, app commands (quit, buffer switching, open/reload config, text scale, describe-key), layout of views and echo area, drawing, window title, mouse; dev: the Phase 2 sample behind `--sample`, smoke probes |
+| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap, buffers, the kill ring, app commands (quit, buffer switching, open/reload config, text scale, describe-key, quoted-insert), layout of views and echo area, drawing (region included), window title, mouse (click, drag, double / triple click); dev: the Phase 2 sample behind `--sample`, smoke probes, `--bench-edit` memory |
 | `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation, os_* implementation, dev flags |
+| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation (click counts), clipboard (and the dev fake), os_* implementation, dev flags |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
+Core (`app.c`, `font.c`, `buffer.c`, `view.c`, `edit.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
 includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
 
 ## Startup and frame loop
@@ -134,6 +135,34 @@ with or without the 100 MB file.
 - Release exe 188,928 bytes (156,672 after Phase 4); the same six imports (kernel32 adds
   GetEnvironmentVariableW, Find*ChangeNotification, CreateDirectoryW; user32 adds ToUnicodeEx,
   GetKeyboardState, GetKeyboardLayout).
+
+## Measurements (Phase 6)
+
+`build\teal_bench.exe`, same machine; the release build for the memory figures.
+
+- Typing (bench-view, 10,000 self-inserts on one line at line 1,000,000, command + frame build):
+  Phase 5 build 22-38 us, Phase 6 build 29-38 us in the same runs (alternated; the spread is
+  the machine, composed vs overlay presentation). Logging an insert into the undo log costs
+  17 ns at the buffer level (37 -> 54 ns per insert). Point's column is scanned from the line
+  start on every view_ensure_visible; on the 10,000-character line that is ~5 us a call, and
+  the frame made three of them; it now makes two (perf commit), which keeps typing in the
+  Phase 5 range.
+- --bench-edit on the 100 MB file: 10,000 self-inserts with undo on, 29 us a frame; undo log
+  after them 383 KB committed (groups of 20). kill-region of the second half (~50 MB) 101 ms
+  command + frame (one copy into the kill ring, one into the undo log, one into the clipboard
+  as UTF-16); its undo 36 ms; a yank of it at the end 39 ms; the undo of that 8 ms. Undo log
+  after that 51 MB committed (limit 64 MB: older groups dropped, the commit given back), kill
+  ring 51 MB (the entry has its own reservation).
+- Startup (release, 7 runs) 191 ms median (190 in Phase 5). Release exe 219,648 bytes (188,928
+  after Phase 5); the same six DLLs (user32 adds the clipboard functions, GetDoubleClickTime,
+  GetSystemMetricsForDpi; kernel32 adds Global* and VirtualFree).
+- Memory, release build, private bytes idle (3 runs each): *scratch* only 78-80 MB; with
+  src\keymap.c (14 KB) 79-80 MB; with the 100 MB file 189-190 MB. Dev build at the startup
+  stages: 4.3 MB before the app, +5 MB for the app (font atlas 4 MB, DirectWrite, buffers),
+  +50 MB with the D3D11 device (driver), +4.4 MB swap chain and pipeline, +12.6 MB after the
+  first frame (driver): of ~76 MB, ~67 MB is Direct3D and the driver. An extra open buffer
+  (2 KB file) adds 439 KB of private bytes; its own commit is 384 KB: meta 64, text 128, line
+  index 128, markers 64 KB (64 KB commit steps; undo commits nothing until the first edit).
 
 ## Roadmap
 
@@ -369,11 +398,84 @@ with or without the 100 MB file.
   cursor after a switch.
 - *Messages*: every echo-area message is also appended to this read-only buffer through the
   inhibit_read_only path, keeping the last 1000 lines. Key prefixes and the describe-key prompt
-  are shown, not logged.
+  are shown, not logged. *scratch* always exists (Phase 6), as in Emacs; the list is the file,
+  *scratch*, *Messages*, and next-buffer keeps *Messages* in the cycle.
+- A config change notification is read 50 ms after the last one (Phase 6), through the same
+  pending-wait mechanism as the retries, so an editor that truncates and then writes the file
+  is read once, full.
 - save-buffers-kill-terminal refuses once while file-visiting buffers are modified and quits on
   an immediate repeat (real prompts come with the minibuffer in Phase 7); the window's close
   button and Alt+F4 run it too. Text scale: 1.2 per step for the session (never written to
   the config); Ctrl + wheel does the same; other mouse input stays hard-coded.
+
+### Editing: mark and region, kill ring, undo, indentation (Phase 6)
+
+- Undo is logged inside buffer_replace, the single entry point: a record {start, removed,
+  inserted} and the removed bytes only (undoing an insertion needs just its length), in a
+  reserved range per buffer. Program buffers (*Messages*) have undo disabled. Loading a file
+  records nothing.
+- Undo follows Emacs: undo is itself undoable (an undo applies the inverse of a group through
+  buffer_replace and is logged as a group). Consecutive undo commands walk back through history
+  (a pending group); any other command ends the run, after which undo first undoes the undos.
+  undo-redo is the direct way forward: it undoes the most recent group that moved back in
+  history (groups record their direction) and led to the current state.
+- The command driver sets undo boundaries: one command, applied to all cursors, is one undo
+  group. Consecutive self-insert-command calls are merged into groups of up to 20 characters,
+  and so are consecutive single-character deletes, as in Emacs. After undo, point goes to where
+  the undone command started and the mark is deactivated.
+- A buffer is unmodified exactly when its undo position equals the position at the last save:
+  every logged edit yields a state id, an undo group returns to the state before the group it
+  reverts, and modified = (state != saved state). Undoing (or redoing) back to the saved
+  state clears the modified flag.
+- undo_limit_mb bounds the log: the oldest groups are dropped first (down to 3/4 of the limit,
+  so the memmove is rare) and the commit beyond what is kept is given back; the most recent
+  command always stays undoable, even alone over the limit.
+- Everything the driver does is driven by command flags; no command implements these rules:
+  COMMAND_MOTION (shift-select), COMMAND_EDIT (deactivates the mark afterwards), COMMAND_KILL /
+  COMMAND_KILL_BACKWARD (a kill directly after a kill appends to the same entry, a backward kill
+  prepends; all cursors of one command share it), COMMAND_MERGE_INSERT / MERGE_DELETE (undo
+  merging), COMMAND_REGION_DELETE (DEL and C-d delete an active region, Emacs'
+  delete-active-region) and COMMAND_REGION_REPLACE (typing, RET and yank replace an active
+  region with delete_selection_mode).
+- Transient mark mode is on by default: the region is highlighted while the mark is active; the
+  selection color is drawn behind the cells, to the window edge on lines whose newline is
+  selected, and text keeps its color. Region commands use the mark whenever it is set (Emacs'
+  mark-even-if-inactive). Shift-select uses the shift-translation of Phase 5: a shifted motion
+  activates the mark at point first (an active region extends), an unshifted motion ends a
+  region that shift started. C-SPC C-SPC deactivates the mark again.
+- Typing does not replace an active region by default (Emacs); delete_selection_mode is a
+  setting.
+- The mouse: a press puts point at the cell and deactivates the region, a drag selects from
+  there (captured; rows and columns clamped to the text area outside it), a double click
+  selects the word (or a run of blanks, or one other character), a triple click the line with
+  its newline. The platform counts clicks with the system's double-click time and area.
+- The kill ring and the Windows clipboard are linked, like Emacs' select-enable-clipboard:
+  every kill command also puts its entry on the clipboard (once per command), and yank takes
+  the clipboard when its sequence number changed since our last kill
+  (GetClipboardSequenceNumber; no clipboard listener). A kill in a read-only buffer copies the
+  text and says the buffer is read-only. kill-line kills through the newline when only blanks
+  are left (Emacs).
+- Kill ring storage: small entries share one arena (dead bytes compacted away when they pass
+  half of it); an entry over 1 MB has its own reservation with a geometrically growing commit.
+  A kill is copied once into its entry, from the buffer; appending grows the newest entry in
+  place, so a large entry is never copied again.
+- Clipboard text is CRLF by convention: LF -> CRLF when copying (in one pass, straight into the
+  clipboard's memory), CRLF and lone CR -> LF when pasting. Busy clipboards are retried 5 times.
+  Tests, the smoke, the benches and screenshot runs use an in-memory fake.
+- Indentation is rule based, with no parser: a line's indentation is the indentation of the
+  previous non-blank line, plus that line's net bracket balance (its ( [ { minus its ) ] }, not
+  counting the closing brackets that start it, which were applied to its own indentation),
+  minus one level per closing bracket that starts the current line; never below column 0.
+  Brackets inside strings and comments are counted naively for now; Phase 8 makes this
+  token-aware. Indentation is rewritten only when it differs (no no-op undo records).
+- RET indents the new line and empties a whitespace-only line it leaves; TAB reindents the line
+  (point keeps its place in the text, from the indentation it goes to the text) or every line
+  of an active region (blank lines emptied); a closing bracket typed first on a line reindents
+  it in the same undo group. indent_with_tabs, or per buffer what detect_indentation found in
+  the file's first indented lines (tab_width and the tab choice are buffer-local, Emacs).
+- comment-line uses "//" for every language; it toggles on the line or the region's lines at
+  their smallest indentation and, without a region, moves to the next line (Emacs).
+- <backtab> is Emacs' name for S-TAB in the kbd notation (and how it prints).
 
 ## Later
 
@@ -390,8 +492,6 @@ with or without the 100 MB file.
 - *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
 - Chords on Turkish Q: Ctrl+Shift+ı gives C-S-i (default case mapping); a layout-aware letter
   case would make it C-S-ı.
-- Hot reload of a file truncated and then written in place (not saved by rename) can load the
-  empty file first and apply the defaults for one frame; a debounce would need a timer.
 - Wide (East Asian) characters and emoji occupying two cells; color emoji.
 - System font fallback for codepoints Consolas lacks.
 - Bold / italic faces, if a theme ever wants them.
@@ -401,4 +501,14 @@ with or without the 100 MB file.
 - Line wrapping (visual lines).
 - Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
   more layout).
-- Column cache for very long lines: point's column is found by scanning from the line start.
+- Column cache for very long lines: point's column is found by scanning from the line start
+  (each view_ensure_visible and the drawing scan it; ~5 us a scan on a 10,000-character line).
+- Prefix arguments (C-u), the mark ring, rectangle commands, overwrite mode.
+- Clipboard delayed rendering (a 50 MB kill is converted to UTF-16 at once).
+- Auto-scroll while dragging outside the window; after a double or triple click, a drag that
+  extends by words or lines.
+- Multiple cursors and undo: undo restores only the primary cursor's point (Phase 14).
+- Smaller commit steps for small buffers: an extra 2 KB buffer costs ~440 KB (64 KB steps for
+  meta, text, line index and markers).
+- Indentation of callbacks: `f((x) => {` opens two levels under the bracket rule (Phase 8 can
+  count tokens instead).

@@ -98,13 +98,19 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # lookups, save, frames at top/middle/end
     build/teal_bench.exe --bench-view                     # same file, key/text events through the app:
                                                           # next-line, PageDown, C-End/C-Home, typing
+    build/teal_bench.exe --bench-edit                     # same file: typing with undo, kill / yank /
+                                                          # undo of 50 MB, undo log, kill ring, memory
+                                                          # per extra buffer
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
 checks, so open-config never touches the real %APPDATA%\teal\teal.conf. The benches report
 the final flush and the Present separately, the Presents that waited a vertical blank (>= 5 ms)
 and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait
-one refresh interval with two buffers; that is not CPU work of ours.
+one refresh interval with two buffers; that is not CPU work of ours. --test, the smoke, the
+benches and screenshot runs use an in-memory fake clipboard: they never touch the real one
+(interactive dev runs do). Dev builds log the private bytes at the startup stages
+("memory:" lines in build\teal.log).
 
 `--smoke` shows the window without activating it, renders 3 frames, reads back the third
 and checks the probes from app_dev_probes: exact background / mode line / cursor pixels, a
@@ -116,10 +122,14 @@ stage 0): a text cell drawn, an empty cell exactly background, a tab leaving col
 with the next character at column 4, ^A taking two cells, a hollow cursor (edges in the
 cursor color, inside background), the mode line with the buffer name and nothing after its
 text. A synthetic click on a character with focus forced on gives a fifth frame (stage 1): a
-filled cursor there with the glyph drawn over it, the old cursor cell cleared. The window
-title must be "*scratch* - teal", set exactly once. Then: the font was set up exactly once at
-startup; build\tmp\smoke_keys.txt is edited and saved through the --keys path ("M-> RET h i
-C-x C-s") and its bytes compared; a config with background = #102030 is loaded (as C-c r), the
+filled cursor there with the glyph drawn over it, the old cursor cell cleared. An active
+region over lines 0-1 gives a sixth frame (stage 2): selected cells in the selection color, a
+glyph drawn over it, the selection reaching the window edge on lines whose newline is selected,
+unselected cells and edges in the background. The window title must be "*scratch* - teal",
+set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
+edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
+so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
+killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the
 pixel probed, and the font must not have been set up again. It also requires a non-empty atlas,
 the D3D11 debug layer active with zero WARNING+ messages, and no leaks (device refcount 0, empty
 DXGI live-object report, DirectWrite references 0, no directory watch left open).
@@ -141,8 +151,16 @@ forms, rejections, 20,000 round trips), chords from key events, the key sequence
 (prefix, undefined, quit, shift-translation, dropped text, C-x o, describe-key, two keymaps
 sharing a prefix, binding conflicts), the config (defaults, layering, every diagnostic with
 its line, clamping, none, files, 10,000 random inputs, settings in the view), the buffer list
-and *Messages*, and hot reload with a real directory watch in build\tmp\watch (write, other
-file, save by rename, a locked file retried and given up). A failed dev ASSERT logs its
+and *Messages*, hot reload with a real directory watch in build\tmp\watch (write, other file,
+save by rename, a locked file retried and given up, the 50 ms settle), the undo log (undo and
+redo of 40 random edits, the saved state, merging at 20, the limit and its memory), undo through
+the driver (the Emacs chain, undo-redo, merging, point, three cursors), mark and region (the
+shift-select state table, delete-active-region, delete_selection_mode, word bounds), the
+clipboard conversions and the fake, the kill ring (kill-line cases, append and prepend, yank-pop,
+the clipboard link, read-only, the storage), indentation (a table of C, Jai and JavaScript
+snippets, tabs, detection, RET, closing brackets, TAB, backtab, M-i, C-q), the other editing
+commands on tricky input, and an undo fuzz of 4,000 random commands through the driver (every
+state id stands for one text, undo and redo return to known states, the modified flag). A failed dev ASSERT logs its
 file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
