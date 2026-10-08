@@ -87,6 +87,7 @@ typedef struct SyntaxLine {
     i64 head, head_end; // the first significant token after any leading closers (-1: none) and, for a word, its end
     u32 head_kind;      // that token's kind
     u8 last;            // its last significant byte (0: none)
+    i32 semicolons;     // its ';' in code
     i32 open;           // brackets it opens and leaves open
     i64 last_unmatched; // its last closer whose opener is on an earlier line, or -1
 } SyntaxLine;
