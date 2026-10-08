@@ -154,6 +154,47 @@ static void files_save(CommandContext *ctx, Buffer *buf) {
     else echo_message(ctx->echo, "Cannot save %S: %s", buf->name, buffer_status_text(status));
 }
 
+// The file on disk is not the one last read or saved: it exists and its size or time differ.
+static b32 files_changed_on_disk(Buffer *buf) {
+    OsFileInfo info;
+    return buf->path.len && os_file_info(buf->path, &info) == OS_FILE_OK && !info.is_dir &&
+           (info.size != buf->file_size || info.write_time != buf->file_time);
+}
+
+static void files_save_some_next(CommandContext *ctx);
+
+enum {
+    FILES_SAVE_ALL  = 1 << 0, // "!": save the rest without asking
+    FILES_QUIT      = 1 << 1, // save-buffers-kill-terminal: then the exit question
+    FILES_ASKED     = 1 << 2, // some buffer needed saving
+    FILES_WALK      = 1 << 3, // a save-some-buffers walk: it goes on after the guard's answer
+};
+
+static void files_guard_answer(CommandContext *ctx, MiniResult *r) {
+    MiniState *s = &ctx->mini->state;
+    if (r->yes) files_save(ctx, s->buffer);
+    if (s->flags & FILES_WALK) {
+        s->index++;
+        files_save_some_next(ctx);
+    }
+}
+
+// Saves, or first asks when the file changed on disk since it was read or saved. True when it
+// asked (the answer continues a save-some-buffers walk).
+static b32 files_save_checked(CommandContext *ctx, Buffer *buf, b32 walk) {
+    if (!files_changed_on_disk(buf)) {
+        files_save(ctx, buf);
+        return 0;
+    }
+    u8 prompt[512];
+    i64 n = fmt_buf(prompt, sizeof(prompt), "%S has changed since visited or saved. Save anyway? (yes or no) ", buf->name);
+    MiniRequest req = { .kind = MINI_YES_NO, .prompt = str8(prompt, n), .done = files_guard_answer };
+    if (!minibuffer_read(ctx, &req)) return 1;
+    if (!walk) ctx->mini->state = (MiniState){ 0 };
+    ctx->mini->state.buffer = buf;
+    return 1;
+}
+
 // A buffer without a file asks for one (write-file). Headless view tests have no minibuffer.
 static void cmd_save_buffer(CommandContext *ctx) {
     Buffer *buf = ctx->view->buffer;
@@ -165,7 +206,8 @@ static void cmd_save_buffer(CommandContext *ctx) {
         echo_message(ctx->echo, "(No changes need to be saved)");
         return;
     }
-    files_save(ctx, buf);
+    if (ctx->mini && ctx->app) files_save_checked(ctx, buf, 0);
+    else files_save(ctx, buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,12 +250,6 @@ const Command CMD_REVERT_BUFFER = { "revert-buffer", cmd_revert_buffer, COMMAND_
 // save-some-buffers and quitting. One chain walks the buffer list: state.index is the next entry to
 // look at, state.flags what was asked for.
 
-enum {
-    FILES_SAVE_ALL  = 1 << 0, // "!": save the rest without asking
-    FILES_QUIT      = 1 << 1, // save-buffers-kill-terminal: then the exit question
-    FILES_ASKED     = 1 << 2, // some buffer needed saving
-};
-
 static b32 files_unsaved(Buffer *b) {
     return b->modified && b->path.len;
 }
@@ -237,6 +273,130 @@ static void files_quit_check(CommandContext *ctx) {
 
 static void files_save_some_answer(CommandContext *ctx, MiniResult *r);
 
+// ---------------------------------------------------------------------------
+// Files changed outside the editor. Checked when the window is activated (every file buffer), and
+// while it has focus through directory watches on the displayed buffers' directories (a change
+// notification is acted on CONFIG_SETTLE_MS after the last one; a reload that meets a sharing
+// violation is tried again every CONFIG_RETRY_MS). An unmodified buffer is reloaded (auto_revert);
+// a modified one is never touched, only flagged and reported once.
+
+// Where undoing a reload puts point: the first view showing the buffer, else where it was last shown.
+static i64 files_point_of(App *app, Buffer *buf) {
+    for (i32 i = 0; i < app->view_count; i++) {
+        if (app->views[i]->buffer == buf) return view_point(app->views[i], &app->views[i]->cursors[0]);
+    }
+    i32 e = buffer_list_index(&app->buffers, buf);
+    return e >= 0 ? buffer_marker_get(buf, app->buffers.entries[e].point) : 0;
+}
+
+// True when a reload met a sharing violation (try again later).
+static b32 files_check_buffer(App *app, Buffer *buf) {
+    if (!buf->path.len) return 0;
+    OsFileInfo info;
+    OsFileStatus status = os_file_info(buf->path, &info);
+    if (status == OS_FILE_NOT_FOUND) {
+        if (buf->disk_state != BUFFER_DISK_DELETED) echo_message(&app->echo, "%S deleted on disk", buf->name);
+        buf->disk_state = BUFFER_DISK_DELETED;
+        return 0;
+    }
+    if (status != OS_FILE_OK || info.is_dir) return 0;
+    if (info.size == buf->file_size && info.write_time == buf->file_time) {
+        buf->disk_state = BUFFER_DISK_OK; // as read or saved (also: back after a deletion)
+        return 0;
+    }
+    if (!buf->modified && app->config->settings.auto_revert) {
+        status = buffer_revert(buf, files_point_of(app, buf));
+        if (status == OS_FILE_OK) {
+            echo_message(&app->echo, "Reverted %S", buf->name);
+            return 0;
+        }
+        if (status == OS_FILE_SHARING_VIOLATION) return 1;
+    }
+    if (buf->disk_state != BUFFER_DISK_CHANGED) echo_message(&app->echo, "%S changed on disk", buf->name);
+    buf->disk_state = BUFFER_DISK_CHANGED;
+    return 0;
+}
+
+static void files_check_all(App *app) {
+    for (i32 i = 0; i < app->buffers.count; i++) files_check_buffer(app, app->buffers.entries[i].buffer);
+}
+
+static void files_notify(App *app, OsWatch watch) {
+    for (i32 i = 0; i < app->watch_count; i++) {
+        if (app->watches[i].watch != watch || !watch) continue;
+        app->disk_pending = 1;
+        app->disk_due_us = os_time_us() + CONFIG_SETTLE_MS * 1000ull;
+        app->disk_attempts = 0;
+    }
+}
+
+// The displayed buffers, once a notification has settled.
+static void files_poll(App *app) {
+    u64 now = os_time_us();
+    if (!app->disk_pending || now < app->disk_due_us) return;
+    app->disk_pending = 0;
+    b32 retry = 0;
+    for (i32 i = 0; i < app->view_count; i++) {
+        b32 seen = 0;
+        for (i32 k = 0; k < i; k++) seen |= app->views[k]->buffer == app->views[i]->buffer;
+        if (!seen) retry |= files_check_buffer(app, app->views[i]->buffer);
+    }
+    if (retry && ++app->disk_attempts < CONFIG_RETRY_ATTEMPTS) {
+        app->disk_pending = 1;
+        app->disk_due_us = now + CONFIG_RETRY_MS * 1000ull;
+    }
+}
+
+static u32 files_wait_ms(App *app) {
+    if (!app->disk_pending) return CONFIG_WAIT_INFINITE;
+    u64 now = os_time_us();
+    return app->disk_due_us <= now ? 0 : (u32)((app->disk_due_us - now + 999) / 1000);
+}
+
+static void files_unwatch_all(App *app) {
+    for (i32 i = 0; i < app->watch_count; i++) os_unwatch(app->watches[i].watch);
+    app->watch_count = 0;
+}
+
+// One watch per distinct directory of the displayed file buffers; changed only when that set changes.
+static void files_update_watches(App *app) {
+    String8 dirs[APP_MAX_VIEWS];
+    i32 n = 0;
+    for (i32 i = 0; i < app->view_count; i++) {
+        Buffer *b = app->views[i]->buffer;
+        if (!b->path.len) continue;
+        String8 dir = str8(b->path.data, b->path.len - config_file_name(b->path).len);
+        if (dir.len > 1 && files_is_slash(dir.data[dir.len - 1]) && dir.data[dir.len - 2] != ':') dir.len--; // not "C:\"
+        b32 seen = 0;
+        for (i32 k = 0; k < n; k++) seen |= str8_equal(dirs[k], dir);
+        if (!seen) dirs[n++] = dir;
+    }
+    b32 same = n == app->watch_count;
+    for (i32 k = 0; k < n && same; k++) {
+        b32 found = 0;
+        for (i32 i = 0; i < app->watch_count; i++) found |= str8_equal(app->watches[i].dir, dirs[k]);
+        same = found;
+    }
+    if (same) return;
+    AppWatch next[APP_MAX_VIEWS];
+    for (i32 k = 0; k < n; k++) {
+        next[k] = (AppWatch){ dirs[k], 0 };
+        for (i32 i = 0; i < app->watch_count; i++) {
+            if (!str8_equal(app->watches[i].dir, dirs[k])) continue;
+            next[k].watch = app->watches[i].watch; // kept
+            app->watches[i].watch = 0;
+        }
+        if (!next[k].watch) next[k].watch = os_watch_dir(dirs[k]);
+    }
+    files_unwatch_all(app); // the ones no longer displayed (kept ones were taken out)
+    arena_reset(&app->watch_arena);
+    for (i32 k = 0; k < n; k++) {
+        app->watches[k] = next[k];
+        app->watches[k].dir = str8_copy(&app->watch_arena, dirs[k]);
+    }
+    app->watch_count = n;
+}
+
 // Asks about the next modified file buffer (or saves it, after "!"); at the end, the exit question
 // when quitting.
 static void files_save_some_next(CommandContext *ctx) {
@@ -247,7 +407,7 @@ static void files_save_some_next(CommandContext *ctx) {
         if (!files_unsaved(b)) continue;
         s->flags |= FILES_ASKED;
         if (s->flags & FILES_SAVE_ALL) {
-            files_save(ctx, b);
+            if (files_save_checked(ctx, b, 1)) return;
             continue;
         }
         arena_reset(&app->files_arena);
@@ -268,7 +428,7 @@ static void files_save_some_answer(CommandContext *ctx, MiniResult *r) {
         return;
     }
     if (r->key == '!') s->flags |= FILES_SAVE_ALL;
-    if (r->key != 'n') files_save(ctx, s->buffer);
+    if (r->key != 'n' && files_save_checked(ctx, s->buffer, 1)) return;
     s->index++;
     files_save_some_next(ctx);
 }
@@ -278,7 +438,7 @@ static void files_save_some_start(CommandContext *ctx, u32 flags) {
         minibuffer_read(ctx, &(MiniRequest){ .kind = MINI_TEXT });
         return;
     }
-    ctx->mini->state = (MiniState){ .flags = flags };
+    ctx->mini->state = (MiniState){ .flags = flags | FILES_WALK };
     files_save_some_next(ctx);
 }
 

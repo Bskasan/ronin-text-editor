@@ -48,6 +48,13 @@ enum {
     BUFFER_MARKER_ADVANCE = 1 << 1, // insertion type: text inserted exactly at the marker goes before it
 };
 
+// The visited file, as the app last saw it on disk (files changed outside the editor).
+typedef enum BufferDiskState {
+    BUFFER_DISK_OK,      // as read or saved
+    BUFFER_DISK_CHANGED, // changed since, not reloaded (the buffer has unsaved changes, or auto_revert is off)
+    BUFFER_DISK_DELETED, // gone; the buffer stays
+} BufferDiskState;
+
 typedef struct BufferMarkerSlot {
     i64 pos;
     u32 flags;
@@ -147,6 +154,7 @@ typedef struct Buffer {
     u64 edit_count;
     i64 file_size;  // as of the last load or save
     u64 file_time;  // last write time, same
+    BufferDiskState disk_state; // set by the app's checks; a load, save or revert makes it OK
     i32 tab_width;  // columns per tab stop (Emacs' buffer-local tab-width; the app sets it from the config)
     b32 indent_tabs;     // indentation with tabs (indent-tabs-mode): from the config, or detected
     b32 indent_detected; // indent_tabs was decided from the file's contents

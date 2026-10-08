@@ -834,6 +834,7 @@ OsFileStatus buffer_load_file(Buffer *buf, String8 path) {
     buffer_mark_saved(buf);
     buf->file_size = info.size;
     buf->file_time = info.write_time;
+    buf->disk_state = BUFFER_DISK_OK;
     return OS_FILE_OK;
 }
 
@@ -882,6 +883,7 @@ OsFileStatus buffer_revert(Buffer *buf, i64 point) {
     buf->read_only = fresh->read_only;
     buf->file_size = fresh->file_size;
     buf->file_time = fresh->file_time;
+    buf->disk_state = BUFFER_DISK_OK;
     buffer_mark_saved(buf);
     buffer_destroy(fresh);
     return OS_FILE_OK;
@@ -1037,6 +1039,7 @@ OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
     if (os_file_info(buf->path, &info) == OS_FILE_OK) {
         buf->file_size = info.size;
         buf->file_time = info.write_time;
+        buf->disk_state = BUFFER_DISK_OK;
     }
     return OS_FILE_OK;
 }
