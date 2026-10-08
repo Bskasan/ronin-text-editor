@@ -11,8 +11,11 @@ typedef struct Settings Settings;
 typedef struct CommandContext CommandContext;
 typedef void CommandFn(CommandContext *ctx);
 
+// The command driver (view_run_command) applies the rules these flags name; commands never do.
 enum {
-    COMMAND_ONCE = 1 << 0, // acts on the View as a whole: runs once, with the primary cursor
+    COMMAND_ONCE         = 1 << 0, // acts on the View as a whole: runs once, with the primary cursor
+    COMMAND_MERGE_INSERT = 1 << 1, // undo: consecutive calls share a group (up to 20): self-insert
+    COMMAND_MERGE_DELETE = 1 << 2, // undo: the same for single-character deletes
 };
 
 typedef struct Command {

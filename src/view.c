@@ -288,6 +288,11 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf) {
 void view_run_command(CommandContext *ctx, const Command *cmd) {
     View *v = ctx->view;
     ctx->this_command = cmd;
+    // One command, over all cursors, is one undo group; consecutive self-inserts and single
+    // deletes merge (the buffer caps a group at 20 commands).
+    BufferUndoMerge merge = (cmd->flags & COMMAND_MERGE_INSERT) ? BUFFER_UNDO_MERGE_INSERT
+                          : (cmd->flags & COMMAND_MERGE_DELETE) ? BUFFER_UNDO_MERGE_DELETE : BUFFER_UNDO_MERGE_NONE;
+    buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, &v->cursors[0]));
     if (cmd->flags & COMMAND_ONCE) {
         ctx->cursor = &v->cursors[0];
         cmd->fn(ctx);
@@ -543,9 +548,9 @@ const Command CMD_END_OF_BUFFER          = { "end-of-buffer", cmd_end_of_buffer,
 const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_command, COMMAND_ONCE };
 const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE };
 const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
-const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, 0 };
+const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, COMMAND_MERGE_INSERT };
 const Command CMD_NEWLINE                = { "newline", cmd_newline, 0 };
-const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, 0 };
-const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, 0 };
+const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, COMMAND_MERGE_DELETE };
+const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, COMMAND_MERGE_DELETE };
 const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
 const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE };

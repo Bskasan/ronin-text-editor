@@ -91,7 +91,7 @@ typedef struct BufferUndoGroup {
     u64 state_before, state_after;
     i64 target;                   // an undo group: the id of the group it reverts; -1 otherwise
     i32 merge, merge_count;       // BufferUndoMerge of the commands merged into it
-    b32 redo;                     // made by buffer_redo (redo only reverts groups made by undo)
+    b32 backward;                 // it moved back in history: the undo of a forward group (normal groups go forward)
 } BufferUndoGroup;
 
 typedef struct BufferUndo {
@@ -199,7 +199,8 @@ void buffer_undo_boundary(Buffer *buf, BufferUndoMerge merge, b32 consecutive, i
 // one before the group undone last (Emacs' pending undo list). *point_out gets the
 // point to restore.
 BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out);
-// Undoes the last undo that led to the current state (Emacs' undo-redo).
+// Emacs' undo-redo: undoes the most recent group that moved back in history (the undo of an
+// edit, not of an undo) and led to the current state.
 BufferUndoResult buffer_redo(Buffer *buf, i64 point, i64 *point_out);
 void buffer_mark_saved(Buffer *buf);  // the current state is the saved one: unmodified
 u64  buffer_undo_memory(Buffer *buf); // committed bytes of the log and its group index
