@@ -1013,9 +1013,10 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
     DevProbe probes[16];
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
-    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : 8;
+    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : 8;
     i32 result = EXIT_OK;
-    LOG("smoke: checking the %s frame", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)" : "sample");
+    LOG("smoke: checking the %s frame", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
+                                       : stage == 2 ? "buffer view (region)" : "sample");
     for (i32 i = 0; i < count; i++) {
         if (!win32_check_probe(&probes[i], pixels, w, h) && result == EXIT_OK) {
             result = probes[i].kind == DEV_PROBE_CLEARTYPE ? EXIT_FONT : EXIT_PIXEL_MISMATCH;
@@ -1633,6 +1634,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 r_request_capture(p->renderer);
                 win32_frame(p);
                 i32 code3 = win32_smoke_check_frame(p, 1);
+                app_dev_smoke_region(p->app);
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 2);
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
                 p->exit_code = code != EXIT_OK ? code : code2 != EXIT_OK ? code2 : code3 != EXIT_OK ? code3

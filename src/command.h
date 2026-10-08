@@ -16,6 +16,10 @@ enum {
     COMMAND_ONCE         = 1 << 0, // acts on the View as a whole: runs once, with the primary cursor
     COMMAND_MERGE_INSERT = 1 << 1, // undo: consecutive calls share a group (up to 20): self-insert
     COMMAND_MERGE_DELETE = 1 << 2, // undo: the same for single-character deletes
+    COMMAND_MOTION       = 1 << 3, // shift-select: with Shift it activates the mark first; without, it ends a shift region
+    COMMAND_EDIT         = 1 << 4, // changes text: the mark is deactivated afterwards
+    COMMAND_REGION_DELETE  = 1 << 5, // with an active region it deletes the region instead (delete-active-region)
+    COMMAND_REGION_REPLACE = 1 << 6, // with delete_selection_mode, an active region is deleted first
 };
 
 typedef struct Command {

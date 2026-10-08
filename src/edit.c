@@ -37,5 +37,5 @@ static void cmd_undo_redo(CommandContext *ctx) {
     edit_undo_report(ctx, r, point, "Redo", "No further redo information");
 }
 
-const Command CMD_UNDO      = { "undo", cmd_undo, COMMAND_ONCE };
-const Command CMD_UNDO_REDO = { "undo-redo", cmd_undo_redo, COMMAND_ONCE };
+const Command CMD_UNDO      = { "undo", cmd_undo, COMMAND_ONCE | COMMAND_EDIT };
+const Command CMD_UNDO_REDO = { "undo-redo", cmd_undo_redo, COMMAND_ONCE | COMMAND_EDIT };

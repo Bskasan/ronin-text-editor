@@ -48,8 +48,11 @@ void echo_clear(Echo *e);
 
 struct Cursor {
     BufferMarker point; // advances over text inserted at it
-    BufferMarker mark;  // does not; unused until Phase 6
+    BufferMarker mark;  // does not
     i64 goal_col;       // visual column kept across consecutive vertical motions, -1 = none
+    b32 mark_set;       // the mark has been set in this buffer (the region exists)
+    b32 mark_active;    // transient mark mode: the region is active (highlighted)
+    b32 mark_shift;     // activated by shift-select: an unshifted motion deactivates it
 };
 
 struct View {
@@ -79,6 +82,13 @@ void view_ensure_visible(View *view);
 void view_scroll_lines(View *view, i64 lines);             // the wheel: moves the top, drags point along
 void view_set_point_at(View *view, i64 row, i64 col);      // a click: text row and absolute visual column
 void view_goto_line_column(View *view, i64 line, i64 col); // 0-based; the line is clamped
+
+// Mark and region. The region is between point and mark; it exists once the mark is set and is
+// active (highlighted, used by region commands) while mark_active.
+void view_set_mark(View *view, Cursor *cursor, i64 pos, b32 active);
+void view_deactivate_mark(View *view); // every cursor
+b32  view_region(View *view, Cursor *cursor, i64 *start, i64 *end); // false when the mark is not set
+b32  view_region_active(View *view, Cursor *cursor, const Settings *settings); // transient mark mode and active
 
 // ---------------------------------------------------------------------------
 // The buffer list. Each entry remembers where its buffer was last shown, so switching a view
@@ -122,6 +132,6 @@ extern const Command CMD_MOVE_BEGINNING_OF_LINE, CMD_MOVE_END_OF_LINE, CMD_FORWA
 extern const Command CMD_FORWARD_PARAGRAPH, CMD_BACKWARD_PARAGRAPH, CMD_BEGINNING_OF_BUFFER, CMD_END_OF_BUFFER;
 extern const Command CMD_SCROLL_UP_COMMAND, CMD_SCROLL_DOWN_COMMAND, CMD_RECENTER_TOP_BOTTOM;
 extern const Command CMD_SELF_INSERT, CMD_NEWLINE, CMD_DELETE_BACKWARD_CHAR, CMD_DELETE_CHAR, CMD_SAVE_BUFFER;
-extern const Command CMD_KEYBOARD_QUIT;
+extern const Command CMD_KEYBOARD_QUIT, CMD_SET_MARK_COMMAND, CMD_EXCHANGE_POINT_AND_MARK, CMD_MARK_WHOLE_BUFFER;
 
 #endif // VIEW_H
