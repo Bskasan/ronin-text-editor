@@ -1,72 +1,6 @@
 // app.c — the editor core: the config (loaded before the font), keys through the keymap,
-// views laid out in the frame, drawing of text, cursors, mode lines and the echo area. View
-// logic lives in view.c. Dev builds keep the Phase 2 hand-colored sample behind --sample for
-// the smoke probes and screenshots (until highlighting in Phase 8).
-
-#if TEAL_DEV
-// Sample text markup: these bytes switch the color of what follows and take no cell.
-#define P "\x01" // plain text
-#define K "\x02" // keyword
-#define T "\x03" // type
-#define S "\x04" // string
-#define N "\x05" // number / constant
-#define C "\x06" // comment
-#define V "\x07" // variable
-
-static u32 app_markup_color(Theme *th, u8 markup) {
-    u32 colors[8] = { 0, th->text, th->keyword, th->type, th->string, th->number, th->comment, th->variable };
-    return colors[markup & 7];
-}
-
-static const char *app_sample[] = {
-    C "// sample.jai: a small Jai program to judge the theme.",
-    K "#import" P " " S "\"Basic\"" P ";",
-    K "#import" P " " S "\"Math\"" P ";",
-    "",
-    T "Vector2" P " :: " K "struct" P " {",
-    "    " V "x" P ": " T "float" P ";",
-    "    " V "y" P ": " T "float" P ";",
-    "}",
-    "",
-    N "MAX_ITEMS" P " :: " N "128" P ";",
-    "",
-    "length :: (" V "v" P ": " T "Vector2" P ") -> " T "float" P " {",
-    "    " K "return" P " sqrt(v.x * v.x + v.y * v.y);   " C "// hypotenuse",
-    "}",
-    "",
-    "main :: () {",
-    "    " V "items" P ": [..] " T "Vector2" P ";",
-    "    " K "for" P " " N "0" P ".." N "MAX_ITEMS" P "-" N "1" P " {",
-    "        array_add(*items, .{" K "xx" P " it, " N "0.5" P "});",
-    "    }",
-    "    print(" S "\"% items, first = %\\n\"" P ", items.count, items[" N "0" P "]);",
-    "}",
-    "",
-    C "/* sample.c: the same idea in C. */",
-    K "#include" P " " S "<stdio.h>",
-    K "typedef" P " " K "struct" P " { " T "float" P " x, y; } " T "Vec2" P ";",
-    "",
-    K "static" P " " T "int" P " count_nonzero(" K "const" P " " T "int" P " *v, " T "int" P " n) {",
-    "    " T "int" P " " V "count" P " = " N "0" P ";",
-    "    " K "for" P " (" T "int" P " i = " N "0" P "; i < n; i++) count += (v[i] != " N "0" P ") " K "|" P " (v[i] < " N "0" P ");",
-    "    " K "return" P " count;",
-    "}",
-    "",
-    T "int" P " main(" T "void" P ") { printf(" S "\"%d\\n\"" P ", " N "0x2A" P "); " K "return" P " " N "0" P "; }",
-    "",
-    C "// Türkçe:" P " ğüşıöç ĞÜŞİÖÇ",
-    C "// Missing glyphs:" P " 漢 😀 (CJK, emoji)",
-    C "// Clipping:" P " g j y Ğ İ | _ []{} @#$%",
-};
-
-#undef P
-#undef K
-#undef T
-#undef S
-#undef N
-#undef C
-#undef V
-#endif // TEAL_DEV
+// views laid out in the frame, drawing of text in its token colors, cursors, mode lines and the
+// echo area. View logic lives in view.c.
 
 #define APP_MAX_VIEWS 8
 #define APP_WHEEL_LINES 3 // per notch (120 units)
@@ -132,8 +66,6 @@ struct App {
     i64 initial_col;
     b32 syntax_pending;          // some view's visible lines still need lexer states: another frame
 #if TEAL_DEV
-    b32 sample; // --sample: the Phase 2 display
-    i32 cursor_col, cursor_row;
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
 #endif
@@ -142,8 +74,8 @@ struct App {
 typedef struct AppLayout {
     i32 cell_w, line_h;
     i32 pad;             // left padding of text areas, pixels
-    i32 cols, rows;      // whole-frame grid (the --sample display)
-    i32 mode_line_y;     // the --sample mode line
+    i32 cols, rows;      // whole-frame grid
+    i32 mode_line_y;     // the mode line of a full-height view
     i32 minibuffer_y;    // the echo area occupies [minibuffer_y, minibuffer_y + line_h)
 } AppLayout;
 
@@ -555,121 +487,6 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     }
 }
 
-#if TEAL_DEV
-// ---------------------------------------------------------------------------
-// Dev: the Phase 2 sample
-
-static String8 app_sample_line(i32 row) {
-    if (row < 0 || row >= ARRAY_COUNT(app_sample)) return str8(NULL, 0);
-    return str8_cstr(app_sample[row]);
-}
-
-// The UTF-8 bytes of the character at `col` in a sample line (markup skipped), or empty.
-static String8 app_char_at(i32 row, i32 col) {
-    String8 line = app_sample_line(row);
-    i32 c = 0;
-    for (i64 i = 0; i < line.len;) {
-        if (line.data[i] < 8) {
-            i++;
-            continue;
-        }
-        i64 advance;
-        utf8_decode(line.data + i, line.len - i, &advance);
-        if (c == col) return str8(line.data + i, advance);
-        c++;
-        i += advance;
-    }
-    return str8(NULL, 0);
-}
-
-// The markup in effect at the character at `col` (1 = plain text), or 0 if there is no character.
-static u8 app_markup_at(i32 row, i32 col) {
-    String8 line = app_sample_line(row);
-    u8 color = 1;
-    i32 c = 0;
-    for (i64 i = 0; i < line.len;) {
-        if (line.data[i] < 8) {
-            color = line.data[i];
-            i++;
-            continue;
-        }
-        i64 advance;
-        utf8_decode(line.data + i, line.len - i, &advance);
-        if (c == col) return color;
-        c++;
-        i += advance;
-    }
-    return 0;
-}
-
-static void app_draw_sample_line(App *app, Renderer *r, i32 y, String8 line) {
-    i32 x = 0;
-    u32 color = app->config->theme.text;
-    i64 run = 0;
-    for (i64 i = 0; i <= line.len; i++) {
-        if (i == line.len || line.data[i] < 8) {
-            x = font_draw_text(app->font, r, x, y, str8(line.data + run, i - run), COLOR_HEX(color));
-            if (i < line.len) color = app_markup_color(&app->config->theme, line.data[i]);
-            run = i + 1;
-        }
-    }
-}
-
-// --sample: the Phase 2 display. Hand-colored sample text, a block cursor moved by the arrow
-// keys, a minibuffer that echoes typed text.
-static b32 app_dev_sample_frame(App *app, FrameInput *in, Renderer *r, AppLayout *l) {
-    for (i32 i = 0; i < in->event_count; i++) {
-        Event *e = &in->events[i];
-        switch (e->kind) {
-        case EVENT_CLOSE:
-            return 0;
-        case EVENT_KEY_DOWN:
-            if (e->key == KEY_LEFT)  app->cursor_col--;
-            if (e->key == KEY_RIGHT) app->cursor_col++;
-            if (e->key == KEY_UP)    app->cursor_row--;
-            if (e->key == KEY_DOWN)  app->cursor_row++;
-            if (e->key == KEY_BACKSPACE && app->echo.len > 0) {
-                do app->echo.len--;
-                while (app->echo.len > 0 && (app->echo.text[app->echo.len] & 0xC0) == 0x80);
-            }
-            break;
-        case EVENT_TEXT: {
-            u8 bytes[4];
-            i64 n = utf8_encode(e->codepoint, bytes);
-            if (app->echo.len + n <= ECHO_CAP) {
-                memcpy(app->echo.text + app->echo.len, bytes, (size_t)n);
-                app->echo.len += (i32)n;
-            }
-        } break;
-        default:
-            break;
-        }
-    }
-    app->cursor_col = CLAMP(app->cursor_col, 0, l->cols - 1);
-    app->cursor_row = CLAMP(app->cursor_row, 0, l->rows - 1);
-
-    r_begin_frame(r, COLOR_HEX(app->config->theme.background));
-
-    for (i32 row = 0; row < l->rows && row < ARRAY_COUNT(app_sample); row++) {
-        app_draw_sample_line(app, r, row * l->line_h, app_sample_line(row));
-    }
-
-    // Block cursor; the character under it is redrawn in the background color, as Emacs does.
-    i32 cx = app->cursor_col * l->cell_w, cy = app->cursor_row * l->line_h;
-    Rect cursor = { (f32)cx, (f32)cy, (f32)(cx + l->cell_w), (f32)(cy + l->line_h) };
-    r_push_rect(r, cursor, COLOR_HEX(app->config->theme.cursor));
-    font_draw_text(app->font, r, cx, cy, app_char_at(app->cursor_row, app->cursor_col), COLOR_HEX(app->config->theme.background));
-
-    String8 status = str8_fmt(in->scratch, "-:---  sample.jai    (Jai)    L%d C%d", app->cursor_row + 1, app->cursor_col);
-    r_push_rect(r, (Rect){ 0, (f32)l->mode_line_y, (f32)in->width, (f32)(l->mode_line_y + l->line_h) }, COLOR_HEX(app->config->theme.text));
-    font_draw_text(app->font, r, 0, l->mode_line_y, status, COLOR_HEX(app->config->theme.background));
-    font_draw_text(app->font, r, 0, l->minibuffer_y, str8(app->echo.text, app->echo.len), COLOR_HEX(app->config->theme.text));
-
-    r_end_frame(r);
-    return 1;
-}
-#endif
-
 // ---------------------------------------------------------------------------
 // Startup and frames
 
@@ -954,7 +771,6 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->initial_line = args->goto_line > 0 ? args->goto_line - 1 : -1;
     app->initial_col = MAX(args->goto_col - 1, 0);
 #if TEAL_DEV
-    app->sample = args->sample;
     app->force_focus = -1;
 #endif
     return app;
@@ -1395,12 +1211,6 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
 #endif
     app->renderer = r;
     font_frame_begin(app->font, r, in->dpi_scale);
-#if TEAL_DEV
-    if (app->sample) {
-        AppLayout l = app_layout(app, in);
-        return app_dev_sample_frame(app, in, r, &l);
-    }
-#endif
     b32 running = app_update(app, in);
     app->renderer = NULL;
     if (!running) return 0;
@@ -1413,89 +1223,58 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
 }
 
 #if TEAL_DEV
-i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
+// Smoke, syntax frames: *scratch* holds a known text in `language`, point on the '(' of line 2, focus
+// forced on (a filled cursor). The same text in every language:
+//   line 0: "// a comment line"
+//   line 1: "return \"some string text\";"   'return' at columns 0-5, the string at 7-24
+//   line 2: "f(a, (b), c);"                  the '(' at column 1 matches the ')' at column 11
+//   line 3: "    x_y = a | b;"               '_' at column 5, '|' at column 12 with spaces around it
+//   line 4: "    z = 0;"                     column 1 is a space with spaces all around
+//   line 5: "    w = 1;"
+void app_dev_smoke_syntax(App *app, i32 language) {
+    View *v = app->views[0];
+    Buffer *buf = v->buffer;
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("// a comment line\nreturn \"some string text\";\nf(a, (b), c);\n"
+                                                      "    x_y = a | b;\n    z = 0;\n    w = 1;\n"));
+    buf->language = (BufferLanguage)language;
+    view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2) + 1);
+    buffer_marker_set(buf, v->top, 0);
+    app->force_focus = 1;
+}
+
+// The probes of a syntax frame: a comment, a keyword and a string pixel in their exact colors, the
+// match of the bracket at point on the paren_match background. With `rendering`, also the
+// rendering checks: background, mode line, cursor, a text cell, a space cell, '_' inked only in its
+// lower part (catches upside-down bitmaps), the ClearType channel order on '|'.
+i32 app_dev_syntax_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, b32 rendering) {
     AppLayout l = app_layout(app, in);
+    Theme *th = &app->config->theme;
     i32 n = 0;
+    i32 cw = l.cell_w, lh = l.line_h, x = l.pad;
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
-
-    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = in->height - 1,
-                   .rgb = app->config->theme.background, .what = "background (bottom-right corner)");
-    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = l.mode_line_y + l.line_h / 2,
-                   .rgb = app->config->theme.text, .what = "mode line (right end)");
-    i32 cx = app->cursor_col * l.cell_w, cy = app->cursor_row * l.line_h;
-    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = cx, .y0 = cy, .rgb = app->config->theme.cursor, .what = "cursor (top-left pixel)");
-
-    // First non-space character cell not under the cursor: some pixel must differ from the background.
-    for (i32 row = 0; row < l.rows && row < ARRAY_COUNT(app_sample); row++) {
-        b32 found = 0;
-        for (i32 col = 0; col < l.cols; col++) {
-            String8 ch = app_char_at(row, col);
-            if (!ch.len) break;
-            if (ch.data[0] == ' ' || (row == app->cursor_row && col == app->cursor_col)) continue;
-            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = col * l.cell_w, .y0 = row * l.line_h,
-                           .x1 = (col + 1) * l.cell_w, .y1 = (row + 1) * l.line_h,
-                           .rgb = app->config->theme.background, .what = "first text cell");
-            found = 1;
-            break;
-        }
-        if (found) break;
+#define CELLS(c0, c1, line) .x0 = x + (c0) * cw, .y0 = (line) * lh, .x1 = x + (c1) * cw, .y1 = ((line) + 1) * lh
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(0, 17, 0), .rgb = th->comment, .what = "syntax: a comment pixel");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(0, 6, 1), .rgb = th->keyword, .what = "syntax: a keyword pixel ('return')");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(7, 25, 1), .rgb = th->string, .what = "syntax: a string pixel");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, CELLS(11, 12, 2), .rgb = th->paren_match,
+                   .what = "syntax: the matching ')' on the paren_match background");
+    if (rendering) {
+        i32 mode_y = l.minibuffer_y - lh;
+        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = in->height - 1, .rgb = th->background,
+                       .what = "background (bottom-right corner)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = mode_y + lh / 2, .rgb = th->text, .what = "mode line (right end)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + cw, .y0 = 2 * lh, .rgb = th->cursor, .what = "cursor (top-left pixel)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELLS(0, 1, 0), .rgb = th->background, .what = "a text cell ('/')");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELLS(1, 2, 4), .rgb = th->background, .what = "a space cell");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 5 * cw, .y0 = 3 * lh, .x1 = x + 6 * cw, .y1 = 3 * lh + lh * 2 / 5,
+                       .rgb = th->background, .what = "'_' upper part");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x + 5 * cw, .y0 = 3 * lh + lh / 2, .x1 = x + 6 * cw, .y1 = 4 * lh,
+                       .rgb = th->background, .what = "'_' lower part");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_CLEARTYPE, .x0 = x + 12 * cw - 1, .y0 = 3 * lh, .x1 = x + 13 * cw + 1, .y1 = 4 * lh,
+                       .rgb = th->background, .text_rgb = th->text, .geometry = app->font->backend.pixel_geometry,
+                       .what = "ClearType '|' (text color)");
     }
-
-    // A space cell surrounded by spaces (middle of an indentation, spaces above and below too):
-    // exactly the background color.
-    for (i32 row = 1; row + 1 < l.rows && row + 1 < ARRAY_COUNT(app_sample); row++) {
-        String8 here = app_char_at(row, 1), left = app_char_at(row, 0), right = app_char_at(row, 2);
-        String8 above = app_char_at(row - 1, 1), below = app_char_at(row + 1, 1);
-        b32 spaces = here.len && left.len && right.len && here.data[0] == ' ' && left.data[0] == ' ' &&
-                     right.data[0] == ' ' && (!above.len || above.data[0] == ' ') &&
-                     (!below.len || below.data[0] == ' ');
-        if (spaces && !(app->cursor_row == row && app->cursor_col == 1)) {
-            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = l.cell_w, .y0 = row * l.line_h,
-                           .x1 = 2 * l.cell_w, .y1 = (row + 1) * l.line_h,
-                           .rgb = app->config->theme.background, .what = "space cell");
-            break;
-        }
-    }
-
-    // Orientation: the first '_' must have ink only in the lower part of its cell. Catches glyph
-    // bitmaps copied upside down, which every probe above would miss.
-    for (i32 row = 0; row < l.rows && row < ARRAY_COUNT(app_sample); row++) {
-        b32 found = 0;
-        for (i32 col = 0; col < l.cols; col++) {
-            String8 ch = app_char_at(row, col);
-            if (!ch.len) break;
-            if (ch.data[0] == '_' && !(row == app->cursor_row && col == app->cursor_col)) {
-                i32 x0 = col * l.cell_w, y0 = row * l.line_h;
-                APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x0, .y0 = y0, .x1 = x0 + l.cell_w,
-                               .y1 = y0 + l.line_h * 2 / 5, .rgb = app->config->theme.background, .what = "'_' upper part");
-                APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = x0, .y0 = y0 + l.line_h / 2,
-                               .x1 = x0 + l.cell_w, .y1 = y0 + l.line_h, .rgb = app->config->theme.background,
-                               .what = "'_' lower part");
-                found = 1;
-                break;
-            }
-        }
-        if (found) break;
-    }
-
-    // A pure white '|' (keyword color) for the ClearType channel-order check.
-    for (i32 row = 0; row < l.rows && row < ARRAY_COUNT(app_sample); row++) {
-        b32 found = 0;
-        for (i32 col = 0; col < l.cols; col++) {
-            String8 ch = app_char_at(row, col);
-            if (!ch.len) break;
-            if (ch.data[0] == '|' && app_markup_at(row, col) == 2 && app->config->theme.keyword == 0xffffff &&
-                !(row == app->cursor_row && col == app->cursor_col)) {
-                APP_PUSH_PROBE(.kind = DEV_PROBE_CLEARTYPE, .x0 = col * l.cell_w - 1, .y0 = row * l.line_h,
-                               .x1 = (col + 1) * l.cell_w + 1, .y1 = (row + 1) * l.line_h,
-                               .rgb = app->config->theme.background, .text_rgb = 0xffffff,
-                               .geometry = app->font->backend.pixel_geometry, .what = "ClearType '|'");
-                found = 1;
-                break;
-            }
-        }
-        if (found) break;
-    }
+#undef CELLS
 #undef APP_PUSH_PROBE
     return n;
 }
@@ -1508,8 +1287,8 @@ i32 app_dev_probes(App *app, FrameInput *in, DevProbe *out, i32 cap) {
 // Stage 0: point on the empty line 2, no focus: a hollow cursor there. Stage 1 (after the
 // platform clicks the 'x' of line 0 and forces focus): a filled cursor on that 'x'.
 void app_dev_smoke_buffer_view(App *app) {
-    app->sample = 0;
     Buffer *buf = app->views[0]->buffer;
+    buf->language = BUFFER_LANG_FUNDAMENTAL;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\na\x01" "b\n"));
     View *v = app->views[0];
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));

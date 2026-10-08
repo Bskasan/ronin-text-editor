@@ -84,7 +84,6 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
     build/teal_debug.exe --test [--seed N]                # headless buffer/file/view tests, exit 0 = pass
     build/teal_debug.exe --smoke                          # exit 0 = pass
     build/teal_debug.exe --screenshot build/shots/x.png   # window hidden, one frame
-    build/teal_debug.exe --sample ...                     # the Phase 2 colored sample (smoke implies it)
     build/teal_debug.exe +LINE:COL <file> --screenshot .. # open a file at a position (cursor drawn focused)
     build/teal_debug.exe --dump-atlas build/shots/a.png   # the CPU glyph atlas
     build/teal_debug.exe --render-mode classic|natural|symmetric   (overrides the config)
@@ -117,20 +116,23 @@ benches and screenshot runs use an in-memory fake clipboard: they never touch th
 (interactive dev runs do). Dev builds log the private bytes at the startup stages
 ("memory:" lines in build\teal.log).
 
-`--smoke` shows the window without activating it, renders 3 frames, reads back the third
-and checks the probes from app_dev_probes: exact background / mode line / cursor pixels, a
-text cell that is not background, a space cell that is exactly background, '_' inked only
-in its lower part (catches upside-down bitmaps), and the ClearType channel order on a white
-'|' (normalized coverage; pixel geometry from the rendering params). Then it switches to the
-buffer view with a known buffer and checks a fourth frame without focus (app_dev_buffer_probes
+`--smoke` shows the window without activating it and renders 2 frames. Then *scratch* gets a
+known text in each language (C, C++, C#, JavaScript, TypeScript, Jai; app_dev_smoke_syntax) and
+each frame is read back and checked (app_dev_syntax_probes): a comment, a keyword and a string
+pixel in their exact colors, and the match of the bracket at point on the paren_match
+background. The C frame also has the rendering checks: exact background / mode line / cursor
+pixels, a text cell that is not background, a space cell that is exactly background, '_' inked
+only in its lower part (catches upside-down bitmaps), and the ClearType channel order on a '|'
+in the text color (normalized coverage; pixel geometry from the rendering params). Then it
+switches to a known Fundamental buffer and checks a frame without focus (app_dev_buffer_probes
 stage 0): a text cell drawn, an empty cell exactly background, a tab leaving columns 0-3 empty
 with the next character at column 4, ^A taking two cells, a hollow cursor (edges in the
 cursor color, inside background), the mode line with the buffer name and nothing after its
-text. A synthetic click on a character with focus forced on gives a fifth frame (stage 1): a
+text. A synthetic click on a character with focus forced on gives the next frame (stage 1): a
 filled cursor there with the glyph drawn over it, the old cursor cell cleared. An active
-region over lines 0-1 gives a sixth frame (stage 2): selected cells in the selection color, a
+region over lines 0-1 gives the next (stage 2): selected cells in the selection color, a
 glyph drawn over it, the selection reaching the window edge on lines whose newline is selected,
-unselected cells and edges in the background. M-x with "minib" gives a seventh frame (stage 3):
+unselected cells and edges in the background. M-x with "minib" gives the last one (stage 3):
 a pixel of the prompt in the prompt color, the selected row's empty part in completion_selection,
 a pixel of a matched substring in completion_match, an unselected row in the background, the
 calling view's hollow cursor. The window title must be "*scratch* - teal",

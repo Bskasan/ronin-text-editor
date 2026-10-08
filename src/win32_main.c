@@ -66,7 +66,7 @@ typedef struct Platform {
     HANDLE log_file;
     b32 smoke;
     b32 test;
-    b32 sample;
+
     u64 seed;
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
@@ -1233,9 +1233,10 @@ static b32 win32_check_probe(DevProbe *pr, u8 *pixels, i32 w, i32 h) {
     return 0;
 }
 
-// Called right after the captured frame. `stage`: -1 the sample (app_dev_probes), 0 / 1 the
-// smoke buffer with a hollow / filled cursor (app_dev_buffer_probes).
-static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
+// Called right after the captured frame. `stage`: -1 a highlighted buffer with the rendering checks,
+// -2 a highlighted buffer (app_dev_syntax_probes); 0 / 1 the smoke buffer with a hollow / filled
+// cursor, 2 a region, 3 the M-x list (app_dev_buffer_probes).
+static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language) {
     b32 buffer_view = stage >= 0;
     i32 w, h;
     u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
@@ -1246,11 +1247,13 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
     FrameInput input = win32_frame_input(p);
     DevProbe probes[16];
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
-                            : app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
-    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : 8;
+                            : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
+    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == -1 ? 12 : 4;
     i32 result = EXIT_OK;
-    LOG("smoke: checking the %s frame", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
-                                       : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)" : "sample");
+    LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
+                                         : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
+                                         : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
+        language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
         if (!win32_check_probe(&probes[i], pixels, w, h) && result == EXIT_OK) {
             result = probes[i].kind == DEV_PROBE_CLEARTYPE ? EXIT_FONT : EXIT_PIXEL_MISMATCH;
@@ -1260,7 +1263,7 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
         LOG("smoke: FAIL: expected %d probes, the app produced %d", expected, count);
         if (result == EXIT_OK) result = EXIT_PIXEL_MISMATCH;
     }
-    if (buffer_view) {
+    if (stage != -1) {
         arena_reset(&p->scratch);
         return result;
     }
@@ -1833,7 +1836,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) { p->smoke = 1; continue; }
         if (str8_equal(a, STR8_LIT("--test"))) { p->test = 1; continue; }
-        if (str8_equal(a, STR8_LIT("--sample"))) { p->sample = 1; continue; }
+
         if (str8_equal(a, STR8_LIT("--seed")) && has_value) { p->seed = win32_parse_u64(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--bench-text"))) { p->bench_text = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
@@ -1937,7 +1940,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
                          .file_path = p->file_path, .goto_line = p->goto_line, .goto_col = p->goto_col };
 #if TEAL_DEV
-    app_args.sample = p->sample || p->smoke; // the smoke probes check the sample
+
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete); // defaults
 #endif
@@ -2068,17 +2071,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
 #if TEAL_DEV
         if (p->smoke) {
-            // Two plain frames, then a third one (the sample), a fourth one (a known buffer, no
-            // focus) and a fifth one (after a click, focus forced on) whose back buffers are read
-            // back and checked.
+            // Two plain frames, then one highlighted buffer per language (the first with the
+            // rendering checks), a known buffer without focus, the same after a click (focus forced
+            // on), a region and the M-x list: each back buffer is read back and checked.
             if (p->frame_count >= 2) {
-                r_request_capture(p->renderer);
-                win32_frame(p);
-                i32 code = win32_smoke_check_frame(p, -1);
+                static const BufferLanguage languages[] = { BUFFER_LANG_C, BUFFER_LANG_CPP, BUFFER_LANG_CSHARP,
+                                                            BUFFER_LANG_JAVASCRIPT, BUFFER_LANG_TYPESCRIPT, BUFFER_LANG_JAI };
+                i32 code = EXIT_OK;
+                for (i32 k = 0; k < ARRAY_COUNT(languages); k++) {
+                    app_dev_smoke_syntax(p->app, languages[k]);
+                    r_request_capture(p->renderer);
+                    win32_frame(p);
+                    i32 c = win32_smoke_check_frame(p, k == 0 ? -1 : -2, buffer_language_name(languages[k]));
+                    if (code == EXIT_OK) code = c;
+                }
                 app_dev_smoke_buffer_view(p->app);
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                i32 code2 = win32_smoke_check_frame(p, 0);
+                i32 code2 = win32_smoke_check_frame(p, 0, NULL);
                 FrameInput input = win32_frame_input(p);
                 Event click = { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT };
                 app_dev_smoke_click_point(p->app, &input, &click.x, &click.y);
@@ -2086,15 +2096,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 app_dev_force_focus(p->app, 1);
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                i32 code3 = win32_smoke_check_frame(p, 1);
+                i32 code3 = win32_smoke_check_frame(p, 1, NULL);
                 app_dev_smoke_region(p->app);
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 2);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 2, NULL);
                 win32_smoke_feed_no_frame(p, "M-x m i n i b"); // stage 3: a filtered candidate list
                 r_request_capture(p->renderer);
                 win32_frame(p);
-                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 3);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 3, NULL);
                 win32_smoke_feed(p, "C-g");
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
