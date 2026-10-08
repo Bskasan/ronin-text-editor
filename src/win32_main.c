@@ -22,6 +22,13 @@ typedef struct Platform {
     Event events[EVENT_CAPACITY];
     i32 event_count;
     HANDLE watches[WIN32_MAX_WATCHES]; // change notifications; OsWatch = index + 1, NULL = free
+#if TEAL_DEV
+    b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
+    u16 *clip_text;          // in its own reservation
+    i64 clip_len;
+    u64 clip_committed;
+    u32 clip_seq;
+#endif
 
     i32 width, height; // client area, pixels
     u32 dpi;
@@ -347,6 +354,104 @@ void os_file_delete(String8 path) {
     u64 mark = arena_pos(scratch);
     DeleteFileW(win32_path16(path));
     arena_pop_to(scratch, mark);
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard
+
+#define WIN32_CLIP_RESERVE GB(8)
+
+static b32 win32_open_clipboard(Platform *p) {
+    for (i32 attempt = 0; attempt < 5; attempt++) {
+        if (OpenClipboard(p->hwnd)) return 1;
+        Sleep(2); // another program holds it: try again shortly
+    }
+    return 0;
+}
+
+#if TEAL_DEV
+// Stores UTF-16 units in the fake, growing its commit.
+static u16 *win32_fake_clip_space(Platform *p, i64 units) {
+    if (!p->clip_text) p->clip_text = (u16 *)os_reserve(WIN32_CLIP_RESERVE);
+    u64 need = ALIGN_UP_POW2((u64)(units + 1) * 2, KB(64));
+    if (!p->clip_text || need > WIN32_CLIP_RESERVE) return NULL;
+    if (need > p->clip_committed) {
+        if (!os_commit((u8 *)p->clip_text + p->clip_committed, need - p->clip_committed)) return NULL;
+        p->clip_committed = need;
+    }
+    return p->clip_text;
+}
+
+void os_dev_clipboard_fake(b32 on) {
+    g_platform->clip_fake = on;
+}
+
+void os_dev_clipboard_external(String8 text) {
+    Platform *p = g_platform;
+    u16 *out = win32_fake_clip_space(p, clip_utf16_len(text));
+    if (!out) return;
+    p->clip_len = clip_utf16_write(text, out);
+    p->clip_seq++;
+}
+#endif
+
+b32 os_clipboard_set(String8 text) {
+    Platform *p = g_platform;
+    i64 units = clip_utf16_len(text);
+#if TEAL_DEV
+    if (p->clip_fake) {
+        u16 *out = win32_fake_clip_space(p, units);
+        if (!out) return 0;
+        p->clip_len = clip_utf16_write(text, out);
+        p->clip_seq++;
+        return 1;
+    }
+#endif
+    if (!win32_open_clipboard(p)) return 0;
+    b32 ok = 0;
+    EmptyClipboard();
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(units + 1) * 2);
+    u16 *out = h ? (u16 *)GlobalLock(h) : NULL;
+    if (out) {
+        out[clip_utf16_write(text, out)] = 0; // straight into the clipboard's memory: no other copy
+        GlobalUnlock(h);
+        ok = SetClipboardData(CF_UNICODETEXT, h) != NULL;
+    }
+    if (h && !ok) GlobalFree(h);
+    CloseClipboard();
+    return ok;
+}
+
+b32 os_clipboard_get(Arena *arena, String8 *text) {
+    Platform *p = g_platform;
+    *text = str8(NULL, 0);
+#if TEAL_DEV
+    if (p->clip_fake) {
+        if (!p->clip_text) return 0;
+        *text = clip_utf8_from_utf16(arena, p->clip_text, p->clip_len);
+        return 1;
+    }
+#endif
+    if (!win32_open_clipboard(p)) return 0;
+    b32 ok = 0;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    u16 *data = h ? (u16 *)GlobalLock(h) : NULL;
+    if (data) {
+        i64 cap = (i64)(GlobalSize(h) / 2), len = 0;
+        while (len < cap && data[len]) len++;
+        *text = clip_utf8_from_utf16(arena, data, len);
+        GlobalUnlock(h);
+        ok = 1;
+    }
+    CloseClipboard();
+    return ok;
+}
+
+u32 os_clipboard_seq(void) {
+#if TEAL_DEV
+    if (g_platform->clip_fake) return g_platform->clip_seq;
+#endif
+    return (u32)GetClipboardSequenceNumber();
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1570,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
+    // Tests, the smoke, benches and screenshots never touch the real clipboard.
+    if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);

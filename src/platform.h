@@ -72,6 +72,18 @@ b32          os_dev_hard_link(String8 existing, String8 link);
 #endif
 
 // ---------------------------------------------------------------------------
+// The clipboard: CF_UNICODETEXT, CRLF by convention (converted here). A busy clipboard is retried
+// a few times. Dev builds can replace it by an in-memory fake (tests, smoke, benches, screenshots).
+
+b32  os_clipboard_set(String8 text);
+b32  os_clipboard_get(Arena *arena, String8 *text); // false when it holds no text
+u32  os_clipboard_seq(void);                       // changes whenever any program sets it
+#if TEAL_DEV
+void os_dev_clipboard_fake(b32 on);
+void os_dev_clipboard_external(String8 text); // the fake: as if another program copied text
+#endif
+
+// ---------------------------------------------------------------------------
 // Directory watches: a change notification (file names, sizes, write times) on one directory,
 // delivered as EVENT_DIR_CHANGED. Waited on with the messages: no polling, no timers.
 
