@@ -3828,13 +3828,15 @@ static b32 test_disk(Test *t) {
     Buffer *b = test_current(app), *e = buffer_list_find_name(&app->buffers, STR8_LIT("e.txt"));
     TEST_CHECK(t, app->watch_count == 1 && app->watches[0].watch && str8_equal(app->watches[0].dir, root), "disk: the directory is watched");
 
-    // Unmodified: reloaded on activation, point kept by the markers.
+    // Unmodified: reloaded on activation, point kept by the markers. Changes are seen by size and write
+    // time, so each change here also changes the size: a rewrite within the same file-time tick at the
+    // same size cannot be told apart (the optimized build is that fast).
     app_dev_feed(app, "C-n C-n", &t->arena);
-    TEST_CHECK(t, os_write_file(path, STR8_LIT("LINE ONE\nline2\nline3\n")) && os_write_file(other, STR8_LIT("E\n")), "disk: change");
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("LINE ONE\nline2\nline3\n")) && os_write_file(other, STR8_LIT("EE\n")), "disk: change");
     test_focus(app, 0, &t->arena);
     test_focus(app, 1, &t->arena);
     TEST_CHECK(t, test_text_is(t, b, STR8_LIT("LINE ONE\nline2\nline3\n")) && view_point(v, &v->cursors[0]) == 15 && !b->modified &&
-                  b->disk_state == BUFFER_DISK_OK && test_text_is(t, e, STR8_LIT("E\n")), "disk: reloaded, point %D",
+                  b->disk_state == BUFFER_DISK_OK && test_text_is(t, e, STR8_LIT("EE\n")), "disk: reloaded, point %D",
                view_point(v, &v->cursors[0]));
     // Our own save is not a change.
     app_dev_feed(app, "x C-x C-s", &t->arena);
