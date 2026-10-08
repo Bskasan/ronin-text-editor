@@ -1454,6 +1454,24 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
                        .rgb = app->config->theme.text, .what = "buffer: mode line buffer name (cells 8-16)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + (cells + 1) * cw, .y0 = mode_y, .x1 = in->width, .y1 = mode_y + lh,
                        .rgb = app->config->theme.text, .what = "buffer: mode line empty after its text");
+    } else if (stage == 3) {
+        // M-x "minib": eight rows above the minibuffer line, the first selected ("minibuffer-backward-updir",
+        // no global binding, so no annotation), the second "minibuffer-complete". Point is still on the
+        // empty line 2: a hollow cursor while the minibuffer reads.
+        Theme *th = &app->config->theme;
+        i32 y0 = l.minibuffer_y - 8 * lh, lx = in->width - 1;
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = l.minibuffer_y, .x1 = x + 3 * cw, .y1 = l.minibuffer_y + lh,
+                       .rgb = th->prompt, .what = "minibuffer: the prompt 'M-x' in the prompt color");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 30 * cw, .y0 = y0, .x1 = lx, .y1 = y0 + lh, .rgb = th->completion_selection,
+                       .what = "minibuffer: the selected row's empty part");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = y0 + lh, .x1 = x + 5 * cw, .y1 = y0 + 2 * lh,
+                       .rgb = th->completion_match, .what = "minibuffer: the matched 'minib' of the second row");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 30 * cw, .y0 = y0 + lh, .x1 = lx, .y1 = y0 + 2 * lh, .rgb = th->background,
+                       .what = "minibuffer: an unselected row's empty part");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = 2 * lh, .x1 = x + t, .y1 = 3 * lh, .rgb = th->cursor,
+                       .what = "minibuffer: the calling view's hollow cursor, left edge");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + t, .y0 = 2 * lh + t, .x1 = x + cw - t, .y1 = 3 * lh - t, .rgb = th->background,
+                       .what = "minibuffer: the calling view's hollow cursor, inside");
     } else if (stage == 2) {
         // The region of app_dev_smoke_region: line 0 from column 5 with its newline, all of line 1.
         Theme *th = &app->config->theme;

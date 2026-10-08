@@ -1185,6 +1185,17 @@ static b32 win32_check_probe(DevProbe *pr, u8 *pixels, i32 w, i32 h) {
         }
         LOG("smoke: FAIL: '%s': (%d,%d)-(%d,%d) is entirely #%06x", pr->what, pr->x0, pr->y0, x1, y1, pr->rgb);
         return 0;
+    case DEV_PROBE_REGION_HAS:
+        for (i32 y = pr->y0; y < y1; y++) {
+            for (i32 x = pr->x0; x < x1; x++) {
+                if (win32_pixel_rgb(pixels, w, x, y) == pr->rgb) {
+                    LOG("smoke: ok: '%s': (%d, %d) is #%06x", pr->what, x, y, pr->rgb);
+                    return 1;
+                }
+            }
+        }
+        LOG("smoke: FAIL: '%s': no pixel of (%d,%d)-(%d,%d) is #%06x", pr->what, pr->x0, pr->y0, x1, y1, pr->rgb);
+        return 0;
     case DEV_PROBE_CLEARTYPE: {
         if (pr->geometry == FB_PIXELS_FLAT) {
             LOG("smoke: skip: '%s': pixel geometry is FLAT, no channel order to check", pr->what);
@@ -1235,10 +1246,10 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage) {
     DevProbe probes[16];
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_probes(p->app, &input, probes, ARRAY_COUNT(probes));
-    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : 8;
+    i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : 8;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
-                                       : stage == 2 ? "buffer view (region)" : "sample");
+                                       : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)" : "sample");
     for (i32 i = 0; i < count; i++) {
         if (!win32_check_probe(&probes[i], pixels, w, h) && result == EXIT_OK) {
             result = probes[i].kind == DEV_PROBE_CLEARTYPE ? EXIT_FONT : EXIT_PIXEL_MISMATCH;
@@ -1292,10 +1303,14 @@ static b32 win32_smoke_keys(Platform *p, String8 path, String8 initial, String8 
     return ok;
 }
 
-static void win32_smoke_feed(Platform *p, const char *keys) {
+static void win32_smoke_feed_no_frame(Platform *p, const char *keys) {
     Event events[64];
     i32 n = app_dev_key_events(p->app, str8_cstr(keys), events, ARRAY_COUNT(events));
     for (i32 i = 0; i < n; i++) win32_push_event(p, events[i]);
+}
+
+static void win32_smoke_feed(Platform *p, const char *keys) {
+    win32_smoke_feed_no_frame(p, keys);
     win32_frame(p);
 }
 
@@ -2019,6 +2034,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 r_request_capture(p->renderer);
                 win32_frame(p);
                 if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 2);
+                win32_smoke_feed_no_frame(p, "M-x m i n i b"); // stage 3: a filtered candidate list
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 3);
+                win32_smoke_feed(p, "C-g");
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);
