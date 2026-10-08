@@ -28,6 +28,7 @@ struct Settings {
     b32 detect_indentation;   // a loaded file decides tabs or spaces for its buffer
     i32 completion_lines;     // rows of the minibuffer's candidate list
     b32 auto_revert;          // an unmodified buffer whose file changed on disk is reloaded
+    b32 show_paren_mode;      // the bracket at point and its match are highlighted
 };
 
 typedef struct Theme { // 0xRRGGBB

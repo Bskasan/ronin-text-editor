@@ -3811,6 +3811,35 @@ static b32 test_app_destroy(Test *t, App *app, const char *what) {
     return 1;
 }
 
+// show_paren_mode in a headless app: the opener at point, the closer before point (which wins), a
+// bracket in a string, the setting off.
+static b32 test_show_paren(Test *t) {
+    String8 path = str8_fmt(&t->arena, "%S\\p8paren.c", t->tmp_dir);
+    String8 text = STR8_LIT("int f(int a) {\n    return g()(a + \"(\");\n}\n");
+    TEST_CHECK(t, os_write_file(path, text), "paren: cannot write the file");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app && app_dev_visit(app, path), "paren: app or visit failed");
+    View *v = app->views[app->active_view];
+    app_dev_feed_events(app, NULL, 0, &t->arena); // a frame: the states
+    i64 a, b;
+    view_set_point(v, &v->cursors[0], 13); // on '{'
+    TEST_CHECK(t, app_dev_paren(app, &t->arena, &a, &b) && a == 13 && b == text.len - 2, "paren: opener at point (%D %D)", a, b);
+    view_set_point(v, &v->cursors[0], 29); // after "g()": on '(' too, the closer before point wins
+    TEST_CHECK(t, app_dev_paren(app, &t->arena, &a, &b) && a == 28 && b == 27, "paren: the closer before point wins (%D %D)", a, b);
+    view_set_point(v, &v->cursors[0], 35); // on the '(' in the string
+    TEST_CHECK(t, !app_dev_paren(app, &t->arena, &a, &b), "paren: a bracket in a string");
+    view_set_point(v, &v->cursors[0], 3); // no bracket
+    TEST_CHECK(t, !app_dev_paren(app, &t->arena, &a, &b), "paren: none at point");
+    view_set_point(v, &v->cursors[0], 13);
+    app->config->settings.show_paren_mode = 0;
+    TEST_CHECK(t, !app_dev_paren(app, &t->arena, &a, &b), "paren: show_paren_mode off");
+    app->config->settings.show_paren_mode = 1;
+    if (!test_app_destroy(t, app, "paren")) return 0;
+    os_file_delete(path);
+    LOG("test: ok: show-paren (an opener at point, the closer before point wins, in a string, none, off)");
+    return 1;
+}
+
 static String8 test_app_text(Test *t, App *app) {
     Buffer *buf = app->views[app->active_view]->buffer;
     return buffer_text(buf, &t->arena, 0, buffer_size(buf));
@@ -4912,6 +4941,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_syntax(&t, seed);
     arena_reset(&t.arena);
     test_match(&t);
+    arena_reset(&t.arena);
+    test_show_paren(&t);
     arena_reset(&t.arena);
     test_indent(&t);
     arena_reset(&t.arena);

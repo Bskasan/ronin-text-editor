@@ -75,6 +75,14 @@ static const char *app_sample[] = {
 #define APP_HEADLESS_CELL_W 8  // the cell of a headless app (dev: --test), which has no font
 #define APP_HEADLESS_LINE_H 16
 
+// show_paren_mode, per view: the pair found for a buffer state and point (-1: none).
+typedef struct AppParen {
+    Buffer *buffer;
+    u64 edit_count;
+    i64 point, valid;
+    i64 a, b;
+} AppParen;
+
 typedef struct AppWatch {
     String8 dir;
     OsWatch watch; // 0: the directory could not be watched (not tried again while it is displayed)
@@ -86,6 +94,7 @@ struct App {
     Buffer *messages;            // *Messages*: the echo area's log
     KillRing kills;              // one for every buffer
     View *views[APP_MAX_VIEWS];  // laid out side by side
+    AppParen parens[APP_MAX_VIEWS]; // the matching brackets each view last showed
     i32 view_count;
     i32 active_view;
     Echo echo;
@@ -381,9 +390,43 @@ static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor
     }
 }
 
+// show_paren_mode: the closing bracket just before point (it wins, as in Emacs) or the opening one at
+// point, and its match: false when there is none (a bracket in a comment or string, unmatched, too
+// far). Cached per view while the buffer, its states and point stay the same.
+static b32 app_paren(App *app, i32 index, Arena *scratch, i64 *a, i64 *b) {
+    View *v = app->views[index];
+    Buffer *buf = v->buffer;
+    AppParen *c = &app->parens[index];
+    i64 p = view_point(v, &v->cursors[0]);
+    if (c->buffer != buf || c->edit_count != buf->edit_count || c->point != p || c->valid != buf->state_valid) {
+        *c = (AppParen){ buf, buf->edit_count, p, buf->state_valid, -1, -1 };
+        i64 size = buffer_size(buf);
+        i64 at[2] = { -1, -1 };
+        if (p > 0) {
+            u8 before = buffer_byte(buf, p - 1);
+            if (before == ')' || before == ']' || before == '}') at[0] = p - 1;
+        }
+        if (p < size) {
+            u8 here = buffer_byte(buf, p);
+            if (here == '(' || here == '[' || here == '{') at[1] = p;
+        }
+        for (i32 k = 0; k < 2 && c->a < 0; k++) {
+            i64 m = at[k] >= 0 ? syntax_match_bracket(buf, at[k], scratch) : -1;
+            if (m >= 0) {
+                c->a = at[k];
+                c->b = m;
+            }
+        }
+    }
+    *a = c->a;
+    *b = c->b;
+    return c->a >= 0;
+}
+
 // `bottom`: the view is drawn above it (the candidate list covers the rest), its mode line moved up.
 // Its rows and scroll position are not touched, so nothing scrolls when the list opens or closes.
-static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, View *v, b32 active, i32 bottom) {
+static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i32 index, b32 active, i32 bottom) {
+    View *v = app->views[index];
     Buffer *buf = v->buffer;
     i32 line_h = l->line_h;
     i32 text_x = v->x + l->pad;
@@ -393,6 +436,15 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, V
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
     for (i32 k = 0; k < v->cursor_count; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
+    i64 pair[2];
+    if (active && app->config->settings.show_paren_mode && app_paren(app, index, in->scratch, &pair[0], &pair[1])) {
+        for (i32 k = 0; k < 2; k++) {
+            i32 x0, y0, x1, y1;
+            if (app_cursor_rect(app, l, v, pair[k], rows, &x0, &y0, &x1, &y1)) {
+                r_push_rect(r, (Rect){ (f32)x0, (f32)y0, (f32)x1, (f32)y1 }, COLOR_HEX(app->config->theme.paren_match));
+            }
+        }
+    }
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
         app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, in->scratch);
     }
@@ -1297,7 +1349,7 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
     i32 list_rows = app_list_rows(app, &l);
     i32 bottom = l.minibuffer_y - list_rows * l.line_h;
     for (i32 i = 0; i < app->view_count; i++) {
-        app_draw_view(app, r, &l, in, app->views[i], i == app->active_view && !app->mini.active, bottom);
+        app_draw_view(app, r, &l, in, i, i == app->active_view && !app->mini.active, bottom);
     }
     if (app->mini.active) {
         if (list_rows) app_draw_candidates(app, r, &l, in, list_rows);
@@ -1505,6 +1557,10 @@ void app_dev_smoke_region(App *app) {
     Buffer *buf = v->buffer;
     view_set_mark(v, &v->cursors[0], 5, 1);
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
+}
+
+b32 app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b) {
+    return app->config->settings.show_paren_mode && app_paren(app, app->active_view, scratch, a, b);
 }
 
 void app_dev_force_focus(App *app, i32 focused) {
