@@ -377,3 +377,287 @@ const Command CMD_ISEARCH_RING_ADVANCE     = { "isearch-ring-advance", cmd_isear
 const Command CMD_ISEARCH_TOGGLE_CASE_FOLD = { "isearch-toggle-case-fold", cmd_isearch_toggle_case_fold, COMMAND_ONCE | COMMAND_ISEARCH };
 // Internal (not in the command table): a plain character typed while searching.
 const Command CMD_ISEARCH_PRINTING_CHAR    = { "isearch-printing-char", cmd_isearch_printing_char, COMMAND_ONCE | COMMAND_ISEARCH };
+
+// ---------------------------------------------------------------------------
+// query-replace and replace-string
+
+void replace_init(Replace *rp) {
+    memset(rp, 0, sizeof(*rp));
+    rp->arena = arena_create(REPLACE_ARENA_RESERVE);
+    rp->pair_arena = arena_create(REPLACE_ARENA_RESERVE);
+}
+
+void replace_destroy(Replace *rp) {
+    if (rp->state != REPLACE_OFF) buffer_marker_destroy(rp->view->buffer, rp->end);
+    rp->state = REPLACE_OFF;
+    os_release(rp->arena.base);
+    os_release(rp->pair_arena.base);
+}
+
+b32 replace_pending(Replace *rp) {
+    return rp->state == REPLACE_SEARCHING || rp->state == REPLACE_ALL;
+}
+
+// A word character for case conversion: letters and digits (every byte >= 0x80 counts as a letter, as
+// for word motions).
+static b32 replace_is_word(u32 c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c >= 0x80;
+}
+
+String8 replace_case(Arena *arena, String8 to, String8 match) {
+    // As Emacs' replace-match decides: what the match's letters look like.
+    b32 some_lower = 0, some_upper = 0, some_nonupper_initial = 0, some_multiletter = 0, prev_word = 0;
+    for (i64 i = 0; i < match.len;) {
+        i64 advance;
+        u32 c = utf8_decode(match.data + i, match.len - i, &advance);
+        i += advance;
+        b32 word = replace_is_word(c);
+        if (unicode_upper(c) != c) { // lowercase
+            some_lower = 1;
+            if (!prev_word) some_nonupper_initial = 1;
+            else some_multiletter = 1;
+        } else if (unicode_lower(c) != c) { // uppercase
+            some_upper = 1;
+            if (prev_word) some_multiletter = 1;
+        } else if (!prev_word && word) { // a caseless initial (a digit) counts as a lowercase one
+            some_nonupper_initial = 1;
+        }
+        prev_word = word;
+    }
+    b32 all_caps = (!some_lower && some_multiletter) || (!some_nonupper_initial && !some_multiletter && some_upper);
+    b32 cap_initial = !all_caps && !some_nonupper_initial && some_multiletter;
+    if (!all_caps && !cap_initial) return to;
+    u8 *out = PUSH_ARRAY(arena, u8, to.len * 4);
+    i64 n = 0;
+    prev_word = 0;
+    for (i64 i = 0; i < to.len;) {
+        i64 advance;
+        u32 c = utf8_decode(to.data + i, to.len - i, &advance);
+        b32 word = replace_is_word(c);
+        if (c != UTF_REPLACEMENT && (all_caps || (word && !prev_word))) {
+            n += utf8_encode(unicode_upper(c), out + n);
+        } else {
+            memcpy(out + n, to.data + i, (size_t)advance);
+            n += advance;
+        }
+        prev_word = word;
+        i += advance;
+    }
+    return str8(out, n);
+}
+
+void replace_finish(Replace *rp, ReplaceEnd how) {
+    if (rp->state == REPLACE_OFF) return;
+    View *v = rp->view;
+    view_set_point(v, &v->cursors[0], rp->point);
+    buffer_marker_destroy(v->buffer, rp->end);
+    rp->state = REPLACE_OFF;
+    if (how == REPLACE_END_QUIT) echo_message(rp->echo, "Quit");
+    else echo_message(rp->echo, "Replaced %D occurrence%s%s", rp->count, rp->count == 1 ? "" : "s", how == REPLACE_END_STOPPED ? " (stopped)" : "");
+}
+
+// The next search, from rp->next to the end of the range (which replacements move).
+static void replace_search_on(Replace *rp) {
+    Buffer *buf = rp->view->buffer;
+    search_restart(&rp->search, buf, 1, rp->next, rp->lo, buffer_marker_get(buf, rp->end));
+}
+
+// Replaces the current match. The next search starts after the replacement, so a replacement that
+// contains the search string is never searched again. False (the session ended) if the buffer refused.
+static b32 replace_one(Replace *rp, Arena *scratch) {
+    Buffer *buf = rp->view->buffer;
+    u64 mark = arena_pos(scratch);
+    String8 text = rp->to;
+    if (rp->convert) text = replace_case(scratch, rp->to, buffer_text(buf, scratch, rp->match_start, rp->match_end));
+    b32 ok = buffer_replace(buf, rp->match_start, rp->match_end, text);
+    i64 len = text.len;
+    arena_pop_to(scratch, mark);
+    if (!ok) {
+        rp->point = rp->match_end;
+        replace_finish(rp, REPLACE_END_DONE);
+        echo_message(rp->echo, buf->read_only ? "Buffer is read-only: %S" : "Buffer is full: %S", buf->name);
+        return 0;
+    }
+    rp->count++;
+    rp->next = rp->point = rp->match_start + len;
+    replace_search_on(rp);
+    return 1;
+}
+
+i64 replace_work(Replace *rp, Arena *scratch, i64 budget) {
+    Buffer *buf = rp->view->buffer;
+    i64 used = 0;
+    while (used < budget && replace_pending(rp)) {
+        i64 before = rp->search.examined;
+        SearchStatus st = search_run(&rp->search, buf, budget - used);
+        used += MAX(rp->search.examined - before, 1);
+        if (st == SEARCH_RUNNING) continue;
+        if (st == SEARCH_NOT_FOUND) {
+            replace_finish(rp, REPLACE_END_DONE);
+            break;
+        }
+        rp->match_start = rp->search.match_start;
+        rp->match_end = rp->search.match_end;
+        if (rp->state == REPLACE_SEARCHING) { // query-replace: ask about it
+            rp->state = REPLACE_ASKING;
+            rp->point = rp->match_end;
+            view_set_point(rp->view, &rp->view->cursors[0], rp->point);
+            break;
+        }
+        if (!replace_one(rp, scratch)) break;
+        used += REPLACE_COST;
+    }
+    return used;
+}
+
+String8 replace_prompt(Replace *rp, Arena *arena) {
+    if (rp->state == REPLACE_ALL) {
+        i64 end = buffer_marker_get(rp->view->buffer, rp->end);
+        i64 done = end > rp->all_from ? (rp->next - rp->all_from) * 100 / (end - rp->all_from) : 100;
+        return str8_fmt(arena, "Replacing... %D%%", CLAMP(done, 0, 100));
+    }
+    if (rp->state == REPLACE_SEARCHING) {
+        return str8_fmt(arena, "Query replacing %S with %S: [searching... %d%%]", rp->from, rp->to, search_progress(&rp->search));
+    }
+    return str8_fmt(arena, "Query replacing %S with %S: (y, n, !, q, .)", rp->from, rp->to);
+}
+
+// The session on the calling view: [point, end) or the region, the mark at the start.
+static void replace_start(CommandContext *ctx, String8 from, String8 to) {
+    Replace *rp = ctx->replace;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    Cursor *c = &v->cursors[0];
+    arena_reset(&rp->arena);
+    rp->from = str8_copy(&rp->arena, from); // `from` and `to` may be the last pair itself
+    rp->to = str8_copy(&rp->arena, to);
+    arena_reset(&rp->pair_arena);
+    rp->last_from = str8_copy(&rp->pair_arena, rp->from);
+    rp->last_to = str8_copy(&rp->pair_arena, rp->to);
+    rp->has_last = 1;
+    i64 lo = rp->region ? rp->region_lo : view_point(v, c);
+    i64 hi = rp->region ? rp->region_hi : buffer_size(buf);
+    rp->view = v;
+    rp->echo = ctx->echo;
+    rp->fold = !search_has_upper(rp->from);
+    rp->convert = rp->fold && !search_has_upper(rp->to);
+    rp->lo = rp->next = rp->point = rp->all_from = lo;
+    rp->end = buffer_marker_create(buf, hi, 0);
+    rp->count = 0;
+    view_deactivate_mark(v);
+    view_set_point(v, c, lo);
+    view_set_mark(v, c, lo, 0);
+    rp->state = rp->ask ? REPLACE_SEARCHING : REPLACE_ALL;
+    search_begin(&rp->search, buf, rp->from, rp->fold, 1, lo, lo, hi);
+}
+
+static void replace_to_done(CommandContext *ctx, MiniResult *r) {
+    replace_start(ctx, ctx->mini->state.text, r->text);
+}
+
+static void replace_from_done(CommandContext *ctx, MiniResult *r) {
+    Replace *rp = ctx->replace;
+    if (!r->text.len) {
+        if (rp->has_last) replace_start(ctx, rp->last_from, rp->last_to);
+        else echo_message(ctx->echo, "Empty search string");
+        return;
+    }
+    if (r->text.len > SEARCH_NEEDLE_MAX) {
+        echo_message(ctx->echo, "Search string too long");
+        return;
+    }
+    ctx->mini->state.text = r->text; // in the chain arena
+    String8 prompt = str8_fmt(ctx->scratch, "%s %S%s with: ", rp->ask ? "Query replace" : "Replace string", r->text,
+                              rp->region ? " in region" : "");
+    MiniRequest req = { .kind = MINI_TEXT, .prompt = prompt, .history = MINI_HISTORY_REPLACE, .done = replace_to_done };
+    minibuffer_read(ctx, &req);
+}
+
+static void replace_command(CommandContext *ctx, b32 ask) {
+    Replace *rp = ctx->replace;
+    if (!rp) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    if (buf->read_only && !(ctx->mini && v == ctx->mini->view)) {
+        echo_message(ctx->echo, "Buffer is read-only: %S", buf->name);
+        return;
+    }
+    Cursor *c = &v->cursors[0];
+    i64 lo = 0, hi = 0;
+    b32 region = view_region_active(v, c, ctx->settings) && view_region(v, c, &lo, &hi);
+    const char *what = ask ? "Query replace" : "Replace string";
+    String8 prompt = rp->has_last ? str8_fmt(ctx->scratch, "%s%s (default %S -> %S): ", what, region ? " in region" : "", rp->last_from, rp->last_to)
+                                  : str8_fmt(ctx->scratch, "%s%s: ", what, region ? " in region" : "");
+    MiniRequest req = { .kind = MINI_TEXT, .prompt = prompt, .history = MINI_HISTORY_REPLACE, .done = replace_from_done };
+    if (!minibuffer_read(ctx, &req)) return;
+    rp->ask = ask;
+    rp->region = region;
+    rp->region_lo = lo;
+    rp->region_hi = hi;
+}
+
+static void cmd_query_replace(CommandContext *ctx) { replace_command(ctx, 1); }
+static void cmd_replace_string(CommandContext *ctx) { replace_command(ctx, 0); }
+
+// An answer to the question (ctx->codepoint), on the session's own match.
+static void cmd_replace_answer(CommandContext *ctx) {
+    Replace *rp = ctx->replace;
+    if (!rp || rp->state != REPLACE_ASKING) return;
+    view_set_point(rp->view, &rp->view->cursors[0], rp->point); // back on the match, wherever the wheel left point
+    switch (ctx->codepoint) {
+    case 'y':
+    case ' ':
+        if (replace_one(rp, ctx->scratch)) rp->state = REPLACE_SEARCHING;
+        break;
+    case 'n':
+    case 0x7f:
+        rp->next = rp->match_end;
+        replace_search_on(rp);
+        rp->state = REPLACE_SEARCHING;
+        break;
+    case '!':
+        if (replace_one(rp, ctx->scratch)) {
+            rp->state = REPLACE_ALL;
+            rp->all_from = rp->next;
+        }
+        break;
+    case '.':
+        if (replace_one(rp, ctx->scratch)) replace_finish(rp, REPLACE_END_DONE);
+        break;
+    case 'q':
+    case '\r':
+        replace_finish(rp, REPLACE_END_DONE);
+        break;
+    }
+}
+
+// C-g: stops the session, keeping what was replaced.
+static void cmd_replace_quit(CommandContext *ctx) {
+    Replace *rp = ctx->replace;
+    if (!rp || rp->state == REPLACE_OFF) return;
+    replace_finish(rp, rp->state == REPLACE_ALL ? REPLACE_END_STOPPED : REPLACE_END_QUIT);
+}
+
+// Internal (not in the command table). Both continue the session's undo group.
+static const Command CMD_REPLACE_ANSWER = { "replace-answer", cmd_replace_answer, COMMAND_ONCE | COMMAND_UNDO_CONTINUE };
+static const Command CMD_REPLACE_QUIT   = { "replace-quit", cmd_replace_quit, COMMAND_ONCE | COMMAND_UNDO_CONTINUE };
+
+b32 replace_key(CommandContext *ctx, const Command *command, u32 answer) {
+    Replace *rp = ctx->replace;
+    ctx->view = rp->view;
+    if (command && (command->flags & COMMAND_QUIT)) { // first: no answer can shadow C-g
+        view_run_command(ctx, &CMD_REPLACE_QUIT);
+        return 1;
+    }
+    if (rp->state != REPLACE_ASKING) return 1; // searching or replacing all: only C-g counts
+    if (answer) {
+        ctx->codepoint = answer;
+        view_run_command(ctx, &CMD_REPLACE_ANSWER);
+        return 1;
+    }
+    replace_finish(rp, REPLACE_END_DONE); // any other key ends the session, then runs (Emacs)
+    return 0;
+}
+
+const Command CMD_QUERY_REPLACE  = { "query-replace", cmd_query_replace, COMMAND_ONCE };
+const Command CMD_REPLACE_STRING = { "replace-string", cmd_replace_string, COMMAND_ONCE };
