@@ -2100,6 +2100,81 @@ static b32 test_indent(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Other editing commands, on tricky input
+
+typedef struct TestEditCase {
+    const Command *command;
+    const char *before, *after; // '|' marks point
+    const char *message;        // expected echo, or NULL
+} TestEditCase;
+
+static b32 test_edit_commands(Test *t) {
+    static const TestEditCase cases[] = {
+        { &CMD_OPEN_LINE, "ab|cd", "ab|\ncd", NULL },
+        { &CMD_OPEN_LINE, "abcd|", "abcd|\n", NULL },
+        { &CMD_DELETE_INDENTATION, "foo  \n   |bar", "foo| bar", NULL },
+        { &CMD_DELETE_INDENTATION, "foo(\n  ba|r", "foo(|bar", NULL },
+        { &CMD_DELETE_INDENTATION, "foo\n  )|;", "foo|);", NULL },
+        { &CMD_DELETE_INDENTATION, "\n  |bar", "|bar", NULL },
+        { &CMD_DELETE_INDENTATION, "fo|o", "fo|o", NULL },
+        { &CMD_DELETE_INDENTATION, "\xc5\x9f\n\xc4\x9f|", "\xc5\x9f| \xc4\x9f", NULL },
+        { &CMD_DELETE_HORIZONTAL_SPACE, "a \t | \tb", "a|b", NULL },
+        { &CMD_DELETE_HORIZONTAL_SPACE, "a|b", "a|b", NULL },
+        { &CMD_JUST_ONE_SPACE, "a \t| \tb", "a |b", NULL },
+        { &CMD_JUST_ONE_SPACE, "a|b", "a |b", NULL },
+        { &CMD_JUST_ONE_SPACE, "a |b", "a |b", NULL },
+        { &CMD_TRANSPOSE_CHARS, "ab|cd", "acb|d", NULL },
+        { &CMD_TRANSPOSE_CHARS, "abc|\nd", "acb|\nd", NULL },
+        { &CMD_TRANSPOSE_CHARS, "abc|", "acb|", NULL },
+        { &CMD_TRANSPOSE_CHARS, "|abc", "|abc", "Beginning of buffer" },
+        { &CMD_TRANSPOSE_CHARS, "a|", "a|", "Beginning of buffer" },
+        { &CMD_TRANSPOSE_CHARS, "a\n|b", "ab\n|", NULL },
+        { &CMD_TRANSPOSE_CHARS, "x\xc5\x9f|\xc4\x9f", "x\xc4\x9f\xc5\x9f|", NULL },
+        { &CMD_UPCASE_WORD, "|hello world", "HELLO| world", NULL },
+        { &CMD_UPCASE_WORD, "hel|lo world", "helLO| world", NULL },
+        { &CMD_UPCASE_WORD, "| \xc4\xb1\xc5\x9f\xc3\x9f.", " I\xc5\x9e\xc3\x9f|.", NULL },
+        { &CMD_DOWNCASE_WORD, "|\xc5\x9e\xc4\x9e\xc3\x9c \xc4\xb0X", "\xc5\x9f\xc4\x9f\xc3\xbc| \xc4\xb0X", NULL },
+        { &CMD_DOWNCASE_WORD, "|", "|", NULL },
+        { &CMD_CAPITALIZE_WORD, "|hELLO wORLD", "Hello| wORLD", NULL },
+        { &CMD_CAPITALIZE_WORD, "|  \xd0\xbf\xd0\xa0\xd0\x98", "  \xd0\x9f\xd1\x80\xd0\xb8|", NULL },
+        { &CMD_COMMENT_LINE, "  fo|o();\nbar", "  // foo();\n|bar", NULL },
+        { &CMD_COMMENT_LINE, "  // fo|o();\nbar", "  foo();\n|bar", NULL },
+        { &CMD_COMMENT_LINE, "  //fo|o();", "  foo();|", NULL },
+        { &CMD_COMMENT_LINE, "   |", "   |", NULL },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        TestView tv;
+        if (!test_view_open(t, &tv, cases[i].before, 10, 40)) return 0;
+        test_view_run(&tv, cases[i].command);
+        char *got = test_view_marked(t, &tv);
+        b32 message_ok = !cases[i].message || test_echo_is(&tv, cases[i].message);
+        TEST_CHECK(t, test_cstr_equal(got, cases[i].after) && message_ok, "edit: %s case %d: got '%s', expected '%s'",
+                   cases[i].command->name, i, got, cases[i].after);
+        if (!test_view_close(t, &tv)) return 0;
+    }
+    // comment-line over a region: the smallest indentation, blank lines left alone; again: uncommented.
+    TestView tv;
+    if (!test_view_open(t, &tv, "|if (a) {\n    b();\n\n    c();\n}\nnext", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    for (i32 i = 0; i < 5; i++) test_view_run(&tv, &CMD_NEXT_LINE);
+    test_view_run(&tv, &CMD_COMMENT_LINE);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("// if (a) {\n//     b();\n\n//     c();\n// }\nnext")), "edit: comment a region");
+    test_view_run(&tv, &CMD_BEGINNING_OF_BUFFER);
+    test_view_run(&tv, &CMD_SET_MARK_COMMAND);
+    for (i32 i = 0; i < 5; i++) test_view_run(&tv, &CMD_NEXT_LINE);
+    test_view_run(&tv, &CMD_COMMENT_LINE);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("if (a) {\n    b();\n\n    c();\n}\nnext")), "edit: uncomment the region");
+    test_view_run(&tv, &CMD_UNDO);
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("if (a) {\n    b();\n\n    c();\n}\nnext")) && !tv.buf->modified,
+               "edit: two undos give the original");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: editing commands, %d cases (open-line, delete-indentation, whitespace, transpose, case, comment-line)",
+        (i32)ARRAY_COUNT(cases) + 3);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 // Every command is found by its own name, names are unique, and unknown names are refused.
@@ -2887,6 +2962,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_kill(&t);
     arena_reset(&t.arena);
     test_indent(&t);
+    arena_reset(&t.arena);
+    test_edit_commands(&t);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);

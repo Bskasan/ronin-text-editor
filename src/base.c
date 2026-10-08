@@ -142,6 +142,48 @@ String16 str16_from_str8(Arena *arena, String8 s) {
     return result;
 }
 
+b32 unicode_is_cased(u32 c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0xC0 && c <= 0xFF && c != 0xD7 && c != 0xF7) ||
+           (c >= 0x100 && c <= 0x17F) || (c >= 0x391 && c <= 0x3C9 && c != 0x3A2 && (c <= 0x3A9 || c >= 0x3B1)) ||
+           (c >= 0x400 && c <= 0x45F);
+}
+
+u32 unicode_lower(u32 c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20;
+    if (c >= 0x100 && c <= 0x17F) {
+        if (c == 0x130) return 'i';                                         // İ
+        if (c == 0x131 || c == 0x138 || c == 0x149 || c == 0x17F) return c; // ı ĸ ŉ ſ: lowercase only
+        if (c == 0x178) return 0xFF;                                        // Ÿ
+        b32 even_upper = c < 0x138 || (c >= 0x14A && c < 0x178);
+        b32 upper = even_upper ? (c & 1) == 0 : (c & 1) == 1;
+        return upper ? c + 1 : c;
+    }
+    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20;
+    if (c >= 0x400 && c <= 0x40F) return c + 0x50;
+    if (c >= 0x410 && c <= 0x42F) return c + 0x20;
+    return c;
+}
+
+u32 unicode_upper(u32 c) {
+    if (c >= 'a' && c <= 'z') return c - 32;
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7) return c - 0x20;
+    if (c == 0xFF) return 0x178;                                            // ÿ
+    if (c >= 0x100 && c <= 0x17F) {
+        if (c == 0x131) return 'I';                                         // ı
+        if (c == 0x17F) return 'S';                                         // ſ
+        if (c == 0x130 || c == 0x138 || c == 0x149 || c == 0x178) return c;
+        b32 even_upper = c < 0x138 || (c >= 0x14A && c < 0x178);
+        b32 lower = even_upper ? (c & 1) == 1 : (c & 1) == 0;
+        return lower ? c - 1 : c;
+    }
+    if (c == 0x3C2) return 0x3A3;                                           // final sigma
+    if (c >= 0x3B1 && c <= 0x3C9) return c - 0x20;
+    if (c >= 0x430 && c <= 0x44F) return c - 0x20;
+    if (c >= 0x450 && c <= 0x45F) return c - 0x50;
+    return c;
+}
+
 String8 str8_from_str16(Arena *arena, u16 *s, i64 len) {
     // Every UTF-16 unit yields at most three UTF-8 bytes.
     u8 *out = PUSH_ARRAY(arena, u8, len * 3);

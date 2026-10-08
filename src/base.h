@@ -95,6 +95,12 @@ String8  str8_copy(Arena *arena, String8 s);
 u32      utf8_decode(u8 *s, i64 len, i64 *advance);
 i64      utf8_encode(u32 codepoint, u8 *out); // out must hold 4 bytes
 String16 str16_from_str8(Arena *arena, String8 s);
+// Simple case mapping for the scripts keyboards type directly: ASCII, Latin-1, Latin Extended-A,
+// basic Greek and Cyrillic (the default Unicode mapping: 'I' <-> 'i', also on Turkish layouts).
+// Characters without a mapping map to themselves.
+b32      unicode_is_cased(u32 c);
+u32      unicode_lower(u32 c);
+u32      unicode_upper(u32 c);
 String8  str8_from_str16(Arena *arena, u16 *s, i64 len);
 // Clipboard text is CRLF by convention. Copying: UTF-8 with LF -> UTF-16 with CRLF, in one pass
 // into the caller's memory (len first, then write; no NUL). Pasting: CRLF and a lone CR -> LF.
