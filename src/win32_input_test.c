@@ -611,7 +611,7 @@ static DWORD WINAPI it_thread(void *param) {
         i32 leaks = app_shutdown(t.app);
         if (leaks) it_fail(&t, "%d leak(s) at shutdown", leaks);
         if (t.failures == before_failures) {
-            LOG("test: ok: input %s (layout 0x%08X, %s): letters, Alt / Ctrl / Ctrl+Alt chords, %s, Alt+Shift and Ctrl+Shift symbols, "
+            LOG("test: ok: input %s (layout 0x%08X, %s): letters, symbols and Turkish letters from their keys, Alt / Ctrl / Ctrl+Alt chords, %s, Alt+Shift and Ctrl+Shift symbols, "
                 "dead keys, no menu for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
                 t.altgr ? "AltGr" : "no AltGr", t.altgr ? "AltGr text and Left Alt + AltGr" : "Right Alt as Meta");
         }
