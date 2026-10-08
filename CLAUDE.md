@@ -108,6 +108,11 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # per keystroke (avg, worst)
     build/teal_bench.exe --bench-syntax                   # lexing MB/s per language; 100 MB C file: "/*" on
                                                           # line 1 then M-> (frames until colored), typing
+    build/teal_bench.exe --bench-search                   # 100 MB file: isearch for a needle at the end and
+                                                          # a missing one (folded / exact, typed / pasted):
+                                                          # time, frames, longest frame; isearch keystrokes
+                                                          # on src/app.c; replace-string x 1,000,000, its
+                                                          # undo and undo-redo
     build/teal_debug.exe <file> --keys ".." --touch <file> --screenshot ..   # rewrite the file after the
                                                           # keys and activate the app (changed on disk)
 
@@ -119,7 +124,8 @@ and the presentation mode: "overlay" (DWM shows the window directly) makes Prese
 one refresh interval with two buffers; that is not CPU work of ours. --test, the smoke, the
 benches and screenshot runs use an in-memory fake clipboard: they never touch the real one
 (interactive dev runs do). Dev builds log the private bytes at the startup stages
-("memory:" lines in build\teal.log).
+("memory:" lines in build\teal.log) and the startup timeline: each stage in ms since process
+creation ("startup:" lines, recorded by os_dev_stage, logged once after the first frame).
 
 `--smoke` shows the window without activating it and renders 2 frames. Then *scratch* gets a
 known text in each language (C, C++, C#, JavaScript, TypeScript, Jai; app_dev_smoke_syntax) and
@@ -137,10 +143,13 @@ text. A synthetic click on a character with focus forced on gives the next frame
 filled cursor there with the glyph drawn over it, the old cursor cell cleared. An active
 region over lines 0-1 gives the next (stage 2): selected cells in the selection color, a
 glyph drawn over it, the selection reaching the window edge on lines whose newline is selected,
-unselected cells and edges in the background. M-x with "minib" gives the last one (stage 3):
+unselected cells and edges in the background. M-x with "minib" gives the next (stage 3):
 a pixel of the prompt in the prompt color, the selected row's empty part in completion_selection,
 a pixel of a matched substring in completion_match, an unselected row in the background, the
-calling view's hollow cursor. The window title must be "*scratch* - teal",
+calling view's hollow cursor. "foo bar foo" with C-s f o o C-s gives the last one (stage 4): the
+current match's isearch background and an isearch_text pixel, the other match's lazy_highlight
+background, the spaces beside them untouched, the prompt color on the echo line. The window
+title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
@@ -191,8 +200,20 @@ changed on disk (activation, watch and settle, modified, the save guard, deleted
 watches released) and the end of the session. Phase 8: line states following their lines (a differential fuzz),
 golden tokens per language, incremental equals full under random edits and partial catch-ups, the
 catch-up budget with a deterministic clock, bracket matching, the indentation table on tokens, typed
-RET cases, show-paren, set-language, and highlighting after an auto-revert. A failed dev ASSERT logs its
-file, line and condition before breaking, so a crash shows up in build\teal.log.
+RET cases, show-paren, set-language, and highlighting after an auto-revert. Phase 9: electric
+case/default labels (C, C++, C#, JavaScript, Jai, with their undo); the search engine against a
+naive reference (36,000 searches: both directions and case modes, random ranges, the gap inside the
+match, overlaps, multi-byte text, each uncut and in random slices; fixed cases, a restart after an
+edit, needle limits, the Turkish i limit, smart case, the fast path's first bytes); isearch through
+the headless app (a state table of extend, repeat, fail, wrap, overwrap, reverse and DEL unwinding
+with the exact prompts, C-g, RET / ESC and the mark, typed ahead, C-s C-s, M-p / M-n, another
+command, a global prefix, C-w, C-y, smart case, M-c, the minibuffer, a search sliced at 64 KB a
+frame, the mouse wheel); query-replace and replace-string (every answer, the last pair, typed ahead,
+an outside change while asking, one undo and undo-redo, the region, case conversion, a -> aa, no
+matches, read-only, the wheel, replace-all over 20,000 matches stopped midway with C-g and undone in
+one step). Tests that need search work spread over frames set app->dev_work_budget (positions per
+frame instead of the clock). A failed dev ASSERT logs its file, line and condition before breaking,
+so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
 check exact colors with an independent decoder, e.g. PowerShell `System.Drawing.Bitmap`.
@@ -213,6 +234,8 @@ number/constant).
 | prompt           | #0fdfaf |   | completion_match | #ffffff |
 | completion_selection | #0000ff | | function        | #ffffff |
 | directive        | #8cde94 |   | constant        | #7ad0c6 |
-| paren_match (background) | #4f94cd | |              |         |
+| paren_match (background) | #4f94cd | | isearch (background) | #cd00cd |
+| isearch_text     | #b0e2ff |   | lazy_highlight (background) | #668b8b |
+| isearch_fail (background) | #8b0000 | |           |         |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.
