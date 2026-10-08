@@ -52,7 +52,25 @@ u8     *kill_extend(KillRing *k, i64 len, b32 prepend);
 void    kill_to_clipboard(KillRing *k); // after a command that killed: the clipboard gets the newest entry
 void    kill_from_clipboard(KillRing *k); // before yank: a clipboard changed elsewhere becomes the newest entry
 
-extern const Command CMD_UNDO, CMD_UNDO_REDO;
+// ---------------------------------------------------------------------------
+// Indentation, rule based (no parser): a line's indentation is the indentation of the previous
+// non-blank line, plus that line's net bracket balance (its ( [ { minus its ) ] }, not counting
+// the closing brackets that start it: they were applied to its own indentation), minus one
+// level per closing bracket that starts the current line; never below column 0. A level is
+// indent_width columns. Brackets in strings and comments count too, for now (Phase 8).
+
+#define EDIT_INDENT_MAX 512 // columns
+
+i64  edit_indent_cols(Buffer *buf, i64 line);                 // columns of the line's leading blanks
+i64  edit_compute_indent(Buffer *buf, i64 line, i64 indent_width);
+// Rewrites the line's leading blanks for `cols` (tabs then spaces with buf->indent_tabs), only if
+// they differ. False if the buffer refused the edit.
+b32  edit_set_indent(Buffer *buf, i64 line, i64 cols);
+i32  edit_detect_tabs(Buffer *buf); // from the first indented lines: 1 tabs, 0 spaces, -1 cannot tell
+void edit_electric_close(CommandContext *ctx); // after typing ) ] }: reindent if it starts the line
+
+extern const Command CMD_QUOTED_INSERT; // app.c
+extern const Command CMD_UNDO, CMD_UNDO_REDO, CMD_NEWLINE, CMD_INDENT_FOR_TAB_COMMAND, CMD_UNINDENT, CMD_TAB_TO_TAB_STOP;
 extern const Command CMD_KILL_REGION, CMD_KILL_RING_SAVE, CMD_KILL_LINE, CMD_KILL_WORD, CMD_BACKWARD_KILL_WORD;
 extern const Command CMD_KILL_WHOLE_LINE, CMD_YANK, CMD_YANK_POP;
 

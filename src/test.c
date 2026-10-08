@@ -1014,7 +1014,8 @@ static b32 test_columns(Test *t, u64 seed) {
 
 // The built-in defaults that matter to view commands (word bytes, fsync on save).
 static const Settings test_settings = { .font_size = 12, .line_height = 100, .tab_width = 4, .fsync_on_save = 1,
-                                        .undo_limit_mb = 64, .transient_mark_mode = 1 };
+                                        .undo_limit_mb = 64, .transient_mark_mode = 1, .kill_ring_max = 60,
+                                        .indent_width = 4 };
 
 typedef struct TestView {
     Buffer *buf;
@@ -1995,6 +1996,110 @@ static b32 test_kill(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Indentation
+
+// Every line of `input` reindented by the rule, top to bottom (as TAB over the whole buffer).
+static b32 test_indent_case(Test *t, const char *what, const char *input, const char *expected, b32 tabs, i32 tab_width) {
+    Buffer *buf = buffer_create(STR8_LIT("indent.c"));
+    buf->indent_tabs = tabs;
+    buf->tab_width = tab_width;
+    buffer_replace(buf, 0, 0, str8_cstr(input));
+    for (i64 line = 0; line < buffer_line_count(buf); line++) {
+        i64 s = buffer_line_start(buf, line), e = buffer_line_end(buf, line), p = s;
+        while (p < e && (buffer_byte(buf, p) == ' ' || buffer_byte(buf, p) == '\t')) p++;
+        if (p == e) buffer_replace(buf, s, e, STR8_LIT(""));
+        else edit_set_indent(buf, line, edit_compute_indent(buf, line, 4));
+    }
+    String8 got = buffer_text(buf, &t->arena, 0, buffer_size(buf));
+    b32 ok = str8_equal(got, str8_cstr(expected));
+    if (!ok) LOG("test: indent '%s':\n%S\n--- expected:\n%s", what, got, expected);
+    buffer_destroy(buf);
+    TEST_CHECK(t, ok, "indent: %s", what);
+    return 1;
+}
+
+static b32 test_indent(Test *t) {
+    static const struct { const char *what, *input, *expected; } cases[] = {
+        { "C: nested blocks, else, a call continued over two lines",
+          "int f(int a) {\nif (a) {\nreturn g(a,\nb,\nc);\n} else {\nreturn 0;\n}\n}\n",
+          "int f(int a) {\n    if (a) {\n        return g(a,\n            b,\n            c);\n    } else {\n        return 0;\n    }\n}\n" },
+        { "C: a line that is only \"));\"",
+          "x = f(g(\na\n));\ny;\n",
+          "x = f(g(\n        a\n));\ny;\n" },
+        { "C: two openers on one line, blank lines, wrong indentation fixed",
+          "    foo({\n\n   a,\n\n})\n        bar();\n",
+          "foo({\n\n        a,\n\n})\nbar();\n" },
+        { "C: a negative balance stops at column 0",
+          "a)));\n}\nb;\n",
+          "a)));\n}\nb;\n" },
+        { "Jai: procedure and loop",
+          "main :: () {\nfor 0..10 {\nprint(\"%\\n\", it);\n}\n}\n",
+          "main :: () {\n    for 0..10 {\n        print(\"%\\n\", it);\n    }\n}\n" },
+        { "JavaScript: array literal with an object, a function",
+          "const a = [\n1,\n{ b: 2 },\n];\nfunction f() {\nreturn a;\n}\n",
+          "const a = [\n    1,\n    { b: 2 },\n];\nfunction f() {\n    return a;\n}\n" },
+        { "brackets closed on the same line do not count",
+          "if (a) { b(); }\nc;\n[x] = y[0];\nz;\n",
+          "if (a) { b(); }\nc;\n[x] = y[0];\nz;\n" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        if (!test_indent_case(t, cases[i].what, cases[i].input, cases[i].expected, 0, 4)) return 0;
+    }
+    // Tabs: whole tabs, then spaces for the rest (tab width 8, indent width 4).
+    if (!test_indent_case(t, "tabs", "a {\nb {\nc {\nd;\n}\n}\n}\n",
+                          "a {\n    b {\n\tc {\n\t    d;\n\t}\n    }\n}\n", 1, 8)) return 0;
+    // Detection from the first indented lines.
+    Buffer *buf = buffer_create(STR8_LIT("d.c"));
+    buffer_replace(buf, 0, 0, STR8_LIT("a\n\tb\n\tc\n  d\n * comment\n"));
+    TEST_CHECK(t, edit_detect_tabs(buf) == 1, "indent: detect tabs");
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("a\n    b\n    c\n\td\n"));
+    TEST_CHECK(t, edit_detect_tabs(buf) == 0, "indent: detect spaces");
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("a\nb\n * x\n"));
+    TEST_CHECK(t, edit_detect_tabs(buf) == -1, "indent: nothing to detect");
+    buffer_destroy(buf);
+
+    // The commands.
+    TestView tv;
+    if (!test_view_open(t, &tv, "int f() {|", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_NEWLINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "int f() {\n    |"), "newline indents the new line");
+    test_type_char(&tv, 'x');
+    test_view_run(&tv, &CMD_NEWLINE);
+    test_view_run(&tv, &CMD_NEWLINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "int f() {\n    x\n\n    |"), "newline empties the blank line it leaves");
+    test_type_char(&tv, '}');
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "int f() {\n    x\n\n}|"), "a closing brace typed first reindents the line");
+    test_view_run(&tv, &CMD_UNDO);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "int f() {\n    x\n\n    |"), "the brace and its reindent are one undo");
+    // TAB: from inside the indentation to the text; in the text point stays with it.
+    buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT("if (a) {\nfoo(b);\n}"));
+    test_view_run(&tv, &CMD_BEGINNING_OF_BUFFER);
+    test_view_run(&tv, &CMD_NEXT_LINE);
+    test_view_run(&tv, &CMD_INDENT_FOR_TAB_COMMAND);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "if (a) {\n    |foo(b);\n}"), "TAB from the line start");
+    test_view_run(&tv, &CMD_FORWARD_WORD);
+    test_view_run(&tv, &CMD_UNINDENT);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "if (a) {\nfoo|(b);\n}"), "backtab: one level less, point with the text");
+    test_view_run(&tv, &CMD_INDENT_FOR_TAB_COMMAND);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "if (a) {\n    foo|(b);\n}"), "TAB in the text keeps point with it");
+    // TAB over a region reindents every line.
+    buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT("  a {\n        b;\n   \n c;\n}\n"));
+    test_view_run(&tv, &CMD_MARK_WHOLE_BUFFER);
+    test_view_run(&tv, &CMD_INDENT_FOR_TAB_COMMAND);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("a {\n    b;\n\n    c;\n}\n")) && !tv.view->cursors[0].mark_active,
+               "TAB over a region");
+    // M-i to the next stop; C-q handled by the keymap (quoted state) inserts literally.
+    buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT("ab"));
+    test_view_run(&tv, &CMD_END_OF_BUFFER);
+    test_view_run(&tv, &CMD_TAB_TO_TAB_STOP);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "ab  |"), "M-i to the next stop");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: indentation: %d rule cases, tabs, detection, newline, closing brace, TAB, backtab, region, M-i",
+        (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 
 // Every command is found by its own name, names are unique, and unknown names are refused.
@@ -2102,7 +2207,7 @@ static b32 test_chords(Test *t) {
         { KEY_LEFT, 0, MOD_SHIFT, "S-<left>" },          // named keys keep every modifier
         { KEY_F5, 0, 0, "<f5>" },
         { KEY_ENTER, 0, MOD_CTRL, "C-RET" },
-        { KEY_TAB, 0, MOD_SHIFT, "S-TAB" },
+        { KEY_TAB, 0, MOD_SHIFT, "<backtab>" },
         { KEY_BACKSPACE, 0, MOD_ALT, "M-DEL" },
         { KEY_HOME, 0, MOD_CTRL | MOD_ALT | MOD_SHIFT, "C-M-S-<home>" },
         { KEY_SEMICOLON, 0x15E, MOD_CTRL | MOD_SHIFT, "C-S-\xc5\x9f" }, // Ş on Turkish Q
@@ -2260,6 +2365,18 @@ static b32 test_key_input(Test *t) {
     TEST_CHECK(t, test_bind(global, "C-x C-s", &CMD_FORWARD_CHAR) == 0 && global->count == 8, "keys: rebinding replaces in place");
     TEST_CHECK(t, test_bind(global, "C-x C-s", NULL) == 0 && global->count == 7, "keys: none removes");
     TEST_CHECK(t, test_bind(global, "C-x C-s", NULL) == 0 && global->count == 7, "keys: removing an unbound sequence");
+    // quoted-insert (C-q): the next key is inserted literally.
+    Keymap *map = PUSH_STRUCT(&t->arena, Keymap);
+    TestKeys kq = { .stack = { map }, .count = 1 };
+    kq.in.quoted = 1;
+    TEST_CHECK(t, test_key(&kq, KEY_TAB, 0, 0) == KEY_RESULT_QUOTED && kq.r.codepoint == '\t', "C-q TAB");
+    kq.in.quoted = 1;
+    TEST_CHECK(t, test_key(&kq, KEY_J, 'j', MOD_CTRL) == KEY_RESULT_QUOTED && kq.r.codepoint == 10, "C-q C-j");
+    kq.in.quoted = 1;
+    TEST_CHECK(t, test_key(&kq, KEY_A, 'a', 0) == KEY_RESULT_IGNORED && test_text(&kq, 'a') == KEY_RESULT_QUOTED && kq.r.codepoint == 'a',
+               "C-q a");
+    kq.in.quoted = 1;
+    TEST_CHECK(t, test_key(&kq, KEY_LEFT, 0, 0) == KEY_RESULT_QUOTED && kq.r.codepoint == 0 && !kq.in.quoted, "C-q <left>: nothing");
     LOG("test: ok: keymaps and the key sequence state machine");
     return 1;
 }
@@ -2450,7 +2567,7 @@ static b32 test_config(Test *t, u64 seed) {
                   th->type == 0x8cde94 && th->variable == 0xc1d1e3, "config: default colors (the CLAUDE.md theme)");
     TEST_CHECK(t, test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER && test_binding(c, "M-<") == &CMD_BEGINNING_OF_BUFFER &&
                   test_binding(c, "C-m") == &CMD_NEWLINE && test_binding(c, "C-j") == &CMD_NEWLINE &&
-                  test_binding(c, "ESC") == &CMD_KEYBOARD_QUIT && test_binding(c, "TAB") == &CMD_SELF_INSERT &&
+                  test_binding(c, "ESC") == &CMD_KEYBOARD_QUIT && test_binding(c, "TAB") == &CMD_INDENT_FOR_TAB_COMMAND && test_binding(c, "<backtab>") == &CMD_UNINDENT &&
                   test_binding(c, "<next>") == &CMD_SCROLL_UP_COMMAND && test_binding(c, "C-x C-c") == &CMD_SAVE_BUFFERS_KILL_TERMINAL &&
                   test_binding(c, "C-x <right>") == &CMD_NEXT_BUFFER && test_binding(c, "C-x <left>") == &CMD_PREVIOUS_BUFFER &&
                   test_binding(c, "C-x C-+") == &CMD_TEXT_SCALE_INCREASE && test_binding(c, "C-x C-=") == &CMD_TEXT_SCALE_INCREASE &&
@@ -2473,7 +2590,7 @@ static b32 test_config(Test *t, u64 seed) {
     // A valid user file on top: only what it names changes.
     config_parse(c, &t->arena, STR8_LIT("# mine\n\n[settings]\nfont_size = 10.5\ntab_width=8\n  underscore_is_word = true  \r\n"
                                         "font = Courier New\n[colors]\nbackground = #102030\n[keys]\n"
-                                        "C-x C-s   forward-char\n=  newline\nC-f none\nC-q C-q C-q C-q backward-char\n"),
+                                        "C-x C-s   forward-char\n=  newline\nC-f none\n<f9> <f9> <f9> <f9> backward-char\n"),
                  STR8_LIT("user.conf"));
     TEST_CHECK(t, c->errors == 0 && c->warnings == 0, "config: valid user file: %d errors, %d warnings", c->errors, c->warnings);
     TEST_CHECK(t, s->font_size == 10.5f && s->tab_width == 8 && s->underscore_is_word && s->fsync_on_save &&
@@ -2482,7 +2599,7 @@ static b32 test_config(Test *t, u64 seed) {
     TEST_CHECK(t, th->background == 0x102030 && th->text == 0xd3b58d, "config: user color over the defaults");
     TEST_CHECK(t, test_binding(c, "C-x C-s") == &CMD_FORWARD_CHAR && test_binding(c, "=") == &CMD_NEWLINE &&
                   !test_binding(c, "C-f") && test_binding(c, "C-b") == &CMD_BACKWARD_CHAR &&
-                  test_binding(c, "C-q C-q C-q C-q") == &CMD_BACKWARD_CHAR, "config: user bindings, none, the defaults kept");
+                  test_binding(c, "<f9> <f9> <f9> <f9>") == &CMD_BACKWARD_CHAR, "config: user bindings, none, the defaults kept");
 
     // Every kind of error and warning, with its line number.
     config_init(c);
@@ -2768,6 +2885,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_clipboard(&t);
     arena_reset(&t.arena);
     test_kill(&t);
+    arena_reset(&t.arena);
+    test_indent(&t);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);

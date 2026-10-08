@@ -345,3 +345,221 @@ const Command CMD_KILL_WHOLE_LINE    = { "kill-whole-line", cmd_kill_whole_line,
 const Command CMD_YANK               = { "yank", cmd_yank, COMMAND_EDIT | COMMAND_REGION_REPLACE };
 const Command CMD_YANK_POP           = { "yank-pop", cmd_yank_pop, COMMAND_EDIT };
 #undef KILL
+
+// ---------------------------------------------------------------------------
+// Indentation
+
+static b32 edit_is_blank(u8 b) {
+    return b == ' ' || b == '\t';
+}
+
+static b32 edit_line_blank(Buffer *buf, i64 line) {
+    i64 end = buffer_line_end(buf, line);
+    for (i64 p = buffer_line_start(buf, line); p < end; p++) if (!edit_is_blank(buffer_byte(buf, p))) return 0;
+    return 1;
+}
+
+// The end of the line's leading blanks.
+static i64 edit_indent_end(Buffer *buf, i64 line) {
+    i64 p = buffer_line_start(buf, line), end = buffer_line_end(buf, line);
+    while (p < end && edit_is_blank(buffer_byte(buf, p))) p++;
+    return p;
+}
+
+i64 edit_indent_cols(Buffer *buf, i64 line) {
+    i64 col = 0;
+    for (i64 p = buffer_line_start(buf, line), end = edit_indent_end(buf, line); p < end; p++) {
+        col += view_char_width(buffer_byte(buf, p), col, buf->tab_width);
+    }
+    return col;
+}
+
+static b32 edit_is_closer(u8 b) {
+    return b == ')' || b == ']' || b == '}';
+}
+
+// After the line's leading blanks: the run of closing brackets (blanks between them allowed).
+// Returns their count; *after gets the position after the run.
+static i64 edit_leading_closers(Buffer *buf, i64 line, i64 *after) {
+    i64 p = edit_indent_end(buf, line), end = buffer_line_end(buf, line), n = 0, last = p;
+    while (p < end) {
+        u8 b = buffer_byte(buf, p);
+        if (edit_is_closer(b)) {
+            n++;
+            last = ++p;
+        } else if (edit_is_blank(b)) {
+            p++;
+        } else {
+            break;
+        }
+    }
+    *after = last;
+    return n;
+}
+
+i64 edit_compute_indent(Buffer *buf, i64 line, i64 indent_width) {
+    i64 after;
+    i64 closers = edit_leading_closers(buf, line, &after);
+    i64 prev = line - 1;
+    while (prev >= 0 && edit_line_blank(buf, prev)) prev--;
+    i64 base = 0, balance = 0;
+    if (prev >= 0) {
+        base = edit_indent_cols(buf, prev);
+        edit_leading_closers(buf, prev, &after); // already applied to its own indentation
+        for (i64 p = after, end = buffer_line_end(buf, prev); p < end; p++) {
+            u8 b = buffer_byte(buf, p);
+            if (b == '(' || b == '[' || b == '{') balance++;
+            else if (edit_is_closer(b)) balance--;
+        }
+    }
+    return CLAMP(base + (balance - closers) * indent_width, 0, (i64)EDIT_INDENT_MAX);
+}
+
+b32 edit_set_indent(Buffer *buf, i64 line, i64 cols) {
+    u8 blanks[EDIT_INDENT_MAX];
+    cols = CLAMP(cols, 0, (i64)EDIT_INDENT_MAX);
+    i64 n = 0, col = 0, tw = MAX(buf->tab_width, 1);
+    if (buf->indent_tabs) {
+        while ((col / tw + 1) * tw <= cols) {
+            blanks[n++] = '\t';
+            col = (col / tw + 1) * tw;
+        }
+    }
+    while (col < cols) {
+        blanks[n++] = ' ';
+        col++;
+    }
+    i64 start = buffer_line_start(buf, line), end = edit_indent_end(buf, line);
+    if (end - start == n) {
+        b32 same = 1;
+        for (i64 i = 0; i < n && same; i++) same = buffer_byte(buf, start + i) == blanks[i];
+        if (same) return 1; // nothing to change: no edit, no undo record
+    }
+    return buffer_replace(buf, start, end, str8(blanks, n));
+}
+
+i32 edit_detect_tabs(Buffer *buf) {
+    i64 tabs = 0, spaces = 0, lines = MIN(buffer_line_count(buf), (i64)1000);
+    for (i64 line = 0; line < lines && tabs + spaces < 100; line++) {
+        i64 p = buffer_line_start(buf, line), end = buffer_line_end(buf, line);
+        if (p >= end) continue;
+        u8 b = buffer_byte(buf, p);
+        if (b == '\t') tabs++;
+        else if (b == ' ' && p + 1 < end && buffer_byte(buf, p + 1) == ' ') spaces++; // a lone space is often " *" in a comment
+    }
+    return tabs > spaces ? 1 : spaces > tabs ? 0 : -1;
+}
+
+static b32 edit_writable(CommandContext *ctx) {
+    Buffer *buf = ctx->view->buffer;
+    if (buf->read_only && !buf->inhibit_read_only) {
+        echo_message(ctx->echo, "Buffer is read-only: %S", buf->name);
+        return 0;
+    }
+    return 1;
+}
+
+// Reindents a line by the rule; a blank line becomes empty (keep_blank: it is indented too).
+static void edit_reindent_line(CommandContext *ctx, i64 line, b32 keep_blank) {
+    Buffer *buf = ctx->view->buffer;
+    if (!keep_blank && edit_line_blank(buf, line)) {
+        buffer_replace(buf, buffer_line_start(buf, line), buffer_line_end(buf, line), STR8_LIT(""));
+        return;
+    }
+    edit_set_indent(buf, line, edit_compute_indent(buf, line, ctx->settings->indent_width));
+}
+
+void edit_electric_close(CommandContext *ctx) {
+    Buffer *buf = ctx->view->buffer;
+    i64 p = view_point(ctx->view, ctx->cursor);
+    i64 line = buffer_line_of(buf, p);
+    if (edit_indent_end(buf, line) == p - 1) edit_reindent_line(ctx, line, 0);
+}
+
+// The newline, then the new line indented by the rule. A line left with only blanks is emptied.
+static void cmd_newline(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 p = view_point(v, ctx->cursor);
+    if (!buffer_replace(buf, p, p, STR8_LIT("\n"))) {
+        echo_message(ctx->echo, "Buffer is full: %S", buf->name);
+        return;
+    }
+    i64 line = buffer_line_of(buf, view_point(v, ctx->cursor));
+    if (edit_line_blank(buf, line - 1)) {
+        buffer_replace(buf, buffer_line_start(buf, line - 1), buffer_line_end(buf, line - 1), STR8_LIT(""));
+    }
+    edit_reindent_line(ctx, line, 1);
+}
+
+// The lines a region command acts on: from the region's first line to its last (a region ending
+// at the start of a line leaves that line out).
+static b32 edit_region_lines(CommandContext *ctx, i64 *first, i64 *last) {
+    View *v = ctx->view;
+    i64 start, end;
+    if (!view_region_active(v, ctx->cursor, ctx->settings) || !view_region(v, ctx->cursor, &start, &end)) return 0;
+    Buffer *buf = v->buffer;
+    *first = buffer_line_of(buf, start);
+    *last = buffer_line_of(buf, end);
+    if (*last > *first && end == buffer_line_start(buf, *last)) (*last)--;
+    return 1;
+}
+
+// TAB: the line (or every line of an active region) reindented by the rule. Point keeps its place
+// in the text; from inside the indentation it goes to the first non-blank character.
+static void cmd_indent_for_tab_command(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 first, last;
+    if (edit_region_lines(ctx, &first, &last)) {
+        for (i64 line = first; line <= last; line++) edit_reindent_line(ctx, line, 0);
+        return;
+    }
+    i64 line = buffer_line_of(buf, view_point(v, ctx->cursor));
+    b32 in_indent = view_point(v, ctx->cursor) <= edit_indent_end(buf, line);
+    edit_reindent_line(ctx, line, 1);
+    if (in_indent) view_set_point(v, ctx->cursor, edit_indent_end(buf, line));
+}
+
+// <backtab>: one level less (to the previous multiple of indent_width), for the line or region.
+static void cmd_unindent(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 first, last, w = ctx->settings->indent_width;
+    if (!edit_region_lines(ctx, &first, &last)) first = last = buffer_line_of(buf, view_point(v, ctx->cursor));
+    for (i64 line = first; line <= last; line++) {
+        if (edit_line_blank(buf, line) && first != last) continue;
+        i64 cols = edit_indent_cols(buf, line);
+        edit_set_indent(buf, line, cols > 0 ? (cols - 1) / w * w : 0);
+    }
+}
+
+// M-i: blanks from point to the next multiple of indent_width.
+static void cmd_tab_to_tab_stop(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 p = view_point(v, ctx->cursor), w = ctx->settings->indent_width, tw = MAX(buf->tab_width, 1);
+    i64 col = view_column_of(buf, p), target = (col / w + 1) * w;
+    u8 blanks[EDIT_INDENT_MAX];
+    i64 n = 0;
+    if (buf->indent_tabs) {
+        while ((col / tw + 1) * tw <= target && n < EDIT_INDENT_MAX) {
+            blanks[n++] = '\t';
+            col = (col / tw + 1) * tw;
+        }
+    }
+    while (col < target && n < EDIT_INDENT_MAX) {
+        blanks[n++] = ' ';
+        col++;
+    }
+    buffer_replace(buf, p, p, str8(blanks, n));
+}
+
+const Command CMD_NEWLINE                = { "newline", cmd_newline, COMMAND_EDIT | COMMAND_REGION_REPLACE };
+const Command CMD_INDENT_FOR_TAB_COMMAND = { "indent-for-tab-command", cmd_indent_for_tab_command, COMMAND_EDIT };
+const Command CMD_UNINDENT               = { "unindent", cmd_unindent, COMMAND_EDIT };
+const Command CMD_TAB_TO_TAB_STOP        = { "tab-to-tab-stop", cmd_tab_to_tab_stop, COMMAND_EDIT };

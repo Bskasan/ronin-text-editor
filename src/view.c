@@ -558,15 +558,14 @@ static void cmd_insert(CommandContext *ctx, String8 text) {
     cmd_replace(ctx, p, p, text); // point advances over it
 }
 
+// A closing ) ] } typed as the first non-blank character of a line reindents the line.
 static void cmd_self_insert(CommandContext *ctx) {
     if (!ctx->codepoint) return; // bound to a key without a character
     u8 bytes[4];
     i64 n = utf8_encode(ctx->codepoint, bytes);
     cmd_insert(ctx, str8(bytes, n));
-}
-
-static void cmd_newline(CommandContext *ctx) {
-    cmd_insert(ctx, STR8_LIT("\n"));
+    u32 c = ctx->codepoint;
+    if (c == ')' || c == ']' || c == '}') edit_electric_close(ctx);
 }
 
 static void cmd_delete_backward_char(CommandContext *ctx) {
@@ -685,7 +684,6 @@ const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_
 const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE | MOTION };
 const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
 const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE };
-const Command CMD_NEWLINE                = { "newline", cmd_newline, EDIT | COMMAND_REGION_REPLACE };
 const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_SAVE_BUFFER            = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };

@@ -555,6 +555,7 @@ static void app_report_config(App *app, ConfigPoll result, b32 reload) {
 static void app_buffer_settings(App *app, Buffer *buf) {
     Settings *s = &app->config->settings;
     buf->tab_width = s->tab_width;
+    if (!buf->indent_detected) buf->indent_tabs = s->indent_with_tabs;
     buffer_undo_set_limit(buf, (u64)s->undo_limit_mb << 20);
 }
 
@@ -605,6 +606,11 @@ static Buffer *app_find_file(App *app, String8 path) {
     if (status == OS_FILE_OK) {
         LOG("app: loaded %S: %D bytes, %D lines, %s %s, %U us", buf->path, buffer_size(buf), buffer_line_count(buf),
             app_encoding_name(buf->encoding), app_eol_name(buf->eol), os_time_us() - t0);
+        if (app->config->settings.detect_indentation) {
+            i32 tabs = edit_detect_tabs(buf);
+            buf->indent_detected = tabs >= 0;
+            if (tabs >= 0) buf->indent_tabs = tabs;
+        }
     } else if (status == OS_FILE_NOT_FOUND) {
         buffer_set_path(buf, full.len ? full : path); // as in Emacs: visit the path as a new file
         echo_message(&app->echo, "(New file)");
@@ -878,6 +884,12 @@ static void cmd_describe_key(CommandContext *ctx) {
     echo_set(ctx->echo, STR8_LIT("Describe key: "));
 }
 
+// C-q: the next key is inserted literally (the keymap's quoted state).
+static void cmd_quoted_insert(CommandContext *ctx) {
+    ctx->app->keys.quoted = 1;
+    echo_set(ctx->echo, STR8_LIT("C-q-"));
+}
+
 const Command CMD_SAVE_BUFFERS_KILL_TERMINAL = { "save-buffers-kill-terminal", cmd_save_buffers_kill_terminal, COMMAND_ONCE };
 const Command CMD_NEXT_BUFFER                = { "next-buffer", cmd_next_buffer, COMMAND_ONCE };
 const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", cmd_previous_buffer, COMMAND_ONCE };
@@ -887,6 +899,7 @@ const Command CMD_TEXT_SCALE_INCREASE        = { "text-scale-increase", cmd_text
 const Command CMD_TEXT_SCALE_DECREASE        = { "text-scale-decrease", cmd_text_scale_decrease, COMMAND_ONCE };
 const Command CMD_TEXT_SCALE_RESET           = { "text-scale-reset", cmd_text_scale_reset, COMMAND_ONCE };
 const Command CMD_DESCRIBE_KEY               = { "describe-key", cmd_describe_key, COMMAND_ONCE };
+const Command CMD_QUOTED_INSERT              = { "quoted-insert", cmd_quoted_insert, COMMAND_ONCE };
 
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
     app->ctx.view = app->views[app->active_view];
@@ -918,6 +931,11 @@ static void app_key_event(App *app, Event *e) {
     case KEY_RESULT_UNDEFINED:
         echo_message(&app->echo, "%S is undefined", str8(seq, n));
         app->ctx.last_command = NULL;
+        break;
+    case KEY_RESULT_QUOTED:
+        echo_clear(&app->echo);
+        if (k.codepoint) app_run_command(app, &CMD_SELF_INSERT, k.codepoint, 0);
+        else echo_message(&app->echo, "%S cannot be inserted", str8(seq, n));
         break;
     case KEY_RESULT_DESCRIBE:
         if (k.command) echo_message(&app->echo, "%S runs the command %s", str8(seq, n), k.command->name);

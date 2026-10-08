@@ -23,6 +23,9 @@ struct Settings {
     b32 transient_mark_mode;  // the region is highlighted (and region commands need it active)
     b32 delete_selection_mode; // typing replaces an active region
     i32 kill_ring_max;
+    i32 indent_width;         // columns per indentation level
+    b32 indent_with_tabs;     // indentation uses tabs (then spaces for the rest)
+    b32 detect_indentation;   // a loaded file decides tabs or spaces for its buffer
 };
 
 typedef struct Theme { // 0xRRGGBB

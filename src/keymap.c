@@ -111,6 +111,14 @@ b32 key_chord_parse(String8 t, KeyChord *out, const char **error) {
         return 0;
     }
     if (str8_equal(rest, STR8_LIT("SPC"))) rest = STR8_LIT(" ");
+    if (str8_equal(rest, STR8_LIT("<backtab>"))) { // Emacs' name for S-TAB
+        if (mods & CHORD_SHIFT) {
+            *error = "repeated modifier";
+            return 0;
+        }
+        *out = CHORD_NAMED | (u32)KEY_TAB | mods | CHORD_SHIFT;
+        return 1;
+    }
     Key named = KEY_NONE;
     if (rest.len >= 3 && rest.data[0] == '<' && rest.data[rest.len - 1] == '>') {
         named = key_named_from_text(rest);
@@ -189,8 +197,12 @@ i64 key_chord_print(KeyChord c, u8 *out, i64 cap) {
     i64 n = 0;
     if (c & CHORD_CTRL) key_put(out, cap, &n, STR8_LIT("C-"));
     if (c & CHORD_META) key_put(out, cap, &n, STR8_LIT("M-"));
-    if (c & CHORD_SHIFT) key_put(out, cap, &n, STR8_LIT("S-"));
     u32 code = c & CHORD_CODE_MASK;
+    if ((c & CHORD_NAMED) && code == KEY_TAB && (c & CHORD_SHIFT)) {
+        key_put(out, cap, &n, STR8_LIT("<backtab>"));
+        return n;
+    }
+    if (c & CHORD_SHIFT) key_put(out, cap, &n, STR8_LIT("S-"));
     if (c & CHORD_NAMED) {
         key_put(out, cap, &n, key_is_named((Key)code) ? str8_cstr(key_names[code]) : STR8_LIT("<?>"));
     } else if (code == ' ') {
@@ -298,6 +310,26 @@ i32 key_dev_events(String8 token, Event out[2], const char **error) {
 // ---------------------------------------------------------------------------
 // The state machine
 
+// The character quoted-insert inserts for a chord: the character itself, a control character for
+// C- with a letter or one of @ [ \ ] ^ _ ?, and TAB 9, RET 13, ESC 27, DEL 127. 0 for other keys.
+static u32 key_quoted_char(KeyChord c) {
+    u32 code = c & CHORD_CODE_MASK;
+    if (c & CHORD_NAMED) {
+        return code == KEY_TAB ? 9 : code == KEY_ENTER ? 13 : code == KEY_ESCAPE ? 27 : code == KEY_BACKSPACE ? 127 : 0;
+    }
+    if (!(c & CHORD_CTRL)) return code;
+    if (code >= 'a' && code <= 'z') return code - 'a' + 1;
+    switch (code) {
+    case '[':  return 27;
+    case '\\': return 28;
+    case ']':  return 29;
+    case '^':  return 30;
+    case '_':  return 31;
+    case '?':  return 127;
+    default:   return 0; // C-@ (NUL) and the rest: nothing to insert
+    }
+}
+
 void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult *out) {
     memset(out, 0, sizeof(*out));
     KeyChord chord;
@@ -316,6 +348,14 @@ void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult
         chord = key_chord_from_text(e->codepoint);
     } else {
         out->kind = KEY_RESULT_IGNORED;
+        return;
+    }
+
+    if (in->quoted) {
+        in->quoted = 0;
+        out->kind = KEY_RESULT_QUOTED;
+        out->seq = (KeySeq){ { chord }, 1 };
+        out->codepoint = key_quoted_char(chord);
         return;
     }
 
