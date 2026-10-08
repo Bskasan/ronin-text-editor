@@ -91,6 +91,7 @@ b32  view_region(View *view, Cursor *cursor, i64 *start, i64 *end); // false whe
 b32  view_region_active(View *view, Cursor *cursor, const Settings *settings); // transient mark mode and active
 // The run around pos that a double click selects: a word, a run of blanks, or one other character.
 void view_word_bounds(Buffer *buf, i64 pos, b32 underscore_is_word, i64 *start, i64 *end);
+b32  view_is_word_char(Buffer *buf, i64 pos, b32 underscore_is_word); // the character at pos is part of a word
 i64  view_forward_word(Buffer *buf, i64 pos, b32 underscore_is_word);  // the end of the next word
 i64  view_backward_word(Buffer *buf, i64 pos, b32 underscore_is_word); // the start of the previous word
 

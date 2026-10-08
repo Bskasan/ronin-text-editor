@@ -563,3 +563,169 @@ const Command CMD_NEWLINE                = { "newline", cmd_newline, COMMAND_EDI
 const Command CMD_INDENT_FOR_TAB_COMMAND = { "indent-for-tab-command", cmd_indent_for_tab_command, COMMAND_EDIT };
 const Command CMD_UNINDENT               = { "unindent", cmd_unindent, COMMAND_EDIT };
 const Command CMD_TAB_TO_TAB_STOP        = { "tab-to-tab-stop", cmd_tab_to_tab_stop, COMMAND_EDIT };
+
+// ---------------------------------------------------------------------------
+// Other editing commands
+
+// C-o: a newline after point; point stays.
+static void cmd_open_line(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    i64 p = view_point(v, ctx->cursor);
+    if (buffer_replace(v->buffer, p, p, STR8_LIT("\n"))) view_set_point(v, ctx->cursor, p);
+}
+
+// The blanks around pos: [*start, *end).
+static void edit_blanks_around(Buffer *buf, i64 pos, i64 *start, i64 *end) {
+    i64 s = pos, e = pos, size = buffer_size(buf);
+    while (s > 0 && edit_is_blank(buffer_byte(buf, s - 1))) s--;
+    while (e < size && edit_is_blank(buffer_byte(buf, e))) e++;
+    *start = s;
+    *end = e;
+}
+
+static void cmd_delete_horizontal_space(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    i64 s, e;
+    edit_blanks_around(v->buffer, view_point(v, ctx->cursor), &s, &e);
+    buffer_replace(v->buffer, s, e, STR8_LIT(""));
+}
+
+static void cmd_just_one_space(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    i64 s, e;
+    edit_blanks_around(v->buffer, view_point(v, ctx->cursor), &s, &e);
+    if (e - s == 1 && buffer_byte(v->buffer, s) == ' ') {
+        view_set_point(v, ctx->cursor, e);
+        return;
+    }
+    if (buffer_replace(v->buffer, s, e, STR8_LIT(" "))) view_set_point(v, ctx->cursor, s + 1);
+}
+
+// M-^: this line joined to the previous one: the newline and the blanks around it become one space
+// (none after '(' or before ')', at the start of the joined line or at its end; Emacs'
+// fixup-whitespace).
+static void cmd_delete_indentation(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 line = buffer_line_of(buf, view_point(v, ctx->cursor));
+    if (line == 0) return;
+    i64 start = buffer_line_end(buf, line - 1), end = edit_indent_end(buf, line);
+    i64 prev_start = buffer_line_start(buf, line - 1);
+    while (start > prev_start && edit_is_blank(buffer_byte(buf, start - 1))) start--;
+    b32 space = start > prev_start && buffer_byte(buf, start - 1) != '(' && end < buffer_line_end(buf, line) &&
+                buffer_byte(buf, end) != ')';
+    if (buffer_replace(buf, start, end, space ? STR8_LIT(" ") : STR8_LIT(""))) view_set_point(v, ctx->cursor, start);
+}
+
+// C-t: the characters before and at point swap places and point moves on; at the end of a line
+// the two characters before point swap.
+static void cmd_transpose_chars(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 p = view_point(v, ctx->cursor);
+    i64 eol = buffer_line_end(buf, buffer_line_of(buf, p));
+    if (p == eol && p > 0) p = buffer_prev_char(buf, p);
+    if (p <= 0 || p >= buffer_size(buf)) {
+        echo_message(ctx->echo, p <= 0 ? "Beginning of buffer" : "End of buffer");
+        return;
+    }
+    i64 a = buffer_prev_char(buf, p), c = buffer_next_char(buf, p);
+    u8 swapped[8];
+    i64 first = c - p, second = p - a;
+    buffer_copy(buf, p, c, swapped);
+    buffer_copy(buf, a, p, swapped + first);
+    if (buffer_replace(buf, a, c, str8(swapped, first + second))) view_set_point(v, ctx->cursor, c);
+}
+
+typedef enum EditCase { EDIT_CASE_UPPER, EDIT_CASE_LOWER, EDIT_CASE_CAPITALIZE } EditCase;
+
+// From point to the end of the next word, characters are mapped one by one (a mapping can change
+// the byte length: 'ı' -> 'I'); point ends after the word.
+static void edit_case_word(CommandContext *ctx, EditCase mode) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    b32 u = ctx->settings->underscore_is_word;
+    i64 p = view_point(v, ctx->cursor), end = view_forward_word(buf, p, u);
+    b32 in_word = 0;
+    while (p < end) {
+        i64 next = buffer_next_char(buf, p);
+        u8 bytes[4];
+        buffer_copy(buf, p, next, bytes);
+        i64 advance;
+        u32 c = utf8_decode(bytes, next - p, &advance);
+        b32 word = view_is_word_char(buf, p, u);
+        u32 mapped = mode == EDIT_CASE_UPPER ? unicode_upper(c) : mode == EDIT_CASE_LOWER ? unicode_lower(c)
+                   : in_word ? unicode_lower(c) : unicode_upper(c);
+        in_word = word;
+        if (mapped != c && !(c == UTF_REPLACEMENT && advance == 1)) {
+            u8 out[4];
+            i64 n = utf8_encode(mapped, out);
+            if (!buffer_replace(buf, p, next, str8(out, n))) break;
+            end += n - (next - p);
+            next = p + n;
+        }
+        p = next;
+    }
+    view_set_point(v, ctx->cursor, end);
+}
+
+static void cmd_upcase_word(CommandContext *ctx) { edit_case_word(ctx, EDIT_CASE_UPPER); }
+static void cmd_downcase_word(CommandContext *ctx) { edit_case_word(ctx, EDIT_CASE_LOWER); }
+static void cmd_capitalize_word(CommandContext *ctx) { edit_case_word(ctx, EDIT_CASE_CAPITALIZE); }
+
+static b32 edit_line_commented(Buffer *buf, i64 line) {
+    i64 p = edit_indent_end(buf, line);
+    return p + 2 <= buffer_line_end(buf, line) && buffer_byte(buf, p) == '/' && buffer_byte(buf, p + 1) == '/';
+}
+
+// C-x C-;: "// " toggled on the line or on every line of an active region (every language uses
+// "//"). When all its non-blank lines are comments they are uncommented; otherwise "// " goes in
+// at their smallest indentation. Blank lines are left alone. Without a region point moves to the
+// next line (Emacs), so repeating it comments the following lines.
+static void cmd_comment_line(CommandContext *ctx) {
+    if (!edit_writable(ctx)) return;
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    i64 first, last;
+    b32 region = edit_region_lines(ctx, &first, &last);
+    if (!region) first = last = buffer_line_of(buf, view_point(v, ctx->cursor));
+    b32 all = 1;
+    i64 min_cols = I64_MAX;
+    for (i64 line = first; line <= last; line++) {
+        if (edit_line_blank(buf, line)) continue;
+        all &= edit_line_commented(buf, line);
+        min_cols = MIN(min_cols, edit_indent_cols(buf, line));
+    }
+    if (min_cols == I64_MAX) all = 0; // only blank lines: nothing to do but move on
+    for (i64 line = first; line <= last && min_cols != I64_MAX; line++) {
+        if (edit_line_blank(buf, line)) continue;
+        if (all) {
+            i64 p = edit_indent_end(buf, line), e = p + 2;
+            if (e < buffer_line_end(buf, line) && buffer_byte(buf, e) == ' ') e++;
+            buffer_replace(buf, p, e, STR8_LIT(""));
+        } else {
+            i64 at = view_offset_at_column(buf, line, min_cols);
+            buffer_replace(buf, at, at, STR8_LIT("// "));
+        }
+    }
+    if (!region) {
+        i64 line = buffer_line_of(buf, view_point(v, ctx->cursor));
+        view_set_point(v, ctx->cursor, line + 1 < buffer_line_count(buf) ? buffer_line_start(buf, line + 1) : buffer_size(buf));
+    }
+}
+
+const Command CMD_OPEN_LINE               = { "open-line", cmd_open_line, COMMAND_EDIT };
+const Command CMD_DELETE_INDENTATION      = { "delete-indentation", cmd_delete_indentation, COMMAND_EDIT };
+const Command CMD_DELETE_HORIZONTAL_SPACE = { "delete-horizontal-space", cmd_delete_horizontal_space, COMMAND_EDIT };
+const Command CMD_JUST_ONE_SPACE          = { "just-one-space", cmd_just_one_space, COMMAND_EDIT };
+const Command CMD_TRANSPOSE_CHARS         = { "transpose-chars", cmd_transpose_chars, COMMAND_EDIT };
+const Command CMD_UPCASE_WORD             = { "upcase-word", cmd_upcase_word, COMMAND_EDIT };
+const Command CMD_DOWNCASE_WORD           = { "downcase-word", cmd_downcase_word, COMMAND_EDIT };
+const Command CMD_CAPITALIZE_WORD         = { "capitalize-word", cmd_capitalize_word, COMMAND_EDIT };
+const Command CMD_COMMENT_LINE            = { "comment-line", cmd_comment_line, COMMAND_EDIT };

@@ -466,6 +466,10 @@ static b32 view_is_word_byte(u8 b, b32 underscore) {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b >= 0x80 || (b == '_' && underscore);
 }
 
+b32 view_is_word_char(Buffer *buf, i64 pos, b32 u) {
+    return pos < buffer_size(buf) && view_is_word_byte(buffer_byte(buf, pos), u);
+}
+
 i64 view_forward_word(Buffer *buf, i64 p, b32 u) {
     i64 size = buffer_size(buf);
     while (p < size && !view_is_word_byte(buffer_byte(buf, p), u)) p++;

@@ -3,27 +3,9 @@
 // ---------------------------------------------------------------------------
 // Letters
 
-// Simple case pairs of the scripts keyboards produce directly: ASCII, Latin-1, Latin Extended-A,
-// basic Greek and Cyrillic. Default Unicode mapping: 'I' lowercases to 'i' (also on Turkish layouts).
+// A cased letter's lowercase form (unicode_lower), 0 for anything else.
 u32 key_letter_lower(u32 c) {
-    if (c >= 'A' && c <= 'Z') return c + 32;
-    if (c >= 'a' && c <= 'z') return c;
-    if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20;
-    if (c >= 0xDF && c <= 0xFF && c != 0xF7) return c; // ß, à..ÿ
-    if (c >= 0x100 && c <= 0x17F) {
-        if (c == 0x130) return 'i';                                         // İ
-        if (c == 0x131 || c == 0x138 || c == 0x149 || c == 0x17F) return c; // ı ĸ ŉ ſ: lowercase only
-        if (c == 0x178) return 0xFF;                                        // Ÿ
-        b32 even_upper = c < 0x138 || (c >= 0x14A && c < 0x178);
-        b32 upper = even_upper ? (c & 1) == 0 : (c & 1) == 1;
-        return upper ? c + 1 : c;
-    }
-    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20;
-    if (c >= 0x3B1 && c <= 0x3C9) return c;
-    if (c >= 0x400 && c <= 0x40F) return c + 0x50;
-    if (c >= 0x410 && c <= 0x42F) return c + 0x20;
-    if (c >= 0x430 && c <= 0x45F) return c;
-    return 0;
+    return unicode_is_cased(c) ? unicode_lower(c) : 0;
 }
 
 // ---------------------------------------------------------------------------
