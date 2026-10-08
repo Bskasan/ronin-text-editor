@@ -1174,6 +1174,35 @@ static void cmd_quoted_insert(CommandContext *ctx) {
     echo_set(ctx->echo, STR8_LIT("C-q-"));
 }
 
+// set-language: the language of the current buffer (its highlighting, indentation), from a list.
+static i64 app_language_candidates(Minibuffer *mb, void *data, String8 input) {
+    (void)data;
+    (void)input;
+    if (mb->cand_count) return 0;
+    for (i32 l = BUFFER_LANG_FUNDAMENTAL; l <= BUFFER_LANG_TYPESCRIPT; l++) {
+        minibuffer_add_candidate(mb, str8_cstr(buffer_language_name((BufferLanguage)l)), str8(NULL, 0), 0);
+    }
+    return 0;
+}
+
+static void app_set_language_done(CommandContext *ctx, MiniResult *r) {
+    Buffer *buf = ctx->view->buffer;
+    for (i32 l = BUFFER_LANG_FUNDAMENTAL; l <= BUFFER_LANG_TYPESCRIPT; l++) {
+        if (!str8_equal(r->text, str8_cstr(buffer_language_name((BufferLanguage)l)))) continue;
+        buf->language = (BufferLanguage)l;
+        syntax_attach(buf); // its states start over (or go, for Fundamental)
+        echo_message(ctx->echo, "Language: %s", buffer_language_name(buf->language));
+        return;
+    }
+}
+
+static void cmd_set_language(CommandContext *ctx) {
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Language: "), .history = MINI_HISTORY_TEXT,
+                        .candidates = app_language_candidates, .require_match = 1, .done = app_set_language_done };
+    minibuffer_read(ctx, &req);
+}
+
+const Command CMD_SET_LANGUAGE               = { "set-language", cmd_set_language, COMMAND_ONCE };
 const Command CMD_NEXT_BUFFER                = { "next-buffer", cmd_next_buffer, COMMAND_ONCE };
 const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", cmd_previous_buffer, COMMAND_ONCE };
 const Command CMD_OPEN_CONFIG                = { "open-config", cmd_open_config, COMMAND_ONCE };
