@@ -135,6 +135,17 @@ typedef struct Buffer {
     i64 nl_cap;      // committed entries
     i64 nl_front, nl_back;
 
+    // Lexer states (highlighting): the state at the start of each line, next to the line index.
+    // line_state[k] belongs to nl[k] (same gap, same indexes) and is the start state of line
+    // k + 1; line 0 starts in state 0. Reserved and committed only while states_on. The values
+    // mean nothing here: the syntax layer computes them; buffer_replace keeps them with their
+    // lines and tracks what an edit made untrustworthy.
+    u32 *line_state;
+    b32 states_on;
+    i64 state_valid; // lines [0, state_valid] have their correct start state
+    i64 state_dirty; // the last line whose text changed since; states may only converge after it (-1: none)
+    i64 state_known; // lines [0, state_known) have a stored state (possibly stale); the rest have none
+
     // Markers: a flat slot array in its own reservation; freed slots are reused.
     BufferMarkerSlot *markers;
     i64 marker_reserved; // slots
@@ -214,6 +225,14 @@ BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out);
 BufferUndoResult buffer_redo(Buffer *buf, i64 point, i64 *point_out);
 void buffer_mark_saved(Buffer *buf);  // the current state is the saved one: unmodified
 u64  buffer_undo_memory(Buffer *buf); // committed bytes of the log and its group index
+
+// Lexer states (see Buffer). Enabling commits one u32 per line, with every state untrusted (only
+// line 0 is known); disabling gives the memory back. An edit replacing lines [a, b] by [a, a + n]
+// lowers state_valid to a, raises state_dirty to a + n, and gives the new lines line a's state.
+b32  buffer_states_enable(Buffer *buf, b32 on); // false if the memory could not be committed (then off)
+u32  buffer_line_state(Buffer *buf, i64 line);   // the stored start state of a line (0 for line 0)
+void buffer_set_line_state(Buffer *buf, i64 line, u32 state); // line >= 1
+u64  buffer_states_memory(Buffer *buf);          // committed bytes
 
 // Files. Loading needs an empty buffer; on failure it stays empty and the status says why.
 // Opening a missing file gives OS_FILE_NOT_FOUND; the caller may then visit the path as a new file.

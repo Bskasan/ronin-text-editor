@@ -329,6 +329,103 @@ static i64 test_random_live_marker(Test *t, TestMarker *m, i64 count) {
     return -1;
 }
 
+// ---------------------------------------------------------------------------
+// Lexer states in the buffer: they follow their lines through every edit and gap move; an edit
+// lowers state_valid, raises state_dirty and gives new lines the state of the edited line.
+
+#define TEST_STATE_OPS 3000
+#define TEST_STATE_LINES_CAP 20000
+
+typedef struct TestStates {
+    u32 *tag;   // per line (tag[0] = 0)
+    i64 lines;
+    i64 valid, dirty, known;
+} TestStates;
+
+static b32 test_states_equal(Test *t, Buffer *buf, TestStates *ref, i32 op) {
+    TEST_CHECK(t, buffer_line_count(buf) == ref->lines, "states: op %d: %D lines, expected %D", op, buffer_line_count(buf), ref->lines);
+    for (i64 l = 0; l < ref->lines; l++) {
+        TEST_CHECK(t, buffer_line_state(buf, l) == ref->tag[l], "states: op %d: line %D has %u, expected %u", op, l,
+                   buffer_line_state(buf, l), ref->tag[l]);
+    }
+    TEST_CHECK(t, buf->state_valid == ref->valid && buf->state_dirty == ref->dirty && buf->state_known == ref->known,
+               "states: op %d: valid %D dirty %D known %D, expected %D %D %D", op, buf->state_valid, buf->state_dirty,
+               buf->state_known, ref->valid, ref->dirty, ref->known);
+    return 1;
+}
+
+static b32 test_line_states(Test *t, u64 seed) {
+    t->rng = seed ^ 0x7374617465ull;
+    Buffer *buf = buffer_create(STR8_LIT("states"));
+    TEST_CHECK(t, buf, "states: buffer_create failed");
+    TestRef ref = { PUSH_ARRAY(&t->arena, u8, MB(1)), 0, MB(1), 0 };
+    u8 *text = PUSH_ARRAY(&t->arena, u8, KB(64));
+    String8 init = test_random_text(t, text, KB(8));
+    buffer_replace(buf, 0, 0, init);
+    test_ref_replace(&ref, 0, 0, init);
+    TEST_CHECK(t, buffer_states_memory(buf) == 0 && !buf->line_state, "states: nothing reserved before they are enabled");
+    TEST_CHECK(t, buffer_states_enable(buf, 1) && buffer_states_memory(buf) > 0, "states: enable");
+    TestStates s = { PUSH_ARRAY(&t->arena, u32, TEST_STATE_LINES_CAP), buffer_line_count(buf), 0, -1, 1 };
+    u32 *next = PUSH_ARRAY(&t->arena, u32, TEST_STATE_LINES_CAP);
+    u32 tag = 1;
+    for (i64 l = 1; l < s.lines; l++) buffer_set_line_state(buf, l, s.tag[l] = tag++);
+    s.known = s.lines;
+    buf->state_known = s.known;
+    i64 big = 0;
+    for (i32 op = 0; op < TEST_STATE_OPS; op++) {
+        if (test_below(t, 10) == 0) {
+            // As the lexer would: some states rewritten, the frontiers moved.
+            for (i32 k = 0; k < 20 && s.lines > 1; k++) {
+                i64 l = 1 + test_below(t, s.lines - 1);
+                buffer_set_line_state(buf, l, s.tag[l] = tag++);
+            }
+            buf->state_known = s.known = 1 + test_below(t, s.lines);
+            buf->state_valid = s.valid = test_below(t, s.known);
+            buf->state_dirty = s.dirty = test_below(t, s.lines + 1) - 1;
+        }
+        // A replace anywhere (it moves the gap there); now and then a large insert that grows the index.
+        i64 a = test_ref_snap(&ref, test_below(t, ref.len + 1));
+        i64 span = test_below(t, 64);
+        i64 b = test_ref_snap(&ref, MIN(a + span, ref.len));
+        i64 len = test_below(t, 48);
+        if (test_below(t, 200) == 0 && ref.len < KB(400)) {
+            len = KB(16) + test_below(t, KB(16));
+            big++;
+        }
+        String8 ins = test_random_text(t, text, len);
+        i64 first = test_count_newlines(ref.data, a);
+        i64 removed = test_count_newlines(ref.data + a, b - a), inserted = test_count_newlines(ins.data, ins.len);
+        if (s.lines - removed + inserted > TEST_STATE_LINES_CAP) continue;
+        TEST_CHECK(t, buffer_replace(buf, a, b, ins), "states: op %d: replace failed", op);
+        test_ref_replace(&ref, a, b, ins);
+        if (a != b || ins.len) {
+            // The flat model: lines first+1 .. first+removed go, `inserted` lines with line first's state come.
+            i64 n = 0;
+            for (i64 l = 0; l <= first; l++) next[n++] = s.tag[l];
+            for (i64 l = 0; l < inserted; l++) next[n++] = s.tag[first];
+            for (i64 l = first + removed + 1; l < s.lines; l++) next[n++] = s.tag[l];
+            memcpy(s.tag, next, (size_t)n * sizeof(u32));
+            s.lines = n;
+            i64 delta = inserted - removed;
+            s.valid = MIN(s.valid, first);
+            s.dirty = MAX(s.dirty > first + removed ? s.dirty + delta : s.dirty, first + inserted);
+            if (s.known > first + removed) s.known += delta;
+            else if (s.known > first) s.known = first + inserted + 1;
+        }
+        if (!test_states_equal(t, buf, &s, op)) return 0;
+    }
+    u64 committed = buffer_states_memory(buf);
+    TEST_CHECK(t, committed == (u64)buf->nl_cap * sizeof(u32), "states: committed with the index (%U, %D entries)", committed, buf->nl_cap);
+    TEST_CHECK(t, buffer_states_enable(buf, 0) && buffer_states_memory(buf) == 0 && buffer_line_state(buf, 1) == 0, "states: disable");
+    TEST_CHECK(t, buffer_replace(buf, 0, 0, STR8_LIT("\n\n")), "states: an edit while disabled");
+    TEST_CHECK(t, buffer_states_enable(buf, 1) && buf->state_valid == 0 && buf->state_known == 1 && buf->state_dirty == -1,
+               "states: enabled again, all untrusted");
+    TEST_CHECK(t, buffer_destroy(buf), "states: destroy");
+    LOG("test: ok: line states (%d edits, %D large, follow their lines; valid / dirty / known; enable, disable, release)",
+        TEST_STATE_OPS, big);
+    return 1;
+}
+
 static b32 test_markers(Test *t, u64 seed) {
     t->rng = seed ^ 0x6d61726b6572ull;
     Buffer *buf = buffer_create(STR8_LIT("markers"));
@@ -4146,6 +4243,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_markers(&t, seed);
+    arena_reset(&t.arena);
+    test_line_states(&t, seed);
     arena_reset(&t.arena);
     test_capacity(&t);
     arena_reset(&t.arena);
