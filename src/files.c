@@ -148,6 +148,12 @@ static void cmd_write_file(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
+static void files_save(CommandContext *ctx, Buffer *buf) {
+    OsFileStatus status = buffer_save_opt(buf, ctx->settings->fsync_on_save);
+    if (status == OS_FILE_OK) files_echo(ctx->echo, "Wrote %S", buf->path);
+    else echo_message(ctx->echo, "Cannot save %S: %s", buf->name, buffer_status_text(status));
+}
+
 // A buffer without a file asks for one (write-file). Headless view tests have no minibuffer.
 static void cmd_save_buffer(CommandContext *ctx) {
     Buffer *buf = ctx->view->buffer;
@@ -159,12 +165,96 @@ static void cmd_save_buffer(CommandContext *ctx) {
         echo_message(ctx->echo, "(No changes need to be saved)");
         return;
     }
-    OsFileStatus status = buffer_save_opt(buf, ctx->settings->fsync_on_save);
-    if (status == OS_FILE_OK) files_echo(ctx->echo, "Wrote %S", buf->path);
-    else echo_message(ctx->echo, "Cannot save %S: %s", buf->name, buffer_status_text(status));
+    files_save(ctx, buf);
 }
 
+// ---------------------------------------------------------------------------
+// save-some-buffers and quitting. One chain walks the buffer list: state.index is the next entry to
+// look at, state.flags what was asked for.
+
+enum {
+    FILES_SAVE_ALL  = 1 << 0, // "!": save the rest without asking
+    FILES_QUIT      = 1 << 1, // save-buffers-kill-terminal: then the exit question
+    FILES_ASKED     = 1 << 2, // some buffer needed saving
+};
+
+static b32 files_unsaved(Buffer *b) {
+    return b->modified && b->path.len;
+}
+
+static void files_quit_confirmed(CommandContext *ctx, MiniResult *r) {
+    if (r->yes) ctx->app->quit = 1;
+}
+
+// The end of the walk when quitting: modified file buffers left over ask once more.
+static void files_quit_check(CommandContext *ctx) {
+    App *app = ctx->app;
+    for (i32 i = 0; i < app->buffers.count; i++) {
+        if (!files_unsaved(app->buffers.entries[i].buffer)) continue;
+        MiniRequest req = { .kind = MINI_YES_NO, .prompt = STR8_LIT("Modified buffers exist; exit anyway? (yes or no) "),
+                            .done = files_quit_confirmed };
+        minibuffer_read(ctx, &req);
+        return;
+    }
+    app->quit = 1;
+}
+
+static void files_save_some_answer(CommandContext *ctx, MiniResult *r);
+
+// Asks about the next modified file buffer (or saves it, after "!"); at the end, the exit question
+// when quitting.
+static void files_save_some_next(CommandContext *ctx) {
+    App *app = ctx->app;
+    MiniState *s = &ctx->mini->state;
+    for (; s->index < app->buffers.count; s->index++) {
+        Buffer *b = app->buffers.entries[s->index].buffer;
+        if (!files_unsaved(b)) continue;
+        s->flags |= FILES_ASKED;
+        if (s->flags & FILES_SAVE_ALL) {
+            files_save(ctx, b);
+            continue;
+        }
+        arena_reset(&app->files_arena);
+        String8 prompt = str8_fmt(&app->files_arena, "Save file %S? (y, n, !, q) ", b->path);
+        for (i64 i = 0; i < prompt.len; i++) if (prompt.data[i] == '\\') prompt.data[i] = '/';
+        MiniRequest req = { .kind = MINI_KEY, .prompt = prompt, .answers = "yn!q", .done = files_save_some_answer };
+        if (minibuffer_read(ctx, &req)) s->buffer = b;
+        return;
+    }
+    if (s->flags & FILES_QUIT) files_quit_check(ctx);
+    else if (!(s->flags & FILES_ASKED)) echo_message(ctx->echo, "(No files need saving)");
+}
+
+static void files_save_some_answer(CommandContext *ctx, MiniResult *r) {
+    MiniState *s = &ctx->mini->state;
+    if (r->key == 'q') {
+        if (s->flags & FILES_QUIT) files_quit_check(ctx);
+        return;
+    }
+    if (r->key == '!') s->flags |= FILES_SAVE_ALL;
+    if (r->key != 'n') files_save(ctx, s->buffer);
+    s->index++;
+    files_save_some_next(ctx);
+}
+
+static void files_save_some_start(CommandContext *ctx, u32 flags) {
+    if (ctx->mini->active) { // refused with Emacs' message: no recursive minibuffers
+        minibuffer_read(ctx, &(MiniRequest){ .kind = MINI_TEXT });
+        return;
+    }
+    ctx->mini->state = (MiniState){ .flags = flags };
+    files_save_some_next(ctx);
+}
+
+static void cmd_save_some_buffers(CommandContext *ctx) { files_save_some_start(ctx, 0); }
+
+// C-x C-c, the close button, Alt+F4 and the end of the Windows session: save-some-buffers, then
+// "Modified buffers exist; exit anyway?" if some are left.
+static void cmd_save_buffers_kill_terminal(CommandContext *ctx) { files_save_some_start(ctx, FILES_QUIT); }
+
 const Command CMD_SAVE_BUFFER = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
+const Command CMD_SAVE_SOME_BUFFERS = { "save-some-buffers", cmd_save_some_buffers, COMMAND_ONCE };
+const Command CMD_SAVE_BUFFERS_KILL_TERMINAL = { "save-buffers-kill-terminal", cmd_save_buffers_kill_terminal, COMMAND_ONCE };
 const Command CMD_FIND_FILE   = { "find-file", cmd_find_file, COMMAND_ONCE };
 const Command CMD_WRITE_FILE  = { "write-file", cmd_write_file, COMMAND_ONCE };
 

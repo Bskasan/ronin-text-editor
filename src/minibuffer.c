@@ -174,10 +174,7 @@ b32 minibuffer_read(CommandContext *ctx, MiniRequest *req) {
         echo_message(ctx->echo, "Command attempted to use minibuffer while in minibuffer");
         return 0;
     }
-    if (!mb->in_continuation) {
-        arena_reset(&mb->arena);
-        mb->state = (MiniState){ 0 };
-    }
+    if (!mb->in_continuation) arena_reset(&mb->arena); // a new chain (its state is the command's to set)
     mb->active = 1;
     mb->finished = 0;
     mb->kind = req->kind;

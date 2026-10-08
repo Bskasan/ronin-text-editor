@@ -206,6 +206,7 @@ static const char config_default[] =
     "C-x C-f     find-file\n"
     "C-x C-s     save-buffer\n"
     "C-x C-w     write-file\n"
+    "C-x s       save-some-buffers\n"
     "C-x C-c     save-buffers-kill-terminal\n"
     "C-x b       switch-to-buffer\n"
     "C-x k       kill-buffer\n"
