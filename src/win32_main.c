@@ -82,6 +82,9 @@ typedef struct Platform {
     String8 config_path;
     String8 keys; // --keys: injected after startup
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
+    b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
+    u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
+    Event last_key_event; // the last of them
     const char *stage_what[32]; // os_dev_stage: the startup timeline, logged after the first frame
     LARGE_INTEGER stage_qpc[32];
     i32 stage_count;
@@ -839,6 +842,12 @@ static void win32_frame(Platform *p) {
 }
 
 static void win32_push_event(Platform *p, Event e) {
+#if TEAL_DEV
+    if (e.kind == EVENT_KEY_DOWN || e.kind == EVENT_TEXT) {
+        e.dev_seq = ++p->key_seq;
+        p->last_key_event = e;
+    }
+#endif
     if (p->event_count > 0) {
         Event *last = &p->events[p->event_count - 1];
         if (last->kind == e.kind && (e.kind == EVENT_MOUSE_MOVE || e.kind == EVENT_RESIZE)) {
@@ -870,15 +879,18 @@ static u32 win32_mods(Platform *p) {
 
 // The character a key produces with the current Shift / AltGr (and Caps Lock) state, Ctrl and
 // Alt ignored. Flag 0x4 leaves the kernel's dead-key state untouched, so typing is not disturbed.
-// A dead key yields its spacing accent. 0 when the key produces nothing printable.
-static u32 win32_key_char(Platform *p, u32 vk, u32 scancode) {
+// A dead key yields its spacing accent. 0 when the key produces nothing printable. `ret` (if not
+// NULL) gets ToUnicodeEx's result: the UTF-16 units written, -1 for a dead key.
+static u32 win32_key_char(Platform *p, u32 vk, u32 scancode, i32 *ret) {
     BYTE state[256];
+    if (ret) *ret = 0;
     if (!GetKeyboardState(state)) return 0;
     state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_RCONTROL] = 0;
     state[VK_MENU] = state[VK_LMENU] = state[VK_RMENU] = 0;
     if (p->altgr) state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_MENU] = state[VK_RMENU] = 0x80;
     WCHAR buf[8];
     int n = ToUnicodeEx(vk, scancode, state, buf, ARRAY_COUNT(buf), 0x4, GetKeyboardLayout(0));
+    if (ret) *ret = n;
     if (n == 0) return 0;
     u32 c = buf[0];
     if (c >= 0xD800 && c <= 0xDBFF && n >= 2 && buf[1] >= 0xDC00 && buf[1] <= 0xDFFF) {
@@ -930,7 +942,7 @@ static b32 win32_is_key_message(UINT msg) {
     return msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP;
 }
 
-static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     Platform *p = g_platform;
     switch (msg) {
     // Shutdown or logoff. With unsaved files: refuse, give the reason, and let the app ask what to save
@@ -1054,7 +1066,7 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     .mods = win32_mods(p),
                     .scancode = (u32)(HIWORD(lp) & (KF_EXTENDED | 0xFF)),
                     .repeat = (HIWORD(lp) & KF_REPEAT) != 0,
-                    .codepoint = win32_key_char(p, vk, (u32)(HIWORD(lp) & 0xFF)),
+                    .codepoint = win32_key_char(p, vk, (u32)(HIWORD(lp) & 0xFF), NULL),
                 };
                 win32_push_event(p, e);
                 p->redraw = 1;
@@ -1152,6 +1164,211 @@ static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+#if TEAL_DEV
+// ---------------------------------------------------------------------------
+// --log-keys: every keyboard message, the state teal reads with it, and what became of it. The app
+// logs, under the same event number, the chord and the command (app_dev_log_key).
+
+static b32 win32_dev_is_keyboard_message(UINT msg) {
+    return win32_is_key_message(msg) || msg == WM_CHAR || msg == WM_SYSCHAR || msg == WM_DEADCHAR || msg == WM_SYSDEADCHAR ||
+           msg == WM_SYSCOMMAND || msg == WM_INPUTLANGCHANGEREQUEST || msg == WM_INPUTLANGCHANGE;
+}
+
+static const char *win32_dev_message_name(UINT msg) {
+    switch (msg) {
+    case WM_KEYDOWN:                return "WM_KEYDOWN";
+    case WM_KEYUP:                  return "WM_KEYUP";
+    case WM_SYSKEYDOWN:             return "WM_SYSKEYDOWN";
+    case WM_SYSKEYUP:               return "WM_SYSKEYUP";
+    case WM_CHAR:                   return "WM_CHAR";
+    case WM_SYSCHAR:                return "WM_SYSCHAR";
+    case WM_DEADCHAR:               return "WM_DEADCHAR";
+    case WM_SYSDEADCHAR:            return "WM_SYSDEADCHAR";
+    case WM_SYSCOMMAND:             return "WM_SYSCOMMAND";
+    case WM_INPUTLANGCHANGEREQUEST: return "WM_INPUTLANGCHANGEREQUEST";
+    case WM_INPUTLANGCHANGE:        return "WM_INPUTLANGCHANGE";
+    default:                        return "?";
+    }
+}
+
+// The legend of a key on a US keyboard, by scan code: keys are named by their US position.
+static const char *win32_dev_us_legend(u32 scancode) {
+    static const char *const legends[0x5A] = {
+        [0x29] = "`", [0x02] = "1", [0x03] = "2", [0x04] = "3", [0x05] = "4", [0x06] = "5", [0x07] = "6", [0x08] = "7",
+        [0x09] = "8", [0x0A] = "9", [0x0B] = "0", [0x0C] = "-", [0x0D] = "=",
+        [0x10] = "Q", [0x11] = "W", [0x12] = "E", [0x13] = "R", [0x14] = "T", [0x15] = "Y", [0x16] = "U", [0x17] = "I",
+        [0x18] = "O", [0x19] = "P", [0x1A] = "[", [0x1B] = "]", [0x2B] = "\\",
+        [0x1E] = "A", [0x1F] = "S", [0x20] = "D", [0x21] = "F", [0x22] = "G", [0x23] = "H", [0x24] = "J", [0x25] = "K",
+        [0x26] = "L", [0x27] = ";", [0x28] = "'",
+        [0x2C] = "Z", [0x2D] = "X", [0x2E] = "C", [0x2F] = "V", [0x30] = "B", [0x31] = "N", [0x32] = "M", [0x33] = ",",
+        [0x34] = ".", [0x35] = "/", [0x39] = "Space", [0x56] = "ISO key left of Z (not on US keyboards)",
+    };
+    return scancode < ARRAY_COUNT(legends) && legends[scancode] ? legends[scancode] : "?";
+}
+
+// "U+0066 'f'", or "none".
+static String8 win32_dev_char(Arena *a, u32 c) {
+    if (!c) return STR8_LIT("none");
+    u8 bytes[4];
+    i64 n = (c >= 0x20 && c != 0x7F) ? utf8_encode(c, bytes) : 0;
+    return n ? str8_fmt(a, "U+%04x '%S'", c, str8(bytes, n)) : str8_fmt(a, "U+%04x", c);
+}
+
+// The keys a symbol chord of the default config needs, on layout `hkl` (VkKeyScanExW).
+static void win32_dev_log_key_table(HKL hkl) {
+    static const struct { u32 c; const char *chords; } table[] = {
+        { '/', "C-/" }, { '_', "C-_ C-M-_" }, { '?', "C-?" }, { '<', "M-<" }, { '>', "M->" }, { '{', "M-{" }, { '}', "M-}" },
+        { '%', "M-%" }, { '^', "M-^" }, { '\\', "M-\\" }, { ';', "M-; C-x C-;" }, { '+', "C-x C-+" }, { '=', "C-x C-=" },
+        { '-', "C-x C--" }, { '0', "C-x C-0" }, { '@', "C-@" }, { ',', "C-c ," },
+    };
+    LOG("keytable: layout 0x%08X: the key that types each character a default symbol chord needs (US positions)", (u64)(uintptr_t)hkl);
+    for (i32 i = 0; i < ARRAY_COUNT(table); i++) {
+        SHORT r = VkKeyScanExW((WCHAR)table[i].c, hkl);
+        if (r == -1) {
+            LOG("keytable:   '%c' (%s): no key types it on this layout", (int)table[i].c, table[i].chords);
+            continue;
+        }
+        u32 vk = (u32)r & 0xFF, sh = ((u32)r >> 8) & 0xFF;
+        u32 scan = MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, hkl);
+        BYTE state[256] = { 0 };
+        if (sh & 1) state[VK_SHIFT] = state[VK_LSHIFT] = 0x80;
+        if (sh & 2) state[VK_CONTROL] = state[VK_LCONTROL] = 0x80;
+        if (sh & 4) state[VK_MENU] = state[VK_RMENU] = 0x80;
+        WCHAR buf[8];
+        int n = ToUnicodeEx(vk, scan, state, buf, ARRAY_COUNT(buf), 0x4, hkl);
+        LOG("keytable:   '%c' (%s): %s%s%s[%s] (vk 0x%02x, scan 0x%02x)%s", (int)table[i].c, table[i].chords,
+            (sh & 6) == 6 ? "AltGr + " : (sh & 2) ? "Ctrl + " : "", (sh & 6) != 6 && (sh & 4) ? "Alt + " : "",
+            (sh & 1) ? "Shift + " : "", win32_dev_us_legend(scan), vk, scan, n < 0 ? ", a DEAD key" : "");
+    }
+}
+
+// One line per keyboard message, after it was handled: `seq_before` and `altgr_before` are the state
+// before, `result` what the window procedure returned.
+static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u32 seq_before, b32 altgr_before, LRESULT result) {
+    Arena *a = &p->scratch;
+    u64 mark = arena_pos(a);
+    HKL hkl = GetKeyboardLayout(0);
+    String8 outcome = { 0 };
+    b32 pushed = p->key_seq != seq_before;
+    if (pushed) {
+        Event *e = &p->last_key_event;
+        outcome = str8_fmt(a, "event #%u %s", e->dev_seq, e->kind == EVENT_KEY_DOWN ? "KEY_DOWN" : "TEXT");
+    }
+    if (msg == WM_INPUTLANGCHANGEREQUEST) {
+        LOG("keys: %s flags 0x%x (%s%s%s) requested layout 0x%08X, current 0x%08X -> %s", win32_dev_message_name(msg), (u32)wp,
+            (wp & INPUTLANGCHANGE_SYSCHARSET) ? "SYSCHARSET " : "", (wp & INPUTLANGCHANGE_FORWARD) ? "FORWARD " : "",
+            (wp & INPUTLANGCHANGE_BACKWARD) ? "BACKWARD" : "", (u64)(uintptr_t)lp, (u64)(uintptr_t)hkl,
+            "passed to DefWindowProc (accepted)");
+        return;
+    }
+    if (msg == WM_INPUTLANGCHANGE) {
+        WCHAR klid[KL_NAMELENGTH] = { 0 };
+        GetKeyboardLayoutNameW(klid);
+        LOG("keys: %s charset %u, layout 0x%08X (KLID %S)", win32_dev_message_name(msg), (u32)wp, (u64)(uintptr_t)lp,
+            str8_from_str16(a, (u16 *)klid, KL_NAMELENGTH - 1));
+        win32_dev_log_key_table((HKL)lp);
+        arena_pop_to(a, mark);
+        return;
+    }
+    if (msg == WM_SYSCOMMAND) {
+        LOG("keys: %s 0x%x%s -> %s", win32_dev_message_name(msg), (u32)wp, (wp & 0xFFF0) == SC_KEYMENU ? " (SC_KEYMENU)" : "",
+            (wp & 0xFFF0) == SC_KEYMENU ? "swallowed: no system menu" : "passed to DefWindowProc");
+        return;
+    }
+
+    // The keys down as the thread's key state has them, and teal's reading of them.
+    u8 down[64];
+    i64 dn = 0;
+    static const struct { int vk; const char *name; } mod_keys[] = {
+        { VK_LSHIFT, "LShift" }, { VK_RSHIFT, "RShift" }, { VK_LCONTROL, "LCtrl" }, { VK_RCONTROL, "RCtrl" },
+        { VK_LMENU, "LAlt" }, { VK_RMENU, "RAlt" }, { VK_LWIN, "LWin" }, { VK_RWIN, "RWin" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(mod_keys); i++) {
+        if (GetKeyState(mod_keys[i].vk) & 0x8000) dn += fmt_buf(down + dn, (i64)sizeof(down) - dn, "%s%s", dn ? "+" : "", mod_keys[i].name);
+    }
+    if (!dn) dn = fmt_buf(down, sizeof(down), "none");
+    u32 mods = win32_mods(p);
+    u8 m[4];
+    i32 mn = 0;
+    if (mods & MOD_CTRL) m[mn++] = 'C';
+    if (mods & MOD_ALT) m[mn++] = 'M';
+    if (mods & MOD_SHIFT) m[mn++] = 'S';
+    if (!mn) m[mn++] = '-';
+    String8 state = str8_fmt(a, "down %S, caps %d | teal mods %S, altgr %d%s | layout 0x%08X", str8(down, dn),
+                             (GetKeyState(VK_CAPITAL) & 1) != 0, str8(m, mn), p->altgr,
+                             altgr_before != p->altgr ? (p->altgr ? " (set now)" : " (cleared now)") : "", (u64)(uintptr_t)hkl);
+    u32 scan = (u32)(HIWORD(lp) & 0xFF);
+    WCHAR name16[64];
+    int name_len = GetKeyNameTextW((LONG)lp, name16, ARRAY_COUNT(name16));
+    String8 key_name = str8_from_str16(a, (u16 *)name16, MAX(name_len, 0));
+    String8 bits = str8_fmt(a, "scan 0x%02x [US %s] ext %d rep %u prev %d up %d altctx %d time %u", scan, win32_dev_us_legend(scan),
+                            (HIWORD(lp) & KF_EXTENDED) != 0, (u32)LOWORD(lp), (HIWORD(lp) & KF_REPEAT) != 0, (HIWORD(lp) & KF_UP) != 0,
+                            (HIWORD(lp) & KF_ALTDOWN) != 0, (u32)GetMessageTime());
+
+    if (win32_is_key_message(msg)) {
+        u32 vk = (u32)wp;
+        b32 up = (HIWORD(lp) & KF_UP) != 0;
+        i32 ret;
+        u32 c = win32_key_char(p, vk, scan, &ret);
+        if (!pushed) {
+            b32 modifier = vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL;
+            outcome = up ? STR8_LIT("key up: no event")
+                    : (vk == VK_CONTROL && !(HIWORD(lp) & KF_EXTENDED) && p->altgr) ? STR8_LIT("dropped: the synthetic Left Ctrl of AltGr")
+                    : modifier ? STR8_LIT("no event: a modifier")
+                    : win32_map_vk(vk) == KEY_NONE ? STR8_LIT("no event: teal has no Key for this virtual key")
+                    : STR8_LIT("no event");
+            if (msg == WM_SYSKEYDOWN && vk == VK_F4 && !p->altgr) outcome = str8_fmt(a, "%S; passed to DefWindowProc (Alt+F4 closes)", outcome);
+        }
+        LOG("keys: %s vk 0x%02x '%S' %S | %S | ToUnicodeEx %d -> %S | -> %S", win32_dev_message_name(msg), vk, key_name, bits, state,
+            ret, win32_dev_char(a, c), outcome);
+    } else {
+        u32 c = (u32)wp;
+        if (!pushed) {
+            outcome = msg == WM_SYSCHAR ? STR8_LIT("ignored: the WM_SYSKEYDOWN was the key (returning 0 avoids the beep)")
+                    : msg == WM_DEADCHAR || msg == WM_SYSDEADCHAR ? STR8_LIT("not handled (DefWindowProc): a dead key, the next character is composed")
+                    : (c >= 0xD800 && c <= 0xDBFF) ? STR8_LIT("waiting: a high surrogate")
+                    : (c < 0x20 || (c >= 0x7F && c <= 0x9F)) ? STR8_LIT("ignored: a control character (the KEY_DOWN is the chord)")
+                    : (mods & (MOD_CTRL | MOD_ALT)) ? STR8_LIT("ignored: Ctrl or Alt held (the KEY_DOWN is the chord)")
+                    : STR8_LIT("no event");
+        }
+        LOG("keys: %s %S %S | %S | -> %S", win32_dev_message_name(msg), win32_dev_char(a, c), bits, state, outcome);
+    }
+    (void)result;
+    arena_pop_to(a, mark);
+}
+#endif
+
+#if TEAL_DEV
+// --log-keys at startup: the layouts loaded in this session, the active one and its key table.
+static void win32_dev_log_layouts(Platform *p) {
+    HKL list[32];
+    i32 n = GetKeyboardLayoutList(ARRAY_COUNT(list), list);
+    WCHAR klid[KL_NAMELENGTH] = { 0 };
+    GetKeyboardLayoutNameW(klid);
+    HKL active = GetKeyboardLayout(0);
+    LOG("keys: layout of this thread 0x%08X (KLID %S); %d layout(s) loaded in the session:", (u64)(uintptr_t)active,
+        str8_from_str16(&p->scratch, (u16 *)klid, KL_NAMELENGTH - 1), n);
+    for (i32 i = 0; i < n; i++) LOG("keys:   0x%08X%s", (u64)(uintptr_t)list[i], list[i] == active ? " (active)" : "");
+    win32_dev_log_key_table(active);
+    for (i32 i = 0; i < n; i++) if (list[i] != active) win32_dev_log_key_table(list[i]);
+    arena_reset(&p->scratch);
+}
+#endif
+
+static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+#if TEAL_DEV
+    Platform *p = g_platform;
+    if (p->log_keys && win32_dev_is_keyboard_message(msg)) {
+        u32 seq_before = p->key_seq;
+        b32 altgr_before = p->altgr;
+        LRESULT result = win32_handle_message(hwnd, msg, wp, lp);
+        win32_dev_log_message(p, msg, wp, lp, seq_before, altgr_before, result);
+        return result;
+    }
+#endif
+    return win32_handle_message(hwnd, msg, wp, lp);
 }
 
 // Exit codes. Most are dev-only (smoke, tests); EXIT_USAGE applies to every build.
@@ -2050,6 +2267,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--config")) && has_value) { p->config_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
             String8 mode = args[++i];
             p->render_mode_forced = 1;
@@ -2161,6 +2379,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes with the app (config, font and atlas, buffers): %U KB", os_dev_private_bytes() / 1024);
+    if (p->log_keys && p->app) {
+        app_dev_log_keys(p->app, 1);
+        win32_dev_log_layouts(p);
+    }
 #endif
     if (!p->app) {
 #if TEAL_DEV
