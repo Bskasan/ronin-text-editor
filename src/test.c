@@ -2206,6 +2206,50 @@ static const TestGolden test_goldens[] = {
     { BUFFER_LANG_C, "C: non-ASCII identifiers, control characters, invalid bytes", {
         "int \xC3\xA9t\xC3\xA9 = 1; \x01 @ \xFF\xFEx;",
         "yyy ttttt p np i i tttp" } },
+    { BUFFER_LANG_JAI, "Jai: nested comments on one line and across lines", {
+        "/* a /* b */ still */ x := 1;",
+        "ccccccccccccccccccccc v pp np",
+        "/* outer",
+        "cccccccc",
+        "/* inner */",
+        "ccccccccccc",
+        "still comment */ y: int;",
+        "cccccccccccccccc vp yyyp" } },
+    { BUFFER_LANG_JAI, "Jai: a here-string", {
+        "s := #string END",
+        "v pp ddddddd sss",
+        "text with END inside and \"quotes\" /* not a comment",
+        "ssssssssssssssssssssssssssssssssssssssssssssssssss",
+        "  END;",
+        "  sssp",
+        "x := 1;",
+        "v pp np" } },
+    { BUFFER_LANG_JAI, "Jai: declarations", {
+        "main :: () {",
+        "ffff pp pp p",
+        "    v: Vector2;",
+        "    vp tttttttp",
+        "Vector2 :: struct { x: float; }",
+        "fffffff pp kkkkkk p vp yyyyyp p",
+        "MAX :: 128;",
+        "fff pp nnnp" } },
+    { BUFFER_LANG_JAI, "Jai: directives, notes, ---", {
+        "#import \"Basic\"; x: int = ---; @Note proc :: () #expand {}",
+        "ddddddd sssssssp vp yyy p ooop ddddd ffff pp pp ddddddd pp" } },
+    { BUFFER_LANG_JAI, "Jai: every number form, a range", {
+        "n := 0x1F + 0b1010 + 0h3F80_0000 + 1_000_000 + 1.5e3 + .5; r := 0..10;",
+        "v pp nnnn p nnnnnn p nnnnnnnnnnn p nnnnnnnnn p nnnnn p nnp v pp nppnnp" } },
+    { BUFFER_LANG_JAI, "Jai: strings, an unterminated string", {
+        "s := \"a\\\"b\\n\" ; t := \"open",
+        "v pp ssssssss p v pp sssss",
+        "x := 1;",
+        "v pp np" } },
+    { BUFFER_LANG_JAI, "Jai: keywords and constants", {
+        "for it, i: items { if it == null continue; }",
+        "kkk kkp vp ttttt p kk kk pp oooo kkkkkkkkp p" } },
+    { BUFFER_LANG_JAI, "Jai: non-ASCII identifiers, control characters", {
+        "\xC3\xA7" "a\xC4\x9Fr\xC4\xB1 := \"\xC3\xBC\"; \x01",
+        "vvvvvvvv pp ssssp i" } },
 };
 
 // The kind at byte b of a lexed line.
@@ -2256,8 +2300,17 @@ static const char *test_corpus_c[] = {
 };
 static const char *test_pieces_c[] = { "/*", "*/", "\"", "'", "R\"x(", ")x\"", "\\", "\n", "#", "//", "{", "}", "\\\n", "x" };
 
+static const char *test_corpus_jai[] = {
+    "#import \"Basic\";", "/* outer", "/* inner */", "still comment */", "main :: () {", "    s := #string DONE",
+    "text \"inside\" /* the string", "DONE;", "    x: int = ---;", "    for it, i: items { if it == null continue; }",
+    "    n := 0x1F + 0h3F80_0000 + 1_000;", "}", "Vector2 :: struct { x, y: float; }", "// comment", "@Note proc :: () #expand {}",
+    "    t := \"open", "",
+};
+static const char *test_pieces_jai[] = { "/*", "*/", "\"", "#string X\n", "X\n", "\n", "//", ":", "::", "#string DONE", "DONE" };
+
 static const TestCorpus test_corpora[] = {
     { BUFFER_LANG_C, test_corpus_c, ARRAY_COUNT(test_corpus_c), test_pieces_c, ARRAY_COUNT(test_pieces_c) },
+    { BUFFER_LANG_JAI, test_corpus_jai, ARRAY_COUNT(test_corpus_jai), test_pieces_jai, ARRAY_COUNT(test_pieces_jai) },
 };
 
 // States of every line lexed from scratch, into `states`.
