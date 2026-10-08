@@ -9,6 +9,12 @@
 #define APP_HEADLESS_CELL_W 8  // the cell of a headless app (dev: --test), which has no font
 #define APP_HEADLESS_LINE_H 16
 
+// A range of buffer positions and a color (drawing).
+typedef struct AppSpan {
+    i64 start, end;
+    u32 rgb;
+} AppSpan;
+
 // show_paren_mode, per view: the pair found for a buffer state and point (-1: none).
 typedef struct AppParen {
     Buffer *buffer;
@@ -187,8 +193,10 @@ static u32 app_kind_color(Theme *th, u32 kind) {
 }
 
 // One line of the buffer, only its columns [left, left + cols), in its token colors. x0 is the x
-// of column `left`.
-static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i32 x0, i32 y, i64 left, i64 cols, Arena *scratch) {
+// of column `left`. `over`: the text of [over->start, over->end) is drawn in over->rgb instead (the
+// current search match); NULL = none.
+static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i32 x0, i32 y, i64 left, i64 cols, AppSpan *over,
+                                 Arena *scratch) {
     Theme *th = &app->config->theme;
     i32 cell_w = app->font->cell_w;
     i64 right = left + cols;
@@ -220,6 +228,7 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
             while (k + 1 < toks.count && (i64)toks.tokens[k + 1].start <= at) k++;
             if (toks.count && (i64)toks.tokens[k].start <= at) rgb = app_kind_color(th, toks.tokens[k].kind);
         }
+        if (over && pos + i >= over->start && pos + i < over->end) rgb = over->rgb;
         if (rgb != run_rgb) {
             if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(run_rgb));
             run = i;
@@ -300,26 +309,32 @@ static String8 app_mode_line_text(View *v, Arena *arena) {
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol));
 }
 
-// The selection color behind the cells of an active region on the visible rows; on a line whose
-// newline is selected it extends to the right edge of the window. Text is drawn over it.
-static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor *c, i32 draw_rows) {
-    i64 start, end;
-    if (!view_region_active(v, c, &app->config->settings) || !view_region(v, c, &start, &end) || start == end) return;
+// A background color behind the cells of [start, end) on the visible rows; on a line whose newline is
+// in the range it extends to the right edge of the window. Text is drawn over it.
+static void app_draw_span(Renderer *r, AppLayout *l, View *v, i64 start, i64 end, i32 draw_rows, u32 rgb) {
+    if (start >= end) return;
     Buffer *buf = v->buffer;
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 x0 = v->x + l->pad, right = v->x + v->w;
-    Color color = COLOR_HEX(app->config->theme.selection);
+    Color color = COLOR_HEX(rgb);
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
         i64 line = top + row, ls = buffer_line_start(buf, line), le = buffer_line_end(buf, line);
         if (end <= ls || start > le) continue;
         i64 a = MAX(start, ls), b = MIN(end, le);
         i64 ca = view_column_of(buf, a) - v->left_col, cb = view_column_of(buf, b) - v->left_col;
-        b32 newline = end > le; // the line's newline is in the region
+        b32 newline = end > le; // the line's newline is in the range
         f32 xa = (f32)(x0 + (i32)MAX(ca, 0) * l->cell_w);
         f32 xb = newline ? (f32)right : (f32)MIN(x0 + (i32)MAX(cb, 0) * l->cell_w, right);
         f32 y = (f32)(v->y + row * l->line_h);
         if (xb > xa) r_push_rect(r, (Rect){ xa, y, xb, y + (f32)l->line_h }, color);
     }
+}
+
+// The selection color behind an active region.
+static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor *c, i32 draw_rows) {
+    i64 start, end;
+    if (!view_region_active(v, c, &app->config->settings) || !view_region(v, c, &start, &end)) return;
+    app_draw_span(r, l, v, start, end, draw_rows, app->config->theme.selection);
 }
 
 // show_paren_mode: the closing bracket just before point (it wins, as in Emacs) or the opening one at
@@ -378,7 +393,7 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
         }
     }
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
-        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, in->scratch);
+        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, NULL, in->scratch);
     }
     b32 filled = active && app_has_focus(app);
     for (i32 k = 0; k < v->cursor_count; k++) {
@@ -472,7 +487,7 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     app_draw_region(app, r, l, v, &v->cursors[0], 1);
     i64 line = view_top_line(v);
     i32 text_x = v->x + l->pad;
-    app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, in->scratch);
+    app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, NULL, in->scratch);
     app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), 1, app_has_focus(app), in->dpi_scale, in->scratch);
     if (mb->kind == MINI_CHOICE) { // "3/41" at the right end
         String8 count = str8_fmt(in->scratch, "%D/%D", mb->match_count ? mb->selected + 1 : 0, mb->match_count);
