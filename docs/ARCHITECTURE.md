@@ -25,11 +25,12 @@
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (views, region, the search highlighting, the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer, revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation (click counts), clipboard (and the dev fake), directory listing, the end-of-session messages, os_* implementation, dev flags |
+| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation (click counts), clipboard (and the dev fake), directory listing, the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`) |
+| `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
 Core (`app.c`, `files.c`, `font.c`, `buffer.c`, `view.c`, `edit.c`, `minibuffer.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
@@ -86,6 +87,16 @@ flag 0x4 so the kernel's dead-key state is untouched; a dead key gives its spaci
 Alt works as Meta (WM_SYSKEY* handled, WM_SYSCHAR swallowed, SC_KEYMENU swallowed); Alt+F4
 still closes, through save-buffers-kill-terminal. Numpad: Enter arrives as KEY_ENTER,
 NumLock-off navigation keys as the ordinary ones, digits as text events.
+Every key but the modifier and lock keys sends a KEY_DOWN, with KEY_NONE when teal has no Key
+for it (keypad digits and operators, VK_OEM_8, media keys): it ends the previous chord's text,
+and makes a chord when it types a character (C-? on Turkish Q's VK_OEM_8); the keypad carries no
+character, so it makes no chords and Alt + keypad digits still enter a character code. A KEY_DOWN
+also says whether the key is dead and whether no text event follows (TranslateMessage has queued
+its characters before the window procedure runs), so describe-key can report a key press that is
+no chord; MOD_ALTGR marks AltGr, for information only. After a Ctrl or Alt chord a pending
+dead-key accent is consumed: TranslateMessage stored it (M-^ where ^ is dead) and the next key
+would compose with it. winuser.h's MOD_ALT / MOD_SHIFT (RegisterHotKey) are undefined in
+win32_main.c: in the unity build MOD_ALT would equal MOD_CTRL there (Alt read as Ctrl).
 
 Keys: KEY_DOWN and text events go through the key sequence state machine (keymap.c) with the
 keymap stack; the result is a command run through `view_run_command`, a prefix shown at once

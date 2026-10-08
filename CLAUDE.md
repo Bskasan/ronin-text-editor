@@ -43,6 +43,12 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - Code, comments, docs and all communication with the user (plans, reports, questions) in English.
 - Whenever the user asks for changes to a plan, show the full revised plan again with the
   changes marked and wait for approval before implementing.
+- Every phase appends its own manual test steps to docs/MANUAL_TESTS.md, each with one status:
+  AUTOMATED (an existing test, named), AUTOMATED-NEW (a test added for it in that phase: the input
+  harness, --keys, the headless app, a smoke probe, a bench check or a dev helper), FIXED (the
+  failing test and the fix commit), or HUMAN (why only a person can judge it, the shortest exact
+  instructions, and a dev helper for most of it where possible). Check each step against its own
+  wording, not against what the code does; a difference is a finding.
 
 ## Commit policy (every phase)
 
@@ -112,9 +118,22 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # a missing one (folded / exact, typed / pasted):
                                                           # time, frames, longest frame; isearch keystrokes
                                                           # on src/app.c; replace-string x 1,000,000, its
-                                                          # undo and undo-redo
+                                                          # undo and undo-redo; replace-string on the
+                                                          # 100 MB file, its progress, C-g, one C-x u
+                                                          # (exit 9 if wrong)
     build/teal_debug.exe <file> --keys ".." --touch <file> --screenshot ..   # rewrite the file after the
                                                           # keys and activate the app (changed on disk)
+    build/teal_debug.exe --log-keys                       # every keyboard message: bits, keys down, teal's
+                                                          # modifiers and AltGr, ToUnicodeEx, the layout,
+                                                          # the event, the chord and command (or why none);
+                                                          # the key table of each loaded layout
+    build/teal_debug.exe --idle-check                     # shown without focus; 5 s idle after 1 s: CPU
+                                                          # time, frames (must be 0), private bytes
+    build/teal_debug.exe <file> --dpi-check build/shots/dpi   # WM_DPICHANGED to 125% and back, three
+                                                          # screenshots, the frame after coming back equal
+    build/teal_debug.exe --clipboard-check                # the REAL clipboard (only when it holds plain
+                                                          # text or nothing; saved, put back, kept out of
+                                                          # clipboard history): CRLF out, LF in
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
@@ -123,7 +142,7 @@ the final flush and the Present separately, the Presents that waited a vertical 
 and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait
 one refresh interval with two buffers; that is not CPU work of ours. --test, the smoke, the
 benches and screenshot runs use an in-memory fake clipboard: they never touch the real one
-(interactive dev runs do). Dev builds log the private bytes at the startup stages
+(interactive dev runs and --clipboard-check do). Dev builds log the private bytes at the startup stages
 ("memory:" lines in build\teal.log) and the startup timeline: each stage in ms since process
 creation ("startup:" lines, recorded by os_dev_stage, logged once after the first frame).
 
@@ -148,14 +167,18 @@ a pixel of the prompt in the prompt color, the selected row's empty part in comp
 a pixel of a matched substring in completion_match, an unselected row in the background, the
 calling view's hollow cursor. "foo bar foo" with C-s f o o C-s gives the last one (stage 4): the
 current match's isearch background and an isearch_text pixel, the other match's lazy_highlight
-background, the spaces beside them untouched, the prompt color on the echo line. The window
+background, the spaces beside them untouched, the prompt color on the echo line; then "x" makes it
+fail (stage 5): the failing part on the isearch_fail background in the prompt line. Every syntax
+frame also has a number pixel in its color. The window
 title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
 killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the
-pixel probed, and the font must not have been set up again. WM_QUERYENDSESSION is sent to its own
-window with an unsaved file (refused, a shutdown block reason, the save question; a repeated query
+pixel probed, and the font must not have been set up again. C-x C-+, C-x C-0, C-x C-- and Ctrl +
+wheel, then a config with font_size = 14, each set up the font again with a larger or smaller cell
+(C-x C-0 and the wheel back to the same one). WM_QUERYENDSESSION is sent to its own
+window with an unsaved file (refused, the block reason "Unsaved changes in teal", the save question; a repeated query
 keeps that chain; C-g keeps the reason; WM_ENDSESSION(FALSE) removes it) and again once it is
 saved (allowed). It also requires a non-empty atlas,
 the D3D11 debug layer active with zero WARNING+ messages, and no leaks (device refcount 0, empty
@@ -165,7 +188,7 @@ messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches), 7 output fi
 ClearType (also: the font set up more than once), 9 test failure (--test; in the smoke: the
 --keys edit saved the wrong bytes, or the end-of-session check), 10 unknown argument (every build).
 
-`--test` runs without a window or device: a differential fuzz of `buffer_replace` against a
+`--test` runs without a device and without a visible window: a differential fuzz of `buffer_replace` against a
 flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
 overrides; decimal or 0x hex), capacity and read-only checks, byte-for-byte file round trips
 (encodings, line endings, block and chunk boundaries; inputs stay in build\tmp\rt_*),
@@ -212,7 +235,20 @@ frame, the mouse wheel); query-replace and replace-string (every answer, the las
 an outside change while asking, one undo and undo-redo, the region, case conversion, a -> aa, no
 matches, read-only, the wheel, replace-all over 20,000 matches stopped midway with C-g and undone in
 one step). Tests that need search work spread over frames set app->dev_work_budget (positions per
-frame instead of the clock). A failed dev ASSERT logs its file, line and condition before breaking,
+frame instead of the clock). The steps of docs/MANUAL_TESTS.md that had no test run through the
+headless app (test_manual_*, logged as "test: ok: manual <ids>"). Then the Win32 side: modifier keys
+set in the thread's key state read by win32_mods; keypad text right after a chord; and the input
+harness (src/win32_input_test.c): key messages posted, with their scan codes and flags (AltGr as the
+synthetic Left Ctrl and Right Alt), to a top-level window that is never shown and uses the real
+window procedure, through the normal pump (TranslateMessage, DispatchMessage) into a headless app,
+on US (must pass completely), United Kingdom, Turkish Q and Finnish, each loaded and activated for
+the harness thread only (KLF_NOTELLSHELL; the session's layouts and the foreground layout are
+checked unchanged afterwards; no SendInput). Per layout: letters, symbols and Turkish letters from
+their keys, Alt / Ctrl / Ctrl+Alt chords, Right Alt as Meta or AltGr text and Left Alt + AltGr,
+Alt+Shift and Ctrl+Shift symbols, dead keys (and none left behind by a chord), nothing to
+DefWindowProc for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, every
+default binding through describe-key (the bindings whose US keys run something else on the layout
+are listed), Alt+F4. A failed dev ASSERT logs its file, line and condition before breaking,
 so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
