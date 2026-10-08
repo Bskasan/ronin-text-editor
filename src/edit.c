@@ -374,14 +374,14 @@ i64 edit_indent_cols(Buffer *buf, i64 line) {
     return col;
 }
 
-// The previous line with code (not blank, not only comments), or -1; *info describes it. The
-// search stops after SYNTAX_MATCH_MAX bytes.
+// The previous line with code (not blank, not only comments, not a C/C++ preprocessor line), or -1;
+// *info describes it. The search stops after SYNTAX_MATCH_MAX bytes.
 static i64 edit_prev_code_line(Buffer *buf, i64 line, Arena *scratch, SyntaxLine *info) {
     i64 budget = SYNTAX_MATCH_MAX;
     for (i64 l = line - 1; l >= 0 && budget > 0; l--) {
         budget -= buffer_line_end(buf, l) - buffer_line_start(buf, l) + 1;
         syntax_line_info(buf, l, scratch, info);
-        if (info->code) return l;
+        if (info->code && !info->directive) return l;
     }
     return -1;
 }
@@ -402,6 +402,75 @@ static i64 edit_statement_start(Buffer *buf, i64 line, SyntaxLine *info, Arena *
     return line;
 }
 
+// Whether the token at [start, end) is a keyword that heads a brace-less body.
+static b32 edit_control_word(Buffer *buf, i64 start, i64 end) {
+    static const char *words[] = { "if", "else", "for", "while", "do", "foreach", "using", "lock", "fixed" };
+    i32 count = buf->language == BUFFER_LANG_CSHARP ? 9 : buf->language == BUFFER_LANG_JAI ? 4 : 5;
+    for (i32 i = 0; i < count; i++) if (syntax_word_is(buf, start, end, words[i])) return 1;
+    return 0;
+}
+
+static b32 edit_head_is(Buffer *buf, SyntaxLine *info, const char *word) {
+    return info->head >= 0 && info->head_kind == SYN_KEYWORD && syntax_word_is(buf, info->head, info->head_end, word);
+}
+
+// "else if": the word after the head's else is if.
+static b32 edit_else_if(Buffer *buf, SyntaxLine *info) {
+    if (!edit_head_is(buf, info, "else")) return 0;
+    i64 p = info->head_end, size = buffer_size(buf);
+    while (p < size && (buffer_byte(buf, p) == ' ' || buffer_byte(buf, p) == '\t')) p++;
+    i64 e = p;
+    while (e < size && buffer_byte(buf, e) >= 'a' && buffer_byte(buf, e) <= 'z') e++;
+    return syntax_word_is(buf, p, e, "if");
+}
+
+// Line x (described by *info) heads a brace-less body: the line its statement started on (*start,
+// described by *head) begins with a control keyword, and x leaves nothing open and does not end
+// with { ; or }.
+static b32 edit_header(Buffer *buf, i64 x, SyntaxLine *info, Arena *scratch, i64 *start, SyntaxLine *head) {
+    if (info->open > 0 || info->last == '{' || info->last == ';' || info->last == '}' || !info->code) return 0;
+    *start = edit_statement_start(buf, x, info, scratch);
+    if (*start == x) *head = *info;
+    else syntax_line_info(buf, *start, scratch, head);
+    return head->head >= 0 && head->head_kind == SYN_KEYWORD && edit_control_word(buf, head->head, head->head_end);
+}
+
+// A label: case or default, ending with ':' (Jai: case X; with its only ';').
+static b32 edit_label(Buffer *buf, SyntaxLine *info) {
+    if (!edit_head_is(buf, info, "case") && !edit_head_is(buf, info, "default")) return 0;
+    if (buf->language == BUFFER_LANG_JAI) return info->last == ';' && info->semicolons == 1;
+    return info->last == ':';
+}
+
+// Up the chain of brace-less headers above the statement that starts on line s, inner to outer. An
+// else (or else if) jumps over the statement before it to the headers of its if. Returns the
+// outermost header's line or, with `want_if`, the first if not taken by an else (-1: none).
+static i64 edit_header_walk(Buffer *buf, i64 s, b32 want_if, Arena *scratch) {
+    i64 outer = -1;
+    i32 taken = 0; // elses seen whose if is still above
+    for (i32 step = 0; step < 64; step++) {
+        SyntaxLine qi, si;
+        i64 q = edit_prev_code_line(buf, s, scratch, &qi), sq;
+        if (q < 0 || !edit_header(buf, q, &qi, scratch, &sq, &si)) break;
+        b32 is_else = edit_head_is(buf, &si, "else"), is_if = edit_head_is(buf, &si, "if") || edit_else_if(buf, &si);
+        if (is_if) {
+            if (taken > 0) taken--;
+            else if (want_if) return sq;
+        }
+        outer = sq;
+        if (is_else) { // its if is above the statement before it
+            taken++;
+            SyntaxLine ti;
+            i64 tl = edit_prev_code_line(buf, sq, scratch, &ti);
+            if (tl < 0) break;
+            s = edit_statement_start(buf, tl, &ti, scratch);
+            continue;
+        }
+        s = sq;
+    }
+    return want_if ? -1 : outer;
+}
+
 i64 edit_compute_indent(Buffer *buf, i64 line, i64 indent_width, Arena *scratch) {
     syntax_catch_up(buf, line, EDIT_SYNC_US, scratch);
     SyntaxLine here, prev;
@@ -414,13 +483,34 @@ i64 edit_compute_indent(Buffer *buf, i64 line, i64 indent_width, Arena *scratch)
     }
     i64 p = edit_prev_code_line(buf, line, scratch, &prev);
     i64 cols = 0;
-    if (here.leading_closer >= 0) {
+    if (here.leading_closer >= 0) { // 1
         i64 m = syntax_match_bracket(buf, here.leading_closer, scratch);
         if (m >= 0) cols = edit_indent_cols(buf, buffer_line_of(buf, m));
         else cols = p >= 0 ? edit_indent_cols(buf, p) - w : 0; // no match within reach: one level less
-    } else if (p >= 0) {
-        if (prev.open > 0) cols = edit_indent_cols(buf, p) + w;
-        else cols = edit_indent_cols(buf, edit_statement_start(buf, p, &prev, scratch));
+        return CLAMP(cols, 0, (i64)EDIT_INDENT_MAX);
+    }
+    if (edit_head_is(buf, &here, "case") || edit_head_is(buf, &here, "default")) { // 2
+        i64 open = syntax_enclosing_open(buf, here.head, scratch);
+        if (open >= 0 && buffer_byte(buf, open) == '{') return CLAMP(edit_indent_cols(buf, buffer_line_of(buf, open)) + w, 0, (i64)EDIT_INDENT_MAX);
+    }
+    if (p < 0) return 0;
+    i64 s = edit_statement_start(buf, p, &prev, scratch);
+    if (edit_head_is(buf, &here, "else")) { // 3
+        i64 it = edit_header_walk(buf, s, 1, scratch);
+        if (it >= 0) return edit_indent_cols(buf, it);
+    }
+    SyntaxLine head;
+    i64 hs;
+    if (prev.open > 0) { // 4
+        cols = edit_indent_cols(buf, p) + w;
+    } else if (edit_label(buf, &prev)) { // 5
+        cols = edit_indent_cols(buf, p) + w;
+    } else if (edit_header(buf, p, &prev, scratch, &hs, &head)) {
+        b32 brace = here.head >= 0 && buffer_byte(buf, here.head) == '{';
+        cols = edit_indent_cols(buf, hs) + (brace ? 0 : w);
+    } else {
+        i64 outer = prev.last == ';' || prev.last == '}' ? edit_header_walk(buf, s, 0, scratch) : -1; // 6
+        cols = edit_indent_cols(buf, outer >= 0 ? outer : s); // 7
     }
     return CLAMP(cols, 0, (i64)EDIT_INDENT_MAX);
 }
@@ -430,7 +520,7 @@ b32 edit_line_fixed(Buffer *buf, i64 line, Arena *scratch) {
     syntax_catch_up(buf, line, EDIT_SYNC_US, scratch);
     SyntaxLine info;
     syntax_line_info(buf, line, scratch, &info);
-    return info.in_literal;
+    return info.in_literal || info.directive;
 }
 
 b32 edit_set_indent(Buffer *buf, i64 line, i64 cols) {

@@ -459,6 +459,7 @@ void syntax_line_info(Buffer *buf, i64 line, Arena *scratch, SyntaxLine *info) {
         if (kind == SYN_COMMENT) continue;
         info->code = 1;
         info->last = c;
+        info->semicolons += c == ';' && kind != SYN_STRING;
         b32 bracket = syn_code_bracket(&l, &k, i);
         if (leading && bracket && syn_closer(c)) {
             if (info->leading_closer < 0) info->leading_closer = l.start + i;

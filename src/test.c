@@ -2718,6 +2718,46 @@ static b32 test_indent(Test *t) {
         { BUFFER_LANG_JAVASCRIPT, "JavaScript: lines inside a template literal are left alone",
           "s = `\n  ${x} {\n`;\ny;\n",
           "s = `\n  ${x} {\n`;\ny;\n" },
+        // Brace-less bodies, labels, preprocessor lines.
+        { BUFFER_LANG_C, "C: a brace-less if followed by else",
+          "if (a)\nx();\nelse\ny();\nz();\n",
+          "if (a)\n    x();\nelse\n    y();\nz();\n" },
+        { BUFFER_LANG_C, "C: else if",
+          "if (a)\nx();\nelse if (b)\ny();\nelse\nw();\nz();\n",
+          "if (a)\n    x();\nelse if (b)\n    y();\nelse\n    w();\nz();\n" },
+        { BUFFER_LANG_C, "C: Allman braces after a header",
+          "if (a)\n{\nb();\n}\nc();\n",
+          "if (a)\n{\n    b();\n}\nc();\n" },
+        { BUFFER_LANG_C, "C: nested brace-less for and if, a dangling else",
+          "for (i = 0; i < n; i++)\nif (x)\na();\nelse\nb();\nc();\n",
+          "for (i = 0; i < n; i++)\n    if (x)\n        a();\n    else\n        b();\nc();\n" },
+        { BUFFER_LANG_C, "C: an else after a nested if-else binds to the outer if",
+          "if (x)\nif (y)\na();\nelse\nb();\nelse\nc();\nd();\n",
+          "if (x)\n    if (y)\n        a();\n    else\n        b();\nelse\n    c();\nd();\n" },
+        { BUFFER_LANG_C, "C: a condition over two lines",
+          "if (a &&\nb)\nc();\nd();\n",
+          "if (a &&\n    b)\n    c();\nd();\n" },
+        { BUFFER_LANG_JAVASCRIPT, "JavaScript: a brace-less body that is a call with a callback",
+          "if (a)\nfoo(function () {\nbar();\n});\nnext();\n",
+          "if (a)\n    foo(function () {\n        bar();\n    });\nnext();\n" },
+        { BUFFER_LANG_C, "C: a comment between a header and its body",
+          "while (x)\n// step\nx = f(x);\ny();\n",
+          "while (x)\n    // step\n    x = f(x);\ny();\n" },
+        { BUFFER_LANG_C, "C: a switch with fall-through labels and a braced case body",
+          "switch (x) {\ncase 1:\ncase 2:\na();\nbreak;\ncase 3: {\nint y = 1;\n}\ndefault:\nb();\n}\n",
+          "switch (x) {\n    case 1:\n    case 2:\n        a();\n        break;\n    case 3: {\n        int y = 1;\n    }\n    default:\n        b();\n}\n" },
+        { BUFFER_LANG_JAI, "Jai: if x == { case ...; }",
+          "if x == {\ncase 1;\na();\ncase;\nb();\n}\n",
+          "if x == {\n    case 1;\n        a();\n    case;\n        b();\n}\n" },
+        { BUFFER_LANG_JAI, "Jai: a brace-less for",
+          "for it: items\nprint(it);\ndone();\n",
+          "for it: items\n    print(it);\ndone();\n" },
+        { BUFFER_LANG_CSHARP, "C#: foreach and using without braces",
+          "foreach (var x in xs)\nusing (var f = Open(x))\nf.Read();\nDone();\n",
+          "foreach (var x in xs)\n    using (var f = Open(x))\n        f.Read();\nDone();\n" },
+        { BUFFER_LANG_C, "C: an #if block in the middle of a function, a multi-line #define",
+          "void f(void) {\na();\n#if DEBUG\nlog();\n#else\n  #define X(a) \\\n     ((a) + 1)\n#endif\nb();\n}\n",
+          "void f(void) {\n    a();\n#if DEBUG\n    log();\n#else\n  #define X(a) \\\n     ((a) + 1)\n#endif\n    b();\n}\n" },
     };
     for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
         if (!test_indent_case(t, cases[i].language, cases[i].what, cases[i].input, cases[i].expected, 0, 4)) return 0;
@@ -2771,8 +2811,30 @@ static b32 test_indent(Test *t) {
     test_view_run(&tv, &CMD_TAB_TO_TAB_STOP);
     TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "ab  |"), "M-i to the next stop");
     if (!test_view_close(t, &tv)) return 0;
-    LOG("test: ok: indentation: %d rule cases, tabs, detection, newline, closing brace, TAB, backtab, region, M-i",
-        (i32)ARRAY_COUNT(cases));
+
+    // On tokens, typed: RET into a block comment keeps the previous line's indentation; a switch typed
+    // with RET and closers only; TAB leaves a preprocessor line where it is.
+    if (!test_view_open(t, &tv, "    /* a|", 10, 40)) return 0;
+    tv.buf->language = BUFFER_LANG_C;
+    test_view_run(&tv, &CMD_NEWLINE);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "    /* a\n    |"), "RET into a block comment");
+    buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT(""));
+    // A label typed after a statement is not reindented by typing it (no electric colon): TAB (\t here).
+    const char *typed = "switch (x) {\ncase 1:\na();\nbreak;\ndefault: {\t\nb();\n}\n}\n";
+    for (const char *c = typed; *c; c++) {
+        if (*c == '\n') test_view_run(&tv, &CMD_NEWLINE);
+        else if (*c == '\t') test_view_run(&tv, &CMD_INDENT_FOR_TAB_COMMAND);
+        else test_type_char(&tv, (u8)*c);
+    }
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("switch (x) {\n    case 1:\n        a();\n        break;\n    default: {\n"
+                                                    "        b();\n    }\n}\n")), "a switch typed with RET and closers");
+    buffer_replace(tv.buf, 0, buffer_size(tv.buf), STR8_LIT("{\n#if X\n}"));
+    test_view_run(&tv, &CMD_MARK_WHOLE_BUFFER);
+    test_view_run(&tv, &CMD_INDENT_FOR_TAB_COMMAND);
+    TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("{\n#if X\n}")), "TAB leaves a preprocessor line");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: indentation: %d rule cases, tabs, detection, newline, closing brace, TAB, backtab, region, M-i, "
+        "RET into a comment, a typed switch, preprocessor lines", (i32)ARRAY_COUNT(cases));
     return 1;
 }
 

@@ -54,15 +54,25 @@ void    kill_from_clipboard(KillRing *k); // before yank: a clipboard changed el
 
 // ---------------------------------------------------------------------------
 // Indentation by rules on tokens (no parser): brackets match on tokens (syntax.h), so brackets in
-// comments and strings do not count. For a line L, with P the previous line that has code (blank
-// and comment-only lines are skipped):
-//   - L starts inside a multi-line comment or string: TAB leaves it; RET into one gets the
-//     previous line's indentation.
-//   - L starts with a closer: the indentation of the line holding its matching opener.
-//   - P leaves a bracket open: P's indentation plus one level, however many it opened.
-//   - Otherwise the indentation of the line P's statement started on: where the opener of P's
-//     last unmatched closer is (a line that closes a bracket opened earlier returns to that
-//     line's indentation), or P itself.
+// comments and strings do not count. P is the previous line that has code (blank lines,
+// comment-only lines and C/C++ preprocessor lines are skipped). S(X), the line on which the
+// statement ending on line X started: the line of the opener of X's last unmatched closer, or where
+// a literal X starts inside began, or X. A header is a line X whose S(X) starts with a control
+// keyword (if else for while do; C# also foreach using lock fixed) and that leaves no bracket open
+// and does not end with { ; or }: a brace-less body follows. A label starts with case or default and
+// ends with ':' (Jai: case X; with its only ';'). For a line L, the first rule that applies:
+//   0. L starts inside a multi-line comment or string, or is a C/C++ preprocessor line: TAB leaves
+//      it (RET into a comment or string gets the previous line's indentation).
+//   1. L starts with a closer: the indentation of the line holding its matching opener.
+//   2. L starts with case or default: one level more than the line holding the enclosing '{'.
+//   3. L starts with else: the indentation of the if it belongs to (the nearest one above in the
+//      chain of headers that has no else yet).
+//   4. P leaves a bracket open: P's indentation plus one level, however many it opened.
+//   5. P is a label: one level more. P is a header: S(P)'s indentation plus one level (L starting
+//      with '{': S(P)'s indentation).
+//   6. P ends a statement (';' or '}') that is the body of a header: back to the outermost header of
+//      the chain of brace-less headers above it.
+//   7. S(P)'s indentation.
 // Never below column 0. A level is indent_width columns.
 
 #define EDIT_INDENT_MAX 512 // columns
@@ -70,7 +80,8 @@ void    kill_from_clipboard(KillRing *k); // before yank: a clipboard changed el
 
 i64  edit_indent_cols(Buffer *buf, i64 line);                 // columns of the line's leading blanks
 i64  edit_compute_indent(Buffer *buf, i64 line, i64 indent_width, Arena *scratch);
-// A line TAB leaves where it is: it has text and starts inside a multi-line comment or string.
+// A line TAB leaves where it is: it has text and starts inside a multi-line comment or string, or it
+// is a C or C++ preprocessor line.
 b32  edit_line_fixed(Buffer *buf, i64 line, Arena *scratch);
 // Rewrites the line's leading blanks for `cols` (tabs then spaces with buf->indent_tabs), only if
 // they differ. False if the buffer refused the edit.
