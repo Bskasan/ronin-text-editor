@@ -437,11 +437,25 @@ static b32 buffer_undo_record(Buffer *buf, i64 start, i64 end, i64 inserted) {
     return 1;
 }
 
+// Gives back the commit of the log beyond what it uses (with 1 MB of slack), once more than
+// 4 MB of it is unused, so the limit bounds memory as well as history.
+static void buffer_undo_shrink(Buffer *buf) {
+    BufferUndo *u = &buf->undo;
+    if (u->log_committed <= u->log_used + MB(4)) return;
+    u64 keep = ALIGN_UP_POW2(u->log_used + MB(1), BUFFER_UNDO_COMMIT);
+    os_decommit(u->log + keep, u->log_committed - keep);
+    u->log_committed = keep;
+}
+
 // Drops the oldest groups while the log is over its limit, down to 3/4 of it (so the memmove is
 // rare). The last group (the running or most recent command) always stays.
 static void buffer_undo_trim(Buffer *buf) {
     BufferUndo *u = &buf->undo;
-    if (u->log_used <= u->limit || u->group_count < 2) return;
+    if (u->log_used <= u->limit) return;
+    if (u->group_count < 2) {
+        buffer_undo_shrink(buf);
+        return;
+    }
     i64 drop = 0;
     u64 cut = 0;
     while (drop < u->group_count - 1 && u->log_used - cut > u->limit / 4 * 3) cut += u->groups[drop++].size;
@@ -456,6 +470,7 @@ static void buffer_undo_trim(Buffer *buf) {
     }
     u->first_id += drop;
     if (u->pending < u->first_id) u->pending = -1;
+    buffer_undo_shrink(buf);
 }
 
 // Applies the inverse of group `id` as a new group (an undo group reverting it). Its records

@@ -1585,6 +1585,19 @@ static b32 test_undo_buffer(Test *t, u64 seed) {
     buffer_replace(buf, 0, MB(1), STR8_LIT("")); // a record larger than the limit
     TEST_CHECK(t, buf->undo.group_count == 1 && buffer_undo(buf, 0, 0, &point) == BUFFER_UNDO_DONE && test_text_is(t, buf, with_big),
                "undo: the last command stays undoable over the limit");
+    // The log's commit follows what it keeps: 8 MB deleted, then a small edit drops that group.
+    u8 *eight = PUSH_ARRAY(&t->arena, u8, MB(8));
+    memset(eight, 'e', MB(8));
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    buffer_replace(buf, 0, 0, str8(eight, MB(8)));
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    buffer_replace(buf, 0, MB(8), STR8_LIT(""));
+    u64 high = buf->undo.log_committed;
+    buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, 0);
+    buffer_replace(buf, 0, 0, STR8_LIT("small"));
+    TEST_CHECK(t, high >= MB(8) && buf->undo.log_committed <= buf->undo.log_used + MB(5),
+               "undo: the commit shrinks when old groups are dropped (%U KB committed for %U KB)", buf->undo.log_committed / 1024,
+               buf->undo.log_used / 1024);
     // Disabled: no log, modified on every edit.
     buffer_undo_enable(buf, 0);
     buffer_mark_saved(buf);

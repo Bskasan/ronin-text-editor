@@ -9,6 +9,7 @@
 
 void *os_reserve(u64 size);
 b32   os_commit(void *ptr, u64 size);
+void  os_decommit(void *ptr, u64 size); // back to reserved only
 b32   os_release(void *ptr); // a whole os_reserve range
 b32   os_write_file(String8 path, String8 data);
 void  os_fatal(String8 message); // does not return
