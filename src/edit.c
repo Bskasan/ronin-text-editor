@@ -586,6 +586,27 @@ void edit_electric_close(CommandContext *ctx) {
     if (edit_indent_end(buf, line) == p - 1) edit_reindent_line(ctx, line, 0, 0);
 }
 
+void edit_electric_label(CommandContext *ctx) {
+    View *v = ctx->view;
+    Buffer *buf = v->buffer;
+    if (!syntax_has_lexer(buf->language)) return;
+    u8 completes = buf->language == BUFFER_LANG_JAI ? ';' : ':';
+    if (ctx->codepoint != completes) return;
+    i64 p = view_point(v, ctx->cursor);
+    i64 line = buffer_line_of(buf, p);
+    for (i64 q = p, end = buffer_line_end(buf, line); q < end; q++) {
+        u8 b = buffer_byte(buf, q);
+        if (b != ' ' && b != '\t') return; // only blanks may follow it
+    }
+    u64 mark = arena_pos(ctx->scratch);
+    syntax_catch_up(buf, line, EDIT_SYNC_US, ctx->scratch);
+    SyntaxLine info;
+    syntax_line_info(buf, line, ctx->scratch, &info);
+    b32 label = edit_label(buf, &info);
+    arena_pop_to(ctx->scratch, mark);
+    if (label) edit_reindent_line(ctx, line, 0, 0);
+}
+
 // The newline, then the new line indented by the rule. A line left with only blanks is emptied.
 static void cmd_newline(CommandContext *ctx) {
     if (!edit_writable(ctx)) return;
