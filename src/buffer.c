@@ -842,6 +842,51 @@ static b32 buffer_is_continuation(u8 b) {
     return (b & 0xC0) == 0x80;
 }
 
+// A marker put back by line and column after a revert.
+typedef struct BufferPlace {
+    i64 slot;
+    i64 line, col; // col in characters (a tab is one)
+} BufferPlace;
+
+// The markers in [start, end), or at start: their line and character column, into a fresh
+// reservation (released by the caller with os_release). *count = how many.
+static BufferPlace *buffer_record_places(Buffer *buf, i64 start, i64 end, i64 *count) {
+    *count = 0;
+    i64 n = 0;
+    for (i64 i = 0; i < buf->marker_count; i++) {
+        i64 pos = buf->markers[i].pos;
+        n += (buf->markers[i].flags & BUFFER_MARKER_LIVE) && pos >= start && (pos < end || pos == start);
+    }
+    if (!n) return NULL;
+    u64 bytes = (u64)n * sizeof(BufferPlace);
+    BufferPlace *places = (BufferPlace *)os_reserve(bytes);
+    if (!places || !os_commit(places, bytes)) {
+        if (places) os_release(places);
+        return NULL; // the markers then adjust as for any edit
+    }
+    for (i64 i = 0; i < buf->marker_count; i++) {
+        i64 pos = buf->markers[i].pos;
+        if (!(buf->markers[i].flags & BUFFER_MARKER_LIVE) || pos < start || (pos >= end && pos != start)) continue;
+        BufferPlace *pl = &places[(*count)++];
+        pl->slot = i;
+        pl->line = buffer_line_of(buf, pos);
+        pl->col = 0;
+        for (i64 p = buffer_line_start(buf, pl->line); p < pos; p = buffer_next_char(buf, p)) pl->col++;
+    }
+    return places;
+}
+
+// Puts recorded markers at their line and column, clamped to the last line and the line's end.
+static void buffer_restore_places(Buffer *buf, BufferPlace *places, i64 count) {
+    i64 last = buffer_line_count(buf) - 1;
+    for (i64 i = 0; i < count; i++) {
+        i64 line = MIN(places[i].line, last);
+        i64 p = buffer_line_start(buf, line), end = buffer_line_end(buf, line);
+        for (i64 c = 0; c < places[i].col && p < end; c++) p = buffer_next_char(buf, p);
+        buf->markers[places[i].slot].pos = MIN(p, end);
+    }
+}
+
 OsFileStatus buffer_revert(Buffer *buf, i64 point) {
     if (!buf->path.len) return OS_FILE_NO_PATH;
     Buffer *fresh = buffer_create(STR8_LIT(""));
@@ -868,10 +913,18 @@ OsFileStatus buffer_revert(Buffer *buf, i64 point) {
     while (s > 0 && (buffer_is_continuation(nt[new_size - s]) || buffer_is_continuation(buffer_byte(buf, old_size - s)))) s--;
     if (p < old_size - s || p < new_size - s) {
         buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, point); // a group of its own
+        // Markers in the replaced range (or at its start) go back to their line and column: an
+        // outside tool rewriting most of the file must not send point to the end.
+        i64 place_count;
+        BufferPlace *places = buffer_record_places(buf, p, old_size - s, &place_count);
         b32 inhibit = buf->inhibit_read_only;
         buf->inhibit_read_only = 1;
         b32 ok = buffer_replace(buf, p, old_size - s, str8(nt + p, new_size - s - p));
         buf->inhibit_read_only = inhibit;
+        if (places) {
+            if (ok) buffer_restore_places(buf, places, place_count);
+            os_release(places);
+        }
         buffer_undo_boundary(buf, BUFFER_UNDO_MERGE_NONE, 0, point); // nothing merges into it afterwards
         if (!ok) {
             buffer_destroy(fresh);

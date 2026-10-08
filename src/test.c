@@ -3730,7 +3730,8 @@ static b32 test_revert(Test *t) {
     TEST_CHECK(t, buffer_revert(buf, 3) == OS_FILE_OK && test_text_is(t, buf, STR8_LIT("aaaa\nXYZ\ncccc\n")) && !buf->modified &&
                   buf->undo.group_count == groups + 1, "revert: text, unmodified, one undo group");
     // The typing was undone by the revert too ("TU" is not in the file): prefix "" .. the whole middle.
-    TEST_CHECK(t, buffer_marker_get(buf, before) == 0 && buffer_marker_get(buf, after) == 11, "revert: markers before (%D) and after (%D)",
+    // `before` (at 4 after the typing) was inside it: back to line 0, column 4.
+    TEST_CHECK(t, buffer_marker_get(buf, before) == 4 &&buffer_marker_get(buf, after) == 11, "revert: markers before (%D) and after (%D)",
                buffer_marker_get(buf, before), buffer_marker_get(buf, after));
     buffer_marker_destroy(buf, before);
     buffer_marker_destroy(buf, after);
@@ -3746,7 +3747,8 @@ static b32 test_revert(Test *t) {
                   test_text_is(t, buf, STR8_LIT("aaaa\nXYZ\ncccc\n")) && !buf->modified, "revert: undo-redo back to the file, unmodified");
     TEST_CHECK(t, buffer_destroy(buf), "revert: destroy");
 
-    // Exact marker positions on a clean buffer: before, after (same distance from the end), inside.
+    // Exact marker positions on a clean buffer: before, after (same distance from the end), inside
+    // (by line and column, whatever their insertion type).
     TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nbbbb\ncccc\n")), "revert: cannot write the file");
     buf = buffer_create(STR8_LIT(""));
     TEST_CHECK(t, buf && buffer_load_file(buf, path) == OS_FILE_OK, "revert: load failed");
@@ -3756,13 +3758,23 @@ static b32 test_revert(Test *t) {
     inside_adv = buffer_marker_create(buf, 7, 1);
     TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nXYZ\ncccc\n")), "revert: cannot change the file");
     TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK, "revert: failed");
-    TEST_CHECK(t, buffer_marker_get(buf, before) == 2 && buffer_marker_get(buf, after) == 11 && buffer_marker_get(buf, inside) == 5 &&
-                  buffer_marker_get(buf, inside_adv) == 8, "revert: markers %D %D %D %D", buffer_marker_get(buf, before),
+    TEST_CHECK(t, buffer_marker_get(buf, before) == 2 && buffer_marker_get(buf, after) == 11 && buffer_marker_get(buf, inside) == 6 &&
+                  buffer_marker_get(buf, inside_adv) == 7,"revert: markers %D %D %D %D", buffer_marker_get(buf, before),
                buffer_marker_get(buf, after), buffer_marker_get(buf, inside), buffer_marker_get(buf, inside_adv));
     buffer_marker_destroy(buf, before);
     buffer_marker_destroy(buf, after);
     buffer_marker_destroy(buf, inside);
     buffer_marker_destroy(buf, inside_adv);
+    // An insertion: a marker exactly at the start of the (empty) range stays before the new text,
+    // whatever its insertion type; one after it shifts.
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nXQYZ\ncccc\n")), "revert: cannot change the file");
+    inside = buffer_marker_create(buf, 6, 1);
+    after = buffer_marker_create(buf, 7, 0);
+    TEST_CHECK(t, buffer_revert(buf, 0) == OS_FILE_OK && buffer_marker_get(buf, inside) == 6 && buffer_marker_get(buf, after) == 8,
+               "revert: insertion, markers %D %D", buffer_marker_get(buf, inside), buffer_marker_get(buf, after));
+    buffer_marker_destroy(buf, inside);
+    buffer_marker_destroy(buf, after);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\nXYZ\ncccc\n")) && buffer_revert(buf, 0) == OS_FILE_OK, "revert: back");
     // Line endings only: the same text, the mode taken over, no edit, no undo group.
     TEST_CHECK(t, os_write_file(path, STR8_LIT("aaaa\r\nXYZ\r\ncccc\r\n")), "revert: cannot change the file");
     u64 edits = buf->edit_count;
@@ -3788,6 +3800,39 @@ static b32 test_revert(Test *t) {
                "revert: a missing file");
     TEST_CHECK(t, buffer_destroy(buf), "revert: destroy");
 
+    // A whole-file rewrite (every line changed, as an outside formatter does): markers keep their line
+    // and character column, clamped to the line's end and to the last line.
+    {
+        u8 *text = PUSH_ARRAY(&t->arena, u8, 4096);
+        i64 n = 0;
+        for (i32 i = 0; i < 100; i++) n += fmt_buf(text + n, 4096 - n, "line %d\n", i);
+        TEST_CHECK(t, os_write_file(path, str8(text, n)), "revert: cannot write the file");
+        buf = buffer_create(STR8_LIT(""));
+        TEST_CHECK(t, buf && buffer_load_file(buf, path) == OS_FILE_OK, "revert: load failed");
+        BufferMarker m50 = buffer_marker_create(buf, buffer_line_start(buf, 50) + 3, 1);
+        BufferMarker m70 = buffer_marker_create(buf, buffer_line_start(buf, 70) + 7, 0);
+        BufferMarker top = buffer_marker_create(buf, buffer_line_start(buf, 40), 0);
+        BufferMarker end = buffer_marker_create(buf, buffer_size(buf), 1);
+        // Every line rewritten; line 70 becomes shorter than column 7 ("\xC3\xA9" is one character).
+        n = 0;
+        for (i32 i = 0; i < 100; i++) n += fmt_buf(text + n, 4096 - n, i == 70 ? "\xC3\xA9\n" : "\xC3\xA9LINE %d;\n", i);
+        TEST_CHECK(t, os_write_file(path, str8(text, n)) && buffer_revert(buf, 0) == OS_FILE_OK, "revert: whole-file rewrite");
+        TEST_CHECK(t, buffer_marker_get(buf, m50) == buffer_line_start(buf, 50) + 4 && buffer_marker_get(buf, m70) == buffer_line_end(buf, 70) &&
+                      buffer_marker_get(buf, top) == buffer_line_start(buf, 40) && buffer_marker_get(buf, end) == buffer_size(buf),
+                   "revert: a whole-file rewrite keeps line and column (%D %D %D %D)", buffer_marker_get(buf, m50),
+                   buffer_marker_get(buf, m70), buffer_marker_get(buf, top), buffer_marker_get(buf, end));
+        // A much shorter file: clamped to the last line and its end.
+        TEST_CHECK(t, os_write_file(path, STR8_LIT("x\nyy")) && buffer_revert(buf, 0) == OS_FILE_OK, "revert: a shorter file");
+        TEST_CHECK(t, buffer_marker_get(buf, m50) == 4 && buffer_marker_get(buf, top) == 2 && buffer_marker_get(buf, end) == 4,
+                   "revert: clamped to the last line (%D %D %D)", buffer_marker_get(buf, m50), buffer_marker_get(buf, top),
+                   buffer_marker_get(buf, end));
+        buffer_marker_destroy(buf, m50);
+        buffer_marker_destroy(buf, m70);
+        buffer_marker_destroy(buf, top);
+        buffer_marker_destroy(buf, end);
+        TEST_CHECK(t, buffer_destroy(buf), "revert: destroy");
+    }
+
     // revert-buffer: unmodified reverts at once; modified asks (no, C-g, yes).
     TEST_CHECK(t, os_write_file(path, STR8_LIT("one\n")), "revert: cannot write the file");
     App *app = test_app_create(t);
@@ -3798,21 +3843,21 @@ static b32 test_revert(Test *t) {
     app_dev_feed(app, "M-x r e v e r t - b u f f e r RET", &t->arena);
     TEST_CHECK(t, !app->mini.active && test_text_is(t, b, STR8_LIT("two\n")) && test_echo_has(app, "Reverted p7revert.txt"),
                "revert: revert-buffer unmodified");
-    // Point was at 0, the start of the replaced "one": an advancing marker, it is now after "two".
+    // Point was at 0, the start of the replaced "one": it stays at line 0, column 0.
     app_dev_feed(app, "x M-x r e v e r t - b u f f e r RET", &t->arena);
     String8 q = str8_fmt(&t->arena, "Discard edits and reread from %S? (yes or no) ", test_slashes(t, path));
     TEST_CHECK(t, app->mini.active && str8_equal(app->mini.prompt, q), "revert: asks '%S'", app->mini.prompt);
     app_dev_feed(app, "n o RET", &t->arena);
-    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("twox\n")) && b->modified, "revert: 'no' keeps the edits");
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("xtwo\n")) && b->modified, "revert: 'no' keeps the edits");
     app_dev_feed(app, "M-x r e v e r t - b u f f e r RET C-g", &t->arena);
-    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("twox\n")) && b->modified && !app->mini.active, "revert: C-g keeps the edits");
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("xtwo\n")) && b->modified && !app->mini.active, "revert: C-g keeps the edits");
     app_dev_feed(app, "M-x r e v e r t - b u f f e r RET y e s RET", &t->arena);
     TEST_CHECK(t, test_text_is(t, b, STR8_LIT("two\n")) && !b->modified, "revert: 'yes' rereads");
     app_dev_feed(app, "C-/", &t->arena);
-    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("twox\n")) && b->modified, "revert: undone through the keys");
+    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("xtwo\n")) && b->modified, "revert: undone through the keys");
     if (!test_app_destroy(t, app, "revert")) return 0;
     os_file_delete(path);
-    LOG("test: ok: revert (one replace, markers, undo and undo-redo, line endings, no-op, whole characters, read-only, "
+    LOG("test: ok: revert (one replace, markers by line and column, a whole-file rewrite, undo and undo-redo, line endings, no-op, whole characters, read-only, "
         "missing file, revert-buffer answers)");
     return 1;
 }
