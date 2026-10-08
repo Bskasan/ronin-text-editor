@@ -1220,6 +1220,7 @@ static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 r
     if (e->mods & MOD_CTRL) mods[mn++] = 'C';
     if (e->mods & MOD_ALT) mods[mn++] = 'M';
     if (e->mods & MOD_SHIFT) mods[mn++] = 'S';
+    if (e->mods & MOD_ALTGR) mods[mn++] = 'G';
     if (!mn) mods[mn++] = '-';
     if (e->kind == EVENT_KEY_DOWN) {
         u8 name[16];
@@ -1288,6 +1289,28 @@ String8 app_dev_binding(App *app, Arena *arena, i32 keymap, i32 index, const cha
 }
 #endif
 
+// describe-key and a key press that is not a chord: a dead key waits for the next key (the composed
+// character is described); a key that types nothing ends it with what was pressed and why.
+static void app_describe_no_chord(App *app, Event *e) {
+    if (e->dead) {
+        u8 accent[4];
+        echo_message(&app->echo, "Describe key: %S is a dead key, it composes with the next key",
+                     str8(accent, utf8_encode(e->codepoint, accent)));
+        return;
+    }
+    if (!e->no_text) return; // its text event is the chord
+    app->keys.describe = 0;
+    app->ctx.last_command = NULL;
+    Arena *scratch = app->ctx.scratch;
+    u64 mark = arena_pos(scratch);
+    String8 name = os_key_name(scratch, e->scancode);
+    if (!name.len) name = str8_fmt(scratch, "the key with scan code 0x%x", e->scancode);
+    echo_message(&app->echo, "%s%s%s%s%S is not a key chord (%s)", (e->mods & MOD_CTRL) ? "Ctrl+" : "",
+                 (e->mods & MOD_ALT) ? "Alt+" : "", (e->mods & MOD_ALTGR) ? "AltGr+" : "", (e->mods & MOD_SHIFT) ? "Shift+" : "",
+                 name, (e->mods & (MOD_CTRL | MOD_ALT)) ? "no character with these modifiers" : "the key types nothing");
+    arena_pop_to(scratch, mark);
+}
+
 // A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
 // is active, [isearch, global] while an isearch is, else [global]. A single-key prompt takes the key
 // itself, after the keymap has said what the key is bound to, so the quit keys still abort it.
@@ -1333,6 +1356,8 @@ static void app_key_event(App *app, Event *e) {
     i64 n = key_seq_print(&k.seq, seq, sizeof(seq) - 1);
     switch (k.kind) {
     case KEY_RESULT_IGNORED:
+        if (app->keys.describe && e->kind == EVENT_KEY_DOWN) app_describe_no_chord(app, e);
+        break;
     case KEY_RESULT_DROPPED:
         break;
     case KEY_RESULT_PREFIX: // shown at once, as "C-x-"

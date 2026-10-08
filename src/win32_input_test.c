@@ -383,6 +383,44 @@ static void it_cases(InputTest *t) {
     it_expect_describe(t, "F10", (ItStroke){ 0, VK_F10, 0 }, STR8_LIT("<f10>"));
     it_expect_describe(t, "Left Alt + Space", (ItStroke){ IT_LALT, VK_SPACE, 0 }, STR8_LIT("M-SPC"));
 
+    // describe-key is never silent: a key press that makes no chord is reported (and ends it); a dead
+    // key is reported and the composed character is described.
+    t->state[VK_NUMLOCK] |= 1;
+    String8 got = it_describe(t, &(ItStroke){ IT_LCTRL, VK_NUMPAD5, 0 }, 1);
+    t->state[VK_NUMLOCK] &= (BYTE)~1;
+    String8 want_nc = str8_fmt(a, "Ctrl+%S is not a key chord (no character with these modifiers)",
+                               os_key_name(a, MapVirtualKeyExW(VK_NUMPAD5, MAPVK_VK_TO_VSC, t->hkl)));
+    if (!str8_equal(got, want_nc)) it_fail(t, "describe-key, Ctrl + keypad 5: echo '%S', expected '%S'", got, want_nc);
+    if (t->altgr) {
+        u32 vk = 'A';
+        while (vk <= 'Z' && (it_layout_char(t, t->hkl, vk, IT_RALT, NULL) || it_layout_char(t, t->hkl, vk, IT_RALT | IT_LSHIFT, NULL))) vk++;
+        if (vk <= 'Z') {
+            got = it_describe(t, &(ItStroke){ IT_RALT, vk, 0 }, 1);
+            String8 want_ag = str8_fmt(a, "AltGr+%S is not a key chord (the key types nothing)",
+                                       os_key_name(a, MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, t->hkl)));
+            if (!str8_equal(got, want_ag)) it_fail(t, "describe-key, AltGr + %c: echo '%S', expected '%S'", (int)vk, got, want_ag);
+        }
+    }
+    for (u32 k = 0x08; k < 0xFF; k++) {
+        b32 is_dead;
+        u32 accent = it_layout_char(t, t->hkl, k, 0, &is_dead);
+        if (!is_dead || accent != 0xB4) continue;
+        it_stroke(t, (ItStroke){ IT_LCTRL, 'H', 0 });
+        it_stroke(t, (ItStroke){ 0, 'K', 0 });
+        it_stroke(t, (ItStroke){ 0, k, 0 });
+        String8 dead_echo = str8_copy(a, app_dev_echo(t->app));
+        it_stroke(t, (ItStroke){ 0, 'E', 0 });
+        String8 composed = str8_copy(a, app_dev_echo(t->app));
+        app_dev_feed(t->app, "C-g", a);
+        String8 want_dead = str8_fmt(a, "Describe key: %S is a dead key, it composes with the next key", it_utf8(a, 0xB4));
+        String8 want_composed = str8_fmt(a, "%S runs the command self-insert-command", it_utf8(a, 0xE9));
+        if (!str8_equal(dead_echo, want_dead) || !str8_equal(composed, want_composed)) {
+            it_fail(t, "describe-key, dead key then e: echo '%S' then '%S', expected '%S' then '%S'", dead_echo, composed, want_dead,
+                    want_composed);
+        }
+        break;
+    }
+
     // The numeric keypad: Enter; with NumLock off its navigation keys; with NumLock on its digits,
     // also right after a chord.
     it_expect_describe(t, "numpad Enter", (ItStroke){ 0, VK_RETURN, 1 }, STR8_LIT("RET"));
@@ -545,7 +583,7 @@ static DWORD WINAPI it_thread(void *param) {
         if (leaks) it_fail(&t, "%d leak(s) at shutdown", leaks);
         if (t.failures == before_failures) {
             LOG("test: ok: input %s (layout 0x%08X, %s): letters, Alt / Ctrl / Ctrl+Alt chords, %s, Alt+Shift and Ctrl+Shift symbols, "
-                "dead keys, no menu for Alt / F10 / Alt+Space, the keypad, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
+                "dead keys, no menu for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
                 t.altgr ? "AltGr" : "no AltGr", t.altgr ? "AltGr text and Left Alt + AltGr" : "Right Alt as Meta");
         }
         run->failures += t.failures;
