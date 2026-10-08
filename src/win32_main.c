@@ -11,6 +11,12 @@
 #include <psapi.h>
 #endif
 
+// winuser.h defines MOD_ALT (0x1) and MOD_SHIFT (0x4) for RegisterHotKey. In this unity build they
+// replace platform.h's modifier bits from here on, and MOD_ALT then equals MOD_CTRL: Alt read as Ctrl.
+#undef MOD_ALT
+#undef MOD_SHIFT
+_Static_assert(MOD_CTRL == 1 << 0 && MOD_ALT == 1 << 1 && MOD_SHIFT == 1 << 2, "platform.h's modifier bits");
+
 #define EVENT_CAPACITY 256
 #define EVENT_RESERVE 4 // free slots required before taking another message off the queue
 #define WIN32_MAX_WATCHES 16 // the config's directory and those of the displayed buffers; the wait takes 63
@@ -1341,6 +1347,42 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
 #endif
 
 #if TEAL_DEV
+// --test, the Win32 side: modifier keys set in this thread's key state as Windows would have them,
+// read by win32_mods and made into a chord. The state is restored afterwards.
+static i32 win32_dev_test_mods(Platform *p) {
+    static const struct { int vks[4]; u32 codepoint; KeyChord want; const char *what; } cases[] = {
+        { { VK_MENU, VK_LMENU }, 'f', 'f' | CHORD_META, "Left Alt + f -> M-f" },
+        { { VK_MENU, VK_RMENU }, 'f', 'f' | CHORD_META, "Right Alt + f (no AltGr) -> M-f" },
+        { { VK_CONTROL, VK_LCONTROL }, 'f', 'f' | CHORD_CTRL, "Left Ctrl + f -> C-f" },
+        { { VK_CONTROL, VK_RCONTROL, VK_MENU, VK_LMENU }, 'f', 'f' | CHORD_CTRL | CHORD_META, "Ctrl + Alt + f -> C-M-f" },
+        { { VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU }, '<', '<' | CHORD_META, "Alt + Shift + , -> M-<" },
+        { { VK_SHIFT, VK_LSHIFT, VK_CONTROL, VK_LCONTROL }, '?', '?' | CHORD_CTRL, "Ctrl + Shift + / -> C-?" },
+    };
+    BYTE saved[256];
+    GetKeyboardState(saved);
+    b32 altgr = p->altgr;
+    p->altgr = 0;
+    i32 failures = 0;
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        BYTE state[256] = { 0 };
+        for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) state[cases[i].vks[k]] = 0x80;
+        SetKeyboardState(state);
+        KeyChord chord = 0;
+        b32 made = key_chord_from_event(KEY_NONE, cases[i].codepoint, win32_mods(p), &chord);
+        if (!made || chord != cases[i].want) {
+            u8 got[32], want[32];
+            i64 gn = made ? key_chord_print(chord, got, sizeof(got)) : fmt_buf(got, sizeof(got), "no chord");
+            i64 wn = key_chord_print(cases[i].want, want, sizeof(want));
+            LOG("test: FAIL: win32 modifiers: %s: got %S, expected %S", cases[i].what, str8(got, gn), str8(want, wn));
+            failures++;
+        }
+    }
+    SetKeyboardState(saved);
+    p->altgr = altgr;
+    if (!failures) LOG("test: ok: win32 modifiers (Alt, Right Alt without AltGr, Ctrl, Ctrl+Alt, Alt+Shift, Ctrl+Shift from the thread's key state)");
+    return failures;
+}
+
 // --log-keys at startup: the layouts loaded in this session, the active one and its key table.
 static void win32_dev_log_layouts(Platform *p) {
     HKL list[32];
@@ -2304,6 +2346,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+        failures += win32_dev_test_mods(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
