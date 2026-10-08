@@ -91,6 +91,8 @@ typedef struct Platform {
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
     u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
     Event last_key_event; // the last of them
+    i32 dev_menu_paths;   // WM_SYSKEY*, WM_SYSCHAR, WM_SYSDEADCHAR, SC_KEYMENU left to DefWindowProc (menu, beep)
+    i32 dev_keymenu;      // WM_SYSCOMMAND SC_KEYMENU received
     const char *stage_what[32]; // os_dev_stage: the startup timeline, logged after the first frame
     LARGE_INTEGER stage_qpc[32];
     i32 stage_count;
@@ -548,6 +550,9 @@ void os_unwatch(OsWatch watch) {
 }
 
 static void win32_push_event(Platform *p, Event e);
+#if TEAL_DEV
+static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
+#endif
 
 // Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it.
 static void win32_poll_watches(Platform *p) {
@@ -1088,7 +1093,12 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             // We handle WM_SYSKEYDOWN ourselves so Alt works as Meta; let only Alt+F4
             // through to DefWindowProc so it still closes the window.
-            if (msg == WM_SYSKEYDOWN && vk == VK_F4 && !p->altgr) return DefWindowProcW(hwnd, msg, wp, lp);
+            if (msg == WM_SYSKEYDOWN && vk == VK_F4 && !p->altgr) {
+#if TEAL_DEV
+                p->dev_menu_paths++;
+#endif
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
         }
         return 0;
     }
@@ -1117,7 +1127,12 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_SYSCOMMAND:
-        if ((wp & 0xFFF0) == SC_KEYMENU) return 0; // Alt / F10 never open the system menu
+        if ((wp & 0xFFF0) == SC_KEYMENU) { // Alt / F10 never open the system menu
+#if TEAL_DEV
+            p->dev_keymenu++;
+#endif
+            return 0;
+        }
         break;
 
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
@@ -1178,6 +1193,10 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     }
+#if TEAL_DEV
+    if (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP || msg == WM_SYSCHAR || msg == WM_SYSDEADCHAR ||
+        (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_KEYMENU)) p->dev_menu_paths++;
+#endif
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
@@ -2390,6 +2409,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         failures += win32_dev_test_mods(p);
         failures += win32_dev_test_keys(p);
+        failures += win32_dev_input_test(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }

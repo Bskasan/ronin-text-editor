@@ -1269,6 +1269,23 @@ static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 r
 void app_dev_log_keys(App *app, b32 on) {
     app->dev_log_keys = on;
 }
+
+String8 app_dev_echo(App *app) {
+    return str8(app->echo.text, app->echo.len);
+}
+
+String8 app_dev_text(App *app, Arena *arena) {
+    Buffer *buf = app->views[app->active_view]->buffer;
+    return buffer_text(buf, arena, 0, buffer_size(buf));
+}
+
+String8 app_dev_binding(App *app, Arena *arena, i32 keymap, i32 index, const char **command) {
+    Keymap *map = keymap == 0 ? &app->config->global : keymap == 1 ? &app->config->minibuffer : &app->config->isearch;
+    if (index < 0 || index >= map->count) return str8(NULL, 0);
+    *command = map->bindings[index].command->name;
+    u8 *text = PUSH_ARRAY(arena, u8, KEY_SEQ_TEXT_CAP);
+    return str8(text, key_seq_print(&map->bindings[index].seq, text, KEY_SEQ_TEXT_CAP));
+}
 #endif
 
 // A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
