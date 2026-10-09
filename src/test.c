@@ -226,8 +226,8 @@ static b32 test_fuzz(Test *t, u64 seed) {
         i64 start, end;
         String8 s = str8(text, 0);
         // Positions: half near the last edit, half anywhere.
-        i64 near = cursor + test_below(t, 65) - 32; // CLAMP evaluates its argument more than once
-        i64 at = test_below(t, 2) ? CLAMP(near, 0, len) : test_below(t, len + 1);
+        i64 near_pos = cursor + test_below(t, 65) - 32; // CLAMP evaluates its argument more than once
+        i64 at = test_below(t, 2) ? CLAMP(near_pos, 0, len) : test_below(t, len + 1);
         if (r < 30) {                  // small insert
             start = end = at;
             s = test_random_text(t, text, 1 + test_below(t, 16));
@@ -2083,14 +2083,14 @@ static b32 test_kill(Test *t) {
         String8 e = kill_entry(k, b);
         i32 i = 39 - b;
         TEST_CHECK(t, e.len == 1000 + i * 3000 && e.data[0] == 'a' + i % 26 && e.data[e.len - 1] == 'a' + i % 26 &&
-                      e.data >= k->small && e.data < k->small + k->small_used, "kill storage: small entry %d after compaction", b);
+                      e.data >= k->small_base && e.data < k->small_base + k->small_used, "kill storage: small entry %d after compaction", b);
     }
     TEST_CHECK(t, k->count == 5 && k->small_used < (u64)(5 * 120000 * 2), "kill storage: dead bytes compacted (%U used)", k->small_used);
     u8 *dst = kill_extend(k, MB(1), 0); // the newest grows past 1 MB: its own reservation, once
     memset(dst, 'Z', MB(1));
     String8 grown = kill_entry(k, 0);
     TEST_CHECK(t, grown.len == 1000 + 39 * 3000 + MB(1) && grown.data[0] == 'a' + 39 % 26 && grown.data[grown.len - 1] == 'Z' &&
-                  (grown.data < k->small || grown.data >= k->small + KILL_SMALL_RESERVE), "kill storage: moved to its own reservation");
+                  (grown.data < k->small_base || grown.data >= k->small_base + KILL_SMALL_RESERVE), "kill storage: moved to its own reservation");
     for (i32 i = 0; i < 3; i++) {
         memset(big, '0' + i, MB(3));
         u8 *d = kill_extend(k, MB(3), i == 1);
@@ -2632,12 +2632,12 @@ static b32 test_match(Test *t) {
     }
     // Too far: the match lies beyond SYNTAX_MATCH_MAX.
     i64 n = SYNTAX_MATCH_MAX + 100;
-    u8 *far = PUSH_ARRAY(&t->arena, u8, n + 3);
-    far[0] = 1;
-    far[1] = '{';
-    for (i64 i = 2; i < n; i += 2) far[i] = 'x', far[i + 1] = '\n';
-    far[n] = '}';
-    if (!test_match_case(t, BUFFER_LANG_C, "too far", str8(far, n + 1))) return 0;
+    u8 *far_text = PUSH_ARRAY(&t->arena, u8, n + 3);
+    far_text[0] = 1;
+    far_text[1] = '{';
+    for (i64 i = 2; i < n; i += 2) far_text[i] = 'x', far_text[i + 1] = '\n';
+    far_text[n] = '}';
+    if (!test_match_case(t, BUFFER_LANG_C, "too far", str8(far_text, n + 1))) return 0;
     // The innermost opener that encloses a position.
     Buffer *buf = buffer_create(STR8_LIT("enclosing"));
     buf->language = BUFFER_LANG_C;

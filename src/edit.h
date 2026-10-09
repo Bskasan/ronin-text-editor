@@ -34,7 +34,7 @@ typedef struct KillRing {
     KillEntry entries[KILL_RING_CAP]; // a ring: the newest at `head`
     i32 head, count, max;
     i32 yank_index;                   // entries back from the newest that the last yank inserted
-    u8 *small;                        // the shared arena
+    u8 *small_base;                   // the shared arena
     u64 small_committed, small_used, small_dead;
     Arena scratch;                    // clipboard conversions; reset after use
     u32 clip_seq;                     // the clipboard's sequence number after our last set or read
