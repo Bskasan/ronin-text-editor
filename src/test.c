@@ -5834,7 +5834,9 @@ static b32 test_matcher(Test *t) {
 // Steps of docs/MANUAL_TESTS.md checked through the headless app; their ids are in the log lines.
 
 static App *test_manual_app(Test *t, String8 file, i64 line, i64 col, String8 config) {
-    AppArgs args = { .dpi_scale = 1.0f, .headless = 1, .file_path = file, .goto_line = line, .goto_col = col, .config_path = config };
+    AppFileArg *f = PUSH_STRUCT(&t->arena, AppFileArg);
+    *f = (AppFileArg){ file, line, col };
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1, .files = f, .file_count = file.len || line ? 1 : 0, .config_path = config };
     App *app = app_create(&t->arena, &args);
     if (app) app_dev_feed_events(app, NULL, 0, &t->arena); // the first frame: layout, the +LINE:COL jump
     return app;
