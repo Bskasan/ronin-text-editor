@@ -36,6 +36,7 @@ struct Renderer {
     b32 occluded;
     b32 wants_redraw;
     b32 in_frame;
+    Rect clip; // quads are cut to it (r_set_clip); the whole target after r_begin_frame
     u32 present_interval;
 
     // Results of r_create_device. It may run on a worker thread, where it must not log, so the
@@ -472,6 +473,7 @@ b32 r_wants_redraw(Renderer *r) {
 void r_begin_frame(Renderer *r, Color clear) {
     r->wants_redraw = 0;
     r->instance_count = 0;
+    r->clip = (Rect){ 0, 0, (f32)r->width, (f32)r->height };
     r->in_frame = !r->minimized;
     if (!r->in_frame) return;
 
@@ -516,8 +518,17 @@ void r_flush(Renderer *r) {
     r->instance_count = 0;
 }
 
+void r_set_clip(Renderer *r, Rect clip) {
+    r->clip = clip;
+}
+
 void r_push_rect(Renderer *r, Rect rect, Color color) {
     if (!r->in_frame) return;
+    rect.x0 = MAX(rect.x0, r->clip.x0);
+    rect.y0 = MAX(rect.y0, r->clip.y0);
+    rect.x1 = MIN(rect.x1, r->clip.x1);
+    rect.y1 = MIN(rect.y1, r->clip.y1);
+    if (rect.x0 >= rect.x1 || rect.y0 >= rect.y1) return;
     if (r->instance_count == R_MAX_INSTANCES) r_flush(r);
     RInstance *inst = &r->instances[r->instance_count++];
     inst->rect[0] = rect.x0;
@@ -531,6 +542,12 @@ void r_push_rect(Renderer *r, Rect rect, Color color) {
 
 void r_push_glyph(Renderer *r, Rect dst, Rect atlas_texels, Color color) {
     if (!r->in_frame) return;
+    // The quad is 1:1 with its texels: cutting it cuts its texel rectangle by the same amounts.
+    f32 cut_x0 = MAX(r->clip.x0 - dst.x0, 0), cut_y0 = MAX(r->clip.y0 - dst.y0, 0);
+    f32 cut_x1 = MAX(dst.x1 - r->clip.x1, 0), cut_y1 = MAX(dst.y1 - r->clip.y1, 0);
+    if (cut_x0 + cut_x1 >= dst.x1 - dst.x0 || cut_y0 + cut_y1 >= dst.y1 - dst.y0) return;
+    dst = (Rect){ dst.x0 + cut_x0, dst.y0 + cut_y0, dst.x1 - cut_x1, dst.y1 - cut_y1 };
+    atlas_texels = (Rect){ atlas_texels.x0 + cut_x0, atlas_texels.y0 + cut_y0, atlas_texels.x1 - cut_x1, atlas_texels.y1 - cut_y1 };
     if (r->instance_count == R_MAX_INSTANCES) r_flush(r);
     RInstance *inst = &r->instances[r->instance_count++];
     inst->rect[0] = dst.x0;

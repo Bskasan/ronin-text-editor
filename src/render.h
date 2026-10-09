@@ -26,6 +26,9 @@ u32  r_shutdown(Renderer *r); // dev: number of leaked references / live objects
 
 void r_resize(Renderer *r, i32 width, i32 height); // 0 x 0 = minimized, frames become no-ops
 void r_begin_frame(Renderer *r, Color clear);
+// Every quad pushed from now on is cut to `clip` (on the CPU: no draw call or state change); a quad
+// cut to nothing is dropped. r_begin_frame resets it to the whole target.
+void r_set_clip(Renderer *r, Rect clip);
 void r_push_rect(Renderer *r, Rect rect, Color color);
 void r_push_glyph(Renderer *r, Rect dst, Rect atlas_texels, Color color); // dst is 1:1 with the texels
 void r_flush(Renderer *r);     // uploads the atlas dirty rect, draws pending quads
