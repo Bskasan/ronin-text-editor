@@ -48,8 +48,8 @@ static Key key_named_from_text(String8 s) {
 // Chords from events
 
 b32 key_chord_from_event(Key key, u32 codepoint, u32 mods, KeyChord *out) {
-    u32 cm = ((mods & MOD_CTRL) ? CHORD_CTRL : 0) | ((mods & MOD_ALT) ? CHORD_META : 0);
-    u32 shift = (mods & MOD_SHIFT) ? CHORD_SHIFT : 0;
+    u32 cm = ((mods & KEYMOD_CTRL) ? CHORD_CTRL : 0) | ((mods & KEYMOD_ALT) ? CHORD_META : 0);
+    u32 shift = (mods & KEYMOD_SHIFT) ? CHORD_SHIFT : 0;
     if (key_is_named(key)) {
         *out = CHORD_NAMED | (u32)key | cm | shift;
         return 1;
@@ -274,12 +274,12 @@ i32 key_dev_events(String8 token, Event out[2], const char **error) {
     KeyChord c;
     if (!key_chord_parse(token, &c, error)) return 0;
     u32 code = c & CHORD_CODE_MASK;
-    u32 mods = ((c & CHORD_CTRL) ? MOD_CTRL : 0) | ((c & CHORD_META) ? MOD_ALT : 0) | ((c & CHORD_SHIFT) ? MOD_SHIFT : 0);
+    u32 mods = ((c & CHORD_CTRL) ? KEYMOD_CTRL : 0) | ((c & CHORD_META) ? KEYMOD_ALT : 0) | ((c & CHORD_SHIFT) ? KEYMOD_SHIFT : 0);
     if (c & CHORD_NAMED) {
         out[0] = (Event){ .kind = EVENT_KEY_DOWN, .key = (Key)code, .mods = mods };
         return 1;
     }
-    if (mods & (MOD_CTRL | MOD_ALT)) {
+    if (mods & (KEYMOD_CTRL | KEYMOD_ALT)) {
         out[0] = (Event){ .kind = EVENT_KEY_DOWN, .key = code == ' ' ? KEY_SPACE : KEY_NONE, .codepoint = code, .mods = mods };
         return 1;
     }

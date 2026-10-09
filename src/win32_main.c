@@ -11,11 +11,9 @@
 #include <psapi.h>
 #endif
 
-// winuser.h defines MOD_ALT (0x1) and MOD_SHIFT (0x4) for RegisterHotKey. In this unity build they
-// replace platform.h's modifier bits from here on, and MOD_ALT then equals MOD_CTRL: Alt read as Ctrl.
-#undef MOD_ALT
-#undef MOD_SHIFT
-_Static_assert(MOD_CTRL == 1 << 0 && MOD_ALT == 1 << 1 && MOD_SHIFT == 1 << 2, "platform.h's modifier bits");
+// platform.h's modifier bits are KEYMOD_*: winuser.h defines MOD_ALT (0x1) and MOD_SHIFT (0x4) for
+// RegisterHotKey, which in this unity build replaced the old MOD_* names here (Alt read as Ctrl).
+_Static_assert(KEYMOD_CTRL == 1 << 0 && KEYMOD_ALT == 1 << 1 && KEYMOD_SHIFT == 1 << 2, "platform.h's modifier bits");
 
 #define EVENT_CAPACITY 256
 #define EVENT_RESERVE 4 // free slots required before taking another message off the queue
@@ -905,14 +903,14 @@ static void win32_push_event(Platform *p, Event e) {
 // Alt still counts as ALT and Right Ctrl as CTRL, so a chord such as M-{ works where "{" needs AltGr.
 static u32 win32_mods(Platform *p) {
     u32 mods = 0;
-    if (GetKeyState(VK_SHIFT) & 0x8000) mods |= MOD_SHIFT;
+    if (GetKeyState(VK_SHIFT) & 0x8000) mods |= KEYMOD_SHIFT;
     if (p->altgr) {
-        mods |= MOD_ALTGR;
-        if (GetKeyState(VK_RCONTROL) & 0x8000) mods |= MOD_CTRL;
-        if (GetKeyState(VK_LMENU) & 0x8000) mods |= MOD_ALT;
+        mods |= KEYMOD_ALTGR;
+        if (GetKeyState(VK_RCONTROL) & 0x8000) mods |= KEYMOD_CTRL;
+        if (GetKeyState(VK_LMENU) & 0x8000) mods |= KEYMOD_ALT;
     } else {
-        if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CTRL;
-        if (GetKeyState(VK_MENU) & 0x8000) mods |= MOD_ALT;
+        if (GetKeyState(VK_CONTROL) & 0x8000) mods |= KEYMOD_CTRL;
+        if (GetKeyState(VK_MENU) & 0x8000) mods |= KEYMOD_ALT;
     }
     return mods;
 }
@@ -1154,7 +1152,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 };
                 win32_push_event(p, e);
                 p->redraw = 1;
-                if ((e.mods & (MOD_CTRL | MOD_ALT)) && e.codepoint) win32_drop_dead_key();
+                if ((e.mods & (KEYMOD_CTRL | KEYMOD_ALT)) && e.codepoint) win32_drop_dead_key();
             }
             // We handle WM_SYSKEYDOWN ourselves so Alt works as Meta; let only Alt+F4
             // through to DefWindowProc so it still closes the window.
@@ -1181,7 +1179,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         p->high_surrogate = 0;
         if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) return 0; // control characters
         u32 mods = win32_mods(p);
-        if (mods & (MOD_CTRL | MOD_ALT)) return 0; // with AltGr: only when Left Alt / Right Ctrl are added
+        if (mods & (KEYMOD_CTRL | KEYMOD_ALT)) return 0; // with AltGr: only when Left Alt / Right Ctrl are added
         Event e = { .kind = EVENT_TEXT, .codepoint = c, .mods = mods };
         win32_push_event(p, e);
         p->redraw = 1;
@@ -1391,10 +1389,10 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
     u32 mods = win32_mods(p);
     u8 m[5];
     i32 mn = 0;
-    if (mods & MOD_CTRL) m[mn++] = 'C';
-    if (mods & MOD_ALT) m[mn++] = 'M';
-    if (mods & MOD_SHIFT) m[mn++] = 'S';
-    if (mods & MOD_ALTGR) m[mn++] = 'G';
+    if (mods & KEYMOD_CTRL) m[mn++] = 'C';
+    if (mods & KEYMOD_ALT) m[mn++] = 'M';
+    if (mods & KEYMOD_SHIFT) m[mn++] = 'S';
+    if (mods & KEYMOD_ALTGR) m[mn++] = 'G';
     if (!mn) m[mn++] = '-';
     String8 state = str8_fmt(a, "down %S, caps %d | teal mods %S, altgr %d%s | layout 0x%08X", str8(down, dn),
                              (GetKeyState(VK_CAPITAL) & 1) != 0, str8(m, mn), p->altgr,
@@ -1428,7 +1426,7 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
                     : msg == WM_DEADCHAR || msg == WM_SYSDEADCHAR ? STR8_LIT("not handled (DefWindowProc): a dead key, the next character is composed")
                     : (c >= 0xD800 && c <= 0xDBFF) ? STR8_LIT("waiting: a high surrogate")
                     : (c < 0x20 || (c >= 0x7F && c <= 0x9F)) ? STR8_LIT("ignored: a control character (the KEY_DOWN is the chord)")
-                    : (mods & (MOD_CTRL | MOD_ALT)) ? STR8_LIT("ignored: Ctrl or Alt held (the KEY_DOWN is the chord)")
+                    : (mods & (KEYMOD_CTRL | KEYMOD_ALT)) ? STR8_LIT("ignored: Ctrl or Alt held (the KEY_DOWN is the chord)")
                     : STR8_LIT("no event");
         }
         LOG("keys: %s %S %S | %S | -> %S", win32_dev_message_name(msg), win32_dev_char(a, c), bits, state, outcome);
@@ -1834,7 +1832,7 @@ static i32 win32_smoke_text_scale(Platform *p) {
     app_dev_cell(p->app, &w2, &h2);
     win32_smoke_feed(p, "C-x C--");
     app_dev_cell(p->app, &w3, &h3);
-    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 100, .y = 100, .wheel = 120, .mods = MOD_CTRL };
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 100, .y = 100, .wheel = 120, .mods = KEYMOD_CTRL };
     win32_push_event(p, wheel);
     win32_frame(p);
     app_dev_cell(p->app, &w4, &h4);
@@ -2044,8 +2042,8 @@ static void win32_bench_view(Platform *p) {
     LOG("bench-view: %D lines; build = command + frame build", app_dev_line_count(p->app));
     Event down = { .kind = EVENT_KEY_DOWN, .key = KEY_DOWN };
     Event page = { .kind = EVENT_KEY_DOWN, .key = KEY_PAGE_DOWN };
-    Event end = { .kind = EVENT_KEY_DOWN, .key = KEY_END, .mods = MOD_CTRL };
-    Event home = { .kind = EVENT_KEY_DOWN, .key = KEY_HOME, .mods = MOD_CTRL };
+    Event end = { .kind = EVENT_KEY_DOWN, .key = KEY_END, .mods = KEYMOD_CTRL };
+    Event home = { .kind = EVENT_KEY_DOWN, .key = KEY_HOME, .mods = KEYMOD_CTRL };
     Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
     Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' }; // ends dropping text after C-Home
     BenchStat st = { 0 }, st2 = { 0 };

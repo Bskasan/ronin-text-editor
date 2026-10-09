@@ -137,10 +137,10 @@ typedef enum Key {
 } Key;
 
 enum {
-    MOD_CTRL  = 1 << 0,
-    MOD_ALT   = 1 << 1,
-    MOD_SHIFT = 1 << 2,
-    MOD_ALTGR = 1 << 3, // AltGr is held: information only (its Ctrl and Alt are not chord modifiers)
+    KEYMOD_CTRL  = 1 << 0,
+    KEYMOD_ALT   = 1 << 1,
+    KEYMOD_SHIFT = 1 << 2,
+    KEYMOD_ALTGR = 1 << 3, // AltGr is held: information only (its Ctrl and Alt are not chord modifiers)
 };
 
 typedef enum MouseButton {
