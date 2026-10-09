@@ -83,6 +83,7 @@ typedef struct Platform {
     b32 bench_complete;
     b32 bench_syntax;
     b32 bench_search;
+    b32 bench_windows;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -2232,6 +2233,50 @@ static void win32_bench_view(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+static u64 win32_bench_keys(Platform *p, const char *keys);
+
+// --bench-windows: frames with four windows on the 100 MB file (top, middle, line 1,000,000, end) against
+// one window; typing at line 1,000,000 with one window and with two windows on the same place.
+static void win32_bench_windows(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    i64 lines = app_dev_line_count(p->app);
+    LOG("bench-windows: %D lines; build = command + frame build", lines);
+    Event idle = { .kind = EVENT_WAKEUP };
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    r_dev_take_frame_stats(p->renderer);
+    for (i32 round = 0; round < 2; round++) {
+        BenchStat one = { 0 }, four = { 0 };
+        app_dev_goto_line(p->app, 0);
+        for (i32 i = 0; i < 300; i++) win32_bench_view_step(p, idle, &one);
+        win32_bench_keys(p, "C-x 2 C-x 3 C-x o C-x o C-x 3"); // top-left, top-right, bottom-left, bottom-right
+        i64 at[4] = { 0, lines / 2, 1000000, -1 };
+        for (i32 w = 0; w < 4; w++) {
+            win32_bench_keys(p, "C-x o");
+            app_dev_goto_line(p->app, at[w]);
+        }
+        for (i32 i = 0; i < 300; i++) win32_bench_view_step(p, idle, &four);
+        LOG("bench-windows: round %d: %d windows", round + 1, app_dev_window_count(p->app));
+        win32_bench_log(p, "bench-windows", "frame, one window at the top", &one);
+        win32_bench_log(p, "bench-windows", "frame, four windows (top, middle, line 1,000,000, end)", &four);
+        win32_bench_keys(p, "C-x 1");
+    }
+    for (i32 round = 0; round < 2; round++) {
+        BenchStat one = { 0 }, two = { 0 }, skip = { 0 };
+        app_dev_goto_line(p->app, 1000000);
+        win32_bench_view_step(p, plain, &skip);
+        for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &one);
+        win32_bench_keys(p, "C-x 3"); // the new window on the same place: both show every insert
+        win32_bench_view_step(p, plain, &skip);
+        for (i32 i = 0; i < 10000; i++) win32_bench_view_step(p, type, &two);
+        win32_bench_keys(p, "C-x 1");
+        win32_bench_log(p, "bench-windows", "self-insert at line 1,000,000, one window", &one);
+        win32_bench_log(p, "bench-windows", "self-insert at line 1,000,000, two windows on it", &two);
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 u64 os_dev_private_bytes(void) {
     PROCESS_MEMORY_COUNTERS_EX pmc = { .cb = sizeof(pmc) };
     if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) return 0;
@@ -2760,7 +2805,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-           p->bench_search ||
+           p->bench_search || p->bench_windows ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -2926,6 +2971,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-search"))) { p->bench_search = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-windows"))) { p->bench_windows = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -2969,6 +3015,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
+                                   : p->bench_windows ? "bench-windows"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -2986,7 +3033,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search) { // generated before the app opens it; measured after startup
+    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows) { // generated before the app opens it; measured after startup
         p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
         p->file_count = 1;
     }
@@ -3056,7 +3103,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
-                             p->bench_syntax || p->bench_search || p->type_ahead_check); // defaults
+                             p->bench_syntax || p->bench_search || p->bench_windows || p->type_ahead_check); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -3205,6 +3252,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_search && !p->quit) {
         win32_bench_search(p);
+        p->quit = 1;
+    }
+    if (p->bench_windows && !p->quit) {
+        win32_bench_windows(p);
         p->quit = 1;
     }
     if (p->bench_complete && !p->quit) {
