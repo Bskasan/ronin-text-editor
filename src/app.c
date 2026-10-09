@@ -33,9 +33,8 @@ struct App {
     Buffer *messages;            // *Messages*: the echo area's log
     KillRing kills;              // one for every buffer
     WindowTree windows;          // the frame's windows (Views), one of them selected
-    Arena *perm;                 // the permanent arena (View structs)
-    View *free_views[WINDOW_MAX]; // the structs of deleted windows' Views, reused by new windows
-    i32 free_view_count;
+    View view_slots[WINDOW_MAX]; // the windows' Views live here: nothing is allocated when windows come and go
+    b32 view_slot_used[WINDOW_MAX];
     AppParen parens[WINDOW_NODE_MAX]; // the matching brackets each window last showed, by its node
     Echo echo;
     CommandContext ctx;          // keeps last_command between events
@@ -963,9 +962,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->messages->tab_width = app->config->settings.tab_width;
     buffer_list_add(&app->buffers, app->messages);
 
-    app->perm = perm;
     app->resizing = -1;
-    View *first = view_create(perm, shown[0]);
+    View *first = app_view_new(app, shown[0]);
     app_view_at_entry(app, first);
     window_init(&app->windows, first);
     if (app->config->settings.startup_windows == 2) { // side by side: the second file, else the same buffer
@@ -1307,17 +1305,21 @@ const Command CMD_QUOTED_INSERT              = { "quoted-insert", cmd_quoted_ins
 // the window they run in refuse there, with Emacs' messages; resizing, balancing and scrolling the
 // other window act on the window the minibuffer was called from.
 
-// A View struct for a new window: a deleted window's, else a new one in the permanent arena.
+// A free View slot for a new window (there is one for each window the tree can hold).
 static View *app_view_new(App *app, Buffer *buf) {
-    if (!app->free_view_count) return view_create(app->perm, buf);
-    View *v = app->free_views[--app->free_view_count];
-    view_init(v, buf);
-    return v;
+    for (i32 i = 0; i < WINDOW_MAX; i++) {
+        if (app->view_slot_used[i]) continue;
+        app->view_slot_used[i] = 1;
+        view_init(&app->view_slots[i], buf);
+        return &app->view_slots[i];
+    }
+    ASSERT(!"no free View slot");
+    return NULL;
 }
 
 static void app_view_free(App *app, View *v) {
     view_destroy(v);
-    app->free_views[app->free_view_count++] = v;
+    app->view_slot_used[v - app->view_slots] = 0;
 }
 
 // A new window showing what `from` shows: the same buffer, point, scroll position and mark (inactive).
@@ -1342,6 +1344,10 @@ static i32 app_command_window(CommandContext *ctx) {
 
 // Splits the selected window; the new window shows the same buffer at the same place.
 static i32 app_split(App *app, i32 leaf, WindowSplit split, Echo *echo) {
+    if (window_count(&app->windows) >= WINDOW_MAX) { // before taking a View slot
+        if (echo) echo_message(echo, "Too many windows");
+        return -1;
+    }
     View *from = app->windows.nodes[leaf].view;
     View *v = app_view_copy(app, from);
     i32 fresh = -1;
