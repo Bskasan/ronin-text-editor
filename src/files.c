@@ -93,6 +93,29 @@ static void files_find_done(CommandContext *ctx, MiniResult *r) {
     ctx->cursor = &ctx->view->cursors[0];
 }
 
+static void files_find_other_done(CommandContext *ctx, MiniResult *r) {
+    App *app = ctx->app;
+    arena_reset(&app->files_arena);
+    String8 path = files_resolve(&app->files_arena, r->text);
+    if (!path.len) return;
+    OsFileInfo info;
+    if (os_file_info(path, &info) == OS_FILE_OK && info.is_dir) {
+        files_echo(ctx->echo, "%S is a directory", path);
+        return;
+    }
+    Buffer *buf = app_find_file(app, path);
+    if (buf) app_pop_to_buffer(ctx, buf);
+}
+
+static void cmd_find_file_other_window(CommandContext *ctx) {
+    App *app = ctx->app;
+    arena_reset(&app->files_arena);
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file in other window: "),
+                        .initial = files_default_dir(&app->files_arena, ctx->view->buffer), .history = MINI_HISTORY_FILE,
+                        .done = files_find_other_done, .candidates = files_file_candidates, .data = app, .file = 1 };
+    minibuffer_read(ctx, &req);
+}
+
 static void cmd_find_file(CommandContext *ctx) {
     App *app = ctx->app;
     arena_reset(&app->files_arena);
@@ -522,6 +545,25 @@ static void files_switch_done(CommandContext *ctx, MiniResult *r) {
     ctx->cursor = &ctx->view->cursors[0];
 }
 
+static void files_switch_other_done(CommandContext *ctx, MiniResult *r) {
+    App *app = ctx->app;
+    Buffer *buf = r->text.len ? buffer_list_find_name(&app->buffers, r->text) : app_other_buffer(app, ctx->view->buffer);
+    if (!buf && !r->text.len) return;
+    if (!buf) buf = app_new_buffer(app, r->text);
+    app_pop_to_buffer(ctx, buf);
+}
+
+static void cmd_switch_to_buffer_other_window(CommandContext *ctx) {
+    App *app = ctx->app;
+    Buffer *def = app_other_buffer(app, ctx->view->buffer);
+    u8 prompt[512];
+    i64 n = def ? fmt_buf(prompt, sizeof(prompt), "Switch to buffer in other window (default %S): ", def->name)
+                : fmt_buf(prompt, sizeof(prompt), "Switch to buffer in other window: ");
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = str8(prompt, n), .history = MINI_HISTORY_BUFFER, .done = files_switch_other_done,
+                        .candidates = files_switch_candidates, .data = app };
+    minibuffer_read(ctx, &req);
+}
+
 static void cmd_switch_to_buffer(CommandContext *ctx) {
     App *app = ctx->app;
     Buffer *def = app_other_buffer(app, ctx->view->buffer);
@@ -591,5 +633,48 @@ static void cmd_kill_buffer(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
+// kill-buffer-and-window: the buffer as kill-buffer would (asking first when it is a modified file),
+// then the window; the only window is not deleted and says so, as in Emacs (the buffer stays killed).
+static void files_kill_and_delete(CommandContext *ctx, Buffer *buf) {
+    App *app = ctx->app;
+    View *v = ctx->view;
+    files_kill_buffer(app, buf);
+    ctx->cursor = &ctx->view->cursors[0];
+    i32 leaf = window_of_view(&app->windows, v);
+    if (leaf < 0 || window_count(&app->windows) == 1) {
+        echo_message(ctx->echo, "Attempt to delete minibuffer or sole ordinary window");
+        return;
+    }
+    app_delete_window(ctx, leaf);
+}
+
+static void files_kill_and_delete_confirmed(CommandContext *ctx, MiniResult *r) {
+    if (r->yes) files_kill_and_delete(ctx, ctx->mini->state.buffer);
+}
+
+static void cmd_kill_buffer_and_window(CommandContext *ctx) {
+    App *app = ctx->app;
+    Buffer *buf = ctx->view->buffer;
+    if (ctx->view == app->mini.view) {
+        echo_message(ctx->echo, "Attempt to delete minibuffer or sole ordinary window");
+        return;
+    }
+    if (buf == app->messages) {
+        echo_message(ctx->echo, "*Messages* cannot be killed");
+        return;
+    }
+    if (buf->modified && buf->path.len) {
+        u8 prompt[512];
+        i64 n = fmt_buf(prompt, sizeof(prompt), "Buffer %S modified; kill anyway? (yes or no) ", buf->name);
+        MiniRequest req = { .kind = MINI_YES_NO, .prompt = str8(prompt, n), .done = files_kill_and_delete_confirmed };
+        if (minibuffer_read(ctx, &req)) ctx->mini->state.buffer = buf;
+        return;
+    }
+    files_kill_and_delete(ctx, buf);
+}
+
 const Command CMD_SWITCH_TO_BUFFER = { "switch-to-buffer", cmd_switch_to_buffer, COMMAND_ONCE };
 const Command CMD_KILL_BUFFER      = { "kill-buffer", cmd_kill_buffer, COMMAND_ONCE };
+const Command CMD_FIND_FILE_OTHER_WINDOW        = { "find-file-other-window", cmd_find_file_other_window, COMMAND_ONCE };
+const Command CMD_SWITCH_TO_BUFFER_OTHER_WINDOW = { "switch-to-buffer-other-window", cmd_switch_to_buffer_other_window, COMMAND_ONCE };
+const Command CMD_KILL_BUFFER_AND_WINDOW        = { "kill-buffer-and-window", cmd_kill_buffer_and_window, COMMAND_ONCE };

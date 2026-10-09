@@ -80,6 +80,7 @@ struct View {
 };
 
 View   *view_create(Arena *arena, Buffer *buf); // one cursor at 0, scrolled to the top
+void    view_init(View *view, Buffer *buf);     // the same in a View struct the caller owns (destroyed or new)
 void    view_destroy(View *view);               // releases its markers, the cursor array and its remembered positions
 Cursor *view_add_cursor(View *view, i64 pos);
 i64     view_point(View *view, Cursor *cursor);
@@ -91,6 +92,9 @@ i64     view_top_line(View *view);
 // Runs after every command (view_run_command) and after every layout.
 void view_ensure_visible(View *view);
 void view_scroll_lines(View *view, i64 lines);             // the wheel: moves the top, drags point along
+// scroll-up-command (dir 1) / scroll-down-command (-1): a screen less VIEW_CONTEXT_LINES; at the limit
+// only the message ("End of buffer", "Beginning of buffer").
+void view_scroll_page(View *view, i32 dir, Echo *echo);
 void view_set_point_at(View *view, i64 row, i64 col);      // a click: text row and absolute visual column
 void view_goto_line_column(View *view, i64 line, i64 col); // 0-based; the line is clamped
 
@@ -151,7 +155,8 @@ void         view_forget_buffer(View *view, Buffer *buf);
 // ---------------------------------------------------------------------------
 // Commands (command.h). view_run_command is the single place that loops over the cursors
 // (Phase 14 adds merging and ordered edits there); COMMAND_ONCE commands act on the View as a
-// whole and run once, with the primary cursor.
+// whole and run once, with the primary cursor. A command that leaves its window (delete-window)
+// sets ctx->view to the window selected instead; the work after the command uses ctx->view.
 
 void view_run_command(CommandContext *ctx, const Command *cmd);
 

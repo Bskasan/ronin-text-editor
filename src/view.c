@@ -125,6 +125,12 @@ void echo_clear(Echo *e) {
 
 View *view_create(Arena *arena, Buffer *buf) {
     View *v = PUSH_STRUCT(arena, View);
+    view_init(v, buf);
+    return v;
+}
+
+void view_init(View *v, Buffer *buf) {
+    memset(v, 0, sizeof(*v));
     v->buffer = buf;
     v->cursor_arena = arena_create(VIEW_CURSOR_RESERVE);
     v->cursors = (Cursor *)v->cursor_arena.base;
@@ -134,7 +140,6 @@ View *view_create(Arena *arena, Buffer *buf) {
     v->memory_arena = arena_create(VIEW_MEMORY_RESERVE);
     v->memory = (ViewBufferPos *)v->memory_arena.base;
     view_add_cursor(v, 0);
-    return v;
 }
 
 void view_destroy(View *v) {
@@ -492,7 +497,7 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     ctx->cursor = NULL;
     if (cmd->flags & (COMMAND_EDIT | COMMAND_KILL)) view_deactivate_mark(ctx->view); // the view may have changed buffers
     if (ctx->kills) kill_to_clipboard(ctx->kills); // once per command, when it killed
-    view_ensure_visible(v);
+    view_ensure_visible(ctx->view); // not `v`: the command may have deleted its window
     ctx->last_command = cmd;
     if (ctx->mini) minibuffer_after_command(ctx); // filters candidates again; runs an accepted prompt's continuation
 }
@@ -728,23 +733,20 @@ static void cmd_mark_whole_buffer(CommandContext *ctx) {
     echo_message(ctx->echo, "Mark set");
 }
 
-static void cmd_scroll_up_command(CommandContext *ctx) {
-    View *v = ctx->view;
-    if (view_top_line(v) >= buffer_line_count(v->buffer) - 1) {
-        echo_message(ctx->echo, "End of buffer");
+void view_scroll_page(View *v, i32 dir, Echo *echo) {
+    if (dir > 0 && view_top_line(v) >= buffer_line_count(v->buffer) - 1) {
+        echo_message(echo, "End of buffer");
         return;
     }
-    view_scroll_lines(v, MAX(v->rows - VIEW_CONTEXT_LINES, 1));
+    if (dir < 0 && view_top_line(v) <= 0) {
+        echo_message(echo, "Beginning of buffer");
+        return;
+    }
+    view_scroll_lines(v, dir * MAX(v->rows - VIEW_CONTEXT_LINES, 1));
 }
 
-static void cmd_scroll_down_command(CommandContext *ctx) {
-    View *v = ctx->view;
-    if (view_top_line(v) <= 0) {
-        echo_message(ctx->echo, "Beginning of buffer");
-        return;
-    }
-    view_scroll_lines(v, -MAX(v->rows - VIEW_CONTEXT_LINES, 1));
-}
+static void cmd_scroll_up_command(CommandContext *ctx) { view_scroll_page(ctx->view, 1, ctx->echo); }
+static void cmd_scroll_down_command(CommandContext *ctx) { view_scroll_page(ctx->view, -1, ctx->echo); }
 
 // Point's line at the center, then the top, then the bottom on consecutive calls.
 static void cmd_recenter_top_bottom(CommandContext *ctx) {

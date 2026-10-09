@@ -33,6 +33,9 @@ struct App {
     Buffer *messages;            // *Messages*: the echo area's log
     KillRing kills;              // one for every buffer
     WindowTree windows;          // the frame's windows (Views), one of them selected
+    Arena *perm;                 // the permanent arena (View structs)
+    View *free_views[WINDOW_MAX]; // the structs of deleted windows' Views, reused by new windows
+    i32 free_view_count;
     AppParen parens[WINDOW_NODE_MAX]; // the matching brackets each window last showed, by its node
     Echo echo;
     CommandContext ctx;          // keeps last_command between events
@@ -140,14 +143,12 @@ static i32 app_divider_px(FrameInput *in) {
     return MAX((i32)(in->dpi_scale + 0.5f), 1);
 }
 
-// The window tree lays out the frame above the echo area; each window is its text area, a mode line at
-// the bottom and, with a window on its right, a divider at its right edge. Rows and columns are whole
-// cells and never below 1, however small the window (the commands' arithmetic needs that); drawing
-// goes by the pixels.
-static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
-    WindowMetrics metrics = { .cell_w = l->cell_w, .line_h = l->line_h, .pad = l->pad, .divider = app_divider_px(in) };
+// Each window is its text area, a mode line at the bottom and, with a window on its right, a divider
+// at its right edge. The Views get the tree's last layout: their rects, and rows and columns in whole
+// cells, never below 1 however small the window (the commands' arithmetic needs that; drawing goes by
+// the pixels). Run after every change of the tree too, so the next command sees the new sizes.
+static void app_fit_views(App *app) {
     WindowTree *t = &app->windows;
-    window_layout(t, 0, 0, in->width, l->minibuffer_y, metrics);
     i32 leaves[WINDOW_MAX];
     i32 n = window_leaves(t, leaves);
     for (i32 i = 0; i < n; i++) {
@@ -157,10 +158,24 @@ static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
         v->y = node->y;
         v->w = node->w;
         v->h = node->h;
-        i32 divider = window_has_divider(t, leaves[i]) ? metrics.divider : 0;
-        v->rows = MAX((v->h - l->line_h) / l->line_h, 1);
-        v->cols = MAX((v->w - l->pad - divider) / l->cell_w, 1);
+        i32 divider = window_has_divider(t, leaves[i]) ? t->m.divider : 0;
+        v->rows = MAX((v->h - t->m.line_h) / MAX(t->m.line_h, 1), 1);
+        v->cols = MAX((v->w - t->m.pad - divider) / MAX(t->m.cell_w, 1), 1);
     }
+}
+
+// A window too small to show a text row and its mode line (a frame too small for its windows): it is
+// not drawn, and the layout pass leaves its scroll position alone so it comes back as it was.
+static b32 app_view_hidden(App *app, View *v) {
+    WindowMetrics *m = &app->windows.m;
+    return v->h < 2 * m->line_h || v->w - m->pad - m->divider < m->cell_w;
+}
+
+// The window tree lays out the frame above the echo area.
+static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
+    WindowMetrics metrics = { .cell_w = l->cell_w, .line_h = l->line_h, .pad = l->pad, .divider = app_divider_px(in) };
+    window_layout(&app->windows, 0, 0, in->width, l->minibuffer_y, metrics);
+    app_fit_views(app);
     // The minibuffer: its text area starts after the prompt.
     View *m = app->mini.view;
     m->x = (i32)MIN(app_text_cells(app->mini.prompt), (i64)l->cols) * l->cell_w;
@@ -915,6 +930,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->messages->tab_width = app->config->settings.tab_width;
     buffer_list_add(&app->buffers, app->messages);
 
+    app->perm = perm;
     window_init(&app->windows, view_create(perm, initial));
     buffer_list_touch(&app->buffers, initial);
     APP_STAGE("app: buffers and the view");
@@ -1201,6 +1217,209 @@ const Command CMD_TEXT_SCALE_DECREASE        = { "text-scale-decrease", cmd_text
 const Command CMD_TEXT_SCALE_RESET           = { "text-scale-reset", cmd_text_scale_reset, COMMAND_ONCE };
 const Command CMD_DESCRIBE_KEY               = { "describe-key", cmd_describe_key, COMMAND_ONCE };
 const Command CMD_QUOTED_INSERT              = { "quoted-insert", cmd_quoted_insert, COMMAND_ONCE };
+
+// ---------------------------------------------------------------------------
+// Windows (COMMAND_ONCE). The minibuffer is not a window of the tree: the commands that would act on
+// the window they run in refuse there, with Emacs' messages; resizing, balancing and scrolling the
+// other window act on the window the minibuffer was called from.
+
+// A View struct for a new window: a deleted window's, else a new one in the permanent arena.
+static View *app_view_new(App *app, Buffer *buf) {
+    if (!app->free_view_count) return view_create(app->perm, buf);
+    View *v = app->free_views[--app->free_view_count];
+    view_init(v, buf);
+    return v;
+}
+
+static void app_view_free(App *app, View *v) {
+    view_destroy(v);
+    app->free_views[app->free_view_count++] = v;
+}
+
+// A new window showing what `from` shows: the same buffer, point, scroll position and mark (inactive).
+static View *app_view_copy(App *app, View *from) {
+    Buffer *buf = from->buffer;
+    View *v = app_view_new(app, buf);
+    view_set_point(v, &v->cursors[0], view_point(from, &from->cursors[0]));
+    buffer_marker_set(buf, v->top, buffer_marker_get(buf, from->top));
+    v->left_col = from->left_col;
+    Cursor *c = &from->cursors[0];
+    if (c->mark_set) view_set_mark(v, &v->cursors[0], buffer_marker_get(buf, c->mark), 0);
+    return v;
+}
+
+// The window a window command acts on: the selected one, or the caller while the minibuffer reads.
+static i32 app_command_window(CommandContext *ctx) {
+    App *app = ctx->app;
+    View *v = ctx->view == app->mini.view && app->mini.caller ? app->mini.caller : ctx->view;
+    i32 leaf = window_of_view(&app->windows, v);
+    return leaf >= 0 ? leaf : app->windows.selected;
+}
+
+// Splits the selected window; the new window shows the same buffer at the same place.
+static i32 app_split(App *app, i32 leaf, WindowSplit split, Echo *echo) {
+    View *from = app->windows.nodes[leaf].view;
+    View *v = app_view_copy(app, from);
+    i32 fresh = -1;
+    WindowStatus status = window_split(&app->windows, leaf, split, v, &fresh);
+    if (status != WINDOW_OK) {
+        app_view_free(app, v);
+        if (echo) echo_message(echo, status == WINDOW_TOO_MANY ? "Too many windows" : "Window too small for splitting");
+        return -1;
+    }
+    app_fit_views(app);
+    view_ensure_visible(from);
+    view_ensure_visible(v);
+    return fresh;
+}
+
+static void app_split_command(CommandContext *ctx, WindowSplit split) {
+    if (ctx->view == ctx->app->mini.view) {
+        echo_message(ctx->echo, "Attempt to split minibuffer window");
+        return;
+    }
+    app_split(ctx->app, ctx->app->windows.selected, split, ctx->echo);
+}
+
+static void cmd_split_window_below(CommandContext *ctx) { app_split_command(ctx, WINDOW_STACKED); }
+static void cmd_split_window_right(CommandContext *ctx) { app_split_command(ctx, WINDOW_SIDE_BY_SIDE); }
+
+// Removes a window (never the last one): where it was in its buffer is kept for the buffer list, the
+// most recently used window is selected, and a command running in it continues in that one.
+static void app_delete_window(CommandContext *ctx, i32 leaf) {
+    App *app = ctx->app;
+    View *v = app->windows.nodes[leaf].view;
+    view_save_position(v, &app->buffers);
+    window_delete(&app->windows, leaf);
+    if (app->dragging && app->drag_view == v) app->dragging = 0;
+    if (app->mini.caller == v) app->mini.caller = app_selected_view(app);
+    app_view_free(app, v);
+    app_fit_views(app);
+    if (ctx->view == v) {
+        ctx->view = app_selected_view(app);
+        ctx->cursor = &ctx->view->cursors[0];
+    }
+}
+
+static void cmd_delete_window(CommandContext *ctx) {
+    App *app = ctx->app;
+    if (ctx->view == app->mini.view || window_count(&app->windows) == 1) {
+        echo_message(ctx->echo, "Attempt to delete minibuffer or sole ordinary window");
+        return;
+    }
+    app_delete_window(ctx, app->windows.selected);
+}
+
+static void cmd_delete_other_windows(CommandContext *ctx) {
+    App *app = ctx->app;
+    if (ctx->view == app->mini.view) {
+        echo_message(ctx->echo, "Can't expand minibuffer to full frame");
+        return;
+    }
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(&app->windows, leaves);
+    for (i32 i = 0; i < n; i++) if (leaves[i] != app->windows.selected) app_delete_window(ctx, leaves[i]);
+}
+
+static void cmd_other_window(CommandContext *ctx) {
+    App *app = ctx->app;
+    if (ctx->view == app->mini.view) {
+        echo_message(ctx->echo, "Cannot select another window from the minibuffer");
+        return;
+    }
+    window_select(&app->windows, window_next(&app->windows, app->windows.selected, 1));
+}
+
+static void cmd_balance_windows(CommandContext *ctx) {
+    window_balance(&ctx->app->windows);
+    app_fit_views(ctx->app);
+}
+
+static void app_resize_command(CommandContext *ctx, WindowSplit axis, i32 cells) {
+    App *app = ctx->app;
+    if (!window_resize(&app->windows, app_command_window(ctx), axis, cells)) {
+        echo_message(ctx->echo, cells > 0 ? "Cannot enlarge selected window" : "Cannot shrink selected window");
+        return;
+    }
+    app_fit_views(app);
+}
+
+static void cmd_enlarge_window(CommandContext *ctx) { app_resize_command(ctx, WINDOW_STACKED, 1); }
+static void cmd_enlarge_window_horizontally(CommandContext *ctx) { app_resize_command(ctx, WINDOW_SIDE_BY_SIDE, 1); }
+static void cmd_shrink_window_horizontally(CommandContext *ctx) { app_resize_command(ctx, WINDOW_SIDE_BY_SIDE, -1); }
+
+// scroll-other-window: the next window in cyclic order; from the minibuffer, the window it was called from.
+static void app_scroll_other(CommandContext *ctx, i32 dir) {
+    App *app = ctx->app;
+    View *other;
+    if (ctx->view == app->mini.view && app->mini.caller) {
+        other = app->mini.caller;
+    } else if (window_count(&app->windows) > 1) {
+        other = app->windows.nodes[window_next(&app->windows, app->windows.selected, 1)].view;
+    } else {
+        echo_message(ctx->echo, "There is no other window");
+        return;
+    }
+    view_scroll_page(other, dir, ctx->echo);
+    view_ensure_visible(other);
+}
+
+static void cmd_scroll_other_window(CommandContext *ctx) { app_scroll_other(ctx, 1); }
+static void cmd_scroll_other_window_down(CommandContext *ctx) { app_scroll_other(ctx, -1); }
+
+// The one place that decides where a buffer shows up in another window: a window other than the
+// selected one already showing it; else, with one window, a split (side by side from
+// split_width_threshold columns on, else one above the other; the other way if that is too small; the
+// selected window itself if neither fits); else the least recently used other window. `select`: it
+// becomes the selected window. Returns its View.
+static View *app_display_buffer(App *app, Buffer *buf, b32 select) {
+    WindowTree *t = &app->windows;
+    i32 selected = t->selected, target = -1;
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(t, leaves);
+    for (i32 i = 0; i < n; i++) {
+        WindowNode *w = &t->nodes[leaves[i]];
+        if (leaves[i] != selected && w->view->buffer == buf && (target < 0 || w->used_tick > t->nodes[target].used_tick)) target = leaves[i];
+    }
+    if (target < 0 && n == 1) {
+        b32 wide = t->w / MAX(t->m.cell_w, 1) >= app->config->settings.split_width_threshold;
+        target = app_split(app, selected, wide ? WINDOW_SIDE_BY_SIDE : WINDOW_STACKED, NULL);
+        if (target < 0) target = app_split(app, selected, wide ? WINDOW_STACKED : WINDOW_SIDE_BY_SIDE, NULL);
+        if (target < 0) target = selected;
+    }
+    if (target < 0) target = window_lru(t, selected);
+    View *v = t->nodes[target].view;
+    app_switch_buffer(app, v, buf);
+    if (select) window_select(t, target);
+    return v;
+}
+
+// A command that shows a buffer in another window and selects it: the work after the command (keeping
+// point visible) is for that window.
+static void app_pop_to_buffer(CommandContext *ctx, Buffer *buf) {
+    ctx->view = app_display_buffer(ctx->app, buf, 1);
+    ctx->cursor = &ctx->view->cursors[0];
+}
+
+static void cmd_view_echo_area_messages(CommandContext *ctx) {
+    App *app = ctx->app;
+    View *v = app_display_buffer(app, app->messages, 0);
+    view_set_point(v, &v->cursors[0], buffer_size(app->messages));
+    view_ensure_visible(v);
+}
+
+const Command CMD_SPLIT_WINDOW_BELOW            = { "split-window-below", cmd_split_window_below, COMMAND_ONCE };
+const Command CMD_SPLIT_WINDOW_RIGHT            = { "split-window-right", cmd_split_window_right, COMMAND_ONCE };
+const Command CMD_OTHER_WINDOW                  = { "other-window", cmd_other_window, COMMAND_ONCE };
+const Command CMD_DELETE_WINDOW                 = { "delete-window", cmd_delete_window, COMMAND_ONCE };
+const Command CMD_DELETE_OTHER_WINDOWS          = { "delete-other-windows", cmd_delete_other_windows, COMMAND_ONCE };
+const Command CMD_BALANCE_WINDOWS               = { "balance-windows", cmd_balance_windows, COMMAND_ONCE };
+const Command CMD_ENLARGE_WINDOW                = { "enlarge-window", cmd_enlarge_window, COMMAND_ONCE };
+const Command CMD_ENLARGE_WINDOW_HORIZONTALLY   = { "enlarge-window-horizontally", cmd_enlarge_window_horizontally, COMMAND_ONCE };
+const Command CMD_SHRINK_WINDOW_HORIZONTALLY    = { "shrink-window-horizontally", cmd_shrink_window_horizontally, COMMAND_ONCE };
+const Command CMD_SCROLL_OTHER_WINDOW           = { "scroll-other-window", cmd_scroll_other_window, COMMAND_ONCE };
+const Command CMD_SCROLL_OTHER_WINDOW_DOWN      = { "scroll-other-window-down", cmd_scroll_other_window_down, COMMAND_ONCE };
+const Command CMD_VIEW_ECHO_AREA_MESSAGES       = { "view-echo-area-messages", cmd_view_echo_area_messages, COMMAND_ONCE };
 
 // Commands run in the minibuffer while it is active, otherwise in the active view.
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
@@ -1495,7 +1714,7 @@ static b32 app_update(App *app, FrameInput *in) {
     }
     View *views[WINDOW_MAX];
     i32 view_count = app_views(app, views);
-    if (relaid) for (i32 i = 0; i < view_count; i++) view_ensure_visible(views[i]);
+    if (relaid) for (i32 i = 0; i < view_count; i++) if (!app_view_hidden(app, views[i])) view_ensure_visible(views[i]);
 
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
@@ -1547,7 +1766,9 @@ static b32 app_update(App *app, FrameInput *in) {
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
     view_count = app_views(app, views); // commands may have split or deleted windows
-    for (i32 i = 0; i < view_count; i++) view_ensure_visible(views[i]); // also views showing a buffer edited elsewhere
+    for (i32 i = 0; i < view_count; i++) { // also views showing a buffer edited elsewhere
+        if (!app_view_hidden(app, views[i])) view_ensure_visible(views[i]);
+    }
     if (app->mini.active) view_ensure_visible(app->mini.view);
     app->laid_w = in->width;
     app->laid_h = in->height;
