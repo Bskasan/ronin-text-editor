@@ -6151,6 +6151,234 @@ static b32 test_manual_disk_search(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// The window tree (window.c), headless: views are stand-in pointers the tree never looks into.
+
+#define TEST_VIEW(k) ((View *)(uintptr_t)(0x1000 + (k)))
+
+static const WindowMetrics test_window_m = { .cell_w = 8, .line_h = 16, .pad = 4, .divider = 1 };
+
+// The leaves tile the frame exactly (inside it, no overlap, the areas add up), no size is negative, the
+// tree's links agree, and with a frame that fits every minimum, every window has its minimum.
+static b32 test_window_tiles(Test *t, WindowTree *w, const char *what) {
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(w, leaves);
+    TEST_CHECK(t, n >= 1 && n <= WINDOW_MAX, "windows: %s: %d windows", what, n);
+    i64 area = 0;
+    for (i32 i = 0; i < n; i++) {
+        WindowNode *a = &w->nodes[leaves[i]];
+        TEST_CHECK(t, a->w >= 0 && a->h >= 0, "windows: %s: window %d has %dx%d", what, leaves[i], a->w, a->h);
+        TEST_CHECK(t, a->x >= w->x && a->y >= w->y && a->x + a->w <= w->x + w->w && a->y + a->h <= w->y + w->h,
+                   "windows: %s: window %d at %d,%d %dx%d leaves the frame %dx%d", what, leaves[i], a->x, a->y, a->w, a->h, w->w, w->h);
+        area += (i64)a->w * a->h;
+        for (i32 k = 0; k < i; k++) {
+            WindowNode *b = &w->nodes[leaves[k]];
+            b32 overlap = a->x < b->x + b->w && b->x < a->x + a->w && a->y < b->y + b->h && b->y < a->y + a->h;
+            TEST_CHECK(t, !overlap, "windows: %s: windows %d and %d overlap", what, leaves[i], leaves[k]);
+        }
+    }
+    TEST_CHECK(t, area == (i64)w->w * w->h, "windows: %s: the windows cover %D of %D pixels", what, area, (i64)w->w * w->h);
+    for (i32 i = 0; i < WINDOW_NODE_MAX; i++) {
+        WindowNode *node = &w->nodes[i];
+        if (!node->used) continue;
+        TEST_CHECK(t, (node->parent < 0) == (i == w->root), "windows: %s: node %d's parent %d (root %d)", what, i, node->parent, w->root);
+        if (node->split == WINDOW_LEAF) continue;
+        for (i32 c = 0; c < 2; c++) TEST_CHECK(t, w->nodes[node->child[c]].parent == i, "windows: %s: node %d's child %d", what, i, c);
+    }
+    i32 min_w = window_min(w, w->root, WINDOW_SIDE_BY_SIDE), min_h = window_min(w, w->root, WINDOW_STACKED);
+    if (min_w <= w->w && min_h <= w->h) {
+        for (i32 i = 0; i < n; i++) {
+            WindowNode *a = &w->nodes[leaves[i]];
+            TEST_CHECK(t, a->w >= window_min(w, leaves[i], WINDOW_SIDE_BY_SIDE) && a->h >= window_min(w, leaves[i], WINDOW_STACKED),
+                       "windows: %s: window %d is %dx%d, below the minimum in a %dx%d frame", what, leaves[i], a->w, a->h, w->w, w->h);
+        }
+    }
+    // Every split puts its line at its ratio, to the cell, unless a minimum size or the frame's edge moved it.
+    for (i32 i = 0; i < WINDOW_NODE_MAX; i++) {
+        WindowNode *node = &w->nodes[i];
+        if (!node->used || node->split == WINDOW_LEAF) continue;
+        i32 total = window_size(w, i, node->split), first = window_size(w, node->child[0], node->split);
+        i32 unit = window_unit(w, node->split);
+        i32 min0 = window_min(w, node->child[0], node->split), min1 = window_min(w, node->child[1], node->split);
+        f32 at = node->ratio * (f32)total;
+        b32 near_ratio = first >= at - (f32)unit && first <= at + (f32)unit;
+        b32 clamped = first == min0 || first == total - min1 || first == 0 || first == total;
+        TEST_CHECK(t, near_ratio || clamped, "windows: %s: split %d puts %d of %d first, ratio %d/1000", what, i, first, total,
+                   (i32)(node->ratio * 1000));
+    }
+    return 1;
+}
+
+static b32 test_window_same_rects(Test *t, WindowTree *w, i32 *rects, b32 save, const char *what) {
+    for (i32 i = 0; i < WINDOW_NODE_MAX; i++) {
+        WindowNode *n = &w->nodes[i];
+        i32 r[4] = { n->used ? n->x : -1, n->y, n->w, n->h };
+        for (i32 k = 0; k < 4; k++) {
+            if (save) rects[i * 4 + k] = r[k];
+            else TEST_CHECK(t, rects[i * 4 + k] == r[k], "windows: %s: node %d's rect changed", what, i);
+        }
+    }
+    return 1;
+}
+
+static b32 test_window_tree(Test *t, u64 seed) {
+    WindowTree tree, *w = &tree;
+    WindowMetrics m = test_window_m;
+    i32 leaf, b, c;
+
+    // C-x 3, then C-x 2 in the left window: cyclic order left-top, left-bottom, right.
+    window_init(w, TEST_VIEW(0));
+    window_layout(w, 0, 0, 1280, 784, m);
+    i32 a = w->root;
+    TEST_CHECK(t, window_split(w, a, WINDOW_SIDE_BY_SIDE, TEST_VIEW(1), &b) == WINDOW_OK, "windows: C-x 3");
+    TEST_CHECK(t, window_split(w, a, WINDOW_STACKED, TEST_VIEW(2), &c) == WINDOW_OK, "windows: C-x 2");
+    if (!test_window_tiles(t, w, "three windows")) return 0;
+    i32 order[WINDOW_MAX];
+    TEST_CHECK(t, window_leaves(w, order) == 3 && order[0] == a && order[1] == c && order[2] == b, "windows: cyclic order");
+    TEST_CHECK(t, window_next(w, a, 1) == c && window_next(w, c, 1) == b && window_next(w, b, 1) == a && window_next(w, a, -1) == b,
+               "windows: next and previous in cyclic order");
+    TEST_CHECK(t, w->selected == a && w->nodes[a].w == 640 && w->nodes[b].x == 640 && w->nodes[c].y == 400 && w->nodes[a].h == 400,
+               "windows: halves (%d %d %d %d)", w->nodes[a].w, w->nodes[b].x, w->nodes[c].y, w->nodes[a].h);
+    TEST_CHECK(t, window_has_divider(w, a) && window_has_divider(w, c) && !window_has_divider(w, b), "windows: dividers");
+    TEST_CHECK(t, window_at(w, 10, 10) == a && window_at(w, 10, 400) == c && window_at(w, 700, 10) == b && window_at(w, 2000, 10) == -1,
+               "windows: window_at");
+    WindowSplit split;
+    TEST_CHECK(t, window_edge_at(w, 639, 600, 3, &split) == w->root && split == WINDOW_SIDE_BY_SIDE, "windows: the divider");
+    TEST_CHECK(t, window_edge_at(w, 100, 400 - 8, 3, &split) == w->nodes[a].parent && split == WINDOW_STACKED, "windows: the upper mode line");
+    TEST_CHECK(t, window_edge_at(w, 100, 784 - 8, 3, &split) == -1 && window_edge_at(w, 100, 100, 3, &split) == -1,
+               "windows: no edge on the bottom mode line or in the text");
+    // The LRU and MRU choices.
+    window_select(w, b);
+    window_select(w, a);
+    TEST_CHECK(t, window_lru(w, a) == c, "windows: the least recently used window");
+    View *gone = window_delete(w, a);
+    TEST_CHECK(t, gone == TEST_VIEW(0) && w->selected == b && window_count(w) == 2, "windows: deleting the selected one selects the MRU one");
+    if (!test_window_tiles(t, w, "after a delete")) return 0;
+    TEST_CHECK(t, w->nodes[c].x == 0 && w->nodes[c].h == 784 && w->nodes[c].w == 640, "windows: the sibling takes the space");
+
+    // Thirds: C-x 3 twice, then balance. Deleting keeps the far window's size; so does a drag.
+    window_init(w, TEST_VIEW(0));
+    window_layout(w, 0, 0, 1200, 784, m);
+    a = w->root;
+    window_split(w, a, WINDOW_SIDE_BY_SIDE, TEST_VIEW(1), &b);
+    window_split(w, a, WINDOW_SIDE_BY_SIDE, TEST_VIEW(2), &c);
+    TEST_CHECK(t, w->nodes[a].w == 304 && w->nodes[c].w == 296 && w->nodes[b].w == 600, "windows: quarters, half (%d %d %d)",
+               w->nodes[a].w, w->nodes[c].w, w->nodes[b].w);
+    window_balance(w);
+    TEST_CHECK(t, w->nodes[a].w == 400 && w->nodes[c].w == 400 && w->nodes[b].w == 400, "windows: balanced thirds (%d %d %d)",
+               w->nodes[a].w, w->nodes[c].w, w->nodes[b].w);
+    i32 moved = window_move_split(w, w->nodes[a].parent, 480);
+    TEST_CHECK(t, moved == 80 && w->nodes[a].w == 480 && w->nodes[c].w == 320 && w->nodes[b].w == 400,
+               "windows: a drag changes only the windows beside the line (%d: %d %d %d)", moved, w->nodes[a].w, w->nodes[c].w, w->nodes[b].w);
+    moved = window_move_split(w, w->nodes[a].parent, 0);
+    TEST_CHECK(t, w->nodes[a].w == window_min(w, a, WINDOW_SIDE_BY_SIDE) || w->nodes[a].w - window_min(w, a, WINDOW_SIDE_BY_SIDE) < 8,
+               "windows: a drag stops at the minimum (%d)", w->nodes[a].w);
+    window_balance(w);
+    TEST_CHECK(t, window_resize(w, c, WINDOW_SIDE_BY_SIDE, 1) && w->nodes[c].w == 408 && w->nodes[b].w == 392 && w->nodes[a].w == 400,
+               "windows: enlarge takes a column from the neighbor (%d %d %d)", w->nodes[a].w, w->nodes[c].w, w->nodes[b].w);
+    TEST_CHECK(t, window_resize(w, b, WINDOW_SIDE_BY_SIDE, -1) && w->nodes[b].w == 384 && w->nodes[c].w == 416,
+               "windows: shrink gives a column to the neighbor");
+    TEST_CHECK(t, !window_resize(w, b, WINDOW_STACKED, 1), "windows: no vertical neighbor: cannot enlarge");
+    window_delete(w, a);
+    TEST_CHECK(t, w->nodes[b].w == 384 && w->nodes[c].w == 816, "windows: deleting gives the space to the adjacent window only (%d %d)",
+               w->nodes[c].w, w->nodes[b].w);
+
+    // Refusals: too small, too many.
+    window_init(w, TEST_VIEW(0));
+    window_layout(w, 0, 0, 1280, 784, m);
+    i32 count = 1;
+    for (i32 k = 1; k < 20; k++) {
+        WindowStatus s = window_split(w, w->selected, WINDOW_STACKED, TEST_VIEW(k), &leaf);
+        if (s != WINDOW_OK) {
+            TEST_CHECK(t, s == WINDOW_TOO_SMALL && w->nodes[w->selected].h < 2 * WINDOW_MIN_LINES * 16, "windows: refused while big enough");
+            break;
+        }
+        count++;
+    }
+    TEST_CHECK(t, count == 4 && test_window_tiles(t, w, "stacked until too small"), "windows: %d stacked", count);
+    for (i32 k = count; k < 20; k++) {
+        i32 leaves[WINDOW_MAX];
+        i32 n = window_leaves(w, leaves), biggest = leaves[0];
+        for (i32 i = 1; i < n; i++) if (w->nodes[leaves[i]].h > w->nodes[biggest].h) biggest = leaves[i];
+        WindowStatus s = window_split(w, biggest, w->nodes[biggest].w >= w->nodes[biggest].h ? WINDOW_SIDE_BY_SIDE : WINDOW_STACKED,
+                                      TEST_VIEW(k), &leaf);
+        if (s != WINDOW_OK) {
+            TEST_CHECK(t, s == WINDOW_TOO_MANY && n == WINDOW_MAX, "windows: refused with %d windows: %d", n, (i32)s);
+            break;
+        }
+    }
+    TEST_CHECK(t, window_count(w) == WINDOW_MAX, "windows: %d windows at most", WINDOW_MAX);
+
+    // The fuzz: random operations on random frames, tiny ones included, from several starting shapes.
+    t->rng = seed ^ 0x77696e646f77ull;
+    i32 rects[WINDOW_NODE_MAX * 4];
+    i32 ops = 0, tiny = 0;
+    for (i32 round = 0; round < 400; round++) {
+        window_init(w, TEST_VIEW(0));
+        i32 fw = 200 + (i32)test_below(t, 1800), fh = 100 + (i32)test_below(t, 1100);
+        window_layout(w, 0, 0, fw, fh, m);
+        for (i32 step = 0; step < 40; step++, ops++) {
+            i32 leaves[WINDOW_MAX];
+            i32 n = window_leaves(w, leaves);
+            i32 pick = leaves[test_below(t, n)];
+            u64 r = test_below(t, 100);
+            const char *what;
+            if (r < 30) {
+                what = "split";
+                window_split(w, pick, test_below(t, 2) ? WINDOW_SIDE_BY_SIDE : WINDOW_STACKED, TEST_VIEW(step + 1), &leaf);
+            } else if (r < 45) {
+                what = "delete";
+                if (n > 1) window_delete(w, pick);
+            } else if (r < 60) {
+                what = "resize";
+                window_resize(w, pick, test_below(t, 2) ? WINDOW_SIDE_BY_SIDE : WINDOW_STACKED, (i32)test_below(t, 21) - 10);
+            } else if (r < 72) {
+                what = "drag";
+                i32 node = (i32)test_below(t, WINDOW_NODE_MAX);
+                if (w->nodes[node].used && w->nodes[node].split != WINDOW_LEAF) {
+                    window_move_split(w, node, (i32)test_below(t, window_size(w, node, w->nodes[node].split) + 40) - 20);
+                }
+            } else if (r < 77) {
+                what = "balance";
+                window_balance(w);
+            } else if (r < 85) {
+                what = "select";
+                window_select(w, pick);
+            } else {
+                // A frame resize, there and back: the same rects. Sometimes tiny (down to nothing), sometimes
+                // just below what the minimum sizes need.
+                what = "frame resize";
+                test_window_same_rects(t, w, rects, 1, what);
+                i32 ow = w->w, oh = w->h, nw, nh;
+                u64 kind = test_below(t, 4);
+                if (kind == 0) {
+                    nw = (i32)test_below(t, 3);
+                    nh = (i32)test_below(t, 3);
+                } else if (kind == 1) {
+                    nw = (i32)test_below(t, 40);
+                    nh = (i32)test_below(t, 40);
+                } else if (kind == 2) {
+                    nw = MAX(window_min(w, w->root, WINDOW_SIDE_BY_SIDE) - 1 - (i32)test_below(t, 30), 0);
+                    nh = MAX(window_min(w, w->root, WINDOW_STACKED) - 1 - (i32)test_below(t, 30), 0);
+                } else {
+                    nw = 200 + (i32)test_below(t, 1800);
+                    nh = 100 + (i32)test_below(t, 1100);
+                }
+                tiny += nw < 40 || nh < 40;
+                window_layout(w, 0, 0, nw, nh, m);
+                if (!test_window_tiles(t, w, "a resized frame")) return 0;
+                window_layout(w, 0, 0, ow, oh, m);
+                if (!test_window_same_rects(t, w, rects, 0, "a frame resized and back")) return 0;
+            }
+            if (!test_window_tiles(t, w, what)) return 0;
+        }
+    }
+    LOG("test: ok: window tree (cyclic order, halves, dividers, edges, LRU / MRU, deletes, thirds and balance, drags and resizes "
+        "that change only the windows beside the line, refusals, a fuzz of %d operations on 400 frames: exact tiling, minimum "
+        "sizes, splits at their ratios, frame resizes there and back (%d tiny or empty frames))", ops, tiny);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -6188,6 +6416,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_view_edit_limits(&t);
     arena_reset(&t.arena);
     test_view_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_window_tree(&t, seed);
     arena_reset(&t.arena);
     test_undo_buffer(&t, seed);
     arena_reset(&t.arena);
