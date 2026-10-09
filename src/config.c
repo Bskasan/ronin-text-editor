@@ -136,6 +136,8 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "kill_ring_max", offsetof(Settings, kill_ring_max), 1, KILL_RING_CAP },
     { "indent_width", offsetof(Settings, indent_width), 1, 16 },
     { "completion_lines", offsetof(Settings, completion_lines), 1, 40 },
+    { "split_width_threshold", offsetof(Settings, split_width_threshold), 1, 10000 },
+    { "startup_windows", offsetof(Settings, startup_windows), 1, 2 },
 };
 
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {
@@ -207,7 +209,24 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "completion_match", offsetof(Theme, completion_match) },
     { "isearch", offsetof(Theme, isearch) },       { "isearch_text", offsetof(Theme, isearch_text) },
     { "lazy_highlight", offsetof(Theme, lazy_highlight) }, { "isearch_fail", offsetof(Theme, isearch_fail) },
+    { "window_divider", offsetof(Theme, window_divider) },
+    { "mode_line_inactive_background", offsetof(Theme, mode_line_inactive_background) },
+    { "mode_line_inactive_text", offsetof(Theme, mode_line_inactive_text) },
 };
+
+// The colors whose default is another color: set by no file so far, they follow it.
+static void config_derived_colors(Config *c) {
+    static const struct { u32 offset, from; } derived[] = {
+        { offsetof(Theme, mode_line_inactive_background), offsetof(Theme, background) },
+        { offsetof(Theme, mode_line_inactive_text), offsetof(Theme, text) },
+    };
+    for (i32 d = 0; d < ARRAY_COUNT(derived); d++) {
+        for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {
+            if (config_colors[i].offset != derived[d].offset || (c->colors_set & (1u << i))) continue;
+            *(u32 *)((u8 *)&c->theme + derived[d].offset) = *(u32 *)((u8 *)&c->theme + derived[d].from);
+        }
+    }
+}
 
 static void config_color(ConfigParser *p, String8 name, String8 value) {
     for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {
@@ -218,6 +237,7 @@ static void config_color(ConfigParser *p, String8 name, String8 value) {
             return;
         }
         *(u32 *)((u8 *)&p->config->theme + config_colors[i].offset) = rgb;
+        p->config->colors_set |= 1u << i;
         return;
     }
     config_diag(p, 0, "unknown color '%S'", config_quote(name));
@@ -324,6 +344,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         } break;
         }
     }
+    config_derived_colors(c);
 }
 
 // ---------------------------------------------------------------------------
