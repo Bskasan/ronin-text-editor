@@ -100,6 +100,10 @@ typedef struct Platform {
     b32 clip_no_history;  // what teal puts on the clipboard stays out of clipboard history (the check's text)
     u64 idle_wakeups;     // passes of the main loop
     u64 idle_start_cpu, idle_start_wakeups;
+    b32 idle_measuring;   // between the two marks: the window procedure's messages are counted
+    u32 idle_mouse_msgs;  // ... from the mouse (the pointer moving over the window, the cursor it asks for)
+    u32 idle_other_msgs;  // ... anything else
+    UINT idle_other[8];   // the first of those
     i64 idle_start_frames;
     const char *stage_what[32]; // os_dev_stage: the startup timeline, logged after the first frame
     LARGE_INTEGER stage_qpc[32];
@@ -1580,6 +1584,14 @@ static void win32_dev_log_layouts(Platform *p) {
 static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 #if TEAL_DEV
     Platform *p = g_platform;
+    if (p->idle_measuring && msg != WM_APP + 2) {
+        if (msg == WM_MOUSEMOVE || msg == WM_SETCURSOR || msg == WM_NCHITTEST || msg == WM_NCMOUSEMOVE || msg == WM_MOUSELEAVE) {
+            p->idle_mouse_msgs++;
+        } else {
+            if (p->idle_other_msgs < ARRAY_COUNT(p->idle_other)) p->idle_other[p->idle_other_msgs] = msg;
+            p->idle_other_msgs++;
+        }
+    }
     if (p->log_keys && win32_dev_is_keyboard_message(msg)) {
         u32 seq_before = p->key_seq;
         b32 altgr_before = p->altgr;
@@ -2624,8 +2636,10 @@ static void win32_dev_idle_check_mark(Platform *p, b32 end) {
         p->idle_start_cpu = win32_dev_cpu_us();
         p->idle_start_frames = p->frame_count;
         p->idle_start_wakeups = p->idle_wakeups;
+        p->idle_measuring = 1;
         return;
     }
+    p->idle_measuring = 0;
     u64 cpu = win32_dev_cpu_us() - p->idle_start_cpu;
     i64 frames = p->frame_count - p->idle_start_frames;
     u64 wakeups = p->idle_wakeups - p->idle_start_wakeups;
@@ -2635,6 +2649,16 @@ static void win32_dev_idle_check_mark(Platform *p, b32 end) {
     LOG("idle-check: %s: %U ms idle: CPU %U us (%U.%02U%% of one core), %D frame(s), %U main loop pass(es) besides the two marks; "
         "private bytes %U KB (%U MB)", ok ? "PASS" : "FAIL", (u64)IDLE_PERIOD_MS, cpu, cpu / (IDLE_PERIOD_MS * 10),
         cpu * 100 / (IDLE_PERIOD_MS * 10) % 100, frames, wakeups > 1 ? wakeups - 1 : 0, bytes / 1024, bytes / (1024 * 1024));
+    u8 others[128];
+    i64 n = 0;
+    for (u32 i = 0; i < MIN(p->idle_other_msgs, (u32)ARRAY_COUNT(p->idle_other)); i++) {
+        n += fmt_buf(others + n, (i64)sizeof(others) - n, "%s0x%x", i ? " " : "", p->idle_other[i]);
+    }
+    LOG("idle-check: messages meanwhile: %u from the mouse (the pointer over the window), %u other%s%S%s", p->idle_mouse_msgs,
+        p->idle_other_msgs, n ? " (" : "", str8(others, n), n ? ")" : "");
+    if (!ok && (p->idle_mouse_msgs || p->idle_other_msgs)) {
+        LOG("idle-check: the period was not idle (input reached the window): run it again without touching the mouse or keyboard");
+    }
     p->exit_code = ok ? EXIT_OK : EXIT_TEST;
     p->quit = 1;
 }
