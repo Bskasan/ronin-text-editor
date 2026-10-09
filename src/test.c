@@ -3734,6 +3734,25 @@ static b32 test_config(Test *t, u64 seed) {
                   test_binding(c, "C-x C--") == &CMD_TEXT_SCALE_DECREASE && test_binding(c, "C-x C-0") == &CMD_TEXT_SCALE_RESET &&
                   test_binding(c, "C-h k") == &CMD_DESCRIBE_KEY && test_binding(c, "C-c ,") == &CMD_OPEN_CONFIG &&
                   test_binding(c, "C-c r") == &CMD_RELOAD_CONFIG, "config: default bindings");
+    TEST_CHECK(t, s->split_width_threshold == 160 && s->startup_windows == 1 && th->window_divider == 0x126367 &&
+                  th->mode_line_inactive_background == th->background && th->mode_line_inactive_text == th->text,
+                  "config: window settings and colors");
+    // The inactive mode line follows background and text until a file sets it.
+    {
+        u64 mark = arena_pos(&t->arena);
+        Config *w = PUSH_STRUCT(&t->arena, Config);
+        config_init(w);
+        config_parse(w, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nbackground = #101010\ntext = #202020\n[settings]\nstartup_windows = 3\n"), STR8_LIT("a.conf"));
+        b32 follows = w->theme.mode_line_inactive_background == 0x101010 && w->theme.mode_line_inactive_text == 0x202020;
+        b32 clamped = w->settings.startup_windows == 2 && w->warnings == 1;
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nmode_line_inactive_background = #303030\n"), STR8_LIT("b.conf"));
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nbackground = #404040\n"), STR8_LIT("c.conf"));
+        b32 kept = w->theme.mode_line_inactive_background == 0x303030 && w->theme.mode_line_inactive_text == 0x202020;
+        arena_pop_to(&t->arena, mark);
+        TEST_CHECK(t, follows && clamped && kept, "config: derived inactive mode line colors (%d %d %d), startup_windows clamped",
+                   follows, clamped, kept);
+    }
 
     // Parse time of the built-in config (about as large as a full user file), for the log.
     u64 t0 = os_time_us();

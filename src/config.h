@@ -29,6 +29,8 @@ struct Settings {
     i32 completion_lines;     // rows of the minibuffer's candidate list
     b32 auto_revert;          // an unmodified buffer whose file changed on disk is reloaded
     b32 show_paren_mode;      // the bracket at point and its match are highlighted
+    i32 split_width_threshold; // columns: a single window pops up a buffer side by side from this frame width on
+    i32 startup_windows;      // 1, or 2: the frame starts split side by side
 };
 
 typedef struct Theme { // 0xRRGGBB
@@ -39,6 +41,9 @@ typedef struct Theme { // 0xRRGGBB
     u32 isearch, isearch_text;         // the current search match: its background and text
     u32 lazy_highlight;                // the background of the other matches on screen
     u32 isearch_fail;                  // the background of the failing part of a search string
+    u32 window_divider;                // the line between windows side by side
+    u32 mode_line_inactive_background; // the mode lines of the windows that are not selected; unless a file
+    u32 mode_line_inactive_text;       // sets them, they are background and text
 } Theme;
 
 typedef struct ConfigDiag {
@@ -53,6 +58,7 @@ typedef struct Config {
     Keymap global;     // [keys]
     Keymap minibuffer; // [keys minibuffer]: searched before global while the minibuffer is active
     Keymap isearch;    // [keys isearch]: searched before global while an isearch is active
+    u32 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
     ConfigDiag *first_diag, *last_diag; // in the arena given to config_parse, at most CONFIG_DIAG_CAP
     i32 errors, warnings;               // all of them
 } Config;
