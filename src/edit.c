@@ -46,10 +46,10 @@ const Command CMD_UNDO_REDO = { "undo-redo", cmd_undo_redo, COMMAND_ONCE | COMMA
 b32 kill_init(KillRing *k, i32 max) {
     memset(k, 0, sizeof(*k));
     k->max = CLAMP(max, 1, KILL_RING_CAP);
-    k->small = (u8 *)os_reserve(KILL_SMALL_RESERVE);
+    k->small_base = (u8 *)os_reserve(KILL_SMALL_RESERVE);
     k->scratch = arena_create(KILL_SCRATCH_RESERVE);
     k->clip_seq = os_clipboard_seq();
-    return k->small != NULL;
+    return k->small_base != NULL;
 }
 
 static KillEntry *kill_at(KillRing *k, i32 back) {
@@ -64,7 +64,7 @@ static void kill_free(KillRing *k, KillEntry *e) {
 
 void kill_destroy(KillRing *k) {
     for (i32 i = 0; i < k->count; i++) kill_free(k, kill_at(k, i));
-    if (k->small) os_release(k->small);
+    if (k->small_base) os_release(k->small_base);
     if (k->scratch.base) os_release(k->scratch.base);
     k->count = 0;
 }
@@ -93,8 +93,8 @@ static void kill_compact(KillRing *k) {
     }
     u64 used = 0;
     for (i32 i = 0; i < n; i++) {
-        memmove(k->small + used, live[i]->data, (size_t)live[i]->len);
-        live[i]->data = k->small + used;
+        memmove(k->small_base + used, live[i]->data, (size_t)live[i]->len);
+        live[i]->data = k->small_base + used;
         used += (u64)live[i]->len;
     }
     k->small_used = used;
@@ -107,10 +107,10 @@ static u8 *kill_small_raw(KillRing *k, i64 len) {
     if (need > KILL_SMALL_RESERVE) return NULL;
     if (need > k->small_committed) {
         u64 to = ALIGN_UP_POW2(need, KB(64));
-        if (!os_commit(k->small + k->small_committed, to - k->small_committed)) return NULL;
+        if (!os_commit(k->small_base + k->small_committed, to - k->small_committed)) return NULL;
         k->small_committed = to;
     }
-    u8 *p = k->small + k->small_used;
+    u8 *p = k->small_base + k->small_used;
     k->small_used = need;
     return p;
 }
@@ -179,7 +179,7 @@ u8 *kill_extend(KillRing *k, i64 len, b32 prepend) {
         e->len = total;
     } else {
         if (k->small_dead > k->small_used / 2) kill_compact(k);
-        if (e->data + e->len != k->small + k->small_used) {
+        if (e->data + e->len != k->small_base + k->small_used) {
             // Not the last allocation: move it to the end (at most KILL_SMALL_MAX bytes).
             u8 *dst = kill_small_raw(k, e->len);
             if (!dst) return NULL;
