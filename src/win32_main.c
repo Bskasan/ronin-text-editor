@@ -18,6 +18,7 @@ _Static_assert(KEYMOD_CTRL == 1 << 0 && KEYMOD_ALT == 1 << 1 && KEYMOD_SHIFT == 
 #define EVENT_CAPACITY 256
 #define EVENT_RESERVE 4 // free slots required before taking another message off the queue
 #define WIN32_MAX_WATCHES 16 // the config's directory and those of the displayed buffers; the wait takes 63
+#define WIN32_TYPE_AHEAD_TAG ((LPARAM)0x7EA1A11E) // --type-ahead-check: dwExtraInfo of its keys (real typing is told apart)
 
 typedef struct Platform {
     HINSTANCE instance;
@@ -104,10 +105,14 @@ typedef struct Platform {
     b32 stages_logged;
     // --type-ahead-check: a thread types letters into the window as soon as it is the foreground one.
     b32 type_ahead_check;
+    DWORD main_thread_id;
     HANDLE type_ahead_thread;
     volatile LONG type_ahead_state;   // 0 waiting, 1 typed, 2 never the foreground window, 3 lost it while typing
     LARGE_INTEGER type_ahead_first, type_ahead_last; // the first and the last key sent
     LARGE_INTEGER first_present;      // the first frame done (its Present returned)
+    i32 type_ahead_focus_lost;        // keys sent while the main thread had no focus window (GetGUIThreadInfo)
+    i32 dev_keydowns, dev_syskeydowns; // the check's own WM_KEYDOWN / WM_SYSKEYDOWN received (no focus window: the latter)
+    i32 dev_foreign_keys;              // key-downs that the check did not send (someone typing meanwhile)
 #endif
 } Platform;
 
@@ -839,6 +844,19 @@ static i32 win32_parse_args(Arena *arena, String8 **out_args) {
 // ---------------------------------------------------------------------------
 // Frames and events
 
+// Every pump goes through this instead of TranslateMessage. While no window has the keyboard focus (in the
+// middle of an activation; keys typed ahead at startup can arrive then), Windows posts plain keys to the
+// active window as WM_SYSKEYDOWN / WM_SYSKEYUP with the Alt context bit clear: they would become Alt chords
+// (M-a, M-d ...) and TranslateMessage would make WM_SYSCHAR instead of WM_CHAR. F10 is the one key that is
+// a WM_SYSKEY* without Alt by design.
+static void win32_translate(MSG *msg) {
+    if ((msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP) && !(HIWORD(msg->lParam) & KF_ALTDOWN) &&
+        msg->wParam != VK_F10) {
+        msg->message = msg->message == WM_SYSKEYDOWN ? WM_KEYDOWN : WM_KEYUP;
+    }
+    TranslateMessage(msg);
+}
+
 static f32 win32_dpi_scale(Platform *p) {
     return p->forced_scale > 0 ? p->forced_scale : (f32)p->dpi / 96.0f;
 }
@@ -1120,6 +1138,13 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYUP:
     case WM_SYSKEYUP: {
         u32 vk = (u32)wp;
+#if TEAL_DEV
+        if (p->type_ahead_check && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)) {
+            if (GetMessageExtraInfo() != WIN32_TYPE_AHEAD_TAG) p->dev_foreign_keys++;
+            else if (msg == WM_KEYDOWN) p->dev_keydowns++;
+            else p->dev_syskeydowns++;
+        }
+#endif
         b32 down = !(HIWORD(lp) & KF_UP);
         b32 extended = (HIWORD(lp) & KF_EXTENDED) != 0;
 
@@ -1946,9 +1971,9 @@ static const struct { u8 vk; b32 shift; } win32_type_ahead_keys[] = { { 'A', 0 }
 
 static DWORD WINAPI win32_dev_type_ahead_thread(LPVOID param) {
     Platform *p = param;
-    i32 waited = 0;
+    ULONGLONG give_up = GetTickCount64() + 3000;
     while (GetForegroundWindow() != p->hwnd) {
-        if (++waited > 3000) {
+        if (GetTickCount64() > give_up) {
             InterlockedExchange(&p->type_ahead_state, 2);
             return 0;
         }
@@ -1976,6 +2001,9 @@ static DWORD WINAPI win32_dev_type_ahead_thread(LPVOID param) {
             in[n] = in[0];
             in[n++].ki.dwFlags = KEYEVENTF_KEYUP;
         }
+        GUITHREADINFO gui = { .cbSize = sizeof(gui) };
+        if (GetGUIThreadInfo(p->main_thread_id, &gui) && gui.hwndFocus != p->hwnd) p->type_ahead_focus_lost++;
+        for (UINT k = 0; k < n; k++) in[k].ki.dwExtraInfo = (ULONG_PTR)WIN32_TYPE_AHEAD_TAG;
         SendInput(n, in, sizeof(INPUT));
         QueryPerformanceCounter(i == 0 ? &p->type_ahead_first : &p->type_ahead_last);
         if (i == 0) p->type_ahead_last = p->type_ahead_first;
@@ -1996,16 +2024,23 @@ static i32 win32_dev_type_ahead_finish(Platform *p) {
         LOG("type-ahead: skip: the window never became the foreground window (Windows refused the activation)");
         return EXIT_OK;
     }
-    // The keys still queued: through the normal pump, a few times over 200 ms.
-    for (i32 round = 0; round < 20 && !p->quit; round++) {
+    // The keys still queued: through the normal pump, until every one arrived or 2 s passed.
+    ULONGLONG give_up = GetTickCount64() + 2000;
+    while (!p->quit && p->dev_keydowns + p->dev_syskeydowns < ARRAY_COUNT(win32_type_ahead_keys) + 1 && GetTickCount64() < give_up) {
         MSG msg;
         while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
+            win32_translate(&msg);
             DispatchMessageW(&msg);
         }
         if (p->event_count) win32_frame(p);
         Sleep(10);
     }
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { // the last key's characters and key-up
+        win32_translate(&msg);
+        DispatchMessageW(&msg);
+    }
+    if (p->event_count) win32_frame(p);
     b32 caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
     u8 want[ARRAY_COUNT(win32_type_ahead_keys)];
     for (i32 i = 0; i < ARRAY_COUNT(win32_type_ahead_keys); i++) {
@@ -2025,8 +2060,15 @@ static i32 win32_dev_type_ahead_finish(Platform *p) {
         (i32)(present_ms * 1000) % 1000, state == 3 ? "the window lost the foreground while typing"
                                          : before ? "all before it" : "not all before it");
     LOG("type-ahead: *scratch* holds '%S', typed '%S'%s", text, str8(want, sizeof(want)), caps ? " (Caps Lock on)" : "");
+    LOG("type-ahead: %d key(s) sent while teal had no focus window; received %d WM_KEYDOWN, %d WM_SYSKEYDOWN of its own, "
+        "%d key-down(s) of other input", p->type_ahead_focus_lost, p->dev_keydowns, p->dev_syskeydowns, p->dev_foreign_keys);
     b32 ok = before && arrived;
-    LOG("type-ahead: %s", ok ? "PASS" : "FAIL");
+    if (!ok && (p->dev_foreign_keys || state == 3)) {
+        LOG("type-ahead: FAIL (inconclusive: someone typed or another window took the foreground meanwhile; run it again "
+            "without touching the keyboard)");
+    } else {
+        LOG("type-ahead: %s", ok ? "PASS" : "FAIL");
+    }
     arena_reset(&p->scratch);
     return ok ? EXIT_OK : EXIT_TEST;
 }
@@ -2040,7 +2082,7 @@ static void win32_bench_text(Platform *p) {
     for (i32 i = 0; i < FRAMES; i++) {
         MSG msg;
         while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
+            win32_translate(&msg);
             DispatchMessageW(&msg);
         }
         p->event_count = 0;
@@ -2102,7 +2144,7 @@ static void win32_bench_log_display(Platform *p) {
 static void win32_bench_pump(void) {
     MSG msg;
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
+        win32_translate(&msg);
         DispatchMessageW(&msg);
     }
 }
@@ -2929,6 +2971,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->height = client.bottom - client.top;
 #if TEAL_DEV
     os_dev_stage("window created (hidden), sized for its DPI");
+    p->main_thread_id = GetCurrentThreadId();
     if (p->type_ahead_check) p->type_ahead_thread = CreateThread(NULL, 0, win32_dev_type_ahead_thread, p, 0, NULL);
 #endif
 
@@ -2963,11 +3006,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         os_fatal(STR8_LIT("Could not open the font (Consolas or Courier New)."));
     }
 
+    // Shown and activated now, still cloaked (DWMWA_CLOAK): keys typed from here on queue for teal
+    // instead of going to whatever launched it, and the activation (the focus sets up the IME and text
+    // services, ~15 ms) overlaps the device creation. Done after the app, not right after the window:
+    // there it slowed the device thread down (first Present 174 ms median against 167; here 168). The
+    // first frame is presented before uncloaking, so the window never shows an unpainted (white) client
+    // area. If Windows refuses the foreground, the window is still shown and appears when it is
+    // uncloaked. The smoke and --idle-check show it later without activation; screenshot runs and
+    // --dpi-check never show it.
+    b32 show_early = 1;
+#if TEAL_DEV
+    show_early = !(p->smoke || p->idle_check || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+#endif
+    if (show_early) {
+        BOOL cloak = TRUE;
+        DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+        ShowWindow(p->hwnd, SW_SHOW);
+        BOOL fg = SetForegroundWindow(p->hwnd);
+#if TEAL_DEV
+        os_dev_stage("shown and activated (cloaked)");
+        LOG("startup: SetForegroundWindow %d, foreground %s, active %s, focus %s", fg, GetForegroundWindow() == p->hwnd ? "teal" : "other",
+            GetActiveWindow() == p->hwnd ? "teal" : "none", GetFocus() == p->hwnd ? "teal" : "none");
+#else
+        (void)fg;
+#endif
+    }
+
 #if TEAL_DEV
     u64 join_start = os_time_us();
 #endif
     if (device_thread) {
-        WaitForSingleObject(device_thread, INFINITE);
+        // Only sent messages are handled meanwhile (the activation, the IME and text services set-up):
+        // posted input stays queued, in order, with its key state, until the main loop reads it.
+        while (MsgWaitForMultipleObjects(1, &device_thread, FALSE, INFINITE, QS_SENDMESSAGE) == WAIT_OBJECT_0 + 1) {
+            MSG msg;
+            PeekMessageW(&msg, NULL, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+        }
         CloseHandle(device_thread);
     } else {
         r_create_device(renderer); // no thread: create it here
@@ -3009,29 +3083,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
 
     if (!p->quit) {
-        // Show cloaked, present the first frame, then uncloak: the window never shows
-        // an unpainted (white) client area.
         BOOL cloak = TRUE;
-        DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
-#if TEAL_DEV
-        os_dev_stage("cloaked");
-#endif
-        // Shown without activation: activating gives the window the focus, which sets up the IME
-        // and text services (~10 ms) and is not needed to draw. Showing renders the first frame
-        // (WM_SIZE); the window is activated once it is on screen.
-        ShowWindow(p->hwnd, SW_SHOWNA);
-#if TEAL_DEV
-        os_dev_stage("window shown (cloaked)");
-#endif
+        if (!show_early) { // the smoke and --idle-check: shown cloaked, never activated
+            DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+            ShowWindow(p->hwnd, SW_SHOWNA);
+        }
         if (p->frame_count == 0) win32_frame(p);
         cloak = FALSE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if TEAL_DEV
         os_dev_stage("uncloaked");
-        if (!p->smoke && !p->idle_check) SetForegroundWindow(p->hwnd); // the smoke never takes the focus
         if (p->idle_check) win32_dev_idle_check_start(p);
         if (p->smoke) p->redraw = 1; // its second plain frame, at once (nothing else would wake the loop)
-        os_dev_stage("activated");
         p->stages_logged = 1;
         win32_dev_log_stages(p);
         win32_inject_keys(p);
@@ -3039,8 +3102,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             p->exit_code = win32_dev_type_ahead_finish(p);
             p->quit = 1;
         }
-#else
-        SetForegroundWindow(p->hwnd);
 #endif
     }
 
@@ -3105,7 +3166,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 p->quit = 1;
                 break;
             }
-            TranslateMessage(&msg);
+            win32_translate(&msg);
             DispatchMessageW(&msg);
         }
         if (p->quit) break;
