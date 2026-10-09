@@ -2133,6 +2133,33 @@ void app_dev_smoke_click_point(App *app, FrameInput *in, i32 *x, i32 *y) {
     *y = l.line_h / 2;
 }
 
+// Smoke stage 6: two windows side by side. The left one (selected, focus on) shows *scratch* with one
+// line of 400 'x' (it runs under the divider), point at its start; the right one a buffer whose lines 0
+// and 1 are empty, point on line 1.
+void app_dev_smoke_windows(App *app) {
+    u8 line[401];
+    memset(line, 'x', 400);
+    line[400] = '\n';
+    app_dev_show_scratch(app, str8(line, sizeof(line)));
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    i32 right = app_split(app, app->windows.selected, WINDOW_SIDE_BY_SIDE, ctx.echo);
+    if (right < 0) return;
+    Buffer *buf = app_new_buffer(app, STR8_LIT("smoke-right"));
+    buffer_replace(buf, 0, 0, STR8_LIT("\n\nright\n"));
+    View *v = app->windows.nodes[right].view;
+    app_switch_buffer(app, v, buf);
+    view_set_point(v, &v->cursors[0], 1);
+    app->force_focus = 1;
+}
+
+// ... and back to one window.
+void app_dev_smoke_windows_end(App *app) {
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    cmd_delete_other_windows(&ctx);
+}
+
 i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 stage) {
     AppLayout l = app_layout(app, in);
     i32 n = 0;
@@ -2141,7 +2168,35 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
     i32 t = MAX((i32)(in->dpi_scale + 0.5f), 1); // the hollow cursor's line width
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
 #define CELL(col, line) .x0 = x + (col) * cw, .y0 = (line) * lh, .x1 = x + ((col) + 1) * cw, .y1 = ((line) + 1) * lh
-    if (stage == 0) {
+    if (stage == 6) {
+        // app_dev_smoke_windows: the divider, both mode line styles, both cursors, the right window's first column.
+        Theme *th = &app->config->theme;
+        i32 leaves[WINDOW_MAX];
+        if (window_leaves(&app->windows, leaves) == 2) {
+            View *left = app->windows.nodes[leaves[0]].view, *right = app->windows.nodes[leaves[1]].view;
+            i32 d = app_divider_px(in), edge = left->x + left->w;
+            i32 my = left->y + left->h - lh;
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = edge - d, .y0 = 0, .x1 = edge, .y1 = my + lh, .rgb = th->window_divider,
+                           .what = "windows: the divider, full height, next to the long line");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = right->x, .y0 = 0, .x1 = right->x + l.pad + cw, .y1 = lh, .rgb = th->background,
+                           .what = "windows: the right window's first column on the long line's row is untouched");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, .x0 = edge - d - cw, .y0 = 0, .x1 = edge - d, .y1 = lh, .rgb = th->background,
+                           .what = "windows: the long line drawn up to the divider (the half-visible last column)");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = edge - d - 1, .y0 = my + lh / 2, .rgb = th->text,
+                           .what = "windows: the selected window's mode line is inverse video");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = right->x + right->w - 1, .y0 = my + lh / 2, .rgb = th->mode_line_inactive_background,
+                           .what = "windows: the other mode line on mode_line_inactive_background");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = right->x + l.pad, .y0 = my, .x1 = right->x + l.pad + 24 * cw, .y1 = my + lh,
+                           .rgb = th->mode_line_inactive_text, .what = "windows: the other mode line's text in mode_line_inactive_text");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = left->x + l.pad, .y0 = 0, .x1 = left->x + l.pad + 1, .y1 = 1, .rgb = th->cursor,
+                           .what = "windows: the filled cursor in the selected window");
+            i32 rx = right->x + l.pad;
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx, .y0 = lh, .x1 = rx + t, .y1 = 2 * lh, .rgb = th->cursor,
+                           .what = "windows: the hollow cursor in the other window, left edge");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx + t, .y0 = lh + t, .x1 = rx + cw - t, .y1 = 2 * lh - t, .rgb = th->background,
+                           .what = "windows: the hollow cursor in the other window, inside");
+        }
+    } else if (stage == 0) {
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(0, 0), .rgb = app->config->theme.background,
                        .what = "buffer: text cell 'i' (line 0, column 0)");
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, CELL(5, 2), .rgb = app->config->theme.background,
