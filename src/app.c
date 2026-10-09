@@ -449,16 +449,27 @@ static AppSpan app_draw_search(App *app, Renderer *r, AppLayout *l, View *v, i32
     return current;
 }
 
-// `bottom`: the view is drawn above it (the candidate list covers the rest), its mode line moved up.
-// Its rows and scroll position are not touched, so nothing scrolls when the list opens or closes.
-static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i32 index, b32 active, i32 bottom) {
+// One window, everything cut to its rect: its text to the text area (a half-visible last column and
+// row included), then its mode line and its divider. `selected`: the selected window (the caller while
+// the minibuffer reads), whose mode line is inverse video; `active`: also no minibuffer, so the cursor
+// is filled (with focus) and the brackets are matched. `bottom`: the window is drawn above it (the
+// candidate list covers the rest), its mode line moved up; its rows and scroll position are not
+// touched, so nothing scrolls when the list opens or closes. A window that has no room for a text row
+// and its mode line (a frame too small for its windows, or under the list) is not drawn.
+static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i32 index, b32 selected, b32 active, i32 bottom) {
     View *v = app->windows.nodes[index].view;
     Buffer *buf = v->buffer;
+    Theme *th = &app->config->theme;
     i32 line_h = l->line_h;
     i32 text_x = v->x + l->pad;
-    i32 mode_y = MAX(MIN(v->y + v->h, bottom) - line_h, v->y);
+    i32 divider = window_has_divider(&app->windows, index) ? app_divider_px(in) : 0;
+    i32 right = v->x + v->w - divider; // the text area and the mode line end here
+    i32 visible_h = MIN(v->y + v->h, bottom) - v->y;
+    if (visible_h < 2 * line_h || right - text_x < l->cell_w) return;
+    i32 mode_y = v->y + visible_h - line_h;
     i32 rows = MIN(v->rows, (mode_y - v->y) / line_h);
-    // Only the visible lines (the partial one above the mode line too, which covers it).
+    r_set_clip(r, (Rect){ (f32)v->x, (f32)v->y, (f32)right, (f32)mode_y });
+    // Only the visible lines: the partial one above the mode line too.
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
     for (i32 k = 0; k < v->cursor_count; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
@@ -473,16 +484,26 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
     }
     AppSpan current = app_draw_search(app, r, l, v, draw_rows);
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
-        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols, current.start >= 0 ? &current : NULL, in->scratch);
+        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, current.start >= 0 ? &current : NULL,
+                             in->scratch);
     }
     b32 filled = active && app_has_focus(app);
     for (i32 k = 0; k < v->cursor_count; k++) {
         app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[k]), rows, filled, in->dpi_scale, in->scratch);
     }
-    // Mode line, inverse video.
-    r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)(v->x + v->w), (f32)(mode_y + line_h) }, COLOR_HEX(app->config->theme.text));
+    // The mode line: inverse video in the selected window.
+    r_set_clip(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)right, (f32)(mode_y + line_h) });
+    u32 mode_bg = selected ? th->text : th->mode_line_inactive_background;
+    u32 mode_fg = selected ? th->background : th->mode_line_inactive_text;
+    r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)right, (f32)(mode_y + line_h) }, COLOR_HEX(mode_bg));
     String8 mode = app_mode_line_text(v, in->scratch);
-    font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((v->w - l->pad) / l->cell_w, 0)), COLOR_HEX(app->config->theme.background));
+    font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((right - text_x) / l->cell_w, 0)), COLOR_HEX(mode_fg));
+    if (divider) {
+        Rect line = { (f32)right, (f32)v->y, (f32)(v->x + v->w), (f32)(mode_y + line_h) };
+        r_set_clip(r, line);
+        r_push_rect(r, line, COLOR_HEX(th->window_divider));
+    }
+    r_set_clip(r, (Rect){ 0, 0, (f32)in->width, (f32)in->height });
 }
 
 // Rows of the candidate list: up to completion_lines, never the whole window.
@@ -1532,7 +1553,8 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
     i32 bottom = l.minibuffer_y - list_rows * l.line_h;
     i32 leaves[WINDOW_MAX];
     for (i32 i = 0, n = window_leaves(&app->windows, leaves); i < n; i++) {
-        app_draw_view(app, r, &l, in, leaves[i], leaves[i] == app->windows.selected && !app->mini.active, bottom);
+        b32 selected = leaves[i] == app->windows.selected;
+        app_draw_view(app, r, &l, in, leaves[i], selected, selected && !app->mini.active, bottom);
     }
     if (app->mini.active) {
         if (list_rows) app_draw_candidates(app, r, &l, in, list_rows);
