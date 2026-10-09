@@ -52,7 +52,7 @@ static void it_fail(InputTest *t, const char *fmt, ...) {
 static void it_pump(void) {
     MSG msg;
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
+        win32_translate(&msg);
         DispatchMessageW(&msg);
     }
 }
@@ -283,6 +283,20 @@ static void it_cases(InputTest *t) {
         it_fail(t, "US letters from ToUnicodeEx: '%S'", want);
     }
     it_expect_text(t, "letters a-z, then with Shift", letters, 52, want);
+
+    // A key pressed while no window has the keyboard focus (during an activation, type-ahead at startup):
+    // Windows posts it to the active window as WM_SYSKEYDOWN / WM_SYSKEYUP without the Alt context bit. It
+    // types its character, not an Alt chord.
+    {
+        app_dev_show_scratch(t->app, STR8_LIT(""));
+        u32 scan = MapVirtualKeyExW('A', MAPVK_VK_TO_VSC, t->hkl);
+        PostMessageW(t->hwnd, WM_SYSKEYDOWN, 'A', (LPARAM)(1u | (scan & 0xFF) << 16));
+        PostMessageW(t->hwnd, WM_SYSKEYUP, 'A', (LPARAM)(1u | (scan & 0xFF) << 16 | 3u << 30));
+        it_pump();
+        it_flush(t);
+        String8 got = app_dev_text(t->app, a), want_a = it_utf8(a, it_layout_char(t, t->hkl, 'A', 0, NULL));
+        if (!str8_equal(got, want_a)) it_fail(t, "a letter posted as WM_SYSKEYDOWN without Alt (no focus window): the buffer has '%S', expected '%S'", got, want_a);
+    }
 
     // Symbols and, where the layout has them, Turkish letters: each from its own keys (a dead key followed
     // by Space, which gives the accent itself), one character each.
@@ -611,7 +625,7 @@ static DWORD WINAPI it_thread(void *param) {
         i32 leaks = app_shutdown(t.app);
         if (leaks) it_fail(&t, "%d leak(s) at shutdown", leaks);
         if (t.failures == before_failures) {
-            LOG("test: ok: input %s (layout 0x%08X, %s): letters, symbols and Turkish letters from their keys, Alt / Ctrl / Ctrl+Alt chords, %s, Alt+Shift and Ctrl+Shift symbols, "
+            LOG("test: ok: input %s (layout 0x%08X, %s): letters, symbols and Turkish letters from their keys, a letter posted as WM_SYSKEYDOWN without Alt (no focus window), Alt / Ctrl / Ctrl+Alt chords, %s, Alt+Shift and Ctrl+Shift symbols, "
                 "dead keys, no menu for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
                 t.altgr ? "AltGr" : "no AltGr", t.altgr ? "AltGr text and Left Alt + AltGr" : "Right Alt as Meta");
         }
