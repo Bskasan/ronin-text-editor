@@ -1456,7 +1456,15 @@ static i32 win32_dev_test_mods(Platform *p) {
     for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
         BYTE state[256] = { 0 };
         for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) state[cases[i].vks[k]] = 0x80;
-        SetKeyboardState(state);
+        // Windows may synchronize the thread's key state with the system's once, after the first set
+        // (about one run in seven lost the first case's Alt): set it until it reads back.
+        for (i32 attempt = 0; attempt < 5; attempt++) {
+            SetKeyboardState(state);
+            b32 held = 1;
+            for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) held &= (GetKeyState(cases[i].vks[k]) & 0x8000) != 0;
+            if (held) break;
+            LOG("test: win32 modifiers: %s: the key state did not read back, set again", cases[i].what);
+        }
         KeyChord chord = 0;
         b32 made = key_chord_from_event(KEY_NONE, cases[i].codepoint, win32_mods(p), &chord);
         if (!made || chord != cases[i].want) {
