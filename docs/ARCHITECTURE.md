@@ -93,10 +93,10 @@ and makes a chord when it types a character (C-? on Turkish Q's VK_OEM_8); the k
 character, so it makes no chords and Alt + keypad digits still enter a character code. A KEY_DOWN
 also says whether the key is dead and whether no text event follows (TranslateMessage has queued
 its characters before the window procedure runs), so describe-key can report a key press that is
-no chord; MOD_ALTGR marks AltGr, for information only. After a Ctrl or Alt chord a pending
+no chord; KEYMOD_ALTGR marks AltGr, for information only. After a Ctrl or Alt chord a pending
 dead-key accent is consumed: TranslateMessage stored it (M-^ where ^ is dead) and the next key
-would compose with it. winuser.h's MOD_ALT / MOD_SHIFT (RegisterHotKey) are undefined in
-win32_main.c: in the unity build MOD_ALT would equal MOD_CTRL there (Alt read as Ctrl).
+would compose with it. The modifier bits are KEYMOD_*: winuser.h's MOD_ALT / MOD_SHIFT
+(RegisterHotKey) replaced the former MOD_* names in win32_main.c (Alt read as Ctrl).
 
 Keys: KEY_DOWN and text events go through the key sequence state machine (keymap.c) with the
 keymap stack; the result is a command run through `view_run_command`, a prefix shown at once

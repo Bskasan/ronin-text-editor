@@ -3322,25 +3322,25 @@ static b32 test_kbd(Test *t, u64 seed) {
 // Chords from (named key, character, modifiers), as the platform delivers KEY_DOWN.
 static b32 test_chords(Test *t) {
     static const struct { Key key; u32 cp; u32 mods; const char *chord; } cases[] = {
-        { KEY_A, 'A', MOD_CTRL | MOD_SHIFT, "C-S-a" },   // letters keep Shift
-        { KEY_A, 'a', MOD_CTRL, "C-a" },
-        { KEY_A, 'A', MOD_CTRL, "C-a" },                 // Caps Lock: no Shift held
-        { KEY_A, 'a', MOD_CTRL | MOD_SHIFT, "C-S-a" },   // Caps Lock and Shift
-        { KEY_SLASH, '?', MOD_CTRL | MOD_SHIFT, "C-?" }, // symbols absorb Shift
-        { KEY_7, '/', MOD_CTRL | MOD_SHIFT, "C-/" },     // "/" is Shift+7 on Turkish Q
-        { KEY_2, '@', MOD_CTRL | MOD_SHIFT, "C-@" },
-        { KEY_7, '{', MOD_ALT, "M-{" },                  // AltGr+7 with Left Alt (Turkish Q)
-        { KEY_Q, '@', MOD_CTRL | MOD_ALT, "C-M-@" },     // AltGr+q with Right Ctrl and Left Alt
-        { KEY_SPACE, ' ', MOD_CTRL, "C-SPC" },
-        { KEY_LEFT, 0, MOD_SHIFT, "S-<left>" },          // named keys keep every modifier
+        { KEY_A, 'A', KEYMOD_CTRL | KEYMOD_SHIFT, "C-S-a" },   // letters keep Shift
+        { KEY_A, 'a', KEYMOD_CTRL, "C-a" },
+        { KEY_A, 'A', KEYMOD_CTRL, "C-a" },                 // Caps Lock: no Shift held
+        { KEY_A, 'a', KEYMOD_CTRL | KEYMOD_SHIFT, "C-S-a" },   // Caps Lock and Shift
+        { KEY_SLASH, '?', KEYMOD_CTRL | KEYMOD_SHIFT, "C-?" }, // symbols absorb Shift
+        { KEY_7, '/', KEYMOD_CTRL | KEYMOD_SHIFT, "C-/" },     // "/" is Shift+7 on Turkish Q
+        { KEY_2, '@', KEYMOD_CTRL | KEYMOD_SHIFT, "C-@" },
+        { KEY_7, '{', KEYMOD_ALT, "M-{" },                  // AltGr+7 with Left Alt (Turkish Q)
+        { KEY_Q, '@', KEYMOD_CTRL | KEYMOD_ALT, "C-M-@" },     // AltGr+q with Right Ctrl and Left Alt
+        { KEY_SPACE, ' ', KEYMOD_CTRL, "C-SPC" },
+        { KEY_LEFT, 0, KEYMOD_SHIFT, "S-<left>" },          // named keys keep every modifier
         { KEY_F5, 0, 0, "<f5>" },
-        { KEY_ENTER, 0, MOD_CTRL, "C-RET" },
-        { KEY_TAB, 0, MOD_SHIFT, "<backtab>" },
-        { KEY_BACKSPACE, 0, MOD_ALT, "M-DEL" },
-        { KEY_HOME, 0, MOD_CTRL | MOD_ALT | MOD_SHIFT, "C-M-S-<home>" },
-        { KEY_SEMICOLON, 0x15E, MOD_CTRL | MOD_SHIFT, "C-S-\xc5\x9f" }, // Ş on Turkish Q
-        { KEY_I, 0x130, MOD_CTRL | MOD_SHIFT, "C-S-i" },                // İ: default case mapping
-        { KEY_NONE, 'x', MOD_ALT, "M-x" },
+        { KEY_ENTER, 0, KEYMOD_CTRL, "C-RET" },
+        { KEY_TAB, 0, KEYMOD_SHIFT, "<backtab>" },
+        { KEY_BACKSPACE, 0, KEYMOD_ALT, "M-DEL" },
+        { KEY_HOME, 0, KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT, "C-M-S-<home>" },
+        { KEY_SEMICOLON, 0x15E, KEYMOD_CTRL | KEYMOD_SHIFT, "C-S-\xc5\x9f" }, // Ş on Turkish Q
+        { KEY_I, 0x130, KEYMOD_CTRL | KEYMOD_SHIFT, "C-S-i" },                // İ: default case mapping
+        { KEY_NONE, 'x', KEYMOD_ALT, "M-x" },
     };
     for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
         KeyChord c = 0;
@@ -3349,8 +3349,8 @@ static b32 test_chords(Test *t) {
     }
     // Not chords: plain or shifted characters (their text event follows), keys without a character.
     static const struct { Key key; u32 cp; u32 mods; } none[] = {
-        { KEY_A, 'a', 0 }, { KEY_A, 'A', MOD_SHIFT }, { KEY_SPACE, ' ', 0 }, { KEY_7, '{', 0 },
-        { KEY_OEM_102, 0, MOD_CTRL }, { KEY_NONE, 0, MOD_ALT },
+        { KEY_A, 'a', 0 }, { KEY_A, 'A', KEYMOD_SHIFT }, { KEY_SPACE, ' ', 0 }, { KEY_7, '{', 0 },
+        { KEY_OEM_102, 0, KEYMOD_CTRL }, { KEY_NONE, 0, KEYMOD_ALT },
     };
     for (i32 i = 0; i < ARRAY_COUNT(none); i++) {
         KeyChord c;
@@ -3416,75 +3416,75 @@ static b32 test_key_input(Test *t) {
     TestKeys k = { .stack = { global }, .count = 1 };
 
     // Prefix, then completion; the pending prefix is the sequence so far.
-    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_seq_is(&k.r.seq, "C-x"), "keys: C-x is a prefix");
-    TEST_CHECK(t, test_key(&k, KEY_S, 's', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_SAVE_BUFFER &&
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_seq_is(&k.r.seq, "C-x"), "keys: C-x is a prefix");
+    TEST_CHECK(t, test_key(&k, KEY_S, 's', KEYMOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_SAVE_BUFFER &&
                   k.in.pending.len == 0, "keys: C-x C-s runs save-buffer");
     // Undefined resets the state.
-    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX, "keys: C-x again");
-    TEST_CHECK(t, test_key(&k, KEY_Q, 'q', MOD_CTRL) == KEY_RESULT_UNDEFINED && test_seq_is(&k.r.seq, "C-x C-q") &&
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX, "keys: C-x again");
+    TEST_CHECK(t, test_key(&k, KEY_Q, 'q', KEYMOD_CTRL) == KEY_RESULT_UNDEFINED && test_seq_is(&k.r.seq, "C-x C-q") &&
                   k.in.pending.len == 0, "keys: C-x C-q is undefined");
-    TEST_CHECK(t, test_key(&k, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_FORWARD_CHAR,
+    TEST_CHECK(t, test_key(&k, KEY_F, 'f', KEYMOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_FORWARD_CHAR,
                "keys: C-f after an undefined sequence");
     // keyboard-quit cancels a prefix; alone it is a command.
-    test_key(&k, KEY_X, 'x', MOD_CTRL);
-    TEST_CHECK(t, test_key(&k, KEY_G, 'g', MOD_CTRL) == KEY_RESULT_QUIT && k.in.pending.len == 0, "keys: C-x C-g quits");
-    test_key(&k, KEY_X, 'x', MOD_CTRL);
+    test_key(&k, KEY_X, 'x', KEYMOD_CTRL);
+    TEST_CHECK(t, test_key(&k, KEY_G, 'g', KEYMOD_CTRL) == KEY_RESULT_QUIT && k.in.pending.len == 0, "keys: C-x C-g quits");
+    test_key(&k, KEY_X, 'x', KEYMOD_CTRL);
     TEST_CHECK(t, test_key(&k, KEY_ESCAPE, 0, 0) == KEY_RESULT_QUIT, "keys: C-x ESC quits");
-    TEST_CHECK(t, test_key(&k, KEY_G, 'g', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_KEYBOARD_QUIT,
+    TEST_CHECK(t, test_key(&k, KEY_G, 'g', KEYMOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_KEYBOARD_QUIT,
                "keys: C-g alone runs keyboard-quit");
     // Shift-translation: an unbound chord with Shift is looked up without it.
-    TEST_CHECK(t, test_key(&k, KEY_LEFT, 0, MOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_BACKWARD_CHAR &&
+    TEST_CHECK(t, test_key(&k, KEY_LEFT, 0, KEYMOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_BACKWARD_CHAR &&
                   k.r.shift_translated, "keys: S-<left> is shift-translated to backward-char");
-    TEST_CHECK(t, test_key(&k, KEY_F, 'F', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_FORWARD_CHAR &&
+    TEST_CHECK(t, test_key(&k, KEY_F, 'F', KEYMOD_CTRL | KEYMOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_FORWARD_CHAR &&
                   k.r.shift_translated, "keys: C-S-f is shift-translated to forward-char");
     TEST_CHECK(t, test_key(&k, KEY_LEFT, 0, 0) == KEY_RESULT_COMMAND && !k.r.shift_translated, "keys: <left> is not translated");
-    TEST_CHECK(t, test_key(&k, KEY_A, 'A', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_BEGINNING_OF_BUFFER &&
+    TEST_CHECK(t, test_key(&k, KEY_A, 'A', KEYMOD_CTRL | KEYMOD_SHIFT) == KEY_RESULT_COMMAND && k.r.command == &CMD_BEGINNING_OF_BUFFER &&
                   !k.r.shift_translated, "keys: a bound C-S-a is not translated");
-    TEST_CHECK(t, test_key(&k, KEY_X, 'X', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_PREFIX && k.r.shift_translated &&
-                  test_key(&k, KEY_S, 's', MOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_SAVE_BUFFER,
+    TEST_CHECK(t, test_key(&k, KEY_X, 'X', KEYMOD_CTRL | KEYMOD_SHIFT) == KEY_RESULT_PREFIX && k.r.shift_translated &&
+                  test_key(&k, KEY_S, 's', KEYMOD_CTRL) == KEY_RESULT_COMMAND && k.r.command == &CMD_SAVE_BUFFER,
                "keys: C-S-x is translated to the C-x prefix");
-    TEST_CHECK(t, test_key(&k, KEY_Q, 'Q', MOD_CTRL | MOD_SHIFT) == KEY_RESULT_UNDEFINED && test_seq_is(&k.r.seq, "C-S-q"),
+    TEST_CHECK(t, test_key(&k, KEY_Q, 'Q', KEYMOD_CTRL | KEYMOD_SHIFT) == KEY_RESULT_UNDEFINED && test_seq_is(&k.r.seq, "C-S-q"),
                "keys: C-S-q is undefined, reported as typed");
     // Text from a consumed KEY_DOWN is dropped up to the next KEY_DOWN.
-    TEST_CHECK(t, test_key(&k, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND && test_text(&k, 'f') == KEY_RESULT_DROPPED &&
+    TEST_CHECK(t, test_key(&k, KEY_F, 'f', KEYMOD_CTRL) == KEY_RESULT_COMMAND && test_text(&k, 'f') == KEY_RESULT_DROPPED &&
                   test_text(&k, 'g') == KEY_RESULT_DROPPED, "keys: text after a consumed KEY_DOWN is dropped");
     TEST_CHECK(t, test_key(&k, KEY_A, 'a', 0) == KEY_RESULT_IGNORED && test_text(&k, 'a') == KEY_RESULT_SELF_INSERT &&
                   k.r.command == &CMD_SELF_INSERT && k.r.codepoint == 'a', "keys: a plain character self-inserts");
     TEST_CHECK(t, test_text(&k, 0x15F) == KEY_RESULT_SELF_INSERT && k.r.codepoint == 0x15F,
                "keys: composed text without a KEY_DOWN (dead keys, IME) self-inserts");
     // A plain character as the second key.
-    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k, 'o') == KEY_RESULT_COMMAND &&
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k, 'o') == KEY_RESULT_COMMAND &&
                   k.r.command == &CMD_NEXT_LINE, "keys: C-x o through a text event");
-    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k, 'z') == KEY_RESULT_UNDEFINED &&
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k, 'z') == KEY_RESULT_UNDEFINED &&
                   test_seq_is(&k.r.seq, "C-x z"), "keys: C-x z is undefined");
     // TAB bound to self-insert-command carries a tab.
     TEST_CHECK(t, test_key(&k, KEY_TAB, 0, 0) == KEY_RESULT_COMMAND && k.r.command == &CMD_SELF_INSERT && k.r.codepoint == '\t',
                "keys: TAB inserts a tab");
     // describe-key: the next complete sequence is described, not run.
     k.in.describe = 1;
-    TEST_CHECK(t, test_key(&k, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k, KEY_S, 's', MOD_CTRL) == KEY_RESULT_DESCRIBE &&
+    TEST_CHECK(t, test_key(&k, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k, KEY_S, 's', KEYMOD_CTRL) == KEY_RESULT_DESCRIBE &&
                   k.r.command == &CMD_SAVE_BUFFER && !k.in.describe, "keys: describe C-x C-s");
     k.in.describe = 1;
-    TEST_CHECK(t, test_key(&k, KEY_Q, 'q', MOD_CTRL) == KEY_RESULT_DESCRIBE && !k.r.command, "keys: describe an undefined C-q");
+    TEST_CHECK(t, test_key(&k, KEY_Q, 'q', KEYMOD_CTRL) == KEY_RESULT_DESCRIBE && !k.r.command, "keys: describe an undefined C-q");
     k.in.describe = 1;
     TEST_CHECK(t, test_type(&k, 'a') == KEY_RESULT_DESCRIBE && k.r.command == &CMD_SELF_INSERT, "keys: describe a");
-    TEST_CHECK(t, test_key(&k, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND, "keys: describe ends after one sequence");
+    TEST_CHECK(t, test_key(&k, KEY_F, 'f', KEYMOD_CTRL) == KEY_RESULT_COMMAND, "keys: describe ends after one sequence");
 
     // Two maps sharing a prefix: prefixes merge across maps, the first exact match wins.
     TEST_CHECK(t, test_bind(context, "C-x k", &CMD_END_OF_BUFFER) == 0 && test_bind(context, "C-f", &CMD_NEXT_LINE) == 0 &&
                   test_bind(context, "C-c x", &CMD_PREVIOUS_LINE) == 0, "keys: binding the context map");
     TestKeys k2 = { .stack = { context, global }, .count = 2 };
-    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k2, KEY_K, 'k', 0) == KEY_RESULT_IGNORED &&
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k2, KEY_K, 'k', 0) == KEY_RESULT_IGNORED &&
                   test_text(&k2, 'k') == KEY_RESULT_COMMAND && k2.r.command == &CMD_END_OF_BUFFER, "keys: C-x k from the context map");
-    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k2, KEY_S, 's', MOD_CTRL) == KEY_RESULT_COMMAND &&
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_key(&k2, KEY_S, 's', KEYMOD_CTRL) == KEY_RESULT_COMMAND &&
                   k2.r.command == &CMD_SAVE_BUFFER, "keys: C-x C-s from the global map is not hidden by the context's C-x k");
-    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'o') == KEY_RESULT_COMMAND &&
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'o') == KEY_RESULT_COMMAND &&
                   k2.r.command == &CMD_NEXT_LINE, "keys: C-x o from the global map");
-    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'q') == KEY_RESULT_UNDEFINED,
+    TEST_CHECK(t, test_key(&k2, KEY_X, 'x', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'q') == KEY_RESULT_UNDEFINED,
                "keys: C-x q is undefined in both maps");
-    TEST_CHECK(t, test_key(&k2, KEY_F, 'f', MOD_CTRL) == KEY_RESULT_COMMAND && k2.r.command == &CMD_NEXT_LINE,
+    TEST_CHECK(t, test_key(&k2, KEY_F, 'f', KEYMOD_CTRL) == KEY_RESULT_COMMAND && k2.r.command == &CMD_NEXT_LINE,
                "keys: C-f bound in both maps: the context map wins");
-    TEST_CHECK(t, test_key(&k2, KEY_C, 'c', MOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'x') == KEY_RESULT_COMMAND &&
+    TEST_CHECK(t, test_key(&k2, KEY_C, 'c', KEYMOD_CTRL) == KEY_RESULT_PREFIX && test_type(&k2, 'x') == KEY_RESULT_COMMAND &&
                   k2.r.command == &CMD_PREVIOUS_LINE, "keys: a prefix that exists only in the context map");
 
     // Binding conflicts: a binding removes the bindings it is a prefix of, or that are its prefix.
@@ -3499,7 +3499,7 @@ static b32 test_key_input(Test *t) {
     kq.in.quoted = 1;
     TEST_CHECK(t, test_key(&kq, KEY_TAB, 0, 0) == KEY_RESULT_QUOTED && kq.r.codepoint == '\t', "C-q TAB");
     kq.in.quoted = 1;
-    TEST_CHECK(t, test_key(&kq, KEY_J, 'j', MOD_CTRL) == KEY_RESULT_QUOTED && kq.r.codepoint == 10, "C-q C-j");
+    TEST_CHECK(t, test_key(&kq, KEY_J, 'j', KEYMOD_CTRL) == KEY_RESULT_QUOTED && kq.r.codepoint == 10, "C-q C-j");
     kq.in.quoted = 1;
     TEST_CHECK(t, test_key(&kq, KEY_A, 'a', 0) == KEY_RESULT_IGNORED && test_text(&kq, 'a') == KEY_RESULT_QUOTED && kq.r.codepoint == 'a',
                "C-q a");

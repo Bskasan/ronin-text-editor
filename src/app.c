@@ -992,7 +992,7 @@ static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shi
 // The wheel scrolls the view under the mouse; point is dragged along to stay visible. With Ctrl it
 // changes the text scale, one step per notch.
 static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
-    if (mods & MOD_CTRL) {
+    if (mods & KEYMOD_CTRL) {
         app->wheel_scale_accum += wheel;
         for (; app->wheel_scale_accum >= 120; app->wheel_scale_accum -= 120) app_run_command(app, &CMD_TEXT_SCALE_INCREASE, 0, 0);
         for (; app->wheel_scale_accum <= -120; app->wheel_scale_accum += 120) app_run_command(app, &CMD_TEXT_SCALE_DECREASE, 0, 0);
@@ -1217,10 +1217,10 @@ static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 r
     i64 en = 0;
     u8 mods[8];
     i32 mn = 0;
-    if (e->mods & MOD_CTRL) mods[mn++] = 'C';
-    if (e->mods & MOD_ALT) mods[mn++] = 'M';
-    if (e->mods & MOD_SHIFT) mods[mn++] = 'S';
-    if (e->mods & MOD_ALTGR) mods[mn++] = 'G';
+    if (e->mods & KEYMOD_CTRL) mods[mn++] = 'C';
+    if (e->mods & KEYMOD_ALT) mods[mn++] = 'M';
+    if (e->mods & KEYMOD_SHIFT) mods[mn++] = 'S';
+    if (e->mods & KEYMOD_ALTGR) mods[mn++] = 'G';
     if (!mn) mods[mn++] = '-';
     if (e->kind == EVENT_KEY_DOWN) {
         u8 name[16];
@@ -1239,7 +1239,7 @@ static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 r
     case KEY_RESULT_IGNORED:
         LOG("keys: app #%u: %S%s -> no chord (%s)", e->dev_seq, str8(ev, en), where,
             e->kind != EVENT_KEY_DOWN ? "not a key event"
-            : !(e->mods & (MOD_CTRL | MOD_ALT)) ? "no Ctrl or Alt: its text event, if any, is the chord"
+            : !(e->mods & (KEYMOD_CTRL | KEYMOD_ALT)) ? "no Ctrl or Alt: its text event, if any, is the chord"
             : "Ctrl or Alt held but the key gives no character");
         break;
     case KEY_RESULT_DROPPED:
@@ -1310,9 +1310,9 @@ static void app_describe_no_chord(App *app, Event *e) {
     u64 mark = arena_pos(scratch);
     String8 name = os_key_name(scratch, e->scancode);
     if (!name.len) name = str8_fmt(scratch, "the key with scan code 0x%x", e->scancode);
-    echo_message(&app->echo, "%s%s%s%s%S is not a key chord (%s)", (e->mods & MOD_CTRL) ? "Ctrl+" : "",
-                 (e->mods & MOD_ALT) ? "Alt+" : "", (e->mods & MOD_ALTGR) ? "AltGr+" : "", (e->mods & MOD_SHIFT) ? "Shift+" : "",
-                 name, (e->mods & (MOD_CTRL | MOD_ALT)) ? "no character with these modifiers" : "the key types nothing");
+    echo_message(&app->echo, "%s%s%s%s%S is not a key chord (%s)", (e->mods & KEYMOD_CTRL) ? "Ctrl+" : "",
+                 (e->mods & KEYMOD_ALT) ? "Alt+" : "", (e->mods & KEYMOD_ALTGR) ? "AltGr+" : "", (e->mods & KEYMOD_SHIFT) ? "Shift+" : "",
+                 name, (e->mods & (KEYMOD_CTRL | KEYMOD_ALT)) ? "no character with these modifiers" : "the key types nothing");
     arena_pop_to(scratch, mark);
 }
 
