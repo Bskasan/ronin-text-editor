@@ -102,6 +102,12 @@ typedef struct Platform {
     LARGE_INTEGER stage_qpc[32];
     i32 stage_count;
     b32 stages_logged;
+    // --type-ahead-check: a thread types letters into the window as soon as it is the foreground one.
+    b32 type_ahead_check;
+    HANDLE type_ahead_thread;
+    volatile LONG type_ahead_state;   // 0 waiting, 1 typed, 2 never the foreground window, 3 lost it while typing
+    LARGE_INTEGER type_ahead_first, type_ahead_last; // the first and the last key sent
+    LARGE_INTEGER first_present;      // the first frame done (its Present returned)
 #endif
 } Platform;
 
@@ -857,6 +863,9 @@ static void win32_frame(Platform *p) {
     p->frame_count++;
 
     if (p->frame_count == 1) {
+#if TEAL_DEV
+        QueryPerformanceCounter(&p->first_present);
+#endif
         FILETIME created, exited, kernel, user, now_ft;
         GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
         GetSystemTimePreciseAsFileTime(&now_ft);
@@ -1929,6 +1938,99 @@ static i32 win32_write_outputs(Platform *p) {
     return result;
 }
 
+// --type-ahead-check: real input, so only letters and Shift, nothing that could confirm or trigger
+// anything if another window became the foreground one. Each key is one SendInput call with all of
+// its inputs (Shift down, key down, key up, Shift up), so no key is ever left held, and the window
+// must still be the foreground one before each call. Runs only with its own flag.
+static const struct { u8 vk; b32 shift; } win32_type_ahead_keys[] = { { 'A', 0 }, { 'B', 0 }, { 'C', 1 }, { 'D', 0 }, { 'E', 0 } };
+
+static DWORD WINAPI win32_dev_type_ahead_thread(LPVOID param) {
+    Platform *p = param;
+    i32 waited = 0;
+    while (GetForegroundWindow() != p->hwnd) {
+        if (++waited > 3000) {
+            InterlockedExchange(&p->type_ahead_state, 2);
+            return 0;
+        }
+        Sleep(1);
+    }
+    for (i32 i = 0; i < ARRAY_COUNT(win32_type_ahead_keys); i++) {
+        if (GetForegroundWindow() != p->hwnd) {
+            InterlockedExchange(&p->type_ahead_state, 3);
+            return 0;
+        }
+        INPUT in[4] = { 0 };
+        UINT n = 0;
+        WORD vk = win32_type_ahead_keys[i].vk;
+        if (win32_type_ahead_keys[i].shift) {
+            in[n].type = INPUT_KEYBOARD;
+            in[n].ki.wVk = VK_SHIFT;
+            in[n++].ki.wScan = (WORD)MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC);
+        }
+        in[n].type = INPUT_KEYBOARD;
+        in[n].ki.wVk = vk;
+        in[n++].ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+        in[n] = in[n - 1];
+        in[n++].ki.dwFlags = KEYEVENTF_KEYUP;
+        if (win32_type_ahead_keys[i].shift) {
+            in[n] = in[0];
+            in[n++].ki.dwFlags = KEYEVENTF_KEYUP;
+        }
+        SendInput(n, in, sizeof(INPUT));
+        QueryPerformanceCounter(i == 0 ? &p->type_ahead_first : &p->type_ahead_last);
+        if (i == 0) p->type_ahead_last = p->type_ahead_first;
+        Sleep(5); // a fast typist
+    }
+    InterlockedExchange(&p->type_ahead_state, 1);
+    return 0;
+}
+
+// After the first frame: waits for the typing thread, lets the queued keys through, and compares
+// *scratch* with what was typed. Exit 0: every key was sent before the first Present and arrived,
+// in order (or the window never became the foreground one: a skip). EXIT_TEST otherwise.
+static i32 win32_dev_type_ahead_finish(Platform *p) {
+    WaitForSingleObject(p->type_ahead_thread, 10000);
+    CloseHandle(p->type_ahead_thread);
+    LONG state = p->type_ahead_state;
+    if (state == 2) {
+        LOG("type-ahead: skip: the window never became the foreground window (Windows refused the activation)");
+        return EXIT_OK;
+    }
+    // The keys still queued: through the normal pump, a few times over 200 ms.
+    for (i32 round = 0; round < 20 && !p->quit; round++) {
+        MSG msg;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (p->event_count) win32_frame(p);
+        Sleep(10);
+    }
+    b32 caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+    u8 want[ARRAY_COUNT(win32_type_ahead_keys)];
+    for (i32 i = 0; i < ARRAY_COUNT(win32_type_ahead_keys); i++) {
+        u8 c = win32_type_ahead_keys[i].vk;
+        want[i] = (win32_type_ahead_keys[i].shift != caps) ? c : (u8)(c + 32);
+    }
+    String8 text = app_dev_text(p->app, &p->scratch);
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    f64 first_ms = (f64)(p->type_ahead_first.QuadPart - p->qpc_start.QuadPart) * 1000.0 / (f64)freq.QuadPart;
+    f64 last_ms = (f64)(p->type_ahead_last.QuadPart - p->qpc_start.QuadPart) * 1000.0 / (f64)freq.QuadPart;
+    f64 present_ms = (f64)(p->first_present.QuadPart - p->qpc_start.QuadPart) * 1000.0 / (f64)freq.QuadPart;
+    b32 before = state == 1 && p->type_ahead_last.QuadPart < p->first_present.QuadPart;
+    b32 arrived = str8_equal(text, str8(want, sizeof(want)));
+    LOG("type-ahead: keys sent %d.%03d to %d.%03d ms after WinMain, first Present at %d.%03d ms: %s",
+        (i32)first_ms, (i32)(first_ms * 1000) % 1000, (i32)last_ms, (i32)(last_ms * 1000) % 1000, (i32)present_ms,
+        (i32)(present_ms * 1000) % 1000, state == 3 ? "the window lost the foreground while typing"
+                                         : before ? "all before it" : "not all before it");
+    LOG("type-ahead: *scratch* holds '%S', typed '%S'%s", text, str8(want, sizeof(want)), caps ? " (Caps Lock on)" : "");
+    b32 ok = before && arrived;
+    LOG("type-ahead: %s", ok ? "PASS" : "FAIL");
+    arena_reset(&p->scratch);
+    return ok ? EXIT_OK : EXIT_TEST;
+}
+
 // --bench-text: 300 frames of a window full of text, presented with Present(0, 0).
 static void win32_bench_text(Platform *p) {
     enum { FRAMES = 300 };
@@ -2605,7 +2707,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 }
 
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->idle_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
            p->bench_search ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -2723,6 +2825,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--type-ahead-check"))) { p->type_ahead_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--clipboard-check"))) { p->clipboard_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--dpi-check")) && has_value) { p->dpi_check = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--render-mode")) && has_value) {
@@ -2826,6 +2929,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->height = client.bottom - client.top;
 #if TEAL_DEV
     os_dev_stage("window created (hidden), sized for its DPI");
+    if (p->type_ahead_check) p->type_ahead_thread = CreateThread(NULL, 0, win32_dev_type_ahead_thread, p, 0, NULL);
 #endif
 
     AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
@@ -2833,7 +2937,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
-                             p->bench_syntax || p->bench_search); // defaults
+                             p->bench_syntax || p->bench_search || p->type_ahead_check); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -2931,6 +3035,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         p->stages_logged = 1;
         win32_dev_log_stages(p);
         win32_inject_keys(p);
+        if (p->type_ahead_check && p->type_ahead_thread) {
+            p->exit_code = win32_dev_type_ahead_finish(p);
+            p->quit = 1;
+        }
 #else
         SetForegroundWindow(p->hwnd);
 #endif
