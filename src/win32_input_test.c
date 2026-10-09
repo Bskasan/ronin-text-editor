@@ -236,6 +236,12 @@ static String8 it_describe(InputTest *t, ItStroke *s, i32 n) {
     for (i32 i = 0; i < n; i++) it_stroke(t, s[i]);
     String8 echo = str8_copy(&t->arena, app_dev_echo(t->app));
     app_dev_feed(t->app, "C-g", &t->arena); // ends a describe-key still waiting; clears the echo
+    // C-g went to the app directly, not through the keyboard layer: an accent still pending there (the
+    // last stroke was a dead key) would compose with the next case's keys. Space takes it, as it would
+    // for a person.
+    BYTE none[256] = { 0 };
+    WCHAR out[8];
+    ToUnicodeEx(VK_SPACE, MapVirtualKeyExW(VK_SPACE, MAPVK_VK_TO_VSC, t->hkl), none, out, ARRAY_COUNT(out), 0, t->hkl);
     return echo;
 }
 
@@ -515,7 +521,18 @@ static void it_bindings(InputTest *t) {
                 LOG("test: input %s: unreachable: %S (%s): a character no key types", t->name, text, command);
                 if (t->hkl == t->us) it_fail(t, "binding %S unreachable", text);
             } else {
-                String8 got = it_describe(t, here, seq.len);
+                // A plain character from a dead key (^ on Turkish Q and Finnish, in C-x ^) is typed as the
+                // dead key, then Space: Space after a dead key gives the accent itself.
+                ItStroke strokes[2 * KEY_SEQ_MAX];
+                i32 n = 0;
+                for (i32 k = 0; k < seq.len; k++) {
+                    strokes[n++] = here[k];
+                    b32 dead = 0;
+                    KeyChord c = seq.chords[k];
+                    if (!(c & (CHORD_CTRL | CHORD_META | CHORD_NAMED))) it_layout_char(t, t->hkl, here[k].vk, here[k].mods, &dead);
+                    if (dead) strokes[n++] = (ItStroke){ 0, VK_SPACE, 0 };
+                }
+                String8 got = it_describe(t, strokes, n);
                 b32 ok = map == 0 ? str8_equal(got, want) : str8_starts_with(got, str8_fmt(a, "%S ", want));
                 if (!ok) {
                     wrong++;
