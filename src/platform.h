@@ -272,6 +272,10 @@ i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file te
 void app_dev_goto_line(App *app, i64 line); // point to the start of line (< 0: the last line), recentered
 i32  app_dev_key_events(App *app, String8 keys, Event *out, i32 cap); // --keys: tokens to events (bad tokens logged, skipped)
 b32  app_dev_feed_events(App *app, Event *events, i32 count, Arena *scratch); // headless: events through the app, false = quit
+void app_dev_frame_size(App *app, i32 width, i32 height); // headless: the frame of the next frames (default 1280 x 800)
+i32  app_dev_window_count(App *app);
+i32  app_dev_window_selected(App *app);           // the selected window's index in cyclic order
+i64  app_dev_window_top(App *app, i32 index);     // the top line of the index-th window in cyclic order
 b32  app_dev_feed(App *app, const char *keys, Arena *scratch);               // headless: --keys notation, one event at a time
 void app_dev_use_config(App *app, String8 path); // switches to this config file and reloads it (as C-c r)
 b32  app_dev_visit(App *app, String8 path);      // visits a file in the active view
