@@ -347,7 +347,7 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
   holding its matching opener; a line after one that leaves any bracket open gets one level more,
   however many it opened (fixes `f((x) => {` giving two levels).
 - [x] 9. isearch and query-replace
-- [ ] 10. Window splitting
+- [x] 10. Window splitting
 - [ ] 11. Project + fuzzy file open
 - [ ] 12. Project-wide search
 - [ ] 13. Build + jump to error
