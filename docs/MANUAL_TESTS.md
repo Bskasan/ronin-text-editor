@@ -26,13 +26,15 @@ Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 | `--dpi-check <dir>` | WM_DPICHANGED to 125% and back, with a screenshot at each step. Checks the scaling, the font set-ups, and that the frame after coming back is identical to the first. |
 | `--clipboard-check` | The real clipboard, only when it holds plain text or nothing. It saves the text, puts it back, and keeps everything out of clipboard history. |
 | `--log-keys` | Every keyboard message, what teal read from it, and the command it ran. |
+| `--type-ahead-check` | Real input (SendInput, letters and Shift only), run on demand only: types five keys while teal starts and checks they arrived in order before the first frame. |
+| `--bench-windows` | Frames with one and four windows, typing with one and two windows, on the 100 MB file. |
 
 ## A. Startup and window
 
 | Step | What | Status | Evidence |
 |---|---|---|---|
 | A1 | Start from Explorer: no white flash; title "*scratch* - teal" | HUMAN | The title is AUTOMATED: smoke `win32_smoke_check_title` ("window title '*scratch* - teal', set 1 time(s)"). The flash needs eyes: the window is shown cloaked until the first Present. |
-| A2 | Type as soon as the window is visible: characters go to teal | HUMAN | Needs real focus. The smoke never takes the focus. |
+| A2 | Type as soon as the window is visible: characters go to teal | AUTOMATED-NEW | `--type-ahead-check` (Phase 10, on demand): keys typed while teal starts, even before its window is visible, arrive in order. |
 | A3 | Same from a terminal and from the taskbar | HUMAN | Needs the shell. |
 | A4 | Idle with the mouse outside: 0% CPU | AUTOMATED-NEW | `--idle-check`: "PASS: 5000 ms idle: CPU 0 us (0.00% of one core), 0 frame(s), 0 main loop pass(es)". Run on demand. |
 | A5 | Drag-resize: crisp, no stretching, no black areas | HUMAN | Visual, during the modal size loop. |
@@ -213,13 +215,57 @@ Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 | K17 | 100 MB replace-string: progress, C-g stops, C-x u restores | AUTOMATED-NEW | `--bench-search` "replace-string buffer -> BUF in the 100 MB file: after 4 frames 'Replacing... 9%'; C-g: 'Replaced 87987 occurrences (stopped)'; one C-x u ... gives back the exact text 1" (exit 9 if not). |
 | Z1 | Idle 0% CPU; about 80 MB without the big file | AUTOMATED-NEW | `--idle-check`: CPU 0 us over 5 s, 0 frames, private bytes 75 MB. |
 
+## L. Windows (Phase 10)
+
+"window tests" below are the `--test` groups logged as "test: ok: window tree", "window commands",
+"pop-up rule", "two windows on one buffer", "mouse in windows", "the minibuffer and isearch from the
+second of three windows", "a frame too small for its windows", "startup_windows = 2" and "command line
+files".
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| L1 | C-x 3: two windows side by side, both on the buffer at the same place, the left one selected | AUTOMATED-NEW | window tests "C-x 3"; harness, every layout: C-x 3 through posted key messages. Screenshot build/shots/p10_1_side_by_side.png. |
+| L2 | C-x 2: two windows one above the other | AUTOMATED-NEW | window tests "C-x 2" (heights 400 / 384 in the 784 px frame). Screenshot build/shots/p10_2_stacked_same_file.png. |
+| L3 | C-x o goes through the windows in order and back to the first | AUTOMATED-NEW | window tests "C-x o in cyclic order"; harness "C-x o selected 1". |
+| L4 | C-x 0 deletes the window; on the only window it refuses | AUTOMATED-NEW | window tests: the most recently used window is selected; "Attempt to delete minibuffer or sole ordinary window". |
+| L5 | C-x 1 leaves only the selected window | AUTOMATED-NEW | window tests "C-x 1". |
+| L6 | Splitting stops at "Window too small for splitting", and past 8 windows "Too many windows" | AUTOMATED-NEW | window tests (4 stacked windows; 8 side by side) and the tree fuzz. |
+| L7 | C-x + makes the windows equal | AUTOMATED-NEW | window tests: 8 windows of 160 px; tree test: thirds after C-x 3 C-x 3. |
+| L8 | C-x ^, C-x }, C-x { change the size by one line / column; "Cannot enlarge selected window" when nothing can give | AUTOMATED-NEW | window tests "C-x ^", "C-x }", "C-x {" (416 / 368, 648 / 632, 640). |
+| L9 | C-M-v / C-M-S-v scroll the other window; with one window "There is no other window" | AUTOMATED-NEW | window tests (46 lines, back again); harness, every layout. |
+| L10 | C-x 4 f and C-x 4 b open a file / buffer in another window and select it | AUTOMATED-NEW | pop-up rule test (prompts "Find file in other window: ", "Switch to buffer in other window (default ..."). |
+| L11 | C-x 4 0 kills the buffer and its window; on the only window the buffer goes and the window stays | AUTOMATED-NEW | pop-up rule test. Note: the message after it is Emacs' "Attempt to delete minibuffer or sole ordinary window". |
+| L12 | C-h e shows *Messages* in another window, at its end, without selecting it | AUTOMATED-NEW | pop-up rule test "C-h e". |
+| L13 | A buffer shown "in another window": one window splits side by side on a wide frame, one above the other on a narrow one; a window already showing it is reused; otherwise the least recently used window | AUTOMATED-NEW | pop-up rule test, each case (split_width_threshold = 200 for the narrow one). |
+| L14 | Two windows on one file: each keeps its own point and scroll; typing in one moves the other's text correctly; killing the buffer replaces it in both | AUTOMATED-NEW | two windows on one buffer. |
+| L15 | Switching buffers back and forth in one window returns to its place and leaves the other window alone | AUTOMATED-NEW | two windows on one buffer "C-x b back and forth"; buffer list test "each view remembers its own place". |
+| L16 | M-x, goto-line and isearch from a window other than the first: that window stays selected (RET and C-g) | AUTOMATED-NEW | the minibuffer and isearch from the second of three windows. |
+| L17 | Window commands in the minibuffer refuse with a message (C-M-v scrolls the window it was called from) | AUTOMATED-NEW | window tests "in the minibuffer". Note: Emacs' C-x o would leave the minibuffer; teal says "Cannot select another window from the minibuffer" (Later). |
+| L18 | C-x o during an isearch ends it | AUTOMATED-NEW | window tests "C-x o ends the isearch". |
+| L19 | A click selects the window under the pointer and puts point there | AUTOMATED-NEW | mouse in windows "a click selects the window and sets point". |
+| L20 | The wheel scrolls the window under the pointer, not the selected one | AUTOMATED-NEW | mouse in windows "the wheel over a window that is not selected". |
+| L21 | Dragging the line between two windows, or a mode line, resizes the windows on either side | AUTOMATED-NEW | mouse in windows: divider to 720 px, mode line to 336 px, the third window unchanged. |
+| L22 | The drag follows the pointer smoothly | HUMAN | How it feels needs a hand on the mouse. |
+| L23 | The pointer turns into the resize cursor over a divider and over a mode line with a window below; the arrow elsewhere | AUTOMATED-NEW + HUMAN | Which cursor: mouse in windows (app_mouse_cursor at the divider, a mode line, the bottom mode line, text, with the minibuffer reading, in a tiny frame); harness: a mouse move and WM_SETCURSOR request no frame. That Windows shows that cursor: HUMAN. |
+| L24 | A drag selection that leaves its window stays in it | AUTOMATED-NEW | mouse in windows "a drag selection stays in its window". |
+| L25 | Dividers and inactive mode lines look right at 100% and 150% | HUMAN | Visual. Smoke stage 6 checks the exact colors at 100%; dev helper for 150%: `teal_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`. |
+| L26 | A long line in the left window never draws into the right one | AUTOMATED-NEW | smoke stage 6: the divider exactly window_divider next to the line, the right window's first column exactly background. |
+| L27 | window_divider, mode_line_inactive_background, mode_line_inactive_text in teal.conf | AUTOMATED-NEW | config test "window settings and colors", "derived inactive mode line colors"; applying live is the hot reload's (AUTOMATED). |
+| L28 | startup_windows = 2 with two files: side by side, each file at its +LINE | AUTOMATED-NEW | startup_windows = 2 test. Screenshot build/shots/p10_5_startup_windows_2.png. |
+| L29 | Several files on the command line, each with its own +LINE[:COLUMN] | AUTOMATED-NEW | command line files (6 cases); startup_windows = 2 test. |
+| L30 | The OS window dragged to its smallest with several windows, then back: nothing breaks, the windows come back as they were | AUTOMATED-NEW + HUMAN | a frame too small for its windows (8 windows at 40x30, 1x0, 8x16 ...: identical rects, scroll positions and points afterwards). How it looks while small: HUMAN. |
+| L31 | Typing right after starting teal (before its window appears) lands in teal, in order | AUTOMATED-NEW | `--type-ahead-check` (on demand: real input): keys sent 20-83 ms after WinMain, first Present at 160 ms, "abCde". Keys typed in the first ~35-50 ms, before the window exists, still go to the launcher. |
+| L32 | Startup is not slower | AUTOMATED | `--startup-ms`, release, 15 runs in rotating order: 170 ms median against 169 for Phase 9. |
+| L33 | A teal name that a Windows header defines as a macro breaks the build | AUTOMATED-NEW | build.bat's check (src/check_macros.c); the old MOD_ALT, KillRing.small and a test's near each fail it. |
+| L34 | Typing with two windows on one buffer stays fast | AUTOMATED-NEW | `--bench-windows`: 15-22 us a keystroke with two windows, 8-10 us with one. |
+
 ## HUMAN steps
 
 In this order, with `build\teal.exe` (or teal_debug.exe):
 
 1. **A1, A3**: Start teal from Explorer, then from a terminal, then from a pinned taskbar icon. There
    must be no white flash, and the title must read "*scratch* - teal".
-2. **A2**: Start it and type `abc` right away. The text must land in teal.
+2. **A2**: Covered by `--type-ahead-check` since Phase 10; nothing to do by hand.
 3. **A5, A6**: Drag a window corner around. The text stays crisp, nothing is stretched, and no black
    areas appear. Then minimize, restore and maximize.
 4. **A8**: Alt+Tab to another app: the cursor is hollow. Come back: it is filled.
@@ -232,6 +278,16 @@ In this order, with `build\teal.exe` (or teal_debug.exe):
 11. **I8**: Edit teal.conf in Notepad and save. The change applies; the default theme never flashes.
 12. **J9**: Leave a modified file and sign out of Windows. The sign-out is blocked with "Unsaved
     changes in teal", and teal asks to save.
+
+Phase 10, with two or three windows (C-x 3, C-x 2):
+
+13. **L22, L23**: Drag the line between two windows, then a mode line with a window below it. The line
+    follows the pointer without jumping; over the line and the mode line the pointer is the left-right /
+    up-down resize cursor, the arrow over text and over the bottom mode line.
+14. **L25**: Look at the dividers and the inactive mode lines at 100% and at 150% display scale (dev
+    helper: `teal_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`).
+15. **L30**: With four windows, drag the teal window to its smallest size, then back. Nothing looks
+    broken while it is small, and every window comes back as it was.
 
 Dev helpers that take most of the work out of the others: `teal_debug.exe --idle-check` (A4, Z1),
 `teal_debug.exe --dpi-check build\shots\dpi` (A9), and `teal_debug.exe --clipboard-check` (E14,

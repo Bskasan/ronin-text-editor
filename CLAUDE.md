@@ -19,6 +19,10 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - No third-party code or libraries. System DLLs only.
 - One build.bat, unity build: src/teal.c includes the other .c files (win32_dwrite.cpp is
   the only second translation unit). No CMake, no .sln.
+- No teal identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
+  rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/check_macros.c with
+  /Zs (every system header, then teal.c, syntax only) and fails on a collision. Fix by renaming,
+  never by #undef.
 - /W4 /WX clean, always.
 - Write as if there were no C runtime: no stdio, no malloc/free, no str* functions, no CRT
   float formatting. memcpy/memset/memmove are fine. (Static CRT linked for now; Phase 15 may
@@ -77,11 +81,14 @@ Report benchmark numbers from teal_bench.exe (dev flags, optimized code). Its sm
 the debug-layer check; the smoke acceptance criterion is the debug build.
 
 build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
-src/shaders/*.hlsl with fxc into build\gen\*.h, compiles win32_dwrite.cpp, then the unity
-build, and prints the exe size.
+src/shaders/*.hlsl with fxc into build\gen\*.h, runs the macro-collision check
+(src/check_macros.c, /Zs, ~0.3 s), compiles win32_dwrite.cpp, then the unity build, and prints
+the exe size.
 
-Command line, every build: `teal [+LINE[:COLUMN]] [file]` (1-based, as in Emacs). Any
-unrecognized argument starting with `--` (or a flag missing its value) exits at once with
+Command line, every build: `teal [[+LINE[:COLUMN]] file ...]` (1-based, as in Emacs): every file
+is opened, each at the +LINE[:COLUMN] before it (one with no file after it: the file before it, or
+*scratch*); the first is shown, and with startup_windows = 2 the second window shows the second.
+Any unrecognized argument starting with `--` (or a flag missing its value) exits at once with
 code 10, before a window exists.
 
 `--startup-ms` works in both builds: it exits right after the first Present with exit code =
@@ -128,12 +135,27 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # the event, the chord and command (or why none);
                                                           # the key table of each loaded layout
     build/teal_debug.exe --idle-check                     # shown without focus; 5 s idle after 1 s: CPU
-                                                          # time, frames (must be 0), private bytes
+                                                          # time, frames (must be 0), private bytes, the
+                                                          # messages that reached the window meanwhile
+                                                          # (it opens under the mouse: don't touch it)
     build/teal_debug.exe <file> --dpi-check build/shots/dpi   # WM_DPICHANGED to 125% and back, three
                                                           # screenshots, the frame after coming back equal
     build/teal_debug.exe --clipboard-check                # the REAL clipboard (only when it holds plain
                                                           # text or nothing; saved, put back, kept out of
                                                           # clipboard history): CRLF out, LF in
+    build/teal_debug.exe --type-ahead-check               # REAL input: once teal's window is the foreground
+                                                          # one, a thread types a b S-c d e with SendInput
+                                                          # (letters and Shift only, one SendInput call per
+                                                          # key, the foreground checked before each) while
+                                                          # the device is created; *scratch* must read
+                                                          # "abCde", every key sent before the first
+                                                          # Present. Exit 0 pass (or a skip without the
+                                                          # foreground), 9 fail; "inconclusive" when other
+                                                          # input arrived. Only ever run by this flag: never
+                                                          # from --test, the smoke, a bench or the build.
+    build/teal_bench.exe --bench-windows                  # 100 MB file: frames with one window and with four
+                                                          # (top, middle, line 1,000,000, end); typing at
+                                                          # line 1,000,000 with one window and with two
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
@@ -168,7 +190,12 @@ a pixel of a matched substring in completion_match, an unselected row in the bac
 calling view's hollow cursor. "foo bar foo" with C-s f o o C-s gives the last one (stage 4): the
 current match's isearch background and an isearch_text pixel, the other match's lazy_highlight
 background, the spaces beside them untouched, the prompt color on the echo line; then "x" makes it
-fail (stage 5): the failing part on the isearch_fail background in the prompt line. Every syntax
+fail (stage 5): the failing part on the isearch_fail background in the prompt line. Two windows side by
+side (stage 6): the left one selected with focus and a 400-character line, the right one another
+buffer: the divider in window_divider over the full height (nothing of the long line in it), the right
+window's first column exactly background, the long line drawn up to the divider, the inverse mode
+line on the left and mode_line_inactive_background / _text on the right, the filled cursor on the left
+and the hollow one on the right; then back to one window. Every syntax
 frame also has a number pixel in its color. The window
 title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
@@ -235,7 +262,14 @@ frame, the mouse wheel); query-replace and replace-string (every answer, the las
 an outside change while asking, one undo and undo-redo, the region, case conversion, a -> aa, no
 matches, read-only, the wheel, replace-all over 20,000 matches stopped midway with C-g and undone in
 one step). Tests that need search work spread over frames set app->dev_work_budget (positions per
-frame instead of the clock). The steps of docs/MANUAL_TESTS.md that had no test run through the
+frame instead of the clock). Phase 10: the window tree (fixed cases and a fuzz of 16,000 operations on
+400 frames, tiny and empty ones included: exact tiling, minimum sizes, splits at their ratios, frame
+resizes there and back), each view's remembered positions, and through the headless app every window
+command with its messages and refusals (in the minibuffer too), the order of C-x o, the pop-up rule in
+each case, two windows on one buffer, the mouse (clicks, the wheel, divider and mode-line drags, the
+cursor), prompts and isearch from the second of three windows, a frame too small for 8 windows (and
+back: identical rects, scroll positions and points), startup_windows = 2 (app_dev_frame_size sets the
+headless frame). The steps of docs/MANUAL_TESTS.md that had no test run through the
 headless app (test_manual_*, logged as "test: ok: manual <ids>"). Then the Win32 side: modifier keys
 set in the thread's key state read by win32_mods; keypad text right after a chord; and the input
 harness (src/win32_input_test.c): key messages posted, with their scan codes and flags (AltGr as the
@@ -246,9 +280,11 @@ the harness thread only (KLF_NOTELLSHELL; the session's layouts and the foregrou
 checked unchanged afterwards; no SendInput). Per layout: letters, symbols and Turkish letters from
 their keys, Alt / Ctrl / Ctrl+Alt chords, Right Alt as Meta or AltGr text and Left Alt + AltGr,
 Alt+Shift and Ctrl+Shift symbols, dead keys (and none left behind by a chord), nothing to
-DefWindowProc for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, every
-default binding through describe-key (the bindings whose US keys run something else on the layout
-are listed), Alt+F4. A failed dev ASSERT logs its file, line and condition before breaking,
+DefWindowProc for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, a letter
+posted as WM_SYSKEYDOWN without Alt (no focus window) typing its letter, C-x 3 / C-x o / C-M-v /
+C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding through describe-key (a
+plain character from a dead key typed as the dead key and Space; the bindings whose US keys run
+something else on the layout are listed), Alt+F4. Also the command line's files and +LINE:COLUMN. A failed dev ASSERT logs its file, line and condition before breaking,
 so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
@@ -272,6 +308,7 @@ number/constant).
 | directive        | #8cde94 |   | constant        | #7ad0c6 |
 | paren_match (background) | #4f94cd | | isearch (background) | #cd00cd |
 | isearch_text     | #b0e2ff |   | lazy_highlight (background) | #668b8b |
-| isearch_fail (background) | #8b0000 | |           |         |
+| isearch_fail (background) | #8b0000 | | window_divider | #126367 |
+| mode_line_inactive_background | background | | mode_line_inactive_text | text |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.
