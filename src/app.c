@@ -79,6 +79,7 @@ struct App {
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
     i64 dev_work_budget; // search positions per frame instead of the clock (deterministic tests); 0 = the clock
     b32 dev_log_keys;    // --log-keys: every key and text event's result goes to the log
+    i32 dev_frame_w, dev_frame_h; // the headless app's frame (app_dev_frame_size); 0 = 1280 x 800
 #endif
 };
 
@@ -2242,11 +2243,34 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
 
 // A headless app (--test): events through app_update with a fixed 1280x800 window. False = quit.
 b32 app_dev_feed_events(App *app, Event *events, i32 count, Arena *scratch) {
-    FrameInput in = { .events = events, .event_count = count, .width = 1280, .height = 800, .dpi_scale = 1.0f, .scratch = scratch };
+    FrameInput in = { .events = events, .event_count = count, .width = app->dev_frame_w ? app->dev_frame_w : 1280,
+                      .height = app->dev_frame_w ? app->dev_frame_h : 800, .dpi_scale = 1.0f, .scratch = scratch };
     u64 mark = arena_pos(scratch);
     b32 running = app_update(app, &in);
     arena_pop_to(scratch, mark);
     return running;
+}
+
+void app_dev_frame_size(App *app, i32 width, i32 height) {
+    app->dev_frame_w = MAX(width, 1); // a 0 x 0 frame is a minimized window, which runs no frames
+    app->dev_frame_h = MAX(height, 0);
+}
+
+i32 app_dev_window_count(App *app) {
+    return window_count(&app->windows);
+}
+
+i32 app_dev_window_selected(App *app) {
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(&app->windows, leaves);
+    for (i32 i = 0; i < n; i++) if (leaves[i] == app->windows.selected) return i;
+    return -1;
+}
+
+i64 app_dev_window_top(App *app, i32 index) {
+    View *views[WINDOW_MAX];
+    i32 n = app_views(app, views);
+    return index >= 0 && index < n ? view_top_line(views[index]) : -1;
 }
 
 // --keys notation through a headless app, one event at a time. False = quit.

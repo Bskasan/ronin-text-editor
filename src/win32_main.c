@@ -2820,6 +2820,65 @@ static u64 win32_parse_u64(String8 s) {
 }
 #endif
 
+// The files of the command line: a +LINE[:COLUMN] applies to the file after it (Emacs). True when `a` was a
+// file or a +LINE[:COLUMN] (anything but a "--" flag); p->files has room for every argument.
+static b32 win32_file_arg(Platform *p, String8 a, i64 *goto_line, i64 *goto_col) {
+    if (win32_parse_goto(a, goto_line, goto_col)) return 1;
+    if (a.len >= 2 && a.data[0] == '-' && a.data[1] == '-') return 0;
+    p->files[p->file_count++] = (AppFileArg){ a, *goto_line, *goto_col };
+    *goto_line = *goto_col = 0;
+    return 1;
+}
+
+// After the last argument: a +LINE[:COLUMN] with no file after it goes to the file before it, else (no file
+// at all) to *scratch*.
+static void win32_files_done(Platform *p, i64 goto_line, i64 goto_col) {
+    if (!goto_line) return;
+    if (p->file_count) {
+        p->files[p->file_count - 1].line = goto_line;
+        p->files[p->file_count - 1].col = goto_col;
+    } else {
+        p->files[p->file_count++] = (AppFileArg){ { 0 }, goto_line, goto_col };
+    }
+}
+
+#if TEAL_DEV
+// --test: command lines through win32_file_arg / win32_files_done.
+static i32 win32_dev_test_args(Platform *p) {
+    static const struct { const char *args[5]; const char *want; } cases[] = {
+        { { "a.c" }, "a.c 0:0" },
+        { { "+3", "a.c", "b.c", "+5:2" }, "a.c 3:0 | b.c 5:2" },
+        { { "a.c", "+4", "b.c" }, "a.c 0:0 | b.c 4:0" },
+        { { "+7:9" }, " 7:9" },
+        { { "+2", "--smoke", "x.txt", "y.txt", "z.txt" }, "x.txt 2:0 | y.txt 0:0 | z.txt 0:0" },
+        { { "+abc", "+1:" }, "+abc 0:0 | +1: 0:0" },
+    };
+    AppFileArg *saved = p->files;
+    i32 saved_count = p->file_count, failures = 0;
+    AppFileArg files[8];
+    for (i32 c = 0; c < ARRAY_COUNT(cases); c++) {
+        p->files = files;
+        p->file_count = 0;
+        i64 line = 0, col = 0;
+        for (i32 k = 0; k < 5 && cases[c].args[k]; k++) win32_file_arg(p, str8_cstr(cases[c].args[k]), &line, &col);
+        win32_files_done(p, line, col);
+        u8 got[256];
+        i64 n = 0;
+        for (i32 i = 0; i < p->file_count; i++) {
+            n += fmt_buf(got + n, (i64)sizeof(got) - n, "%s%S %D:%D", i ? " | " : "", files[i].path, files[i].line, files[i].col);
+        }
+        if (!str8_equal(str8(got, n), str8_cstr(cases[c].want))) {
+            LOG("test: FAIL: command line %d: '%S', expected '%s'", c, str8(got, n), cases[c].want);
+            failures++;
+        }
+    }
+    p->files = saved;
+    p->file_count = saved_count;
+    if (!failures) LOG("test: ok: command line files (+LINE[:COLUMN] before each file, a trailing one, *scratch*, flags between, not a number)");
+    return failures;
+}
+#endif
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line, int show_cmd) {
     (void)prev_instance;
     (void)cmd_line;
@@ -2848,18 +2907,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // Any "--" argument that is not recognized (or lacks its value) ends the process right
     // here: a stale or wrong executable never opens a window.
     String8 bad_arg = { 0 };
-    // A +LINE[:COLUMN] applies to the file after it (Emacs); one with no file after it to the file before
-    // it, else (no file at all) to *scratch*.
     p->files = PUSH_ARRAY(&p->perm, AppFileArg, arg_count);
     i64 goto_line = 0, goto_col = 0;
     for (i32 i = 1; i < arg_count && !bad_arg.len; i++) {
         String8 a = args[i];
-        if (win32_parse_goto(a, &goto_line, &goto_col)) continue;
-        if (!(a.len >= 2 && a.data[0] == '-' && a.data[1] == '-')) {
-            p->files[p->file_count++] = (AppFileArg){ a, goto_line, goto_col };
-            goto_line = goto_col = 0;
-            continue;
-        }
+        if (win32_file_arg(p, a, &goto_line, &goto_col)) continue;
         if (str8_equal(a, STR8_LIT("--startup-ms"))) { p->startup_ms = 1; continue; }
 #if TEAL_DEV
         b32 has_value = i + 1 < arg_count;
@@ -2896,14 +2948,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
         bad_arg = a;
     }
-    if (goto_line) {
-        if (p->file_count) {
-            p->files[p->file_count - 1].line = goto_line;
-            p->files[p->file_count - 1].col = goto_col;
-        } else {
-            p->files[p->file_count++] = (AppFileArg){ { 0 }, goto_line, goto_col };
-        }
-    }
+    win32_files_done(p, goto_line, goto_col);
 #if !TEAL_DEV
     if (bad_arg.len) return EXIT_USAGE;
 #endif
@@ -2935,6 +2980,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         failures += win32_dev_test_mods(p);
+        failures += win32_dev_test_args(p);
         failures += win32_dev_test_keys(p);
         failures += win32_dev_input_test(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);

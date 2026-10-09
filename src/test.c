@@ -6424,6 +6424,450 @@ static b32 test_window_tree(Test *t, u64 seed) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Windows through the headless app: a 1280 x 800 frame (the tree gets 1280 x 784 above the echo line),
+// 8 x 16 cells, a 4 px pad, a 1 px divider.
+
+static View *test_win(App *app, i32 i) {
+    View *views[WINDOW_MAX];
+    i32 n = app_views(app, views);
+    return i >= 0 && i < n ? views[i] : NULL;
+}
+
+static i64 test_win_point(App *app, i32 i) {
+    View *v = test_win(app, i);
+    return view_point(v, &v->cursors[0]);
+}
+
+// *scratch* in the selected window with `lines` numbered lines ("line 0\n" ...), point at the start.
+static void test_win_lines(Test *t, App *app, i32 lines) {
+    u8 *text = PUSH_ARRAY(&t->arena, u8, (i64)lines * 16);
+    i64 n = 0;
+    for (i32 i = 0; i < lines; i++) n += fmt_buf(text + n, 16, "line %d\n", i);
+    app_dev_show_scratch(app, str8(text, n));
+}
+
+static void test_win_mouse(Test *t, App *app, EventKind kind, i32 x, i32 y) {
+    Event e = { .kind = kind, .button = MOUSE_LEFT, .x = x, .y = y, .clicks = 1 };
+    app_dev_feed_events(app, &e, 1, &t->arena);
+}
+
+// " " separated characters of `s` for app_dev_feed.
+static const char *test_win_keys(Test *t, String8 s) {
+    u8 *out = PUSH_ARRAY(&t->arena, u8, s.len * 2 + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < s.len; i++) {
+        out[n++] = s.data[i];
+        out[n++] = ' ';
+    }
+    out[n] = 0;
+    return (const char *)out;
+}
+
+// Each command of the phase, the order other-window visits windows in, the refusals.
+static b32 test_window_commands(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "window commands: app_create failed");
+    test_win_lines(t, app, 300);
+    app_dev_feed(app, "M-g g 1 0 0 RET", &t->arena);
+    i64 p = test_app_point(app);
+    app_dev_feed(app, "C-x 3", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 0 && test_win(app, 1)->buffer == test_win(app, 0)->buffer &&
+                  test_win_point(app, 1) == p && test_win(app, 0)->w == 640 && test_win(app, 1)->x == 640 &&
+                  app_dev_window_top(app, 1) == app_dev_window_top(app, 0),
+               "window commands: C-x 3 (a new window on the same buffer at the same place, the left one selected)");
+    app_dev_feed(app, "C-x 2", &t->arena); // the left one: top-left 0, bottom-left 1, right 2
+    TEST_CHECK(t, app_dev_window_count(app) == 3 && app_dev_window_selected(app) == 0 && test_win(app, 1)->x == 0 &&
+                  test_win(app, 1)->y == 400 && test_win(app, 0)->h == 400 && test_win(app, 2)->h == 784,
+               "window commands: C-x 2 (%d %d %d)", test_win(app, 1)->y, test_win(app, 0)->h, test_win(app, 2)->h);
+    i32 seen[4];
+    for (i32 k = 0; k < 4; k++) {
+        app_dev_feed(app, "C-x o", &t->arena);
+        seen[k] = app_dev_window_selected(app);
+    }
+    TEST_CHECK(t, seen[0] == 1 && seen[1] == 2 && seen[2] == 0 && seen[3] == 1, "window commands: C-x o in cyclic order (%d %d %d %d)",
+               seen[0], seen[1], seen[2], seen[3]);
+    app_dev_feed(app, "C-x o C-x o", &t->arena); // the top-left one selected, the right one most recently before it
+    app_dev_feed(app, "C-x 0", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 1 && test_win(app, 0)->h == 784,
+               "window commands: C-x 0 deletes it and selects the most recently used one (selected %d)", app_dev_window_selected(app));
+    app_dev_feed(app, "C-x 1", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 1 && test_win(app, 0)->w == 1280, "window commands: C-x 1");
+    app_dev_feed(app, "C-x 0", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 1 && test_app_echo_is(app, "Attempt to delete minibuffer or sole ordinary window"),
+               "window commands: C-x 0 on the only window");
+
+    // Refusals: too small (each C-x 2 halves the selected, top window), too many.
+    i32 count = 1;
+    for (i32 k = 0; k < 10 && !test_app_echo_is(app, "Window too small for splitting"); k++) {
+        app_dev_feed(app, "C-x 2", &t->arena);
+        count = app_dev_window_count(app);
+    }
+    TEST_CHECK(t, test_app_echo_is(app, "Window too small for splitting") && count == 4 && test_win(app, 0)->h >= 2 * WINDOW_MIN_LINES * 16 / 2,
+               "window commands: 'Window too small for splitting' with %d windows", count);
+    app_dev_feed(app, "C-x 1", &t->arena);
+    for (i32 k = 0; k < 10 && !test_app_echo_is(app, "Too many windows"); k++) {
+        app_dev_feed(app, "C-x 3", &t->arena);
+        if (!test_app_echo_is(app, "Too many windows")) app_dev_feed(app, "C-x +", &t->arena);
+    }
+    TEST_CHECK(t, app_dev_window_count(app) == WINDOW_MAX && test_app_echo_is(app, "Too many windows"), "window commands: 'Too many windows' at %d",
+               app_dev_window_count(app));
+    for (i32 i = 0; i < WINDOW_MAX; i++) TEST_CHECK(t, test_win(app, i)->w == 160, "window commands: C-x + makes 8 windows 160 px wide");
+
+    // Sizes.
+    app_dev_feed(app, "C-x 1 C-x ^", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Cannot enlarge selected window"), "window commands: C-x ^ with one window");
+    app_dev_feed(app, "C-x 2 C-x ^", &t->arena);
+    TEST_CHECK(t, test_win(app, 0)->h == 416 && test_win(app, 1)->h == 368, "window commands: C-x ^ (%d %d)", test_win(app, 0)->h, test_win(app, 1)->h);
+    app_dev_feed(app, "C-x }", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Cannot enlarge selected window"), "window commands: C-x } without a window beside it");
+    app_dev_feed(app, "C-x 1 C-x 3 C-x }", &t->arena);
+    TEST_CHECK(t, test_win(app, 0)->w == 648 && test_win(app, 1)->w == 632, "window commands: C-x }");
+    app_dev_feed(app, "C-x { C-x {", &t->arena);
+    TEST_CHECK(t, test_win(app, 0)->w == 632, "window commands: C-x {");
+    app_dev_feed(app, "C-x o C-x {", &t->arena); // the right window gives a column to the left one (no window after it)
+    TEST_CHECK(t, test_win(app, 1)->w == 640, "window commands: C-x { in the right window (%d)", test_win(app, 1)->w);
+
+    // scroll-other-window.
+    app_dev_feed(app, "C-x 1 C-M-v", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "There is no other window"), "window commands: C-M-v with one window");
+    app_dev_feed(app, "C-x 3", &t->arena);
+    i64 top0 = app_dev_window_top(app, 0), top1 = app_dev_window_top(app, 1);
+    app_dev_feed(app, "C-M-v", &t->arena);
+    TEST_CHECK(t, app_dev_window_top(app, 1) == top1 + 46 && app_dev_window_top(app, 0) == top0 && app_dev_window_selected(app) == 0,
+               "window commands: C-M-v scrolls the other window a screen (%D -> %D)", top1, app_dev_window_top(app, 1));
+    app_dev_feed(app, "C-M-S-v", &t->arena);
+    TEST_CHECK(t, app_dev_window_top(app, 1) == top1, "window commands: C-M-S-v scrolls it back");
+
+    // other-window ends an isearch like any other command.
+    app_dev_feed(app, "C-s l i n e", &t->arena);
+    TEST_CHECK(t, app->isearch.active, "window commands: isearch started");
+    app_dev_feed(app, "C-x o", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && app_dev_window_selected(app) == 1, "window commands: C-x o ends the isearch");
+
+    // In the minibuffer.
+    i64 caller_top = app_dev_window_top(app, 1);
+    app_dev_feed(app, "M-x C-x 3", &t->arena);
+    TEST_CHECK(t, app->mini.active && test_app_echo_is(app, "Attempt to split minibuffer window") && app_dev_window_count(app) == 2,
+               "window commands: C-x 3 in the minibuffer");
+    app_dev_feed(app, "C-x 0", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Attempt to delete minibuffer or sole ordinary window") && app_dev_window_count(app) == 2,
+               "window commands: C-x 0 in the minibuffer");
+    app_dev_feed(app, "C-x 1", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Can't expand minibuffer to full frame") && app_dev_window_count(app) == 2,
+               "window commands: C-x 1 in the minibuffer");
+    app_dev_feed(app, "C-x o", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Cannot select another window from the minibuffer") && app_dev_window_selected(app) == 1,
+               "window commands: C-x o in the minibuffer");
+    app_dev_feed(app, "C-x 4 0", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Attempt to delete minibuffer or sole ordinary window") && app_dev_window_count(app) == 2,
+               "window commands: C-x 4 0 in the minibuffer");
+    app_dev_feed(app, "C-M-v", &t->arena);
+    TEST_CHECK(t, app_dev_window_top(app, 1) == caller_top + 46 && app->mini.active,
+               "window commands: C-M-v in the minibuffer scrolls the window it was called from");
+    app_dev_feed(app, "C-x ^", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Cannot enlarge selected window"), "window commands: C-x ^ in the minibuffer acts on the caller");
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !app->mini.active && app_dev_window_selected(app) == 1, "window commands: the minibuffer closed");
+    if (!test_app_destroy(t, app, "window commands")) return 0;
+    LOG("test: ok: window commands (C-x 3, C-x 2, C-x o in cyclic order, C-x 0 and the most recently used window, C-x 1, the "
+        "refusals, C-x +, C-x ^, C-x }, C-x {, C-M-v and C-M-S-v, C-x o ending an isearch, every window command in the minibuffer)");
+    return 1;
+}
+
+// The pop-up rule in each case, with C-x 4 b, C-x 4 f, C-h e; C-x 4 0.
+static b32 test_window_popup(Test *t) {
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p10windows", t->tmp_dir));
+    os_make_dir(dir);
+    String8 file = str8_fmt(&t->arena, "%S\\other.txt", dir), anchor = str8_fmt(&t->arena, "%S\\anchor.txt", dir);
+    String8 conf = str8_fmt(&t->arena, "%S\\narrow.conf", dir);
+    TEST_CHECK(t, os_write_file(file, STR8_LIT("other\n")) && os_write_file(anchor, STR8_LIT("anchor\n")) &&
+                  os_write_file(conf, STR8_LIT("[settings]\nsplit_width_threshold = 200\n")), "pop-up: cannot write the files");
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "pop-up: app_create failed");
+
+    // One window, a frame of 160 columns (the threshold): split side by side; the new window is selected.
+    app_dev_feed(app, "C-x 4 b * M e s s a g e s * RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 1 && test_win(app, 1)->buffer == app->messages &&
+                  test_win(app, 1)->x == 640 && test_win(app, 0)->buffer != app->messages,
+               "pop-up: one window: split side by side, the buffer in the new window");
+    // A window already showing it is reused.
+    app_dev_feed(app, "C-x o C-x 4 b * M e s s a g e s * RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 1, "pop-up: the window showing it is reused");
+    // Otherwise the least recently used other window: top-left (selected), bottom-left, right; the right one was
+    // selected after the bottom-left one.
+    app_dev_feed(app, "C-x 1 C-x 3 C-x 2 C-x o C-x o C-x o", &t->arena);
+    TEST_CHECK(t, app_dev_window_selected(app) == 0, "pop-up: back in the first window");
+    app_dev_feed(app, "C-x 4 b p o p RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 3 && app_dev_window_selected(app) == 1 && str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("pop")),
+               "pop-up: the least recently used other window (selected %d)", app_dev_window_selected(app));
+    // One window in a frame narrower than split_width_threshold: one above the other.
+    app_dev_use_config(app, conf);
+    app_dev_feed(app, "C-x 1 C-x 4 b * s c r a t c h * RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && test_win(app, 1)->x == 0 && test_win(app, 1)->y > 0 && app_dev_window_selected(app) == 1,
+               "pop-up: below 200 columns, one above the other");
+    // C-h e: *Messages* in another window, not selected, point at its end.
+    app_dev_feed(app, "C-x 1 C-h e", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 0 && test_win(app, 1)->buffer == app->messages &&
+                  test_win_point(app, 1) == buffer_size(app->messages), "pop-up: C-h e");
+    // C-x 4 f: the file in the other window, selected.
+    app_dev_visit(app, anchor);
+    app_dev_feed(app, "C-x 4 f", &t->arena);
+    TEST_CHECK(t, app->mini.active && str8_equal(app->mini.prompt, STR8_LIT("Find file in other window: ")), "pop-up: C-x 4 f prompt");
+    app_dev_feed(app, test_win_keys(t, STR8_LIT("other.txt")), &t->arena);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 1 && str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("other.txt")),
+               "pop-up: C-x 4 f opens the file in the other window");
+    // C-x 4 0: the buffer and its window go.
+    app_dev_feed(app, "C-x 4 0", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 1 && !buffer_list_find_name(&app->buffers, STR8_LIT("other.txt")),
+               "pop-up: C-x 4 0 kills the buffer and deletes its window");
+    app_dev_feed(app, "C-x 4 0", &t->arena); // anchor.txt in the only window: killed, the window stays
+    TEST_CHECK(t, app_dev_window_count(app) == 1 && !buffer_list_find_name(&app->buffers, STR8_LIT("anchor.txt")) &&
+                  test_app_echo_is(app, "Attempt to delete minibuffer or sole ordinary window"), "pop-up: C-x 4 0 in the only window");
+    app_dev_feed(app, "C-x 4 b", &t->arena);
+    TEST_CHECK(t, app->mini.active && str8_starts_with(app->mini.prompt, STR8_LIT("Switch to buffer in other window (default ")), "pop-up: C-x 4 b prompt");
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "pop-up")) return 0;
+    LOG("test: ok: pop-up rule (one window: side by side from split_width_threshold columns, else stacked; a window already showing "
+        "the buffer; the least recently used other window; C-x 4 b, C-x 4 f, C-h e), C-x 4 0 (also in the only window)");
+    return 1;
+}
+
+// Two windows on one buffer: independent point and scroll, an edit in one moves the other's markers,
+// kill-buffer replaces the buffer in both, each window's remembered position.
+static b32 test_window_same_buffer(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "same buffer: app_create failed");
+    test_win_lines(t, app, 300);
+    app_dev_feed(app, "M-g g 1 0 0 RET C-x 3 C-x o M->", &t->arena);
+    i64 p0 = test_win_point(app, 0), top0 = app_dev_window_top(app, 0);
+    TEST_CHECK(t, test_win_point(app, 1) == buffer_size(test_win(app, 1)->buffer) && app_dev_window_top(app, 1) > top0 &&
+                  buffer_line_of(test_win(app, 0)->buffer, p0) == 99, "same buffer: each window has its own point and scroll");
+    app_dev_feed(app, "M-< a b c RET", &t->arena); // in the right window, before the left window's point and top
+    TEST_CHECK(t, test_win_point(app, 0) == p0 + 4 && app_dev_window_top(app, 0) == top0 + 1 && test_win_point(app, 1) == 4,
+               "same buffer: an edit in one window moves the other's point (%D, want %D) and top", test_win_point(app, 0), p0 + 4);
+    // Each window returns to its own place after C-x b back and forth; the other is not disturbed.
+    app_dev_feed(app, "C-x o C-x b * M e s s a g e s * RET C-x b * s c r a t c h * RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_selected(app) == 0 && test_win_point(app, 0) == p0 + 4 && app_dev_window_top(app, 0) == top0 + 1 &&
+                  test_win_point(app, 1) == 4, "same buffer: C-x b back and forth keeps each window's place (%D, want %D)",
+               test_win_point(app, 0), p0 + 4);
+    // kill-buffer replaces it in both windows.
+    app_dev_feed(app, "C-x b t w o RET C-x o C-x b t w o RET", &t->arena);
+    TEST_CHECK(t, str8_equal(test_win(app, 0)->buffer->name, STR8_LIT("two")) && test_win(app, 1)->buffer == test_win(app, 0)->buffer,
+               "same buffer: both windows on 'two'");
+    app_dev_feed(app, "C-x k RET", &t->arena);
+    TEST_CHECK(t, !buffer_list_find_name(&app->buffers, STR8_LIT("two")) && test_win(app, 0)->buffer != NULL &&
+                  !str8_equal(test_win(app, 0)->buffer->name, STR8_LIT("two")) && !str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("two")),
+               "same buffer: kill-buffer replaced it in both windows");
+    if (!test_app_destroy(t, app, "same buffer")) return 0;
+    LOG("test: ok: two windows on one buffer (own point and scroll, an edit moving the other's markers, C-x b back and forth, "
+        "kill-buffer in both)");
+    return 1;
+}
+
+// Clicks, the wheel, divider and mode-line drags, drag selections, the mouse cursor.
+static b32 test_window_mouse(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "mouse: app_create failed");
+    test_win_lines(t, app, 300);
+    app_dev_feed(app, "C-x 3", &t->arena);
+    // A click in the right window selects it and puts point there: row 6, column 7.
+    test_win_mouse(t, app, EVENT_MOUSE_DOWN, 640 + 4 + 7 * 8 + 2, 6 * 16 + 5);
+    test_win_mouse(t, app, EVENT_MOUSE_UP, 640 + 4 + 7 * 8 + 2, 6 * 16 + 5);
+    Buffer *buf = test_win(app, 1)->buffer;
+    TEST_CHECK(t, app_dev_window_selected(app) == 1 && test_win_point(app, 1) == buffer_line_start(buf, 6) + 6, // "line 6" has 6 columns
+               "mouse: a click selects the window and sets point (%D)", test_win_point(app, 1));
+    // The wheel over the left window scrolls it, not the selected one.
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 100, .y = 100, .wheel = -120 };
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    TEST_CHECK(t, app_dev_window_top(app, 0) == 3 && app_dev_window_top(app, 1) == 0 && app_dev_window_selected(app) == 1,
+               "mouse: the wheel over a window that is not selected scrolls it");
+    // The cursor: the divider (the left window's last pixel, 639), text, the bottom mode line.
+    TEST_CHECK(t, app_mouse_cursor(app, 639, 300) == MOUSE_CURSOR_RESIZE_WE && app_mouse_cursor(app, 641, 300) == MOUSE_CURSOR_RESIZE_WE &&
+                  app_mouse_cursor(app, 300, 300) == MOUSE_CURSOR_ARROW && app_mouse_cursor(app, 300, 775) == MOUSE_CURSOR_ARROW,
+               "mouse: the cursor over the divider, text and the bottom mode line");
+    // Dragging the divider: only the two windows change; snapped to cells.
+    test_win_mouse(t, app, EVENT_MOUSE_DOWN, 639, 300);
+    test_win_mouse(t, app, EVENT_MOUSE_MOVE, 719, 300);
+    test_win_mouse(t, app, EVENT_MOUSE_UP, 719, 300);
+    TEST_CHECK(t, test_win(app, 0)->w == 720 && test_win(app, 1)->x == 720 && test_win_point(app, 1) == buffer_line_start(buf, 6) + 6,
+               "mouse: dragging the divider (%d)", test_win(app, 0)->w);
+    // A mode line with a window below it: the vertical resize cursor; dragging it moves that line only.
+    app_dev_feed(app, "C-x o C-x 2", &t->arena); // the left window: top-left 0, bottom-left 1, right 2
+    TEST_CHECK(t, app_mouse_cursor(app, 100, 390) == MOUSE_CURSOR_RESIZE_NS && app_mouse_cursor(app, 100, 775) == MOUSE_CURSOR_ARROW,
+               "mouse: the cursor over a mode line with a window below it, and over the bottom one");
+    app_dev_feed(app, "C-x o", &t->arena);
+    test_win_mouse(t, app, EVENT_MOUSE_DOWN, 100, 390);
+    test_win_mouse(t, app, EVENT_MOUSE_MOVE, 100, 330);
+    test_win_mouse(t, app, EVENT_MOUSE_UP, 100, 330);
+    TEST_CHECK(t, test_win(app, 0)->h == 336 && test_win(app, 1)->y == 336 && test_win(app, 2)->h == 784 && app_dev_window_selected(app) == 0,
+               "mouse: dragging a mode line (%d), its window selected", test_win(app, 0)->h);
+    // A drag selection stays in the window it started in: over the right window, the column is the last visible one.
+    i64 right_point = test_win_point(app, 2);
+    test_win_mouse(t, app, EVENT_MOUSE_DOWN, 4 + 2, 5);
+    test_win_mouse(t, app, EVENT_MOUSE_MOVE, 900, 5);
+    test_win_mouse(t, app, EVENT_MOUSE_UP, 900, 5);
+    View *left = test_win(app, 0);
+    TEST_CHECK(t, app_dev_window_selected(app) == 0 && left->cursors[0].mark_active && test_win_point(app, 2) == right_point &&
+                  test_win_point(app, 0) == buffer_line_end(left->buffer, view_top_line(left)),
+               "mouse: a drag selection stays in its window");
+    // While the minibuffer reads, no edge is draggable and presses outside its line do nothing.
+    app_dev_feed(app, "M-x", &t->arena);
+    TEST_CHECK(t, app_mouse_cursor(app, 719, 600) == MOUSE_CURSOR_ARROW, "mouse: no resize cursor while the minibuffer reads");
+    test_win_mouse(t, app, EVENT_MOUSE_DOWN, 719, 600);
+    test_win_mouse(t, app, EVENT_MOUSE_MOVE, 500, 600);
+    test_win_mouse(t, app, EVENT_MOUSE_UP, 500, 600);
+    TEST_CHECK(t, test_win(app, 0)->w == 720 && app->mini.active, "mouse: the divider stays while the minibuffer reads");
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "mouse")) return 0;
+    LOG("test: ok: mouse in windows (a click selects and sets point, the wheel over another window, divider and mode-line drags "
+        "and their cursors, a drag selection kept in its window, nothing to drag while the minibuffer reads)");
+    return 1;
+}
+
+// The minibuffer and isearch from the second of three windows: that window stays selected.
+static b32 test_window_prompts(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "prompts: app_create failed");
+    test_win_lines(t, app, 300);
+    app_dev_feed(app, "C-x 3 C-x 2 C-x o", &t->arena);
+    TEST_CHECK(t, app_dev_window_selected(app) == 1, "prompts: the second window");
+    app_dev_feed(app, "M-x g o t o - l i n e RET 5 0 RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_selected(app) == 1 && buffer_line_of(test_win(app, 1)->buffer, test_win_point(app, 1)) == 49 &&
+                  test_win_point(app, 0) == 0 && test_win_point(app, 2) == 0, "prompts: M-x goto-line runs in the second window and keeps it");
+    app_dev_feed(app, "M-x g o C-g", &t->arena);
+    TEST_CHECK(t, !app->mini.active && app_dev_window_selected(app) == 1, "prompts: C-g in the minibuffer keeps the second window");
+    i64 p = test_win_point(app, 1);
+    app_dev_feed(app, "C-s l i n e SPC 7 0 RET", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && app_dev_window_selected(app) == 1 && buffer_line_of(test_win(app, 1)->buffer, test_win_point(app, 1)) == 70,
+               "prompts: an isearch ended with RET in the second window");
+    app_dev_feed(app, "C-s l i n e SPC 9 9 C-g", &t->arena);
+    TEST_CHECK(t, !app->isearch.active && app_dev_window_selected(app) == 1 && buffer_line_of(test_win(app, 1)->buffer, test_win_point(app, 1)) == 70,
+               "prompts: an isearch quit with C-g goes back to where it started");
+    (void)p;
+    if (!test_app_destroy(t, app, "prompts")) return 0;
+    LOG("test: ok: the minibuffer and isearch from the second of three windows (RET, C-g): that window stays selected");
+    return 1;
+}
+
+// A frame too small for its windows: nothing negative, rows and columns at least 1, commands still run,
+// and the windows come back as they were.
+static b32 test_window_tiny(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "tiny: app_create failed");
+    test_win_lines(t, app, 300);
+    for (i32 k = 0; k < 10 && app_dev_window_count(app) < WINDOW_MAX; k++) app_dev_feed(app, "C-x 3 C-x +", &t->arena);
+    app_dev_feed(app, "C-x o C-x o", &t->arena); // window 2 selected
+    i32 rects[WINDOW_MAX][4];
+    i64 tops[WINDOW_MAX], points[WINDOW_MAX];
+    for (i32 i = 0; i < WINDOW_MAX; i++) {
+        View *v = test_win(app, i);
+        rects[i][0] = v->x, rects[i][1] = v->y, rects[i][2] = v->w, rects[i][3] = v->h;
+        tops[i] = view_top_line(v);
+        points[i] = test_win_point(app, i);
+    }
+    app_dev_frame_size(app, 40, 30);
+    app_dev_feed(app, "", &t->arena);
+    app_dev_feed(app, "x y z C-v M-v C-v", &t->arena);
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 1, .y = 1, .wheel = -120 };
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    i32 wheeled = window_at(&app->windows, 1, 1);
+    app_dev_feed(app, "C-x 2", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Too many windows"), "tiny: C-x 2 with 8 windows");
+    for (i32 k = 0; k < WINDOW_MAX; k++) app_dev_feed(app, "C-x o", &t->arena);
+    app_dev_feed(app, "C-s x RET M-x C-g", &t->arena);
+    test_win_mouse(t, app, EVENT_MOUSE_DOWN, 5, 5);
+    test_win_mouse(t, app, EVENT_MOUSE_UP, 5, 5);
+    for (i32 i = 0; i < WINDOW_MAX; i++) {
+        View *v = test_win(app, i);
+        TEST_CHECK(t, v->w >= 0 && v->h >= 0 && v->rows >= 1 && v->cols >= 1, "tiny: window %d is %dx%d, %d rows, %d columns", i, v->w, v->h,
+                   v->rows, v->cols);
+    }
+    MouseCursor c = app_mouse_cursor(app, 3, 3);
+    TEST_CHECK(t, c >= MOUSE_CURSOR_ARROW && c < MOUSE_CURSOR_COUNT, "tiny: the mouse cursor");
+    // Three windows in the tiny frame: C-x 2 is too small now.
+    app_dev_feed(app, "C-x 1 C-x 3 C-x 3", &t->arena);
+    i32 three = app_dev_window_count(app);
+    app_dev_feed(app, "C-x 2", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Window too small for splitting") && app_dev_window_count(app) == three,
+               "tiny: 'Window too small for splitting' (%d windows)", three);
+    app_dev_frame_size(app, 1280, 800);
+    app_dev_feed(app, "", &t->arena);
+    TEST_CHECK(t, three == 1 || app_dev_window_count(app) == three, "tiny: the windows are still there");
+    if (!test_app_destroy(t, app, "tiny")) return 0;
+
+    // The same eight windows, shrunk and grown back without commands in between: identical rects, scroll
+    // positions and points.
+    app = test_app_create(t);
+    test_win_lines(t, app, 300);
+    for (i32 k = 0; k < 10 && app_dev_window_count(app) < WINDOW_MAX; k++) app_dev_feed(app, "C-x 3 C-x +", &t->arena);
+    for (i32 i = 0; i < WINDOW_MAX; i++) {
+        app_dev_feed(app, "C-x o M-g g 1 5 0 RET", &t->arena); // every window somewhere else
+        View *v = test_win(app, i);
+        (void)v;
+    }
+    for (i32 i = 0; i < WINDOW_MAX; i++) {
+        View *v = test_win(app, i);
+        rects[i][0] = v->x, rects[i][1] = v->y, rects[i][2] = v->w, rects[i][3] = v->h;
+        tops[i] = view_top_line(v);
+        points[i] = test_win_point(app, i);
+    }
+    static const i32 sizes[][2] = { { 40, 30 }, { 1, 0 }, { 8, 16 }, { 600, 100 }, { 1279, 799 } };
+    for (i32 s = 0; s < ARRAY_COUNT(sizes); s++) {
+        app_dev_frame_size(app, sizes[s][0], sizes[s][1]);
+        app_dev_feed(app, "", &t->arena);
+        app_dev_frame_size(app, 1280, 800);
+        app_dev_feed(app, "", &t->arena);
+        for (i32 i = 0; i < WINDOW_MAX; i++) {
+            View *v = test_win(app, i);
+            TEST_CHECK(t, v->x == rects[i][0] && v->y == rects[i][1] && v->w == rects[i][2] && v->h == rects[i][3] &&
+                          view_top_line(v) == tops[i] && test_win_point(app, i) == points[i],
+                       "tiny: after %dx%d, window %d is back as it was (top %D, want %D)", sizes[s][0], sizes[s][1], i, view_top_line(v), tops[i]);
+        }
+    }
+    (void)wheeled;
+    if (!test_app_destroy(t, app, "tiny")) return 0;
+    LOG("test: ok: a frame too small for its windows (8 windows in 40x30: typing, C-v, M-v, the wheel, C-x 2, C-x o, isearch, M-x, a "
+        "click; nothing negative, rows and columns >= 1; 'Window too small for splitting'; frames of 40x30, 1x0, 8x16, 600x100, "
+        "1279x799 and back: identical rects, scroll positions and points)");
+    return 1;
+}
+
+// startup_windows = 2 with two files on the command line.
+static b32 test_window_startup(Test *t) {
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p10windows", t->tmp_dir));
+    os_make_dir(dir);
+    String8 a = str8_fmt(&t->arena, "%S\\first.txt", dir), b = str8_fmt(&t->arena, "%S\\second.txt", dir);
+    String8 conf = str8_fmt(&t->arena, "%S\\two.conf", dir);
+    u8 *text = PUSH_ARRAY(&t->arena, u8, 100 * 16);
+    i64 n = 0;
+    for (i32 i = 0; i < 100; i++) n += fmt_buf(text + n, 16, "row %d\n", i);
+    TEST_CHECK(t, os_write_file(a, str8(text, n)) && os_write_file(b, str8(text, n)) && os_write_file(conf, STR8_LIT("[settings]\nstartup_windows = 2\n")),
+               "startup: cannot write the files");
+    AppFileArg files[2] = { { a, 10, 3 }, { b, 50, 0 } };
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1, .files = files, .file_count = 2, .config_path = conf };
+    App *app = app_create(&t->arena, &args);
+    TEST_CHECK(t, app, "startup: app_create failed");
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 0 &&
+                  str8_equal(test_win(app, 0)->buffer->name, STR8_LIT("first.txt")) && str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("second.txt")) &&
+                  test_win(app, 1)->x == 640, "startup: startup_windows = 2 shows the two files side by side");
+    Buffer *fa = test_win(app, 0)->buffer, *fb = test_win(app, 1)->buffer;
+    TEST_CHECK(t, test_win_point(app, 0) == buffer_line_start(fa, 9) + 2 && test_win_point(app, 1) == buffer_line_start(fb, 49),
+               "startup: each file at its own +LINE:COLUMN");
+    if (!test_app_destroy(t, app, "startup")) return 0;
+    files[1].path = str8(NULL, 0);
+    args.file_count = 1;
+    app = app_create(&t->arena, &args);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && test_win(app, 0)->buffer == test_win(app, 1)->buffer &&
+                  test_win_point(app, 1) == test_win_point(app, 0), "startup: one file: both windows show it");
+    if (!test_app_destroy(t, app, "startup")) return 0;
+    LOG("test: ok: startup_windows = 2 (two files side by side, each at its +LINE:COLUMN; one file in both windows)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -6513,6 +6957,20 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_isearch(&t);
     arena_reset(&t.arena);
     test_replace(&t);
+    arena_reset(&t.arena);
+    test_window_commands(&t);
+    arena_reset(&t.arena);
+    test_window_popup(&t);
+    arena_reset(&t.arena);
+    test_window_same_buffer(&t);
+    arena_reset(&t.arena);
+    test_window_mouse(&t);
+    arena_reset(&t.arena);
+    test_window_prompts(&t);
+    arena_reset(&t.arena);
+    test_window_tiny(&t);
+    arena_reset(&t.arena);
+    test_window_startup(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);

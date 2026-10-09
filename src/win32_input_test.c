@@ -482,6 +482,54 @@ static void it_cases(InputTest *t) {
     it_expect_text(t, "NumLock on: numpad 4, +, C-l, numpad 5", digits, 4, STR8_LIT("4+5"));
     t->state[VK_NUMLOCK] &= (BYTE)~1;
     SetKeyboardState(t->state);
+
+    // Windows through the layout's own keys: C-x 3, C-x o, C-M-v and C-M-S-v.
+    {
+        u8 *text = PUSH_ARRAY(a, u8, 200 * 16);
+        i64 n = 0;
+        for (i32 i = 0; i < 200; i++) n += fmt_buf(text + n, 16, "line %d\n", i);
+        app_dev_show_scratch(t->app, str8(text, n));
+        ItStroke cx = { 0 }, three = { 0 }, o = { 0 }, scroll = { 0 }, scroll_down = { 0 };
+        b32 keys = it_chord_stroke(t, t->hkl, t->altgr, 'x' | CHORD_CTRL, &cx) && it_chord_stroke(t, t->hkl, t->altgr, '3', &three) &&
+                   it_chord_stroke(t, t->hkl, t->altgr, 'o', &o) && it_chord_stroke(t, t->hkl, t->altgr, 'v' | CHORD_CTRL | CHORD_META, &scroll) &&
+                   it_chord_stroke(t, t->hkl, t->altgr, 'v' | CHORD_CTRL | CHORD_META | CHORD_SHIFT, &scroll_down);
+        if (!keys) {
+            it_fail(t, "windows: C-x, 3, o or C-M-v has no keys");
+        } else {
+            it_stroke(t, cx);
+            it_stroke(t, three);
+            i32 count = app_dev_window_count(t->app);
+            it_stroke(t, cx);
+            it_stroke(t, o);
+            i32 selected = app_dev_window_selected(t->app);
+            i64 top = app_dev_window_top(t->app, 0);
+            it_stroke(t, scroll);
+            i64 scrolled = app_dev_window_top(t->app, 0);
+            it_stroke(t, scroll_down);
+            i64 back = app_dev_window_top(t->app, 0);
+            if (count != 2 || selected != 1 || scrolled != top + 46 || back != top) {
+                it_fail(t, "windows: C-x 3 gave %d windows, C-x o selected %d, C-M-v scrolled the other window from %D to %D, C-M-S-v to %D",
+                        count, selected, top, scrolled, back);
+            }
+            app_dev_feed(t->app, "C-x 1", a);
+        }
+    }
+
+    // A mouse move without a button, and WM_SETCURSOR: no frame requested (the move only queues its event).
+    {
+        Platform *p = t->p;
+        p->redraw = 0;
+        i32 events = p->event_count;
+        PostMessageW(t->hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(300, 200));
+        it_pump();
+        i32 moved = p->event_count - events;
+        b32 redraw_move = p->redraw;
+        SendMessageW(t->hwnd, WM_SETCURSOR, (WPARAM)t->hwnd, MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+        if (redraw_move || p->redraw || p->event_count != events + moved || moved > 1) {
+            it_fail(t, "mouse move / WM_SETCURSOR: redraw %d / %d, %d event(s) queued", redraw_move, p->redraw, p->event_count - events);
+        }
+        it_flush(t);
+    }
 }
 
 // Every binding of the default config: the keys that type its chords on this layout, and what
@@ -643,7 +691,7 @@ static DWORD WINAPI it_thread(void *param) {
         if (leaks) it_fail(&t, "%d leak(s) at shutdown", leaks);
         if (t.failures == before_failures) {
             LOG("test: ok: input %s (layout 0x%08X, %s): letters, symbols and Turkish letters from their keys, a letter posted as WM_SYSKEYDOWN without Alt (no focus window), Alt / Ctrl / Ctrl+Alt chords, %s, Alt+Shift and Ctrl+Shift symbols, "
-                "dead keys, no menu for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
+                "dead keys, no menu for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, C-x 3 / C-x o / C-M-v / C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
                 t.altgr ? "AltGr" : "no AltGr", t.altgr ? "AltGr text and Left Alt + AltGr" : "Right Alt as Meta");
         }
         run->failures += t.failures;
