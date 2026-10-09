@@ -48,20 +48,27 @@ set LIBS=kernel32.lib user32.lib gdi32.lib d3d11.lib dxgi.lib dwmapi.lib dwrite.
 
 if "%MODE%"=="release" (
     set NAME=teal
-    set OPT=/O2 /GL /Gw /Gy /GS- /MT /DTEAL_DEV=0
+    set OPT=/O2 /GL /Gw /Gy /GS- /MT
+    set DEFS=/DTEAL_DEV=0
     set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
 ) else if "%MODE%"=="bench" (
     set NAME=teal_bench
-    set OPT=/O2 /Zi /MT /DTEAL_DEV=1 /DTEAL_D3D_DEBUG=0
+    set OPT=/O2 /Zi /MT
+    set DEFS=/DTEAL_DEV=1 /DTEAL_D3D_DEBUG=0
     set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO
 ) else (
     set NAME=teal_debug
-    set OPT=/Od /Zi /MTd /DTEAL_DEV=1
+    set OPT=/Od /Zi /MTd
+    set DEFS=/DTEAL_DEV=1
     set LINKOPT=/DEBUG /INCREMENTAL:NO
 )
-cl %CPPFLAGS% %OPT% src\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
+rem No teal identifier may collide with a system macro: every system header first, then the whole
+rem unity build, syntax only (src\check_macros.c says why).
+cl %CFLAGS% %DEFS% /Zs src\check_macros.c
 if errorlevel 1 exit /b 1
-cl %CFLAGS% %OPT% src\teal.c build\%NAME%_dwrite.obj /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
+cl %CPPFLAGS% %OPT% %DEFS% src\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
+if errorlevel 1 exit /b 1
+cl %CFLAGS% %OPT% %DEFS% src\teal.c build\%NAME%_dwrite.obj /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
 if errorlevel 1 exit /b 1
 
 for %%F in ("build\%NAME%.exe") do echo build\%NAME%.exe: %%~zF bytes
