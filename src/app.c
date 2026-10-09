@@ -2,7 +2,6 @@
 // views laid out in the frame, drawing of text in its token colors, cursors, mode lines and the
 // echo area. View logic lives in view.c.
 
-#define APP_MAX_VIEWS 8
 #define APP_WHEEL_LINES 3 // per notch (120 units)
 #define APP_PAD_PX 4      // left padding of a text area at 96 DPI
 #define APP_CONFIG_RESERVE MB(16)
@@ -33,10 +32,8 @@ struct App {
     BufferList buffers;          // every buffer, in creation order
     Buffer *messages;            // *Messages*: the echo area's log
     KillRing kills;              // one for every buffer
-    View *views[APP_MAX_VIEWS];  // laid out side by side
-    AppParen parens[APP_MAX_VIEWS]; // the matching brackets each view last showed
-    i32 view_count;
-    i32 active_view;
+    WindowTree windows;          // the frame's windows (Views), one of them selected
+    AppParen parens[WINDOW_NODE_MAX]; // the matching brackets each window last showed, by its node
     Echo echo;
     CommandContext ctx;          // keeps last_command between events
     KeyInput keys;               // the key sequence state
@@ -46,7 +43,7 @@ struct App {
     Search lazy;                 // the lazy highlight: the other matches on the drawn rows
     b32 search_pending;          // a search step is still being searched: another frame
     Arena files_arena;           // files.c: paths being built; reset by each use
-    AppWatch watches[APP_MAX_VIEWS]; // the directories of the displayed file buffers
+    AppWatch watches[WINDOW_MAX]; // the directories of the displayed file buffers
     i32 watch_count;
     Arena watch_arena;           // their names; rebuilt when the set changes
     b32 disk_pending;            // a change notification came: check the displayed buffers at disk_due_us
@@ -91,12 +88,24 @@ typedef struct AppLayout {
     i32 minibuffer_y;    // the echo area occupies [minibuffer_y, minibuffer_y + line_h)
 } AppLayout;
 
+static View *app_selected_view(App *app) {
+    return app->windows.nodes[app->windows.selected].view;
+}
+
+// The windows' Views in cyclic order (out holds WINDOW_MAX); returns the count.
+static i32 app_views(App *app, View **out) {
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(&app->windows, leaves);
+    for (i32 i = 0; i < n; i++) out[i] = app->windows.nodes[leaves[i]].view;
+    return n;
+}
+
 static AppLayout app_layout(App *app, FrameInput *in) {
     AppLayout l;
     l.cell_w = app->font ? app->font->cell_w : APP_HEADLESS_CELL_W;
     l.line_h = app->font ? app->font->line_h : APP_HEADLESS_LINE_H;
     l.pad = MAX((i32)(APP_PAD_PX * in->dpi_scale + 0.5f), 1);
-    l.minibuffer_y = in->height - l.line_h;
+    l.minibuffer_y = MAX(in->height - l.line_h, 0);
     l.mode_line_y = l.minibuffer_y - l.line_h;
     l.cols = MAX(in->width / l.cell_w, 1);
     l.rows = MAX(l.mode_line_y / l.line_h, 1);
@@ -110,18 +119,31 @@ static i64 app_text_cells(String8 s) {
     return cells;
 }
 
-// Hands every view its rect: equal columns side by side above the echo area. Each view is its
-// text area plus a mode line at the bottom.
+// The width of the vertical divider at the right of a window with another window beside it.
+static i32 app_divider_px(FrameInput *in) {
+    return MAX((i32)(in->dpi_scale + 0.5f), 1);
+}
+
+// The window tree lays out the frame above the echo area; each window is its text area, a mode line at
+// the bottom and, with a window on its right, a divider at its right edge. Rows and columns are whole
+// cells and never below 1, however small the window (the commands' arithmetic needs that); drawing
+// goes by the pixels.
 static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
-    i32 area_h = MAX(l->minibuffer_y, 0);
-    for (i32 i = 0; i < app->view_count; i++) {
-        View *v = app->views[i];
-        v->x = in->width * i / app->view_count;
-        v->w = in->width * (i + 1) / app->view_count - v->x;
-        v->y = 0;
-        v->h = area_h;
+    WindowMetrics metrics = { .cell_w = l->cell_w, .line_h = l->line_h, .pad = l->pad, .divider = app_divider_px(in) };
+    WindowTree *t = &app->windows;
+    window_layout(t, 0, 0, in->width, l->minibuffer_y, metrics);
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(t, leaves);
+    for (i32 i = 0; i < n; i++) {
+        WindowNode *node = &t->nodes[leaves[i]];
+        View *v = node->view;
+        v->x = node->x;
+        v->y = node->y;
+        v->w = node->w;
+        v->h = node->h;
+        i32 divider = window_has_divider(t, leaves[i]) ? metrics.divider : 0;
         v->rows = MAX((v->h - l->line_h) / l->line_h, 1);
-        v->cols = MAX((v->w - l->pad) / l->cell_w, 1);
+        v->cols = MAX((v->w - l->pad - divider) / l->cell_w, 1);
     }
     // The minibuffer: its text area starts after the prompt.
     View *m = app->mini.view;
@@ -347,7 +369,7 @@ static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor
 // point, and its match: false when there is none (a bracket in a comment or string, unmatched, too
 // far). Cached per view while the buffer, its states and point stay the same.
 static b32 app_paren(App *app, i32 index, Arena *scratch, i64 *a, i64 *b) {
-    View *v = app->views[index];
+    View *v = app->windows.nodes[index].view;
     Buffer *buf = v->buffer;
     AppParen *c = &app->parens[index];
     i64 p = view_point(v, &v->cursors[0]);
@@ -430,7 +452,7 @@ static AppSpan app_draw_search(App *app, Renderer *r, AppLayout *l, View *v, i32
 // `bottom`: the view is drawn above it (the candidate list covers the rest), its mode line moved up.
 // Its rows and scroll position are not touched, so nothing scrolls when the list opens or closes.
 static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i32 index, b32 active, i32 bottom) {
-    View *v = app->views[index];
+    View *v = app->windows.nodes[index].view;
     Buffer *buf = v->buffer;
     i32 line_h = l->line_h;
     i32 text_x = v->x + l->pad;
@@ -802,10 +824,6 @@ static Buffer *app_other_buffer(App *app, Buffer *buf) {
     return best ? best->buffer : NULL;
 }
 
-static View *app_active_view(App *app) {
-    return app->views[app->active_view];
-}
-
 // files.c: files changed outside the editor.
 static void files_check_all(App *app);
 static void files_end_session(App *app);
@@ -860,8 +878,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->messages->tab_width = app->config->settings.tab_width;
     buffer_list_add(&app->buffers, app->messages);
 
-    app->views[0] = view_create(perm, initial);
-    app->view_count = 1;
+    window_init(&app->windows, view_create(perm, initial));
     buffer_list_touch(&app->buffers, initial);
     APP_STAGE("app: buffers and the view");
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
@@ -899,7 +916,8 @@ App *app_create(Arena *perm, AppArgs *args) {
 
 i32 app_shutdown(App *app) {
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
-    for (i32 i = 0; i < app->view_count; i++) view_destroy(app->views[i]);
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) view_destroy(views[i]);
     leaks += minibuffer_destroy(&app->mini);
     isearch_destroy(&app->isearch);
     replace_destroy(&app->replace); // before the buffers: its marker
@@ -911,15 +929,6 @@ i32 app_shutdown(App *app) {
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
     os_unwatch(app->config_watch);
     return leaks;
-}
-
-// The view under a pixel, or -1.
-static i32 app_view_at(App *app, i32 x, i32 y) {
-    for (i32 i = 0; i < app->view_count; i++) {
-        View *v = app->views[i];
-        if (x >= v->x && x < v->x + v->w && y >= v->y && y < v->y + v->h) return i;
-    }
-    return -1;
 }
 
 // The buffer position under a pixel of a view's text area; outside the area (a drag with the
@@ -945,11 +954,11 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         v = app->mini.view;
         if (y < v->y || x < v->x) return;
     } else {
-        i32 i = app_view_at(app, x, y);
+        i32 i = window_at(&app->windows, x, y);
         if (i < 0) return;
-        v = app->views[i];
+        v = app->windows.nodes[i].view;
         if (y >= v->y + v->h - l->line_h) return; // the mode line
-        app->active_view = i;
+        window_select(&app->windows, i);
     }
     Buffer *buf = v->buffer;
     Cursor *c = &v->cursors[0];
@@ -1001,16 +1010,17 @@ static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
     app->wheel_accum += wheel * APP_WHEEL_LINES;
     i32 lines = app->wheel_accum / 120;
     app->wheel_accum -= lines * 120;
-    i32 i = app_view_at(app, x, y);
+    i32 i = window_at(&app->windows, x, y);
     if (!lines || i < 0) return;
-    view_scroll_lines(app->views[i], -lines); // positive = away from the user = towards the top
-    view_ensure_visible(app->views[i]);
+    View *v = app->windows.nodes[i].view;
+    view_scroll_lines(v, -lines); // positive = away from the user = towards the top
+    view_ensure_visible(v);
     app->ctx.last_command = NULL;
 }
 
 // "<buffer name> - teal" for the active view; the platform is called only when it changes.
 static void app_update_title(App *app, Arena *scratch) {
-    String8 title = str8_fmt(scratch, "%S - teal", app->views[app->active_view]->buffer->name);
+    String8 title = str8_fmt(scratch, "%S - teal", app_selected_view(app)->buffer->name);
     title.len = MIN(title.len, (i64)sizeof(app->title));
     if (str8_equal(title, str8(app->title, app->title_len))) return;
     memcpy(app->title, title.data, (size_t)title.len);
@@ -1157,7 +1167,7 @@ const Command CMD_QUOTED_INSERT              = { "quoted-insert", cmd_quoted_ins
 
 // Commands run in the minibuffer while it is active, otherwise in the active view.
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
-    app->ctx.view = app->mini.active ? app->mini.view : app->views[app->active_view];
+    app->ctx.view = app->mini.active ? app->mini.view : app_selected_view(app);
     app->ctx.codepoint = codepoint;
     app->ctx.shift_translated = shift_translated;
     view_run_command(&app->ctx, cmd);
@@ -1281,7 +1291,7 @@ String8 app_dev_echo(App *app) {
 }
 
 String8 app_dev_text(App *app, Arena *arena) {
-    Buffer *buf = app->views[app->active_view]->buffer;
+    Buffer *buf = app_selected_view(app)->buffer;
     return buffer_text(buf, arena, 0, buffer_size(buf));
 }
 
@@ -1414,8 +1424,9 @@ static void app_search_work(App *app, Arena *scratch, u64 deadline) {
 // some view still needs states, another frame is requested; once they are there, nothing runs.
 static void app_catch_up(App *app, Arena *scratch, u64 end) {
     b32 pending = 0;
-    for (i32 i = 0; i < app->view_count; i++) {
-        View *v = app->views[i];
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
+        View *v = views[i];
         u64 now = os_time_us();
         u64 budget = now < end ? end - now : 1;
         if (!syntax_catch_up(v->buffer, view_top_line(v) + v->rows, budget, scratch)) pending = 1;
@@ -1441,11 +1452,13 @@ static b32 app_update(App *app, FrameInput *in) {
     // through the scroll position); every frame does it after the events anyway.
     b32 relaid = in->width != app->laid_w || in->height != app->laid_h || l.cell_w != app->laid_cell_w || l.line_h != app->laid_line_h;
     if (app->initial_line >= 0) { // the first frame: the layout is known now
-        view_goto_line_column(app->views[0], app->initial_line, app->initial_col);
+        view_goto_line_column(app_selected_view(app), app->initial_line, app->initial_col);
         app->initial_line = -1;
         relaid = 1;
     }
-    if (relaid) for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]);
+    View *views[WINDOW_MAX];
+    i32 view_count = app_views(app, views);
+    if (relaid) for (i32 i = 0; i < view_count; i++) view_ensure_visible(views[i]);
 
     for (i32 i = 0; i < in->event_count; i++) {
         Event *e = &in->events[i];
@@ -1496,7 +1509,8 @@ static b32 app_update(App *app, FrameInput *in) {
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
-    for (i32 i = 0; i < app->view_count; i++) view_ensure_visible(app->views[i]); // also views showing a buffer edited elsewhere
+    view_count = app_views(app, views); // commands may have split or deleted windows
+    for (i32 i = 0; i < view_count; i++) view_ensure_visible(views[i]); // also views showing a buffer edited elsewhere
     if (app->mini.active) view_ensure_visible(app->mini.view);
     app->laid_w = in->width;
     app->laid_h = in->height;
@@ -1516,8 +1530,9 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
     // bottom of the views.
     i32 list_rows = app_list_rows(app, &l);
     i32 bottom = l.minibuffer_y - list_rows * l.line_h;
-    for (i32 i = 0; i < app->view_count; i++) {
-        app_draw_view(app, r, &l, in, i, i == app->active_view && !app->mini.active, bottom);
+    i32 leaves[WINDOW_MAX];
+    for (i32 i = 0, n = window_leaves(&app->windows, leaves); i < n; i++) {
+        app_draw_view(app, r, &l, in, leaves[i], leaves[i] == app->windows.selected && !app->mini.active, bottom);
     }
     if (app->mini.active) {
         if (list_rows) app_draw_candidates(app, r, &l, in, list_rows);
@@ -1561,7 +1576,7 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
 //   line 4: "    z = 0;"                     column 1 is a space with spaces all around
 //   line 5: "    w = 1;"
 void app_dev_smoke_syntax(App *app, i32 language) {
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     Buffer *buf = v->buffer;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("// a comment line\nreturn \"some string text\";\nf(a, (b), c);\n"
                                                       "    x_y = a | b;\n    z = 0;\n    w = 1;\n"));
@@ -1617,10 +1632,10 @@ i32 app_dev_syntax_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, b32 
 // Stage 0: point on the empty line 2, no focus: a hollow cursor there. Stage 1 (after the
 // platform clicks the 'x' of line 0 and forces focus): a filled cursor on that 'x'.
 void app_dev_smoke_buffer_view(App *app) {
-    Buffer *buf = app->views[0]->buffer;
+    Buffer *buf = app_selected_view(app)->buffer;
     buf->language = BUFFER_LANG_FUNDAMENTAL;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\na\x01" "b\n"));
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
     buffer_marker_set(buf, v->top, 0);
     app->force_focus = 0;
@@ -1637,7 +1652,7 @@ void app_dev_use_config(App *app, String8 path) {
 
 b32 app_dev_visit(App *app, String8 path) {
     Buffer *buf = app_find_file(app, path);
-    if (buf) view_switch_buffer(app_active_view(app), &app->buffers, buf);
+    if (buf) view_switch_buffer(app_selected_view(app), &app->buffers, buf);
     return buf != NULL;
 }
 
@@ -1668,7 +1683,7 @@ static i64 app_dev_bench_candidates(Minibuffer *mb, void *data, String8 input) {
 u64 app_dev_bench_complete_open(App *app, i64 count) {
     u64 t0 = os_time_us();
     minibuffer_abort(&app->mini);
-    app->ctx.view = app->views[app->active_view];
+    app->ctx.view = app_selected_view(app);
     MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Bench: "), .candidates = app_dev_bench_candidates,
                         .data = (void *)(uintptr_t)count };
     minibuffer_read(&app->ctx, &req);
@@ -1695,7 +1710,7 @@ i32 app_dev_font_setups(App *app) {
 
 // Smoke stage 2: the region from line 0, column 5 to the start of line 2, active.
 void app_dev_smoke_region(App *app) {
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     Buffer *buf = v->buffer;
     view_set_mark(v, &v->cursors[0], 5, 1);
     view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
@@ -1704,7 +1719,7 @@ void app_dev_smoke_region(App *app) {
 // Smoke stage 4: "foo bar foo" from column 0, point 0, focus on; the smoke then types C-s f o o C-s, so
 // the current match is the second foo (columns 8-10) and the first one (0-2) is lazily highlighted.
 void app_dev_smoke_isearch(App *app) {
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     Buffer *buf = v->buffer;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("foo bar foo\n"));
     view_deactivate_mark(v);
@@ -1715,7 +1730,7 @@ void app_dev_smoke_isearch(App *app) {
 
 // --bench-search: text appended to the active buffer, not undoable (as if loaded).
 void app_dev_append(App *app, String8 text) {
-    Buffer *buf = app_active_view(app)->buffer;
+    Buffer *buf = app_selected_view(app)->buffer;
     buffer_undo_enable(buf, 0);
     buffer_replace(buf, buffer_size(buf), buffer_size(buf), text);
     buffer_undo_enable(buf, 1);
@@ -1724,7 +1739,7 @@ void app_dev_append(App *app, String8 text) {
 // --bench-search: *scratch* with `text` (not undoable) in the active view, point at the start.
 void app_dev_show_scratch(App *app, String8 text) {
     Buffer *buf = buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*"));
-    View *v = app_active_view(app);
+    View *v = app_selected_view(app);
     view_switch_buffer(v, &app->buffers, buf);
     buffer_undo_enable(buf, 0);
     buffer_replace(buf, 0, buffer_size(buf), text);
@@ -1739,22 +1754,22 @@ b32 app_dev_isearch_failing(App *app) {
 }
 
 i64 app_dev_point(App *app) {
-    View *v = app_active_view(app);
+    View *v = app_selected_view(app);
     return view_point(v, &v->cursors[0]);
 }
 
 i64 app_dev_size(App *app) {
-    return buffer_size(app_active_view(app)->buffer);
+    return buffer_size(app_selected_view(app)->buffer);
 }
 
 void app_dev_set_language(App *app, i32 language) {
-    Buffer *buf = app_active_view(app)->buffer;
+    Buffer *buf = app_selected_view(app)->buffer;
     buf->language = (BufferLanguage)language;
     syntax_attach(buf);
 }
 
 b32 app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b) {
-    return app->config->settings.show_paren_mode && app_paren(app, app->active_view, scratch, a, b);
+    return app->config->settings.show_paren_mode && app_paren(app, app->windows.selected, scratch, a, b);
 }
 
 void app_dev_force_focus(App *app, i32 focused) {
@@ -1797,7 +1812,7 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + t, .y0 = 2 * lh + t, .x1 = x + cw - t, .y1 = 3 * lh - t,
                        .rgb = app->config->theme.background, .what = "buffer: hollow cursor, inside");
         // Mode line: inverse video to the right end, the buffer name drawn, nothing after the text.
-        String8 mode = app_mode_line_text(app->views[0], in->scratch);
+        String8 mode = app_mode_line_text(app_selected_view(app), in->scratch);
         i32 cells = (i32)mode.len; // ASCII here
         APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = in->width - 1, .y0 = mode_y + lh / 2,
                        .rgb = app->config->theme.text, .what = "buffer: mode line (right end)");
@@ -1913,13 +1928,13 @@ i32 app_dev_key_events(App *app, String8 keys, Event *out, i32 cap) {
 
 // Point to the start of `line` (< 0: the last line), the window recentered on it if needed.
 void app_dev_goto_line(App *app, i64 line) {
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     view_goto_line_column(v, line < 0 ? I64_MAX : line, 0);
     view_ensure_visible(v);
 }
 
 i64 app_dev_line_count(App *app) {
-    return buffer_line_count(app->views[0]->buffer);
+    return buffer_line_count(app_selected_view(app)->buffer);
 }
 
 u64 app_dev_build_us(App *app) {
@@ -1927,7 +1942,7 @@ u64 app_dev_build_us(App *app) {
 }
 
 AppDevMemory app_dev_memory(App *app) {
-    Buffer *buf = app_active_view(app)->buffer;
+    Buffer *buf = app_selected_view(app)->buffer;
     AppDevMemory m = { 0 };
     m.undo = buffer_undo_memory(buf);
     KillRing *k = &app->kills;
