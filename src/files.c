@@ -282,8 +282,9 @@ static void files_save_some_answer(CommandContext *ctx, MiniResult *r);
 
 // Where undoing a reload puts point: the first view showing the buffer, else where it was last shown.
 static i64 files_point_of(App *app, Buffer *buf) {
-    for (i32 i = 0; i < app->view_count; i++) {
-        if (app->views[i]->buffer == buf) return view_point(app->views[i], &app->views[i]->cursors[0]);
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
+        if (views[i]->buffer == buf) return view_point(views[i], &views[i]->cursors[0]);
     }
     i32 e = buffer_list_index(&app->buffers, buf);
     return e >= 0 ? buffer_marker_get(buf, app->buffers.entries[e].point) : 0;
@@ -336,10 +337,11 @@ static void files_poll(App *app) {
     if (!app->disk_pending || now < app->disk_due_us) return;
     app->disk_pending = 0;
     b32 retry = 0;
-    for (i32 i = 0; i < app->view_count; i++) {
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
         b32 seen = 0;
-        for (i32 k = 0; k < i; k++) seen |= app->views[k]->buffer == app->views[i]->buffer;
-        if (!seen) retry |= files_check_buffer(app, app->views[i]->buffer);
+        for (i32 k = 0; k < i; k++) seen |= views[k]->buffer == views[i]->buffer;
+        if (!seen) retry |= files_check_buffer(app, views[i]->buffer);
     }
     if (retry && ++app->disk_attempts < CONFIG_RETRY_ATTEMPTS) {
         app->disk_pending = 1;
@@ -360,10 +362,11 @@ static void files_unwatch_all(App *app) {
 
 // One watch per distinct directory of the displayed file buffers; changed only when that set changes.
 static void files_update_watches(App *app) {
-    String8 dirs[APP_MAX_VIEWS];
+    String8 dirs[WINDOW_MAX];
     i32 n = 0;
-    for (i32 i = 0; i < app->view_count; i++) {
-        Buffer *b = app->views[i]->buffer;
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, count = app_views(app, views); i < count; i++) {
+        Buffer *b = views[i]->buffer;
         if (!b->path.len) continue;
         String8 dir = str8(b->path.data, b->path.len - config_file_name(b->path).len);
         if (dir.len > 1 && files_is_slash(dir.data[dir.len - 1]) && dir.data[dir.len - 2] != ':') dir.len--; // not "C:\"
@@ -378,7 +381,7 @@ static void files_update_watches(App *app) {
         same = found;
     }
     if (same) return;
-    AppWatch next[APP_MAX_VIEWS];
+    AppWatch next[WINDOW_MAX];
     for (i32 k = 0; k < n; k++) {
         next[k] = (AppWatch){ dirs[k], 0 };
         for (i32 i = 0; i < app->watch_count; i++) {
@@ -544,8 +547,9 @@ static void files_kill_buffer(App *app, Buffer *buf) {
         if (!other || !files_last_shown(app, other)) other = fresh; // rather the new *scratch* than a buffer never shown
         buffer_list_add(&app->buffers, fresh);
     }
-    for (i32 i = 0; i < app->view_count; i++) {
-        if (app->views[i]->buffer == buf) view_switch_buffer(app->views[i], &app->buffers, other);
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
+        if (views[i]->buffer == buf) view_switch_buffer(views[i], &app->buffers, other);
     }
     buffer_list_remove(&app->buffers, buf);
     ASSERT(buf->marker_live == 0);

@@ -4191,7 +4191,7 @@ static b32 test_show_paren(Test *t) {
     TEST_CHECK(t, os_write_file(path, text), "paren: cannot write the file");
     App *app = test_app_create(t);
     TEST_CHECK(t, app && app_dev_visit(app, path), "paren: app or visit failed");
-    View *v = app->views[app->active_view];
+    View *v = app_selected_view(app);
     app_dev_feed_events(app, NULL, 0, &t->arena); // a frame: the states
     i64 a, b;
     view_set_point(v, &v->cursors[0], 13); // on '{'
@@ -4213,7 +4213,7 @@ static b32 test_show_paren(Test *t) {
 }
 
 static String8 test_app_text(Test *t, App *app) {
-    Buffer *buf = app->views[app->active_view]->buffer;
+    Buffer *buf = app_selected_view(app)->buffer;
     return buffer_text(buf, &t->arena, 0, buffer_size(buf));
 }
 
@@ -4222,7 +4222,7 @@ static b32 test_headless_app(Test *t) {
     TEST_CHECK(t, app, "headless app: app_create failed");
     app_dev_feed(app, "h i RET C-a x C-/", &t->arena);
     String8 text = test_app_text(t, app);
-    TEST_CHECK(t, str8_equal(text, STR8_LIT("hi\n")) && str8_equal(app->views[0]->buffer->name, STR8_LIT("*scratch*")),
+    TEST_CHECK(t, str8_equal(text, STR8_LIT("hi\n")) && str8_equal(app_selected_view(app)->buffer->name, STR8_LIT("*scratch*")),
                "headless app: typed into *scratch*: '%S'", text);
     if (!test_app_destroy(t, app, "headless app")) return 0;
     LOG("test: ok: headless app (keys through the keymap and the driver)");
@@ -4236,7 +4236,7 @@ static b32 test_headless_app(Test *t) {
 static App *test_search_app(Test *t, String8 text, i64 point) {
     App *app = test_app_create(t);
     if (!app) return NULL;
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     buffer_replace(v->buffer, 0, buffer_size(v->buffer), text);
     view_set_point(v, &v->cursors[0], point);
     view_ensure_visible(v);
@@ -4244,7 +4244,7 @@ static App *test_search_app(Test *t, String8 text, i64 point) {
 }
 
 static i64 test_app_point(App *app) {
-    View *v = app->views[app->active_view];
+    View *v = app_selected_view(app);
     return view_point(v, &v->cursors[0]);
 }
 
@@ -4330,12 +4330,12 @@ static b32 test_isearch(Test *t) {
         test_cstr(what, sizeof(what), "step %d ('%s')", i, steps[i].keys);
         if (!test_isearch_state(t, app, what, steps[i].active, steps[i].point, steps[i].prompt, steps[i].string, steps[i].fail)) return 0;
     }
-    TEST_CHECK(t, test_app_echo_is(app, "Quit") && !app->views[0]->cursors[0].mark_set, "isearch: C-g quits without a mark");
+    TEST_CHECK(t, test_app_echo_is(app, "Quit") && !app_selected_view(app)->cursors[0].mark_set, "isearch: C-g quits without a mark");
     MiniHistory *h = &app->mini.histories[MINI_HISTORY_SEARCH];
     TEST_CHECK(t, h->count == 0, "isearch: a quit search is not in the history");
 
     // RET and ESC: end at the match, the mark at the start, the string in the history.
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     Cursor *c = &v->cursors[0];
     app_dev_feed(app, "C-s f o o RET", &t->arena);
     TEST_CHECK(t, !app->isearch.active && test_app_point(app) == 11 && c->mark_set && !c->mark_active &&
@@ -4426,7 +4426,7 @@ static b32 test_isearch(Test *t) {
     TEST_CHECK(t, frames + 12 >= (i32)(big / KB(64)) && frames + 12 <= (i32)(big / KB(64)) + 2 && !app_wants_frame(app),
                "isearch: sliced: %d frames after the keys for %D bytes at 64 KB a frame", frames, big);
     app_dev_feed(app, "C-g C-g", &t->arena);
-    view_set_point(app->views[0], &app->views[0]->cursors[0], 0);
+    view_set_point(app_selected_view(app), &app_selected_view(app)->cursors[0], 0);
     app_dev_feed(app, "C-s n e", &t->arena); // "n" being searched, "ne" waiting
     app_dev_feed(app, "DEL", &t->arena);       // drops "ne"; "n" still searched
     TEST_CHECK(t, isearch_pending(&app->isearch) && app->isearch.count == 2, "isearch: sliced: DEL drops a waiting step");
@@ -4441,7 +4441,7 @@ static b32 test_isearch(Test *t) {
     u8 *lines = PUSH_ARRAY(&t->arena, u8, 200 * 13);
     for (i32 i = 0; i < 200; i++) fmt_buf(lines + i * 13, 14, "foo line %03d\n", i); // foo at 13 * i
     app = test_search_app(t, str8(lines, 200 * 13), 0);
-    v = app->views[0];
+    v = app_selected_view(app);
     c = &v->cursors[0];
     app_dev_feed(app, "C-s f o o", &t->arena);
     test_app_wheel(t, app, -10);
@@ -4502,7 +4502,7 @@ static b32 test_replace(Test *t) {
     App *app = test_search_app(t, STR8_LIT("a foo b foo c foo d foo e foo f foo\n"), 0);
     TEST_CHECK(t, app, "replace: app_create failed");
     Replace *rp = &app->replace;
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     app_dev_feed(app, "M-%", &t->arena);
     TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Query replace: ")), "replace: the first prompt '%S'", app_dev_prompt(app));
     app_dev_feed(app, "f o o RET", &t->arena);
@@ -4615,7 +4615,7 @@ static b32 test_replace(Test *t) {
     for (i32 i = 0; i < 200; i++) fmt_buf(lines + i * 13, 14, "foo line %03d\n", i);
     app = test_search_app(t, str8(lines, 200 * 13), 0);
     rp = &app->replace;
-    v = app->views[0];
+    v = app_selected_view(app);
     app_dev_feed(app, "M-% f o o RET b a r RET", &t->arena);
     test_app_wheel(t, app, -10);
     TEST_CHECK(t, test_app_point(app) > 13 * 20, "replace: the wheel dragged point (%D)", test_app_point(app));
@@ -4646,7 +4646,7 @@ static b32 test_replace(Test *t) {
     String8 original = str8(foos, n * 4);
     app = test_search_app(t, original, 0);
     rp = &app->replace;
-    v = app->views[0];
+    v = app_selected_view(app);
     app->dev_work_budget = 4096;
     app_dev_feed(app, "M-% f o o RET b a r RET !", &t->arena);
     q = replace_prompt(rp, &t->arena);
@@ -4733,7 +4733,7 @@ static void test_prompt_chain(CommandContext *ctx, MiniResult *r) {
 }
 
 static b32 test_prompt_open(App *app, MiniRequest *req) {
-    app->ctx.view = app->views[app->active_view];
+    app->ctx.view = app_selected_view(app);
     if (!req->done) req->done = test_prompt_done;
     return minibuffer_read(&app->ctx, req);
 }
@@ -4760,7 +4760,7 @@ static b32 test_minibuffer(Test *t) {
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "minibuffer: app_create failed");
     Minibuffer *mb = &app->mini;
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     TestPromptLog *log = &test_prompt_log;
     *log = (TestPromptLog){ 0 };
 
@@ -4935,7 +4935,7 @@ static b32 test_completion(Test *t) {
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "completion: app_create failed");
     Minibuffer *mb = &app->mini;
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     app_dev_feed(app, "a b c RET d e f C-a", &t->arena);
     i64 top = buffer_marker_get(v->buffer, v->top);
 
@@ -5001,7 +5001,7 @@ static b32 test_completion(Test *t) {
 }
 
 static Buffer *test_current(App *app) {
-    return app->views[app->active_view]->buffer;
+    return app_selected_view(app)->buffer;
 }
 
 static b32 test_current_is(App *app, const char *name) {
@@ -5215,7 +5215,7 @@ static b32 test_find_write(Test *t) {
 static b32 test_goto_line(Test *t) {
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "goto-line: app_create failed");
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     Buffer *buf = v->buffer;
     for (i32 i = 1; i <= 100; i++) {
         u8 line[32];
@@ -5268,7 +5268,7 @@ static b32 test_save_some(Test *t) {
         app_dev_visit(app, f[i]);
         b[i] = test_current(app);
     }
-#define TEST_MODIFY(i) do { view_switch_buffer(app->views[0], &app->buffers, b[i]); app_dev_feed(app, "M-< x", &t->arena); } while (0)
+#define TEST_MODIFY(i) do { view_switch_buffer(app_selected_view(app), &app->buffers, b[i]); app_dev_feed(app, "M-< x", &t->arena); } while (0)
     for (i32 i = 0; i < 3; i++) TEST_MODIFY(i);
     app_dev_feed(app, "C-x s", &t->arena);
     String8 q1 = str8_fmt(&t->arena, "Save file %S? (y, n, !, q) ", test_slashes(t, f[0]));
@@ -5488,7 +5488,7 @@ static void test_focus(App *app, b32 focused, Arena *scratch) {
 }
 
 static b32 test_mode_line_has(Test *t, App *app, const char *what) {
-    String8 mode = app_mode_line_text(app->views[0], &t->arena), w = str8_cstr(what);
+    String8 mode = app_mode_line_text(app_selected_view(app), &t->arena), w = str8_cstr(what);
     for (i64 i = 0; i + w.len <= mode.len; i++) if (mem_equal(mode.data + i, w.data, w.len)) return 1;
     return 0;
 }
@@ -5502,7 +5502,7 @@ static b32 test_disk(Test *t) {
     i32 watches_before = os_dev_watch_count();
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "disk: app_create failed");
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     test_focus(app, 1, &t->arena);
     app_dev_visit(app, other);
     app_dev_visit(app, path);
@@ -5824,18 +5824,18 @@ static b32 test_manual_files(Test *t) {
     TEST_CHECK(t, os_write_file(c_path, str8(lines, n)), "manual C1: cannot write");
     App *app = test_manual_app(t, c_path, 0, 0, none);
     TEST_CHECK(t, app, "manual C1: app_create failed");
-    String8 mode = app_mode_line_text(app->views[0], &t->arena);
+    String8 mode = app_mode_line_text(app_selected_view(app), &t->arena);
     TEST_CHECK(t, test_contains(mode, " -:---  m.c ") && test_contains(mode, "Top   L1 C0    (C)    UTF-8 CRLF"),
                "manual C1: mode line '%S'", mode);
     app_dev_feed(app, "M-g g 1 5 0 RET", &t->arena);
-    mode = app_mode_line_text(app->views[0], &t->arena);
+    mode = app_mode_line_text(app_selected_view(app), &t->arena);
     TEST_CHECK(t, test_contains(mode, "%   L150 C0"), "manual C1: a percent in the middle: '%S'", mode);
     if (!test_app_destroy(t, app, "manual C1")) return 0;
 
     // teal +120:8 file: line 120 centered, column 8 (1-based) is C7.
     app = test_manual_app(t, c_path, 120, 8, none);
     TEST_CHECK(t, app, "manual C2: app_create failed");
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     mode = app_mode_line_text(v, &t->arena);
     i64 top = view_top_line(v), want_top = 119 - v->rows / 2;
     TEST_CHECK(t, test_contains(mode, "L120 C7") && top >= want_top - 1 && top <= want_top + 1, "manual C2: '%S', top line %D, expected %D",
@@ -5899,7 +5899,7 @@ static b32 test_manual_files(Test *t) {
 static b32 test_manual_editing(Test *t) {
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "manual editing: app_create failed");
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     Cursor *c = &v->cursors[0];
     app_dev_feed(app, "C-x C-g", &t->arena);
     TEST_CHECK(t, test_echo_has(app, "Quit"), "manual B7: C-x C-g gave '%S'", test_echo(app));
@@ -6045,7 +6045,7 @@ static b32 test_manual_minibuffer(Test *t) {
     app_dev_feed(app, "h i C-x C-s", &t->arena);
     TEST_CHECK(t, test_file_is(t, h7, "hi"), "manual H7: C-x C-s created the file");
 
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     i64 point = view_point(v, &v->cursors[0]);
     app_dev_feed(app, "C-x <left>", &t->arena);
     b32 left = !test_current_is(app, "h7.txt");
@@ -6097,7 +6097,7 @@ static b32 test_manual_config(Test *t) {
     TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[colors]\nbackground = #202020\n")) && test_echo_has(app, "Reloaded teal.conf") &&
                   app->config->theme.background == 0x202020, "manual I2: echo '%S', background %06x", test_echo(app), app->config->theme.background);
 
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[settings]\ntab_width = 8\n")), "manual I5: write");
     app_dev_show_scratch(app, STR8_LIT("\tx"));
     app_dev_feed(app, "C-f", &t->arena);
@@ -6130,7 +6130,7 @@ static b32 test_manual_disk_search(Test *t) {
     TEST_CHECK(t, os_write_file(path, STR8_LIT("ONE\ntwo\nthree\n")), "manual J1: change");
     test_focus(app, 0, &t->arena);
     test_focus(app, 1, &t->arena);
-    View *v = app->views[0];
+    View *v = app_selected_view(app);
     TEST_CHECK(t, test_echo_has(app, "Reverted j1.txt") && view_point(v, &v->cursors[0]) == 4, "manual J1: echo '%S', point %D", test_echo(app),
                view_point(v, &v->cursors[0]));
 
