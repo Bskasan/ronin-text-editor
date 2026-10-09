@@ -31,6 +31,7 @@ typedef struct Platform {
     Event events[EVENT_CAPACITY];
     i32 event_count;
     HANDLE watches[WIN32_MAX_WATCHES]; // change notifications; OsWatch = index + 1, NULL = free
+    HCURSOR cursors[MOUSE_CURSOR_COUNT]; // loaded once; app_mouse_cursor picks one
 #if TEAL_DEV
     b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
     u16 *clip_text;          // in its own reservation
@@ -1061,6 +1062,15 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         win32_push_event(p, e);
         p->redraw = 1;
         return 0;
+    }
+
+    case WM_SETCURSOR: { // the app says which cursor; nothing is queued and no frame is requested
+        if (LOWORD(lp) != HTCLIENT) break;
+        POINT pt;
+        MouseCursor c = MOUSE_CURSOR_ARROW;
+        if (p->app && GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)) c = app_mouse_cursor(p->app, pt.x, pt.y);
+        SetCursor(p->cursors[c] ? p->cursors[c] : p->cursors[MOUSE_CURSOR_ARROW]);
+        return TRUE;
     }
 
     case WM_ERASEBKGND:
@@ -2931,11 +2941,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
 
 
+    p->cursors[MOUSE_CURSOR_ARROW] = LoadCursorW(NULL, IDC_ARROW);
+    p->cursors[MOUSE_CURSOR_RESIZE_WE] = LoadCursorW(NULL, IDC_SIZEWE);
+    p->cursors[MOUSE_CURSOR_RESIZE_NS] = LoadCursorW(NULL, IDC_SIZENS);
     WNDCLASSEXW wc = {
         .cbSize = sizeof(wc),
         .lpfnWndProc = win32_wndproc,
         .hInstance = instance,
-        .hCursor = LoadCursorW(NULL, IDC_ARROW),
+        .hCursor = p->cursors[MOUSE_CURSOR_ARROW],
         .lpszClassName = L"teal",
     };
     if (!RegisterClassExW(&wc)) os_fatal(STR8_LIT("RegisterClassExW failed."));

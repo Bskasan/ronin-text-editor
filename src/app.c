@@ -65,6 +65,8 @@ struct App {
     b32 dragging;                // the left button went down in a text area and is held
     View *drag_view;             // ... of this view (or the minibuffer)
     i64 drag_anchor;             // where it went down (a drag selects from there)
+    i32 resizing;                // the left button went down on this split's divider or mode line: -1 = none
+    i32 resize_offset;           // the split line's position minus the pointer's when it went down
     Renderer *renderer;          // during a frame: commands that change the font rebind the atlas at once
     b32 quit;
     b32 focused;                 // the window has keyboard focus
@@ -931,6 +933,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     buffer_list_add(&app->buffers, app->messages);
 
     app->perm = perm;
+    app->resizing = -1;
     window_init(&app->windows, view_create(perm, initial));
     buffer_list_touch(&app->buffers, initial);
     APP_STAGE("app: buffers and the view");
@@ -985,19 +988,40 @@ i32 app_shutdown(App *app) {
 }
 
 // The buffer position under a pixel of a view's text area; outside the area (a drag with the
-// mouse captured) the row and column are clamped to it. The partial last row counts as the last one.
+// mouse captured, over another window) the row and column are clamped to it. The partial last row counts
+// as the last one.
 static i64 app_mouse_pos(AppLayout *l, View *v, i32 x, i32 y) {
     i64 row = CLAMP((i64)(y - v->y) / l->line_h, 0, (i64)v->rows - 1);
     if (y < v->y) row = 0;
-    i64 col = v->left_col + MAX(x - (v->x + l->pad), 0) / l->cell_w;
+    i64 col = v->left_col + MIN(MAX(x - (v->x + l->pad), 0) / l->cell_w, (i64)v->cols);
     Buffer *buf = v->buffer;
     i64 line = MIN(view_top_line(v) + row, buffer_line_count(buf) - 1);
     return view_offset_at_column(buf, line, col);
 }
 
-// A left press in a text area activates its view. One click puts point at the cell (a drag from
-// there selects); a double click selects the word, a triple click the line with its newline.
-// While the minibuffer is active only its line takes clicks.
+// How far from a divider (or inside a mode line) a press grabs it: 3 px at 96 DPI.
+static i32 app_grab_px(App *app) {
+    return 3 * MAX(app->windows.m.divider, 1);
+}
+
+// The split line under the pointer that a press would drag, or -1: a divider between windows side by
+// side, or a mode line with a window below it. None while the minibuffer reads (presses outside its
+// line are ignored then).
+static i32 app_edge_at(App *app, i32 x, i32 y, WindowSplit *split) {
+    if (app->mini.active) return -1;
+    return window_edge_at(&app->windows, x, y, app_grab_px(app), split);
+}
+
+MouseCursor app_mouse_cursor(App *app, i32 x, i32 y) {
+    WindowSplit split;
+    if (app_edge_at(app, x, y, &split) < 0) return MOUSE_CURSOR_ARROW;
+    return split == WINDOW_SIDE_BY_SIDE ? MOUSE_CURSOR_RESIZE_WE : MOUSE_CURSOR_RESIZE_NS;
+}
+
+// A left press selects the window under the pointer. In a text area one click then puts point at the
+// cell (a drag from there selects, in that window only); a double click selects the word, a triple
+// click the line with its newline. On a divider, or a mode line with a window below it, a drag moves
+// that split line. While the minibuffer is active only its line takes clicks.
 static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
     View *v;
     isearch_exit(&app->ctx); // a click ends a search at its match first
@@ -1007,11 +1031,21 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         v = app->mini.view;
         if (y < v->y || x < v->x) return;
     } else {
+        WindowSplit split;
+        i32 edge = app_edge_at(app, x, y, &split);
         i32 i = window_at(&app->windows, x, y);
+        if (edge >= 0) {
+            WindowNode *first = &app->windows.nodes[app->windows.nodes[edge].child[0]];
+            app->resizing = edge;
+            app->resize_offset = split == WINDOW_SIDE_BY_SIDE ? first->x + first->w - x : first->y + first->h - y;
+            if (split == WINDOW_STACKED && i >= 0) window_select(&app->windows, i); // a mode line selects its window
+            app->ctx.last_command = NULL;
+            return;
+        }
         if (i < 0) return;
         v = app->windows.nodes[i].view;
-        if (y >= v->y + v->h - l->line_h) return; // the mode line
         window_select(&app->windows, i);
+        if (y >= v->y + v->h - l->line_h) return; // a mode line with nothing below it: only selects
     }
     Buffer *buf = v->buffer;
     Cursor *c = &v->cursors[0];
@@ -1046,6 +1080,19 @@ static void app_drag(App *app, AppLayout *l, i32 x, i32 y) {
         view_set_point(v, c, pos);
         view_ensure_visible(v);
     }
+}
+
+// While the left button is held on a divider or a mode line: its split line follows the pointer, snapped to
+// cells; only the windows on either side of it change, never below their minimum sizes.
+static void app_drag_split(App *app, i32 x, i32 y) {
+    WindowTree *t = &app->windows;
+    WindowNode *n = &t->nodes[app->resizing];
+    if (!n->used || n->split == WINDOW_LEAF) { // the tree changed under the drag
+        app->resizing = -1;
+        return;
+    }
+    i32 line = (n->split == WINDOW_SIDE_BY_SIDE ? x : y) + app->resize_offset;
+    if (window_move_split(t, app->resizing, line - (n->split == WINDOW_SIDE_BY_SIDE ? n->x : n->y))) app_fit_views(app);
 }
 
 extern const Command CMD_SAVE_BUFFERS_KILL_TERMINAL, CMD_TEXT_SCALE_INCREASE, CMD_TEXT_SCALE_DECREASE;
@@ -1292,6 +1339,7 @@ static void app_delete_window(CommandContext *ctx, i32 leaf) {
     view_save_position(v, &app->buffers);
     window_delete(&app->windows, leaf);
     if (app->dragging && app->drag_view == v) app->dragging = 0;
+    app->resizing = -1;
     if (app->mini.caller == v) app->mini.caller = app_selected_view(app);
     app_view_free(app, v);
     app_fit_views(app);
@@ -1740,10 +1788,14 @@ static b32 app_update(App *app, FrameInput *in) {
             if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y, MAX(e->clicks, 1));
             break;
         case EVENT_MOUSE_MOVE:
-            if (app->dragging) app_drag(app, &l, e->x, e->y);
+            if (app->resizing >= 0) app_drag_split(app, e->x, e->y);
+            else if (app->dragging) app_drag(app, &l, e->x, e->y);
             break;
         case EVENT_MOUSE_UP:
-            if (e->button == MOUSE_LEFT) app->dragging = 0;
+            if (e->button == MOUSE_LEFT) {
+                app->dragging = 0;
+                app->resizing = -1;
+            }
             break;
         case EVENT_MOUSE_WHEEL:
             app_wheel(app, e->x, e->y, e->wheel, e->mods);
