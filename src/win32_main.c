@@ -3294,6 +3294,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 win32_frame(p);
                 if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 5, NULL);
                 win32_smoke_feed(p, "C-g RET");
+                app_dev_smoke_windows(p->app); // stage 6: two windows side by side
+                r_request_capture(p->renderer);
+                win32_frame(p);
+                if (code3 == EXIT_OK) code3 = win32_smoke_check_frame(p, 6, NULL);
+                app_dev_smoke_windows_end(p->app);
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_text_scale(p);
