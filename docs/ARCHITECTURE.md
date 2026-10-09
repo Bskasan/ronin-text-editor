@@ -5,6 +5,7 @@
 | file | role |
 |---|---|
 | `src/teal.c` | the unity translation unit; includes everything below except the .cpp, in order |
+| `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header teal uses, then `teal.c`, so a teal identifier that a system header defines as a macro fails the build |
 | `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
 | `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
@@ -15,7 +16,8 @@
 | `src/syntax.h/.c` | token kinds, the line lexer interface, keyword tables, the catch-up of line states (budget, convergence), bracket matching and line summaries on tokens (indentation, show-paren) |
 | `src/lex_c.c`, `lex_jai.c`, `lex_cs.c`, `lex_js.c` | the lexers: C and C++ (one), Jai, C#, JavaScript and TypeScript (one) |
 | `src/command.h/.c` | `Command` and `CommandContext`; the table of every command, lookup by Emacs name |
-| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll), the command driver `view_run_command` (undo boundaries, shift-select, region rules, kill appending, clipboard), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
+| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll, the position it remembers for every buffer it showed), the command driver `view_run_command` (undo boundaries, shift-select, region rules, kill appending, clipboard), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
+| `src/window.h/.c` | headless: the frame's windows, a binary tree of splits whose leaves are Views (fixed node array), the selected window and use ticks (LRU / MRU), layout in whole cells by ratios (minimum sizes, frames too small for them), split, delete, move a split line (adjacent windows only), resize, balance, cyclic order, hit tests (window, divider, mode line) |
 | `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link), undo / undo-redo, kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
@@ -23,17 +25,17 @@
 | `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, the minibuffer commands, M-x, goto-line |
 | `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded, over the gap buffer's two segments in place, resumable with a budget of positions, SSE2 scan for the first byte |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
-| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (views, region, the search highlighting, the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
-| `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer, revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
+| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
+| `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
 | `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain, window, message loop (with directory watches), input translation (click counts), clipboard (and the dev fake), directory listing, the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`) |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing, the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `files.c`, `font.c`, `buffer.c`, `view.c`, `edit.c`, `minibuffer.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
+Core (`app.c`, `files.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
 includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
 
 ## Startup and frame loop
@@ -44,11 +46,18 @@ includes only `platform.h` and `render.h`; `font.c` additionally calls `font_bac
    fields). Meanwhile the main thread creates the window hidden on the monitor under the
    mouse, sizes it for that monitor's DPI (clamped to the work area) and creates the app,
    which reads the config (built-in defaults, then the user's teal.conf), opens DirectWrite
-   once with the configured font and pre-rasterizes ASCII. Then it joins the worker, logs its
-   results, and creates swap chain, pipeline and atlas texture (`r_finish_create`).
-2. Shows the window cloaked (DWMWA_CLOAK) and without activation (SW_SHOWNA; the first frame
-   renders on its WM_SIZE), uncloaks, then activates it (SetForegroundWindow): no white flash, and
-   the focus, with its IME and text services setup (~10 ms), comes after the first frame is on screen.
+   once with the configured font, pre-rasterizes ASCII and opens the files of the command line.
+2. Shows the window cloaked (DWMWA_CLOAK) and activates it (SW_SHOW, SetForegroundWindow) right
+   after the app is created: keys typed from then on queue for teal, and the activation (the focus
+   sets up the IME and text services, ~15 ms) overlaps the device creation. (Activating right after
+   the window was created instead slowed the device thread down: first Present 175 ms against 169.)
+   It joins the worker with MsgWaitForMultipleObjects on QS_SENDMESSAGE, so only sent messages are
+   handled meanwhile and posted input stays queued, in order, with its key state; logs the worker's
+   results and creates swap chain, pipeline and atlas texture (`r_finish_create`). The first frame is
+   presented while still cloaked, then the window is uncloaked: no white flash. The main loop then
+   reads the keys typed ahead. If Windows refuses the foreground, the window is still shown and
+   appears when uncloaked. The smoke and `--idle-check` show it without activation, screenshot runs
+   and `--dpi-check` never show it.
 3. Loop: if no redraw is pending, block in `MsgWaitForMultipleObjectsEx` on the messages and the
    directory watches, with no timeout unless the app asks for one (`app_wait_ms`: only while a
    config read is to be retried). Signalled watches become `EVENT_DIR_CHANGED`. Drain every queued
@@ -295,6 +304,35 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client.
   192.4-193.6, 216.4-217.7).
 - Release exe 323,584 bytes (296,448 after Phase 8); the same six DLLs and the same imported functions.
 
+## Measurements (Phase 10)
+
+Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at 144 Hz before),
+1280x800 client.
+
+- The macro check (`cl /Zs src\check_macros.c`, every build): ~0.3 s. It found winuser.h's (and imm.h's)
+  MOD_ALT / MOD_SHIFT against platform.h's modifier bits, rpcndr.h's `small` (through d3d11.h) against
+  KillRing.small, and minwindef.h's `near` / `far` against two test locals; all renamed. During the phase
+  it caught a new `far` local in window.c on its first build.
+- Startup (`--startup-ms`, release, 15 runs each, the builds in rotating order): Phase 9 169 ms median,
+  window shown and activated right after the window was created 175, after the app (kept) 170. Run in
+  a fixed order (new, then old) the new build looked 9 ms slower in three series; rotating the order
+  removed that. `--type-ahead-check`: the window is the foreground one ~35-50 ms after process
+  creation; keys sent 20-83 ms after WinMain, the first Present at 160 ms, all five in *scratch* in
+  order.
+- `--bench-windows` on the 100 MB file (command + frame build, two rounds): 300 frames with one window
+  18-21 us avg (worst 62-215 us); with four windows at the top, middle, line 1,000,000 and end 32-37 us
+  avg (worst 75-224 us). 10,000 self-inserts at line 1,000,000: one window 8-10 us avg, two windows on
+  that place 15-22 us avg (worst 271-310 us; the first insert's gap move 6 ms in the first round).
+- Typing with one window (bench-view, self-insert at line 1,000,000, alternated with the Phase 9 bench
+  build): Phase 9 12-13 us avg, Phase 10 13-14 us; next-line 21-28 / 25-29 us.
+- Idle (`--idle-check`): 0 frames, 0-15 ms of CPU over 5 s. Runs that failed while someone used the
+  machine (the window opens under the mouse) now show why: the messages that reached the window.
+- Memory (release, private bytes idle, 3 runs): *scratch* 76.1-77.3 MB; src\keymap.c 77.1-77.8 MB; the
+  100 MB .txt 191.8-193.4 MB; the 100 MB .c 216.2-216.9 MB (Phase 9: 77.0-77.4, 76.3-77.4, 191.9-193.4,
+  216.1-217.3). A window costs a View slot inside App and two markers per buffer it remembers.
+- Release exe 343,552 bytes (323,584 after Phase 9); the same six DLLs; user32 adds SetCursor and
+  MsgWaitForMultipleObjects.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -322,6 +360,10 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client.
 - Flip model (FLIP_DISCARD, 2 buffers, SCALING_NONE), max frame latency 1, vsync Present.
 - First frame is presented while the window is DWM-cloaked, then uncloaked.
 - `/external:anglebrackets /external:W0`: SDK headers do not break our /W4 /WX.
+- No teal identifier may be a name a system header defines as a macro: build.bat compiles
+  `src/check_macros.c` (every system header we use, then the whole unity build) with /Zs in every
+  configuration, so such a collision, or a teal macro redefining a system one, fails the build where
+  /external:W0 would have hidden it. Fixes are renames (KEYMOD_*, never #undef).
 - Import list kept minimal for startup: kernel32, user32, gdi32, d3d11, dwmapi, dwrite (dxgi
   only in dev builds; dxguid.lib is static). No shell32 (own command-line parser), no shcore.
 - No key events for lone modifier keys (Ctrl, Shift, Alt, Win, Caps Lock). Numpad: text events.
@@ -407,9 +449,8 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client.
 ### Views, cursors, markers (Phase 4)
 
 - A View is an Emacs window: one buffer, an array of cursors, a scroll position (a top-of-window
-  marker and a left column) and a pixel rect. Layout hands each View its rect (for now: equal
-  side-by-side columns above the echo area, each with its own mode line); nothing assumes a
-  single View. Phase 10 adds splitting.
+  marker and a left column) and a pixel rect. Layout hands each View its rect (the window tree,
+  Phase 10), each with its own mode line; nothing assumes a single View.
 - Cursors are an array from the start. Every motion and edit command is written for a single
   cursor (its context carries the View and that Cursor). `view_run_command` is the only place
   that loops over cursors, and it does the work after the loop (keep point visible, update
@@ -804,10 +845,81 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client.
 - While query-replace searches for its next match beyond one slice (huge buffers), keys other than
   C-g are ignored, not queued.
 
+### Windows (Phase 10)
+
+- Windows follow the Emacs model: a binary tree of splits whose leaves are Views, with one selected
+  window. The minibuffer stays a single line across the bottom of the frame and is not part of the
+  tree. At most 8 windows ("Too many windows"); the tree is a fixed array of 15 nodes in App, and the
+  windows' Views live in 8 slots inside App: nothing is allocated when windows come and go. A window
+  keeps its node index for its whole life.
+- Each window has its own point and scroll position, also when two windows show the same buffer. A
+  window remembers its position for every buffer it has shown (Emacs' window-prev-buffers), so
+  switching buffers back and forth in one window does not disturb another. A window new to a buffer
+  starts where the most recently used other window showing it is, else where the buffer was last
+  shown anywhere (the buffer list's entry), else at the start. Marks are per window too (per cursor,
+  as before); each window highlights its own active region.
+- Layout: a split gives its first child its ratio of the size in whole cells from the split's own
+  origin, clamped by the minimum sizes (4 lines with the mode line, 10 columns: Emacs'
+  window-min-height and window-min-width) when they fit, the second child the rest; the leaves tile
+  the frame exactly. Only split, resize, drag and balance change a ratio, so resizing the frame keeps
+  the proportions and a frame resized and back gives the same rects.
+- A window with another window on its right has the vertical divider (window_divider, 1 px at 96
+  DPI) in its own last pixels; stacked windows are separated by their mode lines. Nothing draws
+  outside its window's rect: each window is drawn with the renderer's clip rectangle (r_set_clip, a
+  CPU cut of every quad, glyphs included), its text cut to the text area so a half-visible last
+  column is drawn clipped, then its mode line and divider.
+- The selected window's mode line is inverse video (also while the minibuffer reads: the caller's, as
+  Emacs' mode-line-window-selected-p); the others use mode_line_inactive_background / _text, which
+  follow background and text unless a file sets them. The cursor is filled only in the selected
+  window with focus and no minibuffer, hollow elsewhere. The paren highlight stays in the selected
+  window; isearch and query-replace highlight only their own window.
+- Split gives each half of the selected window (Emacs' split-window-below / -right); the new window
+  shows the same buffer, point, scroll position and mark (inactive) and the selected window stays
+  selected. Deleting a window gives its space to the windows next to it only and selects the most
+  recently used window (Emacs 28+). Moving a split line (a drag, enlarge / shrink) also changes only
+  the windows on either side of it, never below their minimums; enlarge / shrink take from the
+  window after (right, below) first, then the one before. Balance gives equal shares to the members
+  of a run of same-direction splits.
+- One place decides where a buffer "pops up" for commands that show something in another window
+  (`app_display_buffer`): a window other than the selected one already showing it; else, with one
+  window, a split (side by side when the frame is at least split_width_threshold columns wide,
+  otherwise one above the other; the other way if that is too small; the selected window itself if
+  neither fits); else the least recently used other window. C-x 4 f / C-x 4 b select it, C-h e does
+  not (and shows the end of *Messages*). Phases 12 and 13 use it for search results and build output.
+- In the minibuffer the window commands that act on the window they run in refuse with Emacs'
+  messages ("Attempt to split minibuffer window", "Attempt to delete minibuffer or sole ordinary
+  window", "Can't expand minibuffer to full frame"); other-window says "Cannot select another window
+  from the minibuffer" (Emacs would leave the minibuffer: Later). Resize, balance and C-M-v act on
+  the window the minibuffer was called from. A command that deletes the window it runs in (C-x 0,
+  C-x 4 0) continues in the newly selected window: the driver keeps point visible in ctx->view.
+- Mouse: a click selects the window under the pointer, then sets point; a drag selection stays in
+  the window it started in. A press on a divider (within 3 px at 96 DPI) or on a mode line with a
+  window below it drags that split line, snapped to cells; the bottom mode lines only select. While
+  the minibuffer reads, presses outside its line stay ignored, dividers included. The wheel scrolls
+  the window under the pointer without selecting it.
+- The resize cursor: on WM_SETCURSOR the platform asks the app (`app_mouse_cursor`, a hit test on the
+  last layout: no state change, no event, no frame); the horizontal resize cursor over a draggable
+  divider, the vertical one over a draggable mode line, the arrow elsewhere. A layout change under a
+  still pointer shows on the next mouse move.
+- A frame too small for its windows is split by the ratios alone: rects may be empty, never negative;
+  rows and columns stay at least 1 for the commands' arithmetic, the drawing goes by the pixels. A
+  window without room for a text row and its mode line is not drawn, and the layout pass leaves its
+  scroll position alone, so every window comes back as it was when the frame grows.
+- Command line: `teal [+LINE[:COLUMN]] file ...`: every file is opened (the buffer list is the files,
+  *scratch*, *Messages*), each at the +LINE[:COLUMN] before it; the first is shown; with
+  startup_windows = 2 the frame starts side by side and the second window shows the second file.
+- Type-ahead: keys pressed while no window has the keyboard focus (inside an activation) are posted
+  as WM_SYSKEY* without the Alt context bit; every pump turns them back into WM_KEY* before
+  TranslateMessage (`win32_translate`; F10 excepted), so they type their characters instead of
+  becoming Alt chords.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
   message wait, for lower input latency (Phase 15 candidate).
+- Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
+- Window configurations (winner-mode undo of window changes, C-x r w / C-x r j).
+- Copying the window's remembered positions into the new window on a split (Emacs does).
 - Startup is ~175 ms, of which ~125-150 ms is waiting for `D3D11CreateDevice` (driver load) even
   on its own thread; everything else of ours already overlaps it (Phase 9 measurements). Accepted.
   To make the launch feel instant: show the window immediately with the background color painted
