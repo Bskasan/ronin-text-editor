@@ -219,6 +219,16 @@ typedef struct AppArgs {
 App *app_create(Arena *perm, AppArgs *args); // NULL on failure (logged)
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
 u32  app_wait_ms(App *app); // how long the platform may block before EVENT_WAKEUP; 0xFFFFFFFF = until an event
+// The mouse cursor for a point of the client area (WM_SETCURSOR): the resize cursors over what a press
+// would drag (a divider between windows, a mode line with a window below it), else the arrow. A query on
+// the last layout: no state changes, no event, no frame.
+typedef enum MouseCursor {
+    MOUSE_CURSOR_ARROW,
+    MOUSE_CURSOR_RESIZE_WE, // a divider between windows side by side
+    MOUSE_CURSOR_RESIZE_NS, // a mode line with a window below it
+    MOUSE_CURSOR_COUNT,
+} MouseCursor;
+MouseCursor app_mouse_cursor(App *app, i32 x, i32 y);
 b32  app_wants_frame(App *app); // another frame right away: highlighting is still catching up
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
