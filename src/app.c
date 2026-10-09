@@ -73,9 +73,7 @@ struct App {
     i32 wheel_accum;             // wheel units * APP_WHEEL_LINES not yet turned into lines
     u8 title[256];               // the window title last set
     i32 title_len;
-    i64 initial_line;            // 0-based line to visit on the first frame, -1 = none
     i32 laid_w, laid_h, laid_cell_w, laid_line_h; // the layout the views were last fitted to
-    i64 initial_col;
     b32 syntax_pending;          // some view's visible lines still need lexer states: another frame
 #if TEAL_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
@@ -898,6 +896,22 @@ static u32  files_wait_ms(App *app);
 #define APP_STAGE(what) ((void)0)
 #endif
 
+// A command-line +LINE:COLUMN: the buffer's point in the buffer list, where a window showing it starts.
+static void app_goto_arg(App *app, Buffer *buf, AppFileArg *f) {
+    i32 i = buffer_list_index(&app->buffers, buf);
+    if (i < 0 || f->line <= 0) return;
+    i64 line = CLAMP(f->line - 1, 0, buffer_line_count(buf) - 1);
+    buffer_marker_set(buf, app->buffers.entries[i].point, view_offset_at_column(buf, line, MAX(f->col - 1, 0)));
+}
+
+// A window just made for its buffer starts at the buffer's point in the buffer list.
+static void app_view_at_entry(App *app, View *v) {
+    i32 i = buffer_list_index(&app->buffers, v->buffer);
+    if (i >= 0) view_set_point(v, &v->cursors[0], buffer_marker_get(v->buffer, app->buffers.entries[i].point));
+}
+
+static View *app_view_new(App *app, Buffer *buf);
+
 App *app_create(Arena *perm, AppArgs *args) {
     App *app = PUSH_STRUCT(perm, App);
     syntax_init();
@@ -925,17 +939,43 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->messages->read_only = 1;
     buffer_undo_enable(app->messages, 0); // a program buffer: no undo
     app->echo.log = app->messages;
-    // As in Emacs: the file (if any), *scratch* (always), *Messages*.
-    Buffer *initial = args->file_path.len ? app_find_file(app, args->file_path) : NULL;
+    // As in Emacs: the files (if any), *scratch* (always), *Messages*. Each file's +LINE:COLUMN puts its
+    // point there (1-based, as Emacs' (move-to-column (1- COLUMN))).
+    Buffer *shown[2] = { NULL, NULL };
+    i32 shown_count = 0;
+    AppFileArg *scratch_goto = NULL;
+    for (i32 i = 0; i < args->file_count; i++) {
+        AppFileArg *f = &args->files[i];
+        if (!f->path.len) {
+            scratch_goto = f;
+            continue;
+        }
+        Buffer *buf = app_find_file(app, f->path);
+        if (!buf) continue;
+        app_goto_arg(app, buf, f);
+        if (shown_count < 2) shown[shown_count++] = buf;
+    }
     Buffer *scratch = app_new_buffer(app, STR8_LIT("*scratch*"));
-    if (!initial) initial = scratch;
+    if (!shown_count) {
+        shown[shown_count++] = scratch;
+        if (scratch_goto) app_goto_arg(app, scratch, scratch_goto);
+    }
     app->messages->tab_width = app->config->settings.tab_width;
     buffer_list_add(&app->buffers, app->messages);
 
     app->perm = perm;
     app->resizing = -1;
-    window_init(&app->windows, view_create(perm, initial));
-    buffer_list_touch(&app->buffers, initial);
+    View *first = view_create(perm, shown[0]);
+    app_view_at_entry(app, first);
+    window_init(&app->windows, first);
+    if (app->config->settings.startup_windows == 2) { // side by side: the second file, else the same buffer
+        Buffer *second = shown_count > 1 ? shown[1] : shown[0];
+        View *v = app_view_new(app, second);
+        app_view_at_entry(app, v);
+        window_split(&app->windows, app->windows.root, WINDOW_SIDE_BY_SIDE, v, NULL);
+        buffer_list_touch(&app->buffers, second);
+    }
+    buffer_list_touch(&app->buffers, shown[0]);
     APP_STAGE("app: buffers and the view");
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
@@ -961,9 +1001,6 @@ App *app_create(Arena *perm, AppArgs *args) {
     if (app->font && app->font->used_fallback) {
         echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
     }
-    // +LINE:COLUMN, 1-based on the command line as in Emacs (move-to-column (1- COLUMN)).
-    app->initial_line = args->goto_line > 0 ? args->goto_line - 1 : -1;
-    app->initial_col = MAX(args->goto_col - 1, 0);
 #if TEAL_DEV
     app->force_focus = -1;
 #endif
@@ -1755,11 +1792,6 @@ static b32 app_update(App *app, FrameInput *in) {
     // Fit the views again before the events only when the size or the font changed (a click maps
     // through the scroll position); every frame does it after the events anyway.
     b32 relaid = in->width != app->laid_w || in->height != app->laid_h || l.cell_w != app->laid_cell_w || l.line_h != app->laid_line_h;
-    if (app->initial_line >= 0) { // the first frame: the layout is known now
-        view_goto_line_column(app_selected_view(app), app->initial_line, app->initial_col);
-        app->initial_line = -1;
-        relaid = 1;
-    }
     View *views[WINDOW_MAX];
     i32 view_count = app_views(app, views);
     if (relaid) for (i32 i = 0; i < view_count; i++) if (!app_view_hidden(app, views[i])) view_ensure_visible(views[i]);

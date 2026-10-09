@@ -201,13 +201,19 @@ typedef struct FrameInput {
 typedef struct App App;
 typedef struct Renderer Renderer;
 
+// A file named on the command line, with the +LINE[:COLUMN] given for it (Emacs: the one before it).
+typedef struct AppFileArg {
+    String8 path; // empty: the +LINE[:COLUMN] of a command line without files, for *scratch*
+    i64 line;     // 1-based; 0 = not given
+    i64 col;      // visual column, 1-based; 0 = not given
+} AppFileArg;
+
 typedef struct AppArgs {
     f32 dpi_scale;
     b32 render_mode_forced; // dev --render-mode: overrides the config's render_mode
     FbRenderMode render_mode;
-    String8 file_path; // the first non-flag argument; empty = *scratch*
-    i64 goto_line;     // +LINE[:COLUMN], 1-based as in Emacs; 0 = not given
-    i64 goto_col;      // visual column, 1-based; 0 = not given
+    AppFileArg *files; // in command-line order: all are opened, the first is shown (the second too with
+    i32 file_count;    // startup_windows = 2); none: *scratch*
 #if TEAL_DEV
 
     String8 config_path; // --config: this file instead of the user's teal.conf

@@ -62,8 +62,8 @@ typedef struct Platform {
     // Command-line options.
     b32 startup_ms;       // --startup-ms: exit after the first Present, exit code = ms since process creation
     f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
-    String8 file_path;    // the first argument that is not a flag
-    i64 goto_line, goto_col; // +LINE[:COLUMN], 1-based; 0 = not given
+    AppFileArg *files;    // the arguments that are not flags, with the +LINE[:COLUMN] before each
+    i32 file_count;
     b32 render_mode_forced;
     FbRenderMode render_mode;
     b32 unsaved;      // some file buffer has unsaved changes (os_set_unsaved_files)
@@ -2464,7 +2464,7 @@ static void win32_bench_search(Platform *p) {
 
     // The 100 MB file (manual K17): replace-string shows its progress, C-g stops it, one C-x u gives
     // back the file's text exactly. A wrong result fails the bench (exit 9).
-    if (app_dev_visit(p->app, p->file_path)) {
+    if (app_dev_visit(p->app, p->files[0].path)) {
         u64 hash0 = win32_dev_hash(app_dev_text(p->app, &p->scratch));
         arena_reset(&p->scratch);
         i64 size0 = app_dev_size(p->app);
@@ -2848,11 +2848,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // Any "--" argument that is not recognized (or lacks its value) ends the process right
     // here: a stale or wrong executable never opens a window.
     String8 bad_arg = { 0 };
+    // A +LINE[:COLUMN] applies to the file after it (Emacs); one with no file after it to the file before
+    // it, else (no file at all) to *scratch*.
+    p->files = PUSH_ARRAY(&p->perm, AppFileArg, arg_count);
+    i64 goto_line = 0, goto_col = 0;
     for (i32 i = 1; i < arg_count && !bad_arg.len; i++) {
         String8 a = args[i];
-        if (win32_parse_goto(a, &p->goto_line, &p->goto_col)) continue;
+        if (win32_parse_goto(a, &goto_line, &goto_col)) continue;
         if (!(a.len >= 2 && a.data[0] == '-' && a.data[1] == '-')) {
-            if (!p->file_path.len) p->file_path = a;
+            p->files[p->file_count++] = (AppFileArg){ a, goto_line, goto_col };
+            goto_line = goto_col = 0;
             continue;
         }
         if (str8_equal(a, STR8_LIT("--startup-ms"))) { p->startup_ms = 1; continue; }
@@ -2891,6 +2896,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
         bad_arg = a;
     }
+    if (goto_line) {
+        if (p->file_count) {
+            p->files[p->file_count - 1].line = goto_line;
+            p->files[p->file_count - 1].col = goto_col;
+        } else {
+            p->files[p->file_count++] = (AppFileArg){ { 0 }, goto_line, goto_col };
+        }
+    }
 #if !TEAL_DEV
     if (bad_arg.len) return EXIT_USAGE;
 #endif
@@ -2928,9 +2941,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         return failures ? EXIT_TEST : EXIT_OK;
     }
     if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search) { // generated before the app opens it; measured after startup
-        p->file_path = test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+        p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
+        p->file_count = 1;
     }
-    if (p->bench_syntax) p->file_path = test_bench_syntax_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+    if (p->bench_syntax) {
+        p->files[0] = (AppFileArg){ test_bench_syntax_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
+        p->file_count = 1;
+    }
 #endif
 
     // Argument parsing above takes microseconds; the device thread starts right after it.
@@ -2989,7 +3006,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
 
     AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
-                         .file_path = p->file_path, .goto_line = p->goto_line, .goto_col = p->goto_col };
+                         .files = p->files, .file_count = p->file_count };
 #if TEAL_DEV
     app_args.config_path = p->config_path;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
@@ -3124,7 +3141,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         p->quit = 1;
     }
     if (p->bench_buffer && !p->quit) {
-        test_bench_buffer(p->file_path, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
+        test_bench_buffer(p->files[0].path, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
         win32_bench_buffer_frames(p);
         p->quit = 1;
     }
