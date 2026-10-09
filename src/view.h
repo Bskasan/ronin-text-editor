@@ -44,6 +44,7 @@ void echo_clear(Echo *e);
 // Views
 
 #define VIEW_CURSOR_RESERVE MB(16)  // address space for the cursor array (~1M cursors)
+#define VIEW_MEMORY_RESERVE MB(1)   // address space for the positions a view remembers (~32,000 buffers)
 #define VIEW_CONTEXT_LINES 2        // kept on screen by scroll-up/down-command (Emacs next-screen-context-lines)
 
 struct Cursor {
@@ -54,6 +55,13 @@ struct Cursor {
     b32 mark_active;    // transient mark mode: the region is active (highlighted)
     b32 mark_shift;     // activated by shift-select: an unshifted motion deactivates it
 };
+
+// Where a view (an Emacs window) last showed a buffer it switched away from.
+typedef struct ViewBufferPos {
+    Buffer *buffer;
+    BufferMarker point, top;
+    i64 left_col;
+} ViewBufferPos;
 
 struct View {
     Buffer *buffer;
@@ -66,10 +74,13 @@ struct View {
     i32 rows, cols;     // full text cells, from the layout (or a test)
     i32 recenter_step;  // recenter-top-bottom: 0 center, 1 top, 2 bottom
     i32 recenter_row;   // a command's request: if point is off screen, put its line on this row; -1 = center
+    Arena memory_arena; // holds only `memory`, so the array stays contiguous
+    ViewBufferPos *memory; // a position for every other buffer this view has shown (markers in those buffers)
+    i32 memory_count;
 };
 
 View   *view_create(Arena *arena, Buffer *buf); // one cursor at 0, scrolled to the top
-void    view_destroy(View *view);               // releases its markers and the cursor array
+void    view_destroy(View *view);               // releases its markers, the cursor array and its remembered positions
 Cursor *view_add_cursor(View *view, i64 pos);
 i64     view_point(View *view, Cursor *cursor);
 void    view_set_point(View *view, Cursor *cursor, i64 pos);
@@ -96,8 +107,9 @@ i64  view_forward_word(Buffer *buf, i64 pos, b32 underscore_is_word);  // the en
 i64  view_backward_word(Buffer *buf, i64 pos, b32 underscore_is_word); // the start of the previous word
 
 // ---------------------------------------------------------------------------
-// The buffer list. Each entry remembers where its buffer was last shown, so switching a view
-// away and back restores point and the scroll position (Emacs keeps a point per buffer).
+// The buffer list. Each entry remembers where its buffer was last shown in any view; each view also
+// remembers where it showed every buffer it switched away from (Emacs' window-prev-buffers), so switching
+// one window back and forth never disturbs another.
 
 #define BUFFER_LIST_RESERVE MB(16) // address space for the entries
 
@@ -127,9 +139,14 @@ void         buffer_list_touch(BufferList *list, Buffer *buf); // shown now: the
 Buffer      *buffer_list_find_name(BufferList *list, String8 name); // exact name, or NULL
 // The buffer visiting `full_path` (compared case-insensitively for ASCII, as Windows does), or NULL.
 Buffer      *buffer_list_find_path(BufferList *list, String8 full_path);
-// Shows `buf` in the view: saves where the view was in its old buffer, then restores where `buf`
-// was last shown (the start for a new one). One cursor afterwards.
-void         view_switch_buffer(View *view, BufferList *list, Buffer *buf);
+// Shows `buf` in the view: saves where the view was in its old buffer (in the view and in the list),
+// then restores, in this order: where this view last showed `buf`; where `showing` (another view now
+// showing it, or NULL) is; where it was last shown in any view; the start. One cursor afterwards.
+void         view_switch_buffer(View *view, BufferList *list, Buffer *buf, View *showing);
+// Saves where the view is in its buffer into the buffer list's entry (a window that goes away).
+void         view_save_position(View *view, BufferList *list);
+// Forgets the view's remembered position in `buf` (before the buffer is killed).
+void         view_forget_buffer(View *view, Buffer *buf);
 
 // ---------------------------------------------------------------------------
 // Commands (command.h). view_run_command is the single place that loops over the cursors

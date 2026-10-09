@@ -89,7 +89,7 @@ static void files_find_done(CommandContext *ctx, MiniResult *r) {
     }
     Buffer *buf = app_find_file(app, path);
     if (!buf) return;
-    view_switch_buffer(ctx->view, &app->buffers, buf);
+    app_switch_buffer(app, ctx->view, buf);
     ctx->cursor = &ctx->view->cursors[0];
 }
 
@@ -518,7 +518,7 @@ static void files_switch_done(CommandContext *ctx, MiniResult *r) {
     Buffer *buf = r->text.len ? buffer_list_find_name(&app->buffers, r->text) : app_other_buffer(app, ctx->view->buffer);
     if (!buf && !r->text.len) return;
     if (!buf) buf = app_new_buffer(app, r->text);
-    view_switch_buffer(ctx->view, &app->buffers, buf);
+    app_switch_buffer(app, ctx->view, buf);
     ctx->cursor = &ctx->view->cursors[0];
 }
 
@@ -548,9 +548,11 @@ static void files_kill_buffer(App *app, Buffer *buf) {
         buffer_list_add(&app->buffers, fresh);
     }
     View *views[WINDOW_MAX];
-    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
-        if (views[i]->buffer == buf) view_switch_buffer(views[i], &app->buffers, other);
+    i32 n = app_views(app, views);
+    for (i32 i = 0; i < n; i++) {
+        if (views[i]->buffer == buf) app_switch_buffer(app, views[i], other);
     }
+    for (i32 i = 0; i < n; i++) view_forget_buffer(views[i], buf); // every window's remembered position in it
     buffer_list_remove(&app->buffers, buf);
     ASSERT(buf->marker_live == 0);
     buffer_destroy(buf);

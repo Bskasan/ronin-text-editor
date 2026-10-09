@@ -3633,7 +3633,7 @@ static b32 test_buffer_list(Test *t) {
     view_ensure_visible(v);
     i64 point = view_point(v, &v->cursors[0]), top = view_top_line(v);
     view_add_cursor(v, 5); // a second cursor collapses on a switch
-    view_switch_buffer(v, &list, b);
+    view_switch_buffer(v, &list, b, NULL);
     TEST_CHECK(t, v->buffer == b && view_point(v, &v->cursors[0]) == 0 && view_top_line(v) == 0 && v->cursor_count == 1,
                "buffer list: a buffer never shown starts at the top");
     view_goto_line_column(v, 40, 0);
@@ -3641,11 +3641,35 @@ static b32 test_buffer_list(Test *t) {
     i64 point_b = view_point(v, &v->cursors[0]);
     // An edit in a, while it is not shown, moves its saved point like any marker.
     buffer_replace(a, 0, 0, STR8_LIT("xyz"));
-    view_switch_buffer(v, &list, a);
+    view_switch_buffer(v, &list, a, NULL);
     TEST_CHECK(t, view_point(v, &v->cursors[0]) == point + 3 && view_top_line(v) == top && v->cursor_count == 1,
                "buffer list: switching back restores point and scroll (point %D, expected %D)", view_point(v, &v->cursors[0]), point + 3);
-    view_switch_buffer(v, &list, b);
+    view_switch_buffer(v, &list, b, NULL);
     TEST_CHECK(t, view_point(v, &v->cursors[0]) == point_b, "buffer list: and again for b");
+
+    // Two views: each remembers where it showed a buffer; a view that never showed it takes the position of
+    // a view showing it now, else where it was last shown anywhere.
+    View *v2 = view_create(&arena, a);
+    v2->rows = 20;
+    v2->cols = 40;
+    view_goto_line_column(v2, 10, 0);
+    view_ensure_visible(v2);
+    i64 point2 = view_point(v2, &v2->cursors[0]);
+    view_switch_buffer(v2, &list, b, v); // v shows b at line 40
+    TEST_CHECK(t, view_point(v2, &v2->cursors[0]) == point_b, "view memory: a view new to b takes the point of the view showing it");
+    view_goto_line_column(v2, 90, 0);
+    view_switch_buffer(v, &list, a, NULL);  // v leaves b at line 40; the list's entry for b now says line 40
+    view_switch_buffer(v2, &list, a, NULL); // v2 back to a: its own place (line 10), not v's (line 150)
+    TEST_CHECK(t, view_point(v2, &v2->cursors[0]) == point2 && view_point(v, &v->cursors[0]) == point + 3,
+               "view memory: each view returns to its own place in a (%D, %D)", view_point(v2, &v2->cursors[0]), point2);
+    view_switch_buffer(v2, &list, b, NULL);
+    TEST_CHECK(t, buffer_line_of(b, view_point(v2, &v2->cursors[0])) == 90, "view memory: and in b (line 90, not the list's 40)");
+    view_switch_buffer(v, &list, b, NULL);
+    TEST_CHECK(t, view_point(v, &v->cursors[0]) == point_b, "view memory: v's own place in b");
+    view_forget_buffer(v, a);
+    view_forget_buffer(v2, a);
+    TEST_CHECK(t, v->memory_count == 0 && v2->memory_count == 0, "view memory: forgotten");
+    view_destroy(v2);
     view_destroy(v);
     os_release(arena.base);
     TEST_CHECK(t, buffer_list_destroy(&list) == 0, "buffer list: markers or buffers leaked");
@@ -3664,7 +3688,7 @@ static b32 test_buffer_list(Test *t) {
     TEST_CHECK(t, log->read_only && !log->inhibit_read_only && !log->modified && !buffer_replace(log, 0, 0, STR8_LIT("x")),
                "messages: stays read-only");
     TEST_CHECK(t, buffer_destroy(log), "messages: buffer_destroy failed");
-    LOG("test: ok: buffer list (restore point and scroll, lookup by path), *Messages* capped at %d lines", (i32)ECHO_LOG_LINES);
+    LOG("test: ok: buffer list (restore point and scroll, lookup by path, each view remembers its own place, forgetting), *Messages* capped at %d lines", (i32)ECHO_LOG_LINES);
     return 1;
 }
 
@@ -5287,7 +5311,7 @@ static b32 test_save_some(Test *t) {
         app_dev_visit(app, f[i]);
         b[i] = test_current(app);
     }
-#define TEST_MODIFY(i) do { view_switch_buffer(app_selected_view(app), &app->buffers, b[i]); app_dev_feed(app, "M-< x", &t->arena); } while (0)
+#define TEST_MODIFY(i) do { app_switch_buffer(app, app_selected_view(app), b[i]); app_dev_feed(app, "M-< x", &t->arena); } while (0)
     for (i32 i = 0; i < 3; i++) TEST_MODIFY(i);
     app_dev_feed(app, "C-x s", &t->arena);
     String8 q1 = str8_fmt(&t->arena, "Save file %S? (y, n, !, q) ", test_slashes(t, f[0]));

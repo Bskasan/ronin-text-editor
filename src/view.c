@@ -131,6 +131,8 @@ View *view_create(Arena *arena, Buffer *buf) {
     v->top = buffer_marker_create(buf, 0, 0);
     v->rows = v->cols = 1;
     v->recenter_row = -1;
+    v->memory_arena = arena_create(VIEW_MEMORY_RESERVE);
+    v->memory = (ViewBufferPos *)v->memory_arena.base;
     view_add_cursor(v, 0);
     return v;
 }
@@ -143,6 +145,12 @@ void view_destroy(View *v) {
     buffer_marker_destroy(v->buffer, v->top);
     os_release(v->cursor_arena.base);
     v->cursor_count = 0;
+    for (i32 i = 0; i < v->memory_count; i++) {
+        buffer_marker_destroy(v->memory[i].buffer, v->memory[i].point);
+        buffer_marker_destroy(v->memory[i].buffer, v->memory[i].top);
+    }
+    os_release(v->memory_arena.base);
+    v->memory_count = 0;
 }
 
 Cursor *view_add_cursor(View *v, i64 pos) {
@@ -297,15 +305,44 @@ Buffer *buffer_list_find_path(BufferList *list, String8 full_path) {
     return NULL;
 }
 
-void view_switch_buffer(View *v, BufferList *list, Buffer *buf) {
+static ViewBufferPos *view_memory_of(View *v, Buffer *buf) {
+    for (i32 i = 0; i < v->memory_count; i++) if (v->memory[i].buffer == buf) return &v->memory[i];
+    return NULL;
+}
+
+void view_save_position(View *v, BufferList *list) {
+    i32 i = buffer_list_index(list, v->buffer);
+    if (i < 0) return;
+    BufferEntry *e = &list->entries[i];
+    buffer_marker_set(v->buffer, e->point, view_point(v, &v->cursors[0]));
+    buffer_marker_set(v->buffer, e->top, buffer_marker_get(v->buffer, v->top));
+    e->left_col = v->left_col;
+}
+
+void view_forget_buffer(View *v, Buffer *buf) {
+    ViewBufferPos *m = view_memory_of(v, buf);
+    if (!m) return;
+    buffer_marker_destroy(buf, m->point);
+    buffer_marker_destroy(buf, m->top);
+    *m = v->memory[--v->memory_count];
+    arena_pop_to(&v->memory_arena, (u64)v->memory_count * sizeof(ViewBufferPos));
+}
+
+void view_switch_buffer(View *v, BufferList *list, Buffer *buf, View *showing) {
     if (v->buffer == buf) return;
-    i32 old = buffer_list_index(list, v->buffer);
-    if (old >= 0) {
-        BufferEntry *e = &list->entries[old];
-        buffer_marker_set(v->buffer, e->point, view_point(v, &v->cursors[0]));
-        buffer_marker_set(v->buffer, e->top, buffer_marker_get(v->buffer, v->top));
-        e->left_col = v->left_col;
+    view_save_position(v, list);
+    ViewBufferPos *mine = view_memory_of(v, v->buffer);
+    if (!mine) {
+        mine = PUSH_STRUCT(&v->memory_arena, ViewBufferPos);
+        ASSERT(mine == v->memory + v->memory_count);
+        v->memory_count++;
+        mine->buffer = v->buffer;
+        mine->point = buffer_marker_create(v->buffer, 0, 1);
+        mine->top = buffer_marker_create(v->buffer, 0, 0);
     }
+    buffer_marker_set(v->buffer, mine->point, view_point(v, &v->cursors[0]));
+    buffer_marker_set(v->buffer, mine->top, buffer_marker_get(v->buffer, v->top));
+    mine->left_col = v->left_col;
     for (i32 i = 0; i < v->cursor_count; i++) {
         buffer_marker_destroy(v->buffer, v->cursors[i].point);
         buffer_marker_destroy(v->buffer, v->cursors[i].mark);
@@ -316,10 +353,26 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf) {
 
     i32 now = buffer_list_index(list, buf);
     BufferEntry *e = now >= 0 ? &list->entries[now] : NULL;
+    ViewBufferPos *back = view_memory_of(v, buf);
+    i64 point = 0, top = 0, left = 0;
+    if (back) {
+        point = buffer_marker_get(buf, back->point);
+        top = buffer_marker_get(buf, back->top);
+        left = back->left_col;
+    } else if (showing && showing->buffer == buf) {
+        point = view_point(showing, &showing->cursors[0]);
+        top = buffer_marker_get(buf, showing->top);
+        left = showing->left_col;
+    } else if (e) {
+        point = buffer_marker_get(buf, e->point);
+        top = buffer_marker_get(buf, e->top);
+        left = e->left_col;
+    }
+    if (back) view_forget_buffer(v, buf); // shown again: its position is the view's own now
     v->buffer = buf;
-    v->top = buffer_marker_create(buf, e ? buffer_marker_get(buf, e->top) : 0, 0);
-    view_add_cursor(v, e ? buffer_marker_get(buf, e->point) : 0);
-    v->left_col = e ? e->left_col : 0;
+    v->top = buffer_marker_create(buf, top, 0);
+    view_add_cursor(v, point);
+    v->left_col = left;
     if (e) e->last_shown = ++list->tick;
     v->recenter_step = 0;
     v->recenter_row = -1;

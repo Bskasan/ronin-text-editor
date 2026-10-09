@@ -100,6 +100,22 @@ static i32 app_views(App *app, View **out) {
     return n;
 }
 
+// Shows `buf` in `v`: where `v` last showed it, else where the most recently used other window showing
+// it is, else where it was last shown (view_switch_buffer).
+static void app_switch_buffer(App *app, View *v, Buffer *buf) {
+    i32 leaves[WINDOW_MAX];
+    View *showing = NULL;
+    u64 used = 0;
+    for (i32 i = 0, n = window_leaves(&app->windows, leaves); i < n; i++) {
+        WindowNode *w = &app->windows.nodes[leaves[i]];
+        if (w->view != v && w->view->buffer == buf && (!showing || w->used_tick > used)) {
+            showing = w->view;
+            used = w->used_tick;
+        }
+    }
+    view_switch_buffer(v, &app->buffers, buf, showing);
+}
+
 static AppLayout app_layout(App *app, FrameInput *in) {
     AppLayout l;
     l.cell_w = app->font ? app->font->cell_w : APP_HEADLESS_CELL_W;
@@ -1074,7 +1090,7 @@ static void app_cycle_buffer(CommandContext *ctx, i32 dir) {
     i32 n = app->buffers.count;
     i32 i = buffer_list_index(&app->buffers, ctx->view->buffer);
     if (n < 2 || i < 0) return;
-    view_switch_buffer(ctx->view, &app->buffers, app->buffers.entries[((i + dir) % n + n) % n].buffer);
+    app_switch_buffer(app, ctx->view, app->buffers.entries[((i + dir) % n + n) % n].buffer);
     ctx->cursor = &ctx->view->cursors[0];
 }
 
@@ -1103,7 +1119,7 @@ static void cmd_open_config(CommandContext *ctx) {
     }
     Buffer *buf = app_find_file(app, path);
     if (!buf) return;
-    view_switch_buffer(ctx->view, &app->buffers, buf);
+    app_switch_buffer(app, ctx->view, buf);
     ctx->cursor = &ctx->view->cursors[0];
     if (created) echo_message(ctx->echo, "Created %S from the built-in defaults", path);
 }
@@ -1674,7 +1690,7 @@ void app_dev_use_config(App *app, String8 path) {
 
 b32 app_dev_visit(App *app, String8 path) {
     Buffer *buf = app_find_file(app, path);
-    if (buf) view_switch_buffer(app_selected_view(app), &app->buffers, buf);
+    if (buf) app_switch_buffer(app, app_selected_view(app), buf);
     return buf != NULL;
 }
 
@@ -1762,7 +1778,7 @@ void app_dev_append(App *app, String8 text) {
 void app_dev_show_scratch(App *app, String8 text) {
     Buffer *buf = buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*"));
     View *v = app_selected_view(app);
-    view_switch_buffer(v, &app->buffers, buf);
+    app_switch_buffer(app, v, buf);
     buffer_undo_enable(buf, 0);
     buffer_replace(buf, 0, buffer_size(buf), text);
     buffer_undo_enable(buf, 1);
