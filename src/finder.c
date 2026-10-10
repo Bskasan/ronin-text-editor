@@ -484,6 +484,89 @@ void app_dev_smoke_finder_end(App *app) {
     app->finder.open = NULL;
 }
 
+// --bench-project: the finder open on a synthetic project of `count` paths (directories one to four
+// levels deep, about 50 files each, names made of common source words). Returns the index's memory.
+u64 app_dev_bench_finder_open(App *app, i64 count) {
+    static const char *const words[] = { "app", "main", "buffer", "view", "render", "font", "win32", "test", "config", "mini", "search",
+                                         "isearch", "lex", "syntax", "project", "fuzzy", "window", "edit", "key", "map", "core", "util",
+                                         "net", "io", "file", "path", "string", "list", "tree", "node", "parse", "token", "debug", "log",
+                                         "math", "vec", "image", "audio", "input", "event" };
+    static const char *const exts[] = { "c", "h", "cpp", "cs", "js", "ts", "jai", "md" };
+    Finder *f = &app->finder;
+    Project *p = finder_project(app, STR8_LIT("C:\\bench"));
+    ProjectIndex *x = &p->index[p->live];
+    if (!x->files.base) project_index_init(x);
+    project_index_reset(x);
+    u64 rng = 0x5eed;
+#define BENCH_RNG() (rng = rng * 6364136223846793005ull + 1442695040888963407ull, (u32)(rng >> 33))
+    u8 dir[256], path[512];
+    for (i64 made = 0; made < count;) {
+        i64 dl = 0;
+        i32 depth = 1 + (i32)(BENCH_RNG() % 4);
+        for (i32 k = 0; k < depth; k++) dl += fmt_buf(dir + dl, (i64)sizeof(dir) - dl, k ? "/%s" : "%s", words[BENCH_RNG() % ARRAY_COUNT(words)]);
+        dl += fmt_buf(dir + dl, (i64)sizeof(dir) - dl, "_%U", (u64)made);
+        i64 d = project_index_add_dir(x, str8(dir, dl));
+        for (i32 k = 0; k < 50 && made < count; k++, made++) {
+            u8 name[96];
+            i64 nl = fmt_buf(name, sizeof(name), "%s_%s%d.%s", words[BENCH_RNG() % ARRAY_COUNT(words)], words[BENCH_RNG() % ARRAY_COUNT(words)],
+                             (i32)(BENCH_RNG() % 100), exts[BENCH_RNG() % ARRAY_COUNT(exts)]);
+            i64 pl = fmt_buf(path, sizeof(path), "%S/%S", str8(dir, dl), str8(name, nl));
+            project_index_add_file(x, d, str8(name, nl), project_mask(str8(path, pl)));
+        }
+    }
+#undef BENCH_RNG
+    p->scanned = 1;
+    f->open = p;
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    ctx.cursor = &ctx.view->cursors[0];
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file in C:/bench/: "), .history = MINI_HISTORY_PROJECT,
+                        .done = finder_done, .matcher = &FINDER_MATCHER, .data = app };
+    if (minibuffer_read(&ctx, &req)) app->mini.state.text = str8_copy(&app->mini.arena, p->root);
+    return project_index_memory(x);
+}
+
+void app_dev_bench_finder_close(App *app) {
+    app_dev_smoke_finder_end(app);
+}
+
+// A whole ranking of the open finder's index at once, as RET does; its time.
+u64 app_dev_bench_finder_finish(App *app, String8 query) {
+    Finder *f = &app->finder;
+    u64 t0 = os_time_us();
+    fuzzy_rank_begin(&f->rank, finder_index(f), query, 0);
+    fuzzy_rank_finish(&f->rank);
+    return os_time_us() - t0;
+}
+
+i64 app_dev_bench_matches(App *app) {
+    return app->finder.rank.total;
+}
+
+// A scan of `root` owned by the app (its batches taken by app_wake, as in the main loop).
+void app_dev_bench_scan_start(App *app, String8 root) {
+    Project *p = finder_project(app, root);
+    p->scanned = 0;
+    finder_scan(app, p);
+}
+
+// Whether that scan still runs; its files so far, its result and the index's memory.
+b32 app_dev_bench_scan_state(App *app, String8 root, i64 *files, i64 *ignored, i64 *errors, u64 *memory) {
+    Project *p = finder_project(app, root);
+    ProjectIndex *x = &p->index[p->live];
+    *files = x->file_count;
+    *ignored = p->last.ignored;
+    *errors = p->last.errors;
+    *memory = project_index_memory(x);
+    return p->scan != NULL;
+}
+
+void app_dev_bench_scan_close(App *app, String8 root) {
+    Project *p = finder_project(app, root);
+    finder_close_project(app, p);
+    finder_dev_wait(app, 60000); // the cancelled scan ends
+}
+
 // Releases every held scan (--scan-hold).
 static void finder_dev_release(App *app) {
     for (i32 i = 0; i < PROJECT_KEPT; i++) {
