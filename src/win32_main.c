@@ -1746,6 +1746,7 @@ typedef struct DevShield {
     i32 attempt;
     b32 running;
     b32 held;              // a modifier was still down after the wait
+    b32 lost;              // the key state the case set did not hold, and real input came shortly before
     u32 input_tick;        // the last real input when the attempt started
     i32 pending;           // failures of this attempt, not yet counted
     u8 msgs[DEV_SHIELD_MSGS][384];
@@ -1782,7 +1783,7 @@ static b32 win32_shield_again(DevShield *s, i32 *failures) {
     if (s->running) {
         s->running = 0;
         if (!s->pending) return 0;
-        b32 real = s->held || win32_shield_input_tick(s) != s->input_tick;
+        b32 real = s->held || s->lost || win32_shield_input_tick(s) != s->input_tick;
         if (!real) {
             for (i32 i = 0; i < MIN(s->pending, DEV_SHIELD_MSGS); i++) {
                 if (!s->quiet) LOG("test: FAIL: %S", str8(s->msgs[i], s->msg_len[i]));
@@ -1793,7 +1794,8 @@ static b32 win32_shield_again(DevShield *s, i32 *failures) {
         s->inconclusive++;
         if (!s->quiet) {
             LOG("test: inconclusive: %s: real input during the case%s, repeated (attempt %d of %d): %S", s->what,
-                s->held ? " (a modifier held down)" : "", s->attempt + 1, DEV_SHIELD_ATTEMPTS, str8(s->msgs[0], s->msg_len[0]));
+                s->held ? " (a modifier held down)" : s->lost ? " (the key state it set did not hold: real input just before)" : "",
+                s->attempt + 1, DEV_SHIELD_ATTEMPTS, str8(s->msgs[0], s->msg_len[0]));
         }
         if (++s->attempt >= DEV_SHIELD_ATTEMPTS) {
             if (!s->quiet) LOG("test: FAIL: %s: inconclusive %d times (real input during every attempt)", s->what, DEV_SHIELD_ATTEMPTS);
@@ -1807,16 +1809,22 @@ static b32 win32_shield_again(DevShield *s, i32 *failures) {
         waited += 10;
     }
     s->held = win32_shield_mods_down(s);
-    // Real input since this thread last read its key state (earlier, not during the case: a mouse move
-    // counts) leaves Windows a pending synchronization of the thread's key state with the keyboard's,
-    // which it applies at the next read and which would wipe the state the case is about to set. Reading
-    // the state here applies it first.
-    BYTE sync[256];
-    GetKeyboardState(sync);
+    s->lost = 0;
     s->input_tick = win32_shield_input_tick(s);
     s->pending = 0;
     s->running = 1;
     return 1;
+}
+
+// The key state a case set (SetKeyboardState) does not read back. Windows replaces a thread's key state
+// with the keyboard's some time after real input anywhere (typing in another window), also input that
+// came just before the case began; measured: 16 to 625 ms after the last input, with none during the
+// case. With real input in the last 2 s the case never ran with its state: inconclusive. Without, it is
+// a failure like any other.
+static void win32_shield_state_lost(DevShield *s) {
+    if (s->input_tick_fn) return;
+    LASTINPUTINFO li = { .cbSize = sizeof(li) };
+    if (GetLastInputInfo(&li) && GetTickCount() - li.dwTime < 2000) s->lost = 1;
 }
 
 // A failure inside a case: held until the case ends.
@@ -1887,6 +1895,16 @@ static i32 win32_dev_test_shield(void) {
         }
     }
     ok = ok && runs == 2 && failures == 0 && s.inconclusive == 1;
+    // The key state a case set did not hold after real input just before it (lost): inconclusive, repeated.
+    runs = failures = 0;
+    s.inconclusive = 0;
+    DEV_SHIELD_CASE(&s, "lost", &failures) {
+        if (runs++ == 0) {
+            s.lost = 1;
+            win32_shield_fail(&s, msg);
+        }
+    }
+    ok = ok && runs == 2 && failures == 0 && s.inconclusive == 1;
     // A held modifier released during the wait: it waited, then ran once.
     runs = 0;
     g_shield_fake_held = 3;
@@ -1894,7 +1912,8 @@ static i32 win32_dev_test_shield(void) {
     ok = ok && runs == 1 && failures == 0 && g_shield_fake_held == 0;
     if (ok) {
         LOG("test: ok: input shield (a pass; a failure without real input; real input then a pass: inconclusive, repeated; real "
-            "input every time: a failure after %d attempts; a modifier held past the wait: inconclusive)", DEV_SHIELD_ATTEMPTS);
+            "input every time: a failure after %d attempts; a modifier held past the wait, a key state that did not hold: "
+            "inconclusive)", DEV_SHIELD_ATTEMPTS);
     } else {
         LOG("test: FAIL: input shield: the decisions differ from the table");
     }
@@ -1925,6 +1944,9 @@ static i32 win32_dev_test_mods(Platform *p) {
             SetKeyboardState(state);
             KeyChord chord = 0;
             b32 made = key_chord_from_event(KEY_NONE, cases[i].codepoint, win32_mods(p), &chord);
+            b32 held = 1;
+            for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) held &= (GetKeyState(cases[i].vks[k]) & 0x8000) != 0;
+            if (!held) win32_shield_state_lost(&shield);
             if (!made || chord != cases[i].want) {
                 u8 got[32], want[32], text[256];
                 i64 gn = made ? key_chord_print(chord, got, sizeof(got)) : fmt_buf(got, sizeof(got), "no chord");
@@ -1969,6 +1991,7 @@ static i32 win32_dev_test_keys(Platform *p) {
         memset(state, 0, sizeof(state));
         state[VK_CONTROL] = state[VK_LCONTROL] = 0x80; // C-l: a chord
         SetKeyboardState(state);
+        if (!(GetKeyState(VK_CONTROL) & 0x8000)) win32_shield_state_lost(&shield);
         win32_handle_message(NULL, WM_KEYDOWN, 'L', (LPARAM)(1 | 0x26 << 16));
         win32_handle_message(NULL, WM_CHAR, 0x0C, (LPARAM)(1 | 0x26 << 16));
         memset(state, 0, sizeof(state));
