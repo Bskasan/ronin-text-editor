@@ -180,10 +180,20 @@ static void minibuffer_filter(Minibuffer *mb) {
 #endif
     arena_reset(&mb->match_arena);
     mb->seen_edits = mb->buffer->edit_count;
-    mb->match_count = 0;
+    mb->match_count = mb->match_total = 0;
     mb->selected = mb->list_top = 0;
     if (mb->kind != MINI_CHOICE) return;
     String8 input = minibuffer_input(mb, &mb->match_arena);
+    if (mb->matcher) { // its own ranking, across frames (minibuffer_work)
+        b32 narrow = mb->filtered_epoch == mb->cand_epoch && str8_starts_with(input, mb->last_input);
+        arena_reset(&mb->input_arena);
+        mb->last_input = str8_copy(&mb->input_arena, input);
+        mb->filtered_epoch = mb->cand_epoch;
+        mb->match_from = 0;
+        mb->matcher->begin(mb, mb->candidates_data, input, narrow);
+        mb->matcher_pending = 1;
+        return;
+    }
     i64 from = mb->candidates_fn ? mb->candidates_fn(mb, mb->candidates_data, input) : 0;
     mb->match_from = CLAMP(from, 0, input.len);
     b32 narrow = mb->filtered_epoch == mb->cand_epoch && mb->match_from == mb->last_from && str8_starts_with(input, mb->last_input);
@@ -194,6 +204,7 @@ static void minibuffer_filter(Minibuffer *mb) {
     mb->query = match_query(&mb->match_arena, str8(input.data + mb->match_from, input.len - mb->match_from));
     mb->matches = PUSH_ARRAY(&mb->match_arena, i32, mb->cand_count);
     mb->match_count = match_rank(&mb->query, mb->cands, mb->cand_count, mb->matches, narrow);
+    mb->match_total = mb->match_count;
 #if TEAL_DEV
     mb->dev_filter_us = os_time_us() - t0;
     mb->dev_filters++;
@@ -221,6 +232,8 @@ b32 minibuffer_read(CommandContext *ctx, MiniRequest *req) {
     mb->answers = req->answers;
     mb->candidates_fn = req->candidates;
     mb->candidates_data = req->data;
+    mb->matcher = req->kind == MINI_CHOICE ? req->matcher : NULL;
+    mb->matcher_pending = 0;
     mb->require_match = req->require_match;
     mb->file = req->file;
     mb->run_command = req->run_command;
@@ -242,7 +255,46 @@ static void minibuffer_close(Minibuffer *mb) {
     minibuffer_reset_input(mb, str8(NULL, 0));
     minibuffer_clear_candidates(mb);
     arena_reset(&mb->match_arena);
-    mb->match_count = 0;
+    mb->match_count = mb->match_total = 0;
+    mb->matcher = NULL;
+    mb->matcher_pending = 0;
+}
+
+// The matcher's rows after some work: the selection stays on its candidate when the user moved it (else
+// the first row, as after every change of the input).
+static void minibuffer_matcher_rows(Minibuffer *mb) {
+    const MiniMatcher *m = mb->matcher;
+    u64 id = mb->selected > 0 && mb->selected < mb->match_count ? m->row_id(mb->candidates_data, mb->selected) : 0;
+    b32 keep = mb->selected > 0;
+    mb->match_count = m->rows(mb->candidates_data, &mb->match_total);
+    if (!keep) return;
+    i64 found = -1;
+    for (i64 i = 0; i < mb->match_count && found < 0; i++) if (m->row_id(mb->candidates_data, i) == id) found = i;
+    mb->selected = found >= 0 ? found : CLAMP(mb->selected, 0, MAX(mb->match_count - 1, 0));
+}
+
+b32 minibuffer_work(Minibuffer *mb, u64 deadline, i64 budget) {
+    if (!mb->active || !mb->matcher) return 0;
+    mb->matcher_pending = !mb->matcher->work(mb->candidates_data, deadline, budget);
+    minibuffer_matcher_rows(mb);
+    return mb->matcher_pending;
+}
+
+String8 minibuffer_row_text(Minibuffer *mb, Arena *arena, i64 row, u32 *flags, String8 *annotation) {
+    if (mb->matcher) {
+        *flags = 0;
+        *annotation = str8(NULL, 0);
+        return mb->matcher->text(mb->candidates_data, arena, row);
+    }
+    Candidate *c = &mb->cands[mb->matches[row]];
+    *flags = c->flags;
+    *annotation = c->annotation;
+    return c->text;
+}
+
+i32 minibuffer_row_spans(Minibuffer *mb, i64 row, MatchSpan *out, i32 cap) {
+    if (mb->matcher) return mb->matcher->spans(mb->candidates_data, row, out, cap);
+    return match_spans(&mb->query, &mb->cands[mb->matches[row]], out, cap);
 }
 
 void minibuffer_abort(Minibuffer *mb) {
@@ -417,6 +469,22 @@ static void minibuffer_accept(CommandContext *ctx, b32 as_typed) {
         mb->result.yes = yes;
     } break;
     case MINI_CHOICE: {
+        if (mb->matcher) {
+            // RET while the ranking is still going: it ends now (bounded by the candidates known now),
+            // then the selected row (the first one unless the user moved).
+            if (!as_typed && mb->matcher_pending) {
+                mb->matcher->finish(mb->candidates_data);
+                mb->matcher_pending = 0;
+                minibuffer_matcher_rows(mb);
+            }
+            if (as_typed || !mb->match_count) {
+                minibuffer_finish(mb, input, -1, 0);
+                return;
+            }
+            i64 row = mb->selected;
+            minibuffer_finish(mb, mb->matcher->text(mb->candidates_data, &mb->arena, row), (i32)row, 0);
+            return;
+        }
         i64 index = -1;
         if (!as_typed && mb->match_count > 0) index = mb->matches[mb->selected];
         else if (mb->require_match) index = minibuffer_exact_candidate(mb, input);
@@ -573,6 +641,10 @@ static void cmd_minibuffer_complete(CommandContext *ctx) {
     if (!mb) return;
     if (!mb->match_count) {
         minibuffer_note(ctx, "No match");
+        return;
+    }
+    if (mb->matcher) { // fuzzy rows share no prefix: TAB takes the selected row
+        minibuffer_set_input(mb, mb->matcher->text(mb->candidates_data, &mb->arena, mb->selected));
         return;
     }
     String8 input = minibuffer_input(mb, &mb->arena);

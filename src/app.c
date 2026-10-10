@@ -44,6 +44,7 @@ struct App {
     Replace replace;             // query-replace and replace-string: while active, keys go to it first
     Search lazy;                 // the lazy highlight: the other matches on the drawn rows
     b32 search_pending;          // a search step is still being searched: another frame
+    b32 rank_pending;            // a prompt's matcher is still ranking: another frame
     Arena files_arena;           // files.c: paths being built; reset by each use
     AppWatch watches[WINDOW_MAX]; // the directories of the displayed file buffers
     i32 watch_count;
@@ -557,10 +558,27 @@ static i32 app_list_rows(App *app, AppLayout *l) {
     return (i32)MAX(MIN(rows, (i64)(l->minibuffer_y / l->line_h) - 2), 0);
 }
 
-// The text of a candidate from column 0, the matched spans in the match color, clipped to `cells`.
-static void app_draw_candidate_text(App *app, Renderer *r, i32 x, i32 y, Candidate *c, MatchSpan *spans, i32 n, i64 cells) {
+// The text of a candidate from column 0, the matched spans in the match color, clipped to `cells`; with
+// clip_left, a text too long loses its left part instead, shown as "…" (the spans move with the text).
+static void app_draw_candidate_text(App *app, Renderer *r, i32 x, i32 y, String8 full, u32 flags, MatchSpan *spans, i32 n, i64 cells,
+                                    b32 clip_left) {
     Theme *th = &app->config->theme;
-    String8 text = app_clip_cells(c->text, cells);
+    String8 text = app_clip_cells(full, cells);
+    if (clip_left && text.len < full.len && cells > 1) {
+        // The last cells - 1 characters, after an ellipsis in the text color.
+        i64 start = full.len, count = 0;
+        while (start > 0 && count < cells - 1) {
+            start--;
+            while (start > 0 && (full.data[start] & 0xC0) == 0x80) start--;
+            count++;
+        }
+        x = font_draw_text(app->font, r, x, y, STR8_LIT("\xE2\x80\xA6"), COLOR_HEX(th->text));
+        text = str8(full.data + start, full.len - start);
+        for (i32 k = 0; k < n; k++) {
+            spans[k].start = MAX(spans[k].start - start, 0);
+            spans[k].end = MAX(spans[k].end - start, 0);
+        }
+    }
     i64 at = 0;
     while (at < text.len) {
         // The next boundary: the start or end of a span, whichever comes first after `at`.
@@ -590,7 +608,7 @@ static void app_draw_candidate_text(App *app, Renderer *r, i32 x, i32 y, Candida
         x = font_draw_text(app->font, r, x, y, run, COLOR_HEX(matched ? th->completion_match : th->text));
         at = next;
     }
-    if (c->flags & CANDIDATE_DIR && text.len == c->text.len) font_draw_text(app->font, r, x, y, STR8_LIT("/"), COLOR_HEX(th->text));
+    if (flags & CANDIDATE_DIR && text.len == full.len) font_draw_text(app->font, r, x, y, STR8_LIT("/"), COLOR_HEX(th->text));
 }
 
 // The candidate list above the minibuffer line: the selected row highlighted, matched substrings in
@@ -604,19 +622,21 @@ static void app_draw_candidates(App *app, Renderer *r, AppLayout *l, FrameInput 
     i64 cols = MAX((in->width - 2 * l->pad) / l->cell_w, 1);
     for (i32 row = 0; row < rows && top + row < mb->match_count; row++) {
         i64 index = top + row;
-        Candidate *c = &mb->cands[mb->matches[index]];
+        u32 flags;
+        String8 annotation;
+        String8 text = minibuffer_row_text(mb, in->scratch, index, &flags, &annotation);
         i32 y = y0 + row * l->line_h;
         if (index == mb->selected) {
             r_push_rect(r, (Rect){ 0, (f32)y, (f32)in->width, (f32)(y + l->line_h) }, COLOR_HEX(th->completion_selection));
         }
-        i64 ann = app_text_cells(c->annotation);
+        i64 ann = app_text_cells(annotation);
         i64 room = ann && ann + 2 < cols ? cols - ann - 2 : cols;
-        MatchSpan spans[MATCH_MAX_TERMS];
-        i32 n = match_spans(&mb->query, c, spans, MATCH_MAX_TERMS);
-        app_draw_candidate_text(app, r, l->pad, y, c, spans, n, room);
+        MatchSpan spans[64]; // only the rows drawn are matched for their spans
+        i32 n = minibuffer_row_spans(mb, index, spans, ARRAY_COUNT(spans));
+        app_draw_candidate_text(app, r, l->pad, y, text, flags, spans, n, room, mb->matcher && mb->matcher->clip_left);
         if (room < cols) {
             i32 x = l->pad + (i32)(cols - ann) * l->cell_w;
-            font_draw_text(app->font, r, x, y, c->annotation, COLOR_HEX(th->text));
+            font_draw_text(app->font, r, x, y, annotation, COLOR_HEX(th->text));
         }
     }
 }
@@ -633,8 +653,10 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     i32 text_x = v->x + l->pad;
     app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, NULL, in->scratch);
     app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), 1, app_has_focus(app), in->dpi_scale, in->scratch);
-    if (mb->kind == MINI_CHOICE) { // "3/41" at the right end
-        String8 count = str8_fmt(in->scratch, "%D/%D", mb->match_count ? mb->selected + 1 : 0, mb->match_count);
+    if (mb->kind == MINI_CHOICE) { // "3/41" at the right end, then a matcher's status
+        String8 count = str8_fmt(in->scratch, "%D/%D", mb->match_count ? mb->selected + 1 : 0, mb->match_total);
+        String8 status = mb->matcher && mb->matcher->status ? mb->matcher->status(mb->candidates_data, in->scratch) : str8(NULL, 0);
+        if (status.len) count = str8_fmt(in->scratch, "%S  %S", count, status);
         i32 x = in->width - l->pad - (i32)count.len * l->cell_w;
         if (x > text_x) font_draw_text(app->font, r, x, v->y, count, COLOR_HEX(th->text));
     }
@@ -1795,7 +1817,7 @@ static void app_catch_up(App *app, Arena *scratch, u64 end) {
 }
 
 b32 app_wants_frame(App *app) {
-    return app->syntax_pending || app->search_pending;
+    return app->syntax_pending || app->search_pending || app->rank_pending;
 }
 
 // No worker reports here yet.
@@ -1868,9 +1890,15 @@ static b32 app_update(App *app, FrameInput *in) {
     if (config_pending(&app->config_source)) app_reload_config(app, 0); // a settle delay or retry may be due (EVENT_WAKEUP)
     files_poll(app);
     if (app->quit) return 0;
-    // One deadline for the background work of this frame: search slices, then lexer states.
+    // One deadline for the background work of this frame: search slices, a prompt's ranking, then lexer
+    // states. Tests give the ranking a fixed number of candidates instead of the clock.
     u64 deadline = os_time_us() + SYNTAX_FRAME_BUDGET_US;
     app_search_work(app, in->scratch, deadline);
+    i64 rank_budget = 0;
+#if TEAL_DEV
+    rank_budget = app->dev_work_budget;
+#endif
+    app->rank_pending = app->mini.matcher_pending && minibuffer_work(&app->mini, rank_budget ? 0 : deadline, rank_budget);
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
