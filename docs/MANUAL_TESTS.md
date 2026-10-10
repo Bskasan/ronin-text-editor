@@ -28,6 +28,9 @@ Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 | `--log-keys` | Every keyboard message, what teal read from it, and the command it ran. |
 | `--type-ahead-check` | Real input (SendInput, letters and Shift only), run on demand only: types five keys while teal starts and checks they arrived in order before the first frame. |
 | `--bench-windows` | Frames with one and four windows, typing with one and two windows, on the 100 MB file. |
+| `--bench-project` | Fuzzy ranking on 10,000 / 100,000 / 1,000,000 synthetic paths (frames, the longest frame, RET's whole ranking), scans of the generated tree and of `C:\Windows`, typing with and without a scan running. Never takes the focus. |
+| project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".teal-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
+| shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case that real input disturbed is logged as "test: inconclusive: ..." and repeated. |
 
 ## A. Startup and window
 
@@ -65,7 +68,7 @@ Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 | C1 | Mode line: name, percent, L1 C0, (C), encoding, line endings | AUTOMATED-NEW | manual tests C1: " -:---  m.c ... Top   L1 C0    (C)    UTF-8 CRLF", and a percent after M-g g 150. **Note:** at the top the position reads "Top" (and "Bot" / "All"), not a percent (Emacs). |
 | C2 | teal +120:8 file: line 120 centered, L120 C7 | AUTOMATED-NEW | manual tests C2: "L120 C7", the top line within 1 of 119 − rows/2. |
 | C3 | Nonexistent path: empty buffer, "(New file)" | AUTOMATED-NEW | manual tests C3 (from the command line). find-file is AUTOMATED: `test_find_write` "(New file)". |
-| C4 | Directory path: error message, *scratch* stays | AUTOMATED-NEW | manual tests C4: "Cannot open <path>: is a directory", *scratch* current. |
+| C4 | Directory path: error message, *scratch* stays | AUTOMATED-NEW | manual tests C4. **Note (Phase 11):** a directory on the command line is now the project (`teal <directory>`), so there is no error message; *scratch* stays and starts there (the test checks exactly that; step M13). |
 | C5 | Edit: "**"; C-x C-s: "Wrote ...", "**" gone | AUTOMATED-NEW | manual tests C5. |
 | C6 | CRLF file: edit one line, save: still CRLF, only that line differs | AUTOMATED | `test_edits` edit_crlf.txt (whole-file byte compare); "test: ok: load, edit, save, reload". |
 | C7 | Windows-1254 file: boxes; insert ASCII, save: other bytes unchanged | AUTOMATED-NEW | manual tests C7 (the bytes FE FD F0 DE DD D0 kept byte for byte, CRLF kept). Boxes inspected on build/shots/c7.png. |
@@ -259,6 +262,38 @@ files".
 | L33 | A teal name that a Windows header defines as a macro breaks the build | AUTOMATED-NEW | build.bat's check (src/check_macros.c); the old MOD_ALT, KillRing.small and a test's near each fail it. |
 | L34 | Typing with two windows on one buffer stays fast | AUTOMATED-NEW | `--bench-windows`: 15-22 us a keystroke with two windows, 8-10 us with one. |
 
+## M. Projects and fuzzy file open (Phase 11)
+
+"finder tests" below is the `--test` group logged as "test: ok: project finder"; the other project tests are
+named as in the evidence table.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| M1 | C-x p f in a file of a repository: the prompt opens at once, names the root, and lists its files | AUTOMATED-NEW | finder tests (the prompt "Find file in <root>/: " before the scan ends; 7 rows); harness: C-x p f is among the default bindings described through their keys on every layout. Screenshot build/shots/p11_1_finder_ap.png. |
+| M2 | Typing narrows the list by fuzzy match, file-name matches first, the matched characters highlighted | AUTOMATED-NEW | fuzzy (13 ranking goldens: file name over directory, segment and word starts, consecutive, exact name, smart case, '/', several terms); smoke stage 7 (matched characters exactly completion_match). Screenshots p11_1 ("ap") and p11_2_finder_long.png ("src/find") inspected. |
+| M3 | RET visits the selected file; C-g closes the finder | AUTOMATED-NEW | finder tests ("fuz" RET visits src/fuzzy.c; after C-g the next C-x p f opens a new prompt, which it could not inside one). |
+| M4 | With nothing typed, the files visited in this session come first, most recent first | AUTOMATED-NEW | finder tests (fuzzy.c then main.c, then the rest of the index). |
+| M5 | Typing a name and RET at once (typed ahead) visits the best match | AUTOMATED-NEW | finder tests: one candidate a frame, "app.c" RET visits app.c; "map RET" in the same frame visits map_app.c. |
+| M6 | A large project: the finder opens at once during the scan, says it is scanning, and fills in | AUTOMATED-NEW + HUMAN | finder tests (a scan held after its first batch: "scanning: N files", a partial list, RET on what is known; released, all 10,000). Screenshot p11_3_scanning.png. How it feels on a big real repository: HUMAN. |
+| M7 | Files and directories in .gitignore are not listed; nested .gitignore files; '!' includes again | AUTOMATED-NEW | ignore rules (30 cases, every supported feature); scanner (the exact set on a generated tree, 7 ignored). |
+| M8 | build/, out/, bin/ and obj/ directories are listed unless .gitignore or .teal-project leaves them out | AUTOMATED-NEW | project roots (the built-in project_ignore on build, src/bin, out, obj, target, dist: not ignored); scanner (bin/tool.c listed). |
+| M9 | .teal-project: [ignore] hides, [allow] shows what .gitignore hides; its mistakes are reported with line numbers | AUTOMATED-NEW | .teal-project (diagnostics with file:line); scanner (docs/draft ignored, vendor/ allowed). |
+| M10 | A junction or symlink pointing back into the tree does not make the scan endless | AUTOMATED-NEW | scanner (src/loop, a junction to the root, not entered). |
+| M11 | A file added outside teal shows up in the finder | AUTOMATED-NEW | finder tests (the tree watch marks the index stale; C-x p f shows the old list with "rescanning", then the new file). **Note:** it appears once the rescan that C-x p f starts has ended, not while the finder is closed. |
+| M12 | M-x project-refresh scans again and says how many files and how many were ignored | AUTOMATED-NEW | finder tests ("Scanning <root>/...", then "<N> files in <root>/ (<M> ignored)"). |
+| M13 | `teal <directory>`: that directory is the project; *scratch* and C-x C-f start there | AUTOMATED-NEW | finder tests (*scratch*, no message, C-x C-f's input, C-x p f lists it); manual C4. |
+| M14 | *scratch* started without a directory: C-x p f says how to get a project | AUTOMATED-NEW | finder tests (the exact message). Screenshot p11_4_not_in_project.png. |
+| M15 | M-x project-find-file-other-window shows the file in another window | AUTOMATED-NEW | finder tests (two windows, readme.md in the selected one). |
+| M16 | A path too long for the list is cut on the left, the file name kept | HUMAN | Visual. Screenshot build/shots/p11_5_long_path.png inspected: the row starts with "…", ends with the file name, the matched part highlighted. Dev helper: see HUMAN step 17. |
+| M17 | Typing in a buffer stays as fast while a big project is scanned | AUTOMATED-NEW | `--bench-project`: 9-19 us a keystroke during a scan of C:\Windows, 9-20 us without. |
+| M18 | Ranking a million files never holds a frame beyond the budget | AUTOMATED-NEW | `--bench-project`: longest frame 2,097 us, none over 2,100 us. |
+| M19 | After the scan teal is idle: 0% CPU | AUTOMATED-NEW | `teal_debug.exe src\app.c --keys "C-x p f a p C-g" --idle-check`: 0 frames, 0 main loop passes. |
+| M20 | Closing teal during a scan exits at once, also when a network path hangs | AUTOMATED-NEW | finder tests: shutdown with a scan running well under 1 s; a worker stuck in the "file system" is left after 1,000 ms and the process exits. A real dead network path: not tried. |
+| M21 | A huge tree stops at project_max_files and says so | AUTOMATED-NEW | finder tests (project_max_files = 1000: "Project has more than 1000 files; listed the first 1000", "stopped at 1000 files"). |
+| M22 | Only the selected window shows its active region | AUTOMATED-NEW | the region in windows (C-x o and back, while the minibuffer reads); smoke stage 6 (the other window's region not drawn). |
+| M23 | Typing in another window while `--test` runs does not make it fail | AUTOMATED-NEW + HUMAN | shield self-test (every decision); the cases check that their key state held. Real typing meanwhile: HUMAN step 18. |
+| M24 | The benches and the smoke never take the focus | HUMAN | They show their window without activation (code); only a person typing elsewhere meanwhile can tell. HUMAN step 18. |
+
 ## HUMAN steps
 
 In this order, with `build\teal.exe` (or teal_debug.exe):
@@ -288,6 +323,17 @@ Phase 10, with two or three windows (C-x 3, C-x 2):
     helper: `teal_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`).
 15. **L30**: With four windows, drag the teal window to its smallest size, then back. Nothing looks
     broken while it is small, and every window comes back as it was.
+
+Phase 11, projects:
+
+16. **M6**: Start teal on a big real tree (a large repository, or `teal C:\Windows`), C-x p f, and type at
+    once. The list fills in while "scanning: N files" counts up, and the typing is never held up.
+17. **M16**: `teal_debug.exe build\tmp\p11long\short.c --keys "C-x p f t h e f i l e" --screenshot
+    build\shots\m16.png` (any file deep in a project works): the long row starts with "…" and keeps the file
+    name; with the window narrowed by hand, the same.
+18. **M23, M24**: Type in Notepad while `teal_debug.exe --test` and `teal_bench.exe --bench-project` run.
+    Notepad keeps every key and the focus; `--test` passes (lines "test: inconclusive: ..." in build\teal.log
+    are allowed, a FAIL is not).
 
 Dev helpers that take most of the work out of the others: `teal_debug.exe --idle-check` (A4, Z1),
 `teal_debug.exe --dpi-check build\shots\dpi` (A9), and `teal_debug.exe --clipboard-check` (E14,
