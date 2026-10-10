@@ -737,9 +737,9 @@ static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
         app->config_path.len ? app->config_path : STR8_LIT("(none, built-in defaults only)"),
         buffer_status_text(app->config_source.status),
         result == CONFIG_POLL_LOADED ? "loaded" : result == CONFIG_POLL_RETRY ? "retry" : "failed",
-        app->config_source.size, os_time_us() - t0, c->errors, c->warnings);
+        app->config_source.size, os_time_us() - t0, c->diags.errors, c->diags.warnings);
 #if TEAL_DEV
-    if (result == CONFIG_POLL_LOADED) for (ConfigDiag *d = c->first_diag; d; d = d->next) LOG("config: %S", d->text);
+    if (result == CONFIG_POLL_LOADED) for (ConfigDiag *d = c->diags.first; d; d = d->next) LOG("config: %S", d->text);
 #endif
     return result;
 }
@@ -764,21 +764,21 @@ static void app_report_config(App *app, ConfigPoll result, b32 reload) {
     if (result != CONFIG_POLL_LOADED) return;
     Config *c = app->config;
     i32 stored = 0;
-    for (ConfigDiag *d = c->first_diag; d; d = d->next, stored++) echo_log(&app->echo, d->text);
-    if (stored < c->errors + c->warnings) {
+    for (ConfigDiag *d = c->diags.first; d; d = d->next, stored++) echo_log(&app->echo, d->text);
+    if (stored < c->diags.errors + c->diags.warnings) {
         u8 text[128];
-        i64 n = fmt_buf(text, sizeof(text), "%S: %d more not listed", name, c->errors + c->warnings - stored);
+        i64 n = fmt_buf(text, sizeof(text), "%S: %d more not listed", name, c->diags.errors + c->diags.warnings - stored);
         echo_log(&app->echo, str8(text, n));
     }
-    for (ConfigDiag *d = c->first_diag; c->errors && d; d = d->next) {
+    for (ConfigDiag *d = c->diags.first; c->diags.errors && d; d = d->next) {
         if (d->warning) continue;
         u8 text[ECHO_CAP];
-        i64 n = c->errors == 1 ? fmt_buf(text, sizeof(text), "%S", d->text)
-                               : fmt_buf(text, sizeof(text), "%S (and %d more)", d->text, c->errors - 1);
+        i64 n = c->diags.errors == 1 ? fmt_buf(text, sizeof(text), "%S", d->text)
+                               : fmt_buf(text, sizeof(text), "%S (and %d more)", d->text, c->diags.errors - 1);
         echo_set(&app->echo, str8(text, n)); // the errors themselves are logged above
         return;
     }
-    if (c->errors) echo_message(&app->echo, "%S: %d errors", name, c->errors);
+    if (c->diags.errors) echo_message(&app->echo, "%S: %d errors", name, c->diags.errors);
     else if (reload) echo_message(&app->echo, "Reloaded %S", name);
 }
 
