@@ -1486,6 +1486,171 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
 #endif
 
 #if TEAL_DEV
+// The tests that drive the real input path (the thread's key state, posted key messages) can be disturbed
+// by a person typing in another window meanwhile: Windows may synchronize the thread's key state with the
+// keyboard's. Each case first waits (bounded) until no physical modifier is down, and records the time of
+// the last real input (GetLastInputInfo; posted messages and SetKeyboardState never change it). A case
+// that fails while real input arrived (or a modifier stayed down) is inconclusive: logged and run again,
+// at most DEV_SHIELD_ATTEMPTS times in all. A case that fails with no real input is a failure. A case's
+// failures are held back until it ends, so only a decided failure is logged as one.
+#define DEV_SHIELD_ATTEMPTS 5
+#define DEV_SHIELD_WAIT_MS 2000
+#define DEV_SHIELD_MSGS 4
+
+typedef struct DevShield {
+    const char *what;      // the running case
+    i32 attempt;
+    b32 running;
+    b32 held;              // a modifier was still down after the wait
+    u32 input_tick;        // the last real input when the attempt started
+    i32 pending;           // failures of this attempt, not yet counted
+    u8 msgs[DEV_SHIELD_MSGS][384];
+    i64 msg_len[DEV_SHIELD_MSGS];
+    i32 inconclusive;      // inconclusive attempts so far
+    // The self-test's fakes and settings (0: the real ones).
+    u32 (*input_tick_fn)(void);
+    b32 (*mods_down_fn)(void);
+    u32 wait_ms;
+    b32 quiet;
+} DevShield;
+
+static u32 win32_shield_input_tick(DevShield *s) {
+    if (s->input_tick_fn) return s->input_tick_fn();
+    LASTINPUTINFO li = { .cbSize = sizeof(li) };
+    return GetLastInputInfo(&li) ? li.dwTime : 0;
+}
+
+static b32 win32_shield_mods_down(DevShield *s) {
+    if (s->mods_down_fn) return s->mods_down_fn();
+    static const int vks[] = { VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN };
+    for (i32 i = 0; i < ARRAY_COUNT(vks); i++) if (GetAsyncKeyState(vks[i]) & 0x8000) return 1;
+    return 0;
+}
+
+static void win32_shield_case(DevShield *s, const char *what) {
+    s->what = what;
+    s->attempt = 0;
+    s->running = 0;
+}
+
+// The loop condition of DEV_SHIELD_CASE: true when the case is to run (again).
+static b32 win32_shield_again(DevShield *s, i32 *failures) {
+    if (s->running) {
+        s->running = 0;
+        if (!s->pending) return 0;
+        b32 real = s->held || win32_shield_input_tick(s) != s->input_tick;
+        if (!real) {
+            for (i32 i = 0; i < MIN(s->pending, DEV_SHIELD_MSGS); i++) {
+                if (!s->quiet) LOG("test: FAIL: %S", str8(s->msgs[i], s->msg_len[i]));
+            }
+            *failures += s->pending;
+            return 0;
+        }
+        s->inconclusive++;
+        if (!s->quiet) {
+            LOG("test: inconclusive: %s: real input during the case%s, repeated (attempt %d of %d): %S", s->what,
+                s->held ? " (a modifier held down)" : "", s->attempt + 1, DEV_SHIELD_ATTEMPTS, str8(s->msgs[0], s->msg_len[0]));
+        }
+        if (++s->attempt >= DEV_SHIELD_ATTEMPTS) {
+            if (!s->quiet) LOG("test: FAIL: %s: inconclusive %d times (real input during every attempt)", s->what, DEV_SHIELD_ATTEMPTS);
+            (*failures)++;
+            return 0;
+        }
+    }
+    u32 waited = 0, bound = s->wait_ms ? s->wait_ms : DEV_SHIELD_WAIT_MS;
+    while (win32_shield_mods_down(s) && waited < bound) {
+        Sleep(10); // test code only: waits for a person to let go of a modifier
+        waited += 10;
+    }
+    s->held = win32_shield_mods_down(s);
+    s->input_tick = win32_shield_input_tick(s);
+    s->pending = 0;
+    s->running = 1;
+    return 1;
+}
+
+// A failure inside a case: held until the case ends.
+static void win32_shield_fail(DevShield *s, String8 text) {
+    if (s->pending < DEV_SHIELD_MSGS) {
+        s->msg_len[s->pending] = MIN(text.len, (i64)sizeof(s->msgs[0]));
+        memcpy(s->msgs[s->pending], text.data, (size_t)s->msg_len[s->pending]);
+    }
+    s->pending++;
+}
+
+// for (each attempt) { the case }: no break inside the body.
+#define DEV_SHIELD_CASE(s, what, failures) for (win32_shield_case((s), (what)); win32_shield_again((s), (failures));)
+
+// --test: the shield's decisions, with a fake input clock and fake modifiers.
+static u32 g_shield_fake_tick;
+static i32 g_shield_fake_held; // calls left that report a modifier down
+static u32 win32_dev_fake_tick(void) { return g_shield_fake_tick; }
+static b32 win32_dev_fake_mods(void) {
+    if (g_shield_fake_held > 0) {
+        g_shield_fake_held--;
+        return 1;
+    }
+    return 0;
+}
+
+static i32 win32_dev_test_shield(void) {
+    DevShield s = { .input_tick_fn = win32_dev_fake_tick, .mods_down_fn = win32_dev_fake_mods, .wait_ms = 20, .quiet = 1 };
+    i32 failures = 0, runs = 0;
+    String8 msg = STR8_LIT("the case failed");
+    // A pass: one run, nothing counted.
+    DEV_SHIELD_CASE(&s, "pass", &failures) runs++;
+    b32 ok = runs == 1 && failures == 0 && s.inconclusive == 0;
+    // A failure with no real input: one run, one failure.
+    runs = 0;
+    DEV_SHIELD_CASE(&s, "fail", &failures) {
+        runs++;
+        win32_shield_fail(&s, msg);
+    }
+    ok = ok && runs == 1 && failures == 1 && s.inconclusive == 0;
+    // Real input during the first attempt, a pass on the second: inconclusive once, no failure.
+    runs = failures = 0;
+    DEV_SHIELD_CASE(&s, "input, then pass", &failures) {
+        if (runs++ == 0) {
+            g_shield_fake_tick++;
+            win32_shield_fail(&s, msg);
+        }
+    }
+    ok = ok && runs == 2 && failures == 0 && s.inconclusive == 1;
+    // Real input during every attempt: 5 runs, then one failure.
+    runs = failures = 0;
+    s.inconclusive = 0;
+    DEV_SHIELD_CASE(&s, "always input", &failures) {
+        runs++;
+        g_shield_fake_tick++;
+        win32_shield_fail(&s, msg);
+    }
+    ok = ok && runs == DEV_SHIELD_ATTEMPTS && failures == 1 && s.inconclusive == DEV_SHIELD_ATTEMPTS;
+    // A modifier held past the bound: the failing attempt is inconclusive (no new input needed); once it
+    // is released the case passes.
+    runs = failures = 0;
+    s.inconclusive = 0;
+    g_shield_fake_held = 1000;
+    DEV_SHIELD_CASE(&s, "held", &failures) {
+        if (runs++ == 0) {
+            g_shield_fake_held = 0;
+            win32_shield_fail(&s, msg);
+        }
+    }
+    ok = ok && runs == 2 && failures == 0 && s.inconclusive == 1;
+    // A held modifier released during the wait: it waited, then ran once.
+    runs = 0;
+    g_shield_fake_held = 3;
+    DEV_SHIELD_CASE(&s, "released while waiting", &failures) runs++;
+    ok = ok && runs == 1 && failures == 0 && g_shield_fake_held == 0;
+    if (ok) {
+        LOG("test: ok: input shield (a pass; a failure without real input; real input then a pass: inconclusive, repeated; real "
+            "input every time: a failure after %d attempts; a modifier held past the wait: inconclusive)", DEV_SHIELD_ATTEMPTS);
+    } else {
+        LOG("test: FAIL: input shield: the decisions differ from the table");
+    }
+    return ok ? 0 : 1;
+}
+
 // --test, the Win32 side: modifier keys set in this thread's key state as Windows would have them,
 // read by win32_mods and made into a chord. The state is restored afterwards.
 static i32 win32_dev_test_mods(Platform *p) {
@@ -1502,31 +1667,29 @@ static i32 win32_dev_test_mods(Platform *p) {
     b32 altgr = p->altgr;
     p->altgr = 0;
     i32 failures = 0;
+    DevShield shield = { 0 };
     for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
-        BYTE state[256] = { 0 };
-        for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) state[cases[i].vks[k]] = 0x80;
-        // Windows may synchronize the thread's key state with the system's once, after the first set
-        // (about one run in seven lost the first case's Alt): set it until it reads back.
-        for (i32 attempt = 0; attempt < 5; attempt++) {
+        DEV_SHIELD_CASE(&shield, cases[i].what, &failures) {
+            BYTE state[256] = { 0 };
+            for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) state[cases[i].vks[k]] = 0x80;
             SetKeyboardState(state);
-            b32 held = 1;
-            for (i32 k = 0; k < 4 && cases[i].vks[k]; k++) held &= (GetKeyState(cases[i].vks[k]) & 0x8000) != 0;
-            if (held) break;
-            LOG("test: win32 modifiers: %s: the key state did not read back, set again", cases[i].what);
-        }
-        KeyChord chord = 0;
-        b32 made = key_chord_from_event(KEY_NONE, cases[i].codepoint, win32_mods(p), &chord);
-        if (!made || chord != cases[i].want) {
-            u8 got[32], want[32];
-            i64 gn = made ? key_chord_print(chord, got, sizeof(got)) : fmt_buf(got, sizeof(got), "no chord");
-            i64 wn = key_chord_print(cases[i].want, want, sizeof(want));
-            LOG("test: FAIL: win32 modifiers: %s: got %S, expected %S", cases[i].what, str8(got, gn), str8(want, wn));
-            failures++;
+            KeyChord chord = 0;
+            b32 made = key_chord_from_event(KEY_NONE, cases[i].codepoint, win32_mods(p), &chord);
+            if (!made || chord != cases[i].want) {
+                u8 got[32], want[32], text[160];
+                i64 gn = made ? key_chord_print(chord, got, sizeof(got)) : fmt_buf(got, sizeof(got), "no chord");
+                i64 wn = key_chord_print(cases[i].want, want, sizeof(want));
+                i64 n = fmt_buf(text, sizeof(text), "win32 modifiers: %s: got %S, expected %S", cases[i].what, str8(got, gn), str8(want, wn));
+                win32_shield_fail(&shield, str8(text, n));
+            }
         }
     }
     SetKeyboardState(saved);
     p->altgr = altgr;
-    if (!failures) LOG("test: ok: win32 modifiers (Alt, Right Alt without AltGr, Ctrl, Ctrl+Alt, Alt+Shift, Ctrl+Shift from the thread's key state)");
+    if (!failures) {
+        LOG("test: ok: win32 modifiers (Alt, Right Alt without AltGr, Ctrl, Ctrl+Alt, Alt+Shift, Ctrl+Shift from the thread's key "
+            "state; %d inconclusive attempt(s))", shield.inconclusive);
+    }
     return failures;
 }
 
@@ -1544,24 +1707,35 @@ static i32 win32_dev_test_keys(Platform *p) {
     app_dev_feed_events(app, NULL, 0, &arena);
     BYTE saved[256], state[256] = { 0 };
     GetKeyboardState(saved);
-    i32 count = p->event_count;
-    state[VK_CONTROL] = state[VK_LCONTROL] = 0x80; // C-l: a chord
-    SetKeyboardState(state);
-    win32_handle_message(NULL, WM_KEYDOWN, 'L', (LPARAM)(1 | 0x26 << 16));
-    win32_handle_message(NULL, WM_CHAR, 0x0C, (LPARAM)(1 | 0x26 << 16));
-    memset(state, 0, sizeof(state));
-    state[VK_NUMLOCK] = 1; // keypad 4 with NumLock on
-    SetKeyboardState(state);
-    win32_handle_message(NULL, WM_KEYDOWN, VK_NUMPAD4, (LPARAM)(1 | 0x4B << 16));
-    win32_handle_message(NULL, WM_CHAR, '4', (LPARAM)(1 | 0x4B << 16));
-    SetKeyboardState(saved);
-    app_dev_feed_events(app, p->events + count, p->event_count - count, &arena);
-    p->event_count = count;
-    i64 size = app_dev_size(app);
+    DevShield shield = { 0 };
+    i32 failures = 0;
+    DEV_SHIELD_CASE(&shield, "win32 keys: keypad 4 right after C-l", &failures) {
+        app_dev_show_scratch(app, STR8_LIT(""));
+        i32 count = p->event_count;
+        memset(state, 0, sizeof(state));
+        state[VK_CONTROL] = state[VK_LCONTROL] = 0x80; // C-l: a chord
+        SetKeyboardState(state);
+        win32_handle_message(NULL, WM_KEYDOWN, 'L', (LPARAM)(1 | 0x26 << 16));
+        win32_handle_message(NULL, WM_CHAR, 0x0C, (LPARAM)(1 | 0x26 << 16));
+        memset(state, 0, sizeof(state));
+        state[VK_NUMLOCK] = 1; // keypad 4 with NumLock on
+        SetKeyboardState(state);
+        win32_handle_message(NULL, WM_KEYDOWN, VK_NUMPAD4, (LPARAM)(1 | 0x4B << 16));
+        win32_handle_message(NULL, WM_CHAR, '4', (LPARAM)(1 | 0x4B << 16));
+        SetKeyboardState(saved);
+        app_dev_feed_events(app, p->events + count, p->event_count - count, &arena);
+        p->event_count = count;
+        i64 size = app_dev_size(app);
+        if (size != 1) {
+            u8 text[128];
+            i64 n = fmt_buf(text, sizeof(text), "win32 keys: keypad 4 right after C-l: the buffer has %D byte(s), expected 1", size);
+            win32_shield_fail(&shield, str8(text, n));
+        }
+    }
     i32 leaks = app_shutdown(app);
-    b32 ok = size == 1 && leaks == 0;
+    if (leaks) LOG("test: FAIL: win32 keys: %d leak(s)", leaks);
+    b32 ok = !failures && leaks == 0;
     if (ok) LOG("test: ok: win32 keys (keypad 4 right after C-l types its 4)");
-    else LOG("test: FAIL: win32 keys: keypad 4 right after C-l: the buffer has %D byte(s), expected 1; %d leak(s)", size, leaks);
     return ok ? 0 : 1;
 }
 
@@ -3050,6 +3224,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+        failures += win32_dev_test_shield();
         failures += win32_dev_test_mods(p);
         failures += win32_dev_test_args(p);
         failures += win32_dev_test_keys(p);
