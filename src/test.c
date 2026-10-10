@@ -5868,6 +5868,111 @@ static b32 test_junction_small_file(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Ignore rules (Phase 11): golden cases for every supported .gitignore feature.
+
+static IgnoreScope test_ignore_scope(Test *t, const char *base, const char *text, const IgnoreScope *parent) {
+    IgnoreScope s = { .parent = parent, .base = str8_cstr(base) };
+    ignore_parse_lines(&t->arena, &s, str8_cstr(text), 0);
+    return s;
+}
+
+static b32 test_ignore_rules(Test *t) {
+    // The glob alone ('*' and '?' inside a segment, "**" across segments).
+    static const struct { const char *glob, *path; b32 want; } globs[] = {
+        { "*.c", "a.c", 1 },          { "*.c", "a.h", 0 },          { "*.c", "dir/a.c", 0 },     { "?.c", "a.c", 1 },
+        { "?.c", "ab.c", 0 },         { "a?c", "a/c", 0 },          { "**/foo", "foo", 1 },      { "**/foo", "a/foo", 1 },
+        { "**/foo", "a/b/foo", 1 },   { "**/foo", "afoo", 0 },      { "abc/**", "abc/x", 1 },    { "abc/**", "abc/x/y", 1 },
+        { "abc/**", "abc", 0 },       { "a/**/b", "a/b", 1 },       { "a/**/b", "a/x/b", 1 },    { "a/**/b", "a/x/y/b", 1 },
+        { "a/**/b", "a/xb", 0 },      { "a**b", "axyb", 1 },        { "a**b", "ax/b", 0 },       { "*", "anything", 1 },
+        { "*", "a/b", 0 },            { "**", "a/b", 1 },           { "f*o*o", "fxoyo", 1 },     { "f*o*o", "fxoy", 0 },
+        { "src/*.c", "SRC/Main.C", 1 }, { "", "", 1 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(globs); i++) {
+        TEST_CHECK(t, ignore_glob(str8_cstr(globs[i].glob), str8_cstr(globs[i].path)) == globs[i].want, "ignore: glob '%s' on '%s', expected %d",
+                   globs[i].glob, globs[i].path, globs[i].want);
+    }
+
+    // Parsing: comments, blank lines, trailing blanks, '!', the anchors, directories only.
+    IgnoreScope p = test_ignore_scope(t, "", "# a comment\n\n*.o  \r\n!keep.o\n/build/\ndoc/frotz/\n**/gen\n  \n", NULL);
+    TEST_CHECK(t, p.count == 5, "ignore: 5 patterns parsed, got %d", p.count);
+    TEST_CHECK(t, str8_equal(p.patterns[0].glob, STR8_LIT("*.o")) && p.patterns[0].flags == 0 &&
+                  str8_equal(p.patterns[1].glob, STR8_LIT("keep.o")) && p.patterns[1].flags == IGNORE_NEGATE &&
+                  str8_equal(p.patterns[2].glob, STR8_LIT("build")) && p.patterns[2].flags == (IGNORE_DIR_ONLY | IGNORE_ANCHORED) &&
+                  str8_equal(p.patterns[3].glob, STR8_LIT("doc/frotz")) && p.patterns[3].flags == (IGNORE_DIR_ONLY | IGNORE_ANCHORED) &&
+                  str8_equal(p.patterns[4].glob, STR8_LIT("**/gen")) && p.patterns[4].flags == IGNORE_ANCHORED,
+               "ignore: parsed patterns and flags");
+
+    // Decisions in one scope, and across scopes: { scope set, path, directory?, ignored? }.
+    IgnoreScope root = test_ignore_scope(t, "", "*.log\n!keep.log\nbuild/\n/out/\ndoc/frotz/\n*.tmp\n**/cache\nlib/**\nTMP/\n", NULL);
+    IgnoreScope sub = test_ignore_scope(t, "sub", "!*.tmp\nlocal/\n*.log\n", &root);
+    IgnoreScope last = test_ignore_scope(t, "", "!keep.txt\n*.txt\n", NULL);
+    IgnoreScope builtin = test_ignore_scope(t, "", "node_modules/\n*.exe\n", NULL);
+    IgnoreScope gen = test_ignore_scope(t, "", "gen/\n", NULL);
+    IgnoreScope top = { 0 };
+    ignore_parse_lines(&t->arena, &top, STR8_LIT("*.md\n"), 0);
+    IgnoreScope allow = { 0 };
+    ignore_parse_lines(&t->arena, &allow, STR8_LIT("gen/\nnode_modules/\n"), 1);
+    // .teal-project as one scope: [ignore] first, [allow] after it (negations win as the later patterns).
+    IgnoreScope project = { .base = str8(NULL, 0) };
+    project.patterns = PUSH_ARRAY(&t->arena, IgnorePattern, top.count + allow.count);
+    for (i32 i = 0; i < top.count; i++) project.patterns[project.count++] = top.patterns[i];
+    for (i32 i = 0; i < allow.count; i++) project.patterns[project.count++] = allow.patterns[i];
+    static const struct { i32 set; const char *path; b32 dir, want; const char *what; } cases[] = {
+        { 0, "a.log", 0, 1, "a name pattern" },
+        { 0, "x/y/a.log", 0, 1, "a name pattern at any depth" },
+        { 0, "keep.log", 0, 0, "negation" },
+        { 0, "x/keep.log", 0, 0, "negation at any depth" },
+        { 0, "build", 1, 1, "a directory pattern on a directory" },
+        { 0, "build", 0, 0, "a directory pattern on a file" },
+        { 0, "src/build", 1, 1, "a directory pattern at any depth" },
+        { 0, "out", 1, 1, "a leading slash anchors" },
+        { 0, "src/out", 1, 0, "an anchored pattern below the root" },
+        { 0, "doc/frotz", 1, 1, "an inner slash anchors" },
+        { 0, "a/doc/frotz", 1, 0, "an inner-slash pattern elsewhere" },
+        { 0, "a/b/cache", 1, 1, "**/ at the start" },
+        { 0, "lib/x/y.c", 0, 1, "/** at the end" },
+        { 0, "lib", 1, 0, "/** does not match the directory itself" },
+        { 0, "tmp", 1, 1, "case-insensitive" },
+        { 0, "a.TMP", 0, 1, "case-insensitive extension" },
+        { 1, "sub/a.tmp", 0, 0, "a nested .gitignore negates its parent's pattern" },
+        { 1, "a.tmp", 0, 1, "the nested file applies only below its directory" },
+        { 1, "sub/local", 1, 1, "a nested name pattern" },
+        { 1, "other/local", 1, 0, "the nested name pattern elsewhere" },
+        { 1, "sub/keep.log", 0, 1, "the nested *.log after the root's !keep.log: the last match decides" },
+        { 2, "keep.txt", 0, 1, "!keep.txt before *.txt: the last match decides" },
+        { 3, "node_modules", 1, 0, "[allow] beats the built-in list" },
+        { 3, "x/node_modules", 1, 0, "[allow] of a name pattern at any depth" },
+        { 3, "gen", 1, 0, "[allow] beats .gitignore" },
+        { 3, "README.md", 0, 1, "[ignore] adds to the rest" },
+        { 3, "a.exe", 0, 1, "the built-in list" },
+        { 4, "node_modules", 1, 1, "the built-in list without .teal-project" },
+        { 4, "gen", 1, 1, ".gitignore over the built-in list" },
+        { 4, "src/main.c", 0, 0, "nothing matches: included" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        String8 rel = str8_cstr(cases[i].path);
+        b32 got = 0;
+        switch (cases[i].set) {
+        case 0: got = ignore_path(NULL, &root, NULL, rel, cases[i].dir); break;
+        case 1: got = ignore_path(NULL, &sub, NULL, rel, cases[i].dir); break;
+        case 2: got = ignore_path(NULL, &last, NULL, rel, cases[i].dir); break;
+        case 3: got = ignore_path(&project, &gen, &builtin, rel, cases[i].dir); break;
+        case 4: got = ignore_path(NULL, &gen, &builtin, rel, cases[i].dir); break;
+        }
+        TEST_CHECK(t, got == cases[i].want, "ignore: %s: '%s'%s ignored %d, expected %d", cases[i].what, cases[i].path,
+                   cases[i].dir ? " (directory)" : "", got, cases[i].want);
+    }
+    IgnoreScope words = { 0 };
+    ignore_parse_words(&t->arena, &words, STR8_LIT("  .git/ *.exe\tnode_modules/ \n"));
+    TEST_CHECK(t, words.count == 3 && ignore_scope_decide(&words, STR8_LIT("a/.git"), 1) == 1 &&
+                  ignore_scope_decide(&words, STR8_LIT("a.c"), 0) == -1, "ignore: a blank-separated list");
+    LOG("test: ok: ignore rules (%d globs; comments, blanks, '!', anchors, directories only, '**' in three places, case, nested "
+        "files, the last match deciding, the built-in list, .teal-project [ignore] and [allow] on top: %d cases)",
+        (i32)ARRAY_COUNT(globs), (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Matching
 
 static void test_candidates(Arena *arena, const char **texts, i64 n, Candidate *out) {
@@ -7126,6 +7231,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_tree_watch(&t);
     arena_reset(&t.arena);
     test_junction_small_file(&t);
+    arena_reset(&t.arena);
+    test_ignore_rules(&t);
     arena_reset(&t.arena);
     test_matcher(&t);
     arena_reset(&t.arena);
