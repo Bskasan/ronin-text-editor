@@ -33,6 +33,17 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   UTF-16 only at the Win32 boundary. W APIs only.
 - Rendering is on demand. Idle = blocked in MsgWaitForMultipleObjectsEx, 0% CPU. No idle
   timers, no busy loops.
+- Threads (the device creation, the project scanner): a worker owns its own arena and reads only
+  the immutable request it was started with. It never touches App, Platform, the log (no LOG, no
+  ASSERT in worker code), the scratch arenas or any other arena, and calls only the os_* functions
+  platform.h marks "any thread". It hands finished batches to the main thread through one
+  synchronized queue (the lock held only to link or unlink a batch) and wakes the main loop with
+  os_wake_main. It can be cancelled at any moment (an atomic flag checked at least once per directory
+  entry, and its event for any wait). The main thread joins it when it reports that it is done (no
+  wait then); at exit app_shutdown cancels every worker, then joins them within one shared bound of
+  1,000 ms; a worker still inside a file-system call after that (a dead network path) is left to the
+  process exit and logged in dev builds. The main thread never waits for a worker otherwise. Dev
+  shutdown counts live threads, scan arenas and queued batches as leaks.
 - Layering: editor core files use only platform.h and render.h (font.c also uses
   font_backend.h). Only win32_*.c/.cpp and render_d3d11.c touch Win32 / D3D / DWrite types.
 - State lives in a few explicit structs (App, Platform, Renderer), not scattered globals.
@@ -44,6 +55,9 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   commit, then debug build + `--smoke`, and bench build + `--test` (the optimized build runs
   the fuzz tests quickly). Run the full `--test` on the debug build once per phase, before
   its final commit. Take a screenshot after a visual change and look at it.
+- Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
+  run without asking the user first, and then only once per request: they may be typing in another
+  window. Everything else that is run must keep not taking the focus.
 - Code, comments, docs and all communication with the user (plans, reports, questions) in English.
 - Whenever the user asks for changes to a plan, show the full revised plan again with the
   changes marked and wait for approval before implementing.
