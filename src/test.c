@@ -7782,6 +7782,20 @@ static b32 test_finder(Test *t) {
                "finder: shutdown with a scan running took %U us, %d abandoned, %d threads left", took, app->finder.dev_abandoned,
                os_dev_live_threads() - threads0);
 
+    // project_max_files: the scan stops there and says so; the finder says where it stopped.
+    String8 limit_conf = str8_fmt(&t->arena, "%S\\p11limit.conf", t->tmp_dir);
+    TEST_CHECK(t, os_write_file(limit_conf, STR8_LIT("[settings]\nproject_max_files = 1000\n")), "finder: cannot write the config");
+    app = test_manual_app(t, big, 0, 0, limit_conf);
+    TEST_CHECK(t, app && app->config->settings.project_max_files == 1000, "finder: limit: the config");
+    app_dev_feed(app, "C-x p f", &t->arena);
+    TEST_CHECK(t, finder_dev_wait(app, 10000), "finder: limit: the scan did not end");
+    test_finder_settle(t, app);
+    TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("Project has more than 1000 files; listed the first 1000")) &&
+                  str8_equal(test_finder_status(t, app), STR8_LIT("stopped at 1000 files")) && app->mini.match_total == 1000,
+               "finder: limit: echo '%S', status '%S', %D files", test_echo(app), test_finder_status(t, app), app->mini.match_total);
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "finder: limit")) return 0;
+
     // *scratch* started with no directory: not in a project.
     app = test_app_create(t);
     TEST_CHECK(t, app, "finder: app_create failed");
