@@ -109,6 +109,21 @@ typedef struct MiniState {
     String8 text;     // in the chain arena
 } MiniState;
 
+// A prompt's own matcher instead of the one above (the project finder's fuzzy ranking): it keeps its
+// candidates itself, ranks them across frames within the budget, and gives the rows to draw.
+typedef struct MiniMatcher {
+    // A new input (the whole input; match_from is 0). narrow: it only grew since the last call.
+    void    (*begin)(Minibuffer *mb, void *data, String8 input, b32 narrow);
+    b32     (*work)(void *data, u64 deadline, i64 budget); // ranks until the deadline or the budget; true = done
+    void    (*finish)(void *data);                         // the rest of the ranking now (RET)
+    i64     (*rows)(void *data, i64 *total);               // the rows ranked so far (best first), all matches in *total
+    u64     (*row_id)(void *data, i64 row);                // a row's candidate, to keep the selection on it
+    String8 (*text)(void *data, Arena *arena, i64 row);    // a row's text, also the result when accepted
+    i32     (*spans)(void *data, i64 row, MatchSpan *out, i32 cap); // its matched characters, for drawing
+    String8 (*status)(void *data, Arena *arena);           // shown after the count at the right ("scanning: 1200 files"), may be empty
+    b32 clip_left;                                         // a row too long for the list loses its left part
+} MiniMatcher;
+
 typedef void MiniDoneFn(CommandContext *ctx, MiniResult *r);
 // MINI_CHOICE: called whenever the input changes; may rebuild the candidates (minibuffer_add_candidate
 // after minibuffer_clear_candidates). Returns where the part of the input to match starts.
@@ -126,6 +141,7 @@ typedef struct MiniRequest {
     b32 require_match;           // MINI_CHOICE: input that matches no candidate is refused ("[No match]")
     b32 file;                    // a file name: DEL after a slash removes the last component; a directory candidate descends
     b32 run_command;             // M-x: the result names a command, which runs instead of `done`
+    const MiniMatcher *matcher;  // MINI_CHOICE: its own matcher (with `data`) instead of candidates
 } MiniRequest;
 
 typedef struct MiniHistory {
@@ -168,7 +184,10 @@ struct Minibuffer {
     Candidate *cands;
     i64 cand_count;
     i32 *matches;
-    i64 match_count;
+    i64 match_count;          // rows of the list
+    i64 match_total;          // all matches (a matcher keeps only its best rows)
+    const MiniMatcher *matcher;
+    b32 matcher_pending;      // its ranking is not done
     MatchQuery query;
     i64 match_from;           // where the matched part of the input starts (file names: after the last slash)
     i64 selected;             // index into matches
@@ -204,6 +223,12 @@ void minibuffer_history_add(Minibuffer *mb, MiniHistoryKind kind, String8 text);
 
 // The first match the list shows, so that the selection is among its `lines` rows.
 i64  minibuffer_list_top(Minibuffer *mb, i32 lines);
+// A prompt with its own matcher: ranks within the frame's deadline (or a budget); true while it is not done.
+b32  minibuffer_work(Minibuffer *mb, u64 deadline, i64 budget);
+// The list's rows, whichever matcher ranks them: the text (in `arena`), its CANDIDATE_* flags and
+// annotation; the matched characters.
+String8 minibuffer_row_text(Minibuffer *mb, Arena *arena, i64 row, u32 *flags, String8 *annotation);
+i32  minibuffer_row_spans(Minibuffer *mb, i64 row, MatchSpan *out, i32 cap);
 void minibuffer_clear_candidates(Minibuffer *mb);
 void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, u32 flags);
 
