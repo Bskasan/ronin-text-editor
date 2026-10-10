@@ -14,6 +14,9 @@ behavior); nothing there is a bug.
 
 Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 
+Paths under `build/` (screenshots in build/shots, build\teal.log, build\tmp) are local output of the
+dev builds; they are not part of the repository.
+
 ## Where the evidence is
 
 | Name used below | What it is |
@@ -53,7 +56,7 @@ Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 |---|---|---|---|
 | B1 | Type ğüşıöç ĞÜŞİÖÇ | AUTOMATED-NEW | harness Turkish Q: "12 of 12 Turkish letters typed from their keys". Pasting is AUTOMATED: `test_clipboard` round trip with ş. |
 | B2 | { } [ ] \ \| @ # $ ~ each insert one character | AUTOMATED-NEW | harness, all four layouts: "symbols typed from their keys" (AltGr, and a dead ~ followed by Space on Finnish). |
-| B3 | Dead key then letter: composed character, no command | AUTOMATED-NEW | harness Turkish Q and Finnish: "dead key then e" for ´ ` ^ ¨ gives é è ê ë. "e right after Left Alt + dead key" gives e: this found bug 3. |
+| B3 | Dead key then letter: composed character, no command | AUTOMATED-NEW | harness Turkish Q and Finnish: "dead key then e" for ´ ` ^ ¨ gives é è ê ë. "e right after Left Alt + dead key" gives e: this found a bug (a dead-key accent left pending after a Meta chord), fixed in 051b340. |
 | B4 | Key repeat is smooth | HUMAN | Feel. Repeats are ordinary KEY_DOWNs (`repeat` flag). Typing frame cost: `--bench-view` "self-insert at line 1,000,000: build avg 7 us". |
 | B5 | C-h k C-x C-s: "C-x C-s runs the command save-buffer" | AUTOMATED-NEW | harness: every default binding is described through the real keys with exactly "<keys> runs the command <name>". Before: `test_key_input` "keys: describe C-x C-s" (keymap only). |
 | B6 | C-h k with C-/, M-<, M->, M-{, M-}, M-%: each bound | FIXED | Failing test: `win32_dev_test_mods` "Left Alt + f -> M-f: got C-f", "Alt + Shift + , -> M-<: got C-<". Fixed in 11a98be. Covered since by the harness (all 124 bindings reachable on US, also on UK, Turkish Q and Finnish). |

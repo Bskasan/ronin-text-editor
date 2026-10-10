@@ -331,8 +331,8 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
   that place 15-22 us avg (worst 271-310 us; the first insert's gap move 6 ms in the first round).
 - Typing with one window (bench-view, self-insert at line 1,000,000, alternated with the Phase 9 bench
   build): Phase 9 12-13 us avg, Phase 10 13-14 us; next-line 21-28 / 25-29 us.
-- Idle (`--idle-check`): 0 frames, 0-15 ms of CPU over 5 s. Runs that failed while someone used the
-  machine (the window opens under the mouse) now show why: the messages that reached the window.
+- Idle (`--idle-check`): 0 frames, 0-15 ms of CPU over 5 s. Runs disturbed by real mouse or keyboard
+  input (the window opens under the mouse) now show why: the messages that reached the window.
 - Memory (release, private bytes idle, 3 runs): *scratch* 76.1-77.3 MB; src\keymap.c 77.1-77.8 MB; the
   100 MB .txt 191.8-193.4 MB; the 100 MB .c 216.2-216.9 MB (Phase 9: 77.0-77.4, 76.3-77.4, 191.9-193.4,
   216.1-217.3). A window costs a View slot inside App and two markers per buffer it remembers.
@@ -1028,12 +1028,12 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
   whose deadline leaves the last sort's time). When the input only grows, the next pass looks only at the
   previous survivors (also those of a pass cut short), then at what it never reached; entries that arrive
   during a pass extend it. Spans are computed only for the rows drawn.
-- The input tests' shield (answer 3 of Phase 10): the retry of 1b48e43 is gone. Each case waits (at most
+- The input tests' shield (Phase 10): the earlier retry (1b48e43) is gone. Each case waits (at most
   2 s) until no physical modifier is down and records GetLastInputInfo; a case that fails while real input
   arrived, or whose own key state did not hold with real input in the last 2 s, is inconclusive (logged,
   repeated, at most 5 attempts); any other failure counts. Measured: Windows replaces a thread's key state
   with the keyboard's some time after real input, also input from before the case (16-625 ms in the
-  failures seen). One failure without real input in the 2 s before was seen once afterwards (open).
+  failures seen). One failure without real input in the 2 s before was seen once afterwards (not explained yet).
 - The benches never take the focus: their window is shown cloaked without activation, as the smoke's and
   --idle-check's. Screenshot runs take the workers' results (until none came for 300 ms) before the frame.
 
