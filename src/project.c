@@ -283,3 +283,410 @@ void project_file_parse(Arena *arena, String8 text, String8 file_name, ProjectFi
     out->ignore = project_join(arena, ignore, n_ignore);
     out->allow = project_join(arena, allow, n_allow);
 }
+
+OsFileStatus project_file_read(Arena *arena, String8 root, ProjectFile *out) {
+    memset(out, 0, sizeof(*out));
+    String8 path = str8_fmt(arena, "%S\\%s", root, PROJECT_FILE_NAME);
+    String8 text;
+    OsFileInfo info;
+    OsFileStatus status = config_read_file(arena, path, &text, &info);
+    if (status == OS_FILE_OK) project_file_parse(arena, text, STR8_LIT(PROJECT_FILE_NAME), out);
+    return status;
+}
+
+// ---------------------------------------------------------------------------
+// The index
+
+void project_index_init(ProjectIndex *x) {
+    memset(x, 0, sizeof(*x));
+    x->dirs = arena_create(MB(256));
+    x->files = arena_create(GB(1));
+    x->names = arena_create(GB(2));
+}
+
+void project_index_reset(ProjectIndex *x) {
+    arena_reset(&x->dirs);
+    arena_reset(&x->files);
+    arena_reset(&x->names);
+    x->dir_count = x->file_count = 0;
+}
+
+void project_index_destroy(ProjectIndex *x) {
+    if (x->dirs.base) os_release(x->dirs.base);
+    if (x->files.base) os_release(x->files.base);
+    if (x->names.base) os_release(x->names.base);
+    memset(x, 0, sizeof(*x));
+}
+
+u64 project_index_memory(ProjectIndex *x) {
+    return x->dirs.committed + x->files.committed + x->names.committed;
+}
+
+i64 project_index_add_dir(ProjectIndex *x, String8 rel) {
+    u8 *bytes = PUSH_ARRAY(&x->names, u8, rel.len);
+    memcpy(bytes, rel.data, (size_t)rel.len);
+    ProjectDir *d = PUSH_STRUCT(&x->dirs, ProjectDir);
+    d->path_off = (u32)(bytes - x->names.base);
+    d->path_len = (u32)rel.len;
+    return x->dir_count++;
+}
+
+void project_index_add_file(ProjectIndex *x, i64 dir, String8 name, u64 mask) {
+    u8 *bytes = (u8 *)arena_push(&x->names, (u64)name.len + 2, 1);
+    u16 len = (u16)name.len;
+    memcpy(bytes, &len, 2);
+    memcpy(bytes + 2, name.data, (size_t)name.len);
+    ProjectEntry *e = PUSH_STRUCT(&x->files, ProjectEntry);
+    e->mask = mask;
+    e->dir = (u32)dir;
+    e->name_off = (u32)(bytes - x->names.base);
+    x->file_count++;
+}
+
+String8 project_index_dir(ProjectIndex *x, i64 dir) {
+    ProjectDir *d = (ProjectDir *)x->dirs.base + dir;
+    return str8(x->names.base + d->path_off, d->path_len);
+}
+
+String8 project_index_name(ProjectIndex *x, i64 file) {
+    ProjectEntry *e = (ProjectEntry *)x->files.base + file;
+    u16 len;
+    memcpy(&len, x->names.base + e->name_off, 2);
+    return str8(x->names.base + e->name_off + 2, len);
+}
+
+i64 project_index_path(ProjectIndex *x, i64 file, u8 *buf, i64 cap) {
+    ProjectEntry *e = (ProjectEntry *)x->files.base + file;
+    String8 dir = project_index_dir(x, e->dir), name = project_index_name(x, file);
+    i64 len = dir.len + (dir.len ? 1 : 0) + name.len;
+    if (len > cap) return 0;
+    memcpy(buf, dir.data, (size_t)dir.len);
+    if (dir.len) buf[dir.len] = '/';
+    memcpy(buf + len - name.len, name.data, (size_t)name.len);
+    return len;
+}
+
+u64 project_mask(String8 s) {
+    u64 m = 0;
+    for (i64 i = 0; i < s.len; i++) {
+        u8 c = s.data[i];
+        if (c >= 'A' && c <= 'Z') c = (u8)(c + 32);
+        m |= c >= 'a' && c <= 'z' ? 1ull << (c - 'a')
+           : c >= '0' && c <= '9' ? 1ull << (26 + c - '0')
+           : c == '_' ? 1ull << 36 : c == '-' ? 1ull << 37 : c == '.' ? 1ull << 38 : c == '/' ? 1ull << 39
+           : c == ' ' ? 1ull << 40 : c < 0x80 ? 1ull << 41 : 1ull << 42;
+    }
+    return m;
+}
+
+// ---------------------------------------------------------------------------
+// The scanner. Everything from project_scan_main down to the queue runs on the worker: it touches
+// only the ProjectScan (its request read-only, the lists under the lock), its two arenas and the
+// os_* functions platform.h marks "any thread". No LOG, no ASSERT.
+
+enum { PROJECT_RECORD_DIR = 1, PROJECT_RECORD_FILE = 2 };
+
+// A directory waiting to be walked.
+typedef struct ProjectQueued {
+    struct ProjectQueued *next;
+    String8 rel;
+    const IgnoreScope *chain; // its .gitignore scopes, innermost first
+    i32 depth;
+} ProjectQueued;
+
+// The worker's state while it walks.
+typedef struct ProjectWalk {
+    ProjectScan *s;
+    ProjectBatch *batch;
+    i32 batches;    // allocated
+    i32 sent;       // batches handed over
+    i64 entries;    // directory entries looked at
+    b32 dir_sent;   // the current directory's record is in the stream
+    String8 dir_rel;
+    u64 dir_mask;
+    ProjectScanResult result;
+} ProjectWalk;
+
+static b32 project_cancelled(ProjectScan *s) {
+    return os_atomic_get(&s->cancel) != 0;
+}
+
+// Hands the current batch to the main thread and takes an empty one (allocated while fewer than
+// PROJECT_BATCH_POOL exist, else one that came back). False when cancelled while waiting.
+static b32 project_send(ProjectWalk *w, b32 last) {
+    ProjectScan *s = w->s;
+    ProjectBatch *b = w->batch;
+    b->last = last;
+    if (last) b->result = w->result;
+    os_lock(&s->lock);
+    if (s->ready_last) s->ready_last->next = b;
+    else s->ready = b;
+    s->ready_last = b;
+    os_unlock(&s->lock);
+    os_wake_main();
+    w->batch = NULL;
+    w->sent++;
+    if (last) return 1;
+    // Dev: stand still after some batches until released or cancelled (the scan "still running").
+    if (s->dev_hold_after && w->sent >= s->dev_hold_after) {
+        while (os_atomic_get(&s->dev_hold) && !project_cancelled(s)) os_event_wait(s->event, 0xFFFFFFFFu);
+    }
+    for (;;) {
+        os_lock(&s->lock);
+        ProjectBatch *f = s->free;
+        if (f) s->free = f->next;
+        os_unlock(&s->lock);
+        if (!f && w->batches < PROJECT_BATCH_POOL) {
+            f = PUSH_STRUCT(&s->arena, ProjectBatch);
+            w->batches++;
+        }
+        if (f) {
+            f->next = NULL;
+            f->used = 0;
+            w->batch = f;
+            return !project_cancelled(s);
+        }
+        if (project_cancelled(s)) return 0;
+        os_event_wait(s->event, 0xFFFFFFFFu); // a batch comes back, or a cancel
+    }
+}
+
+static b32 project_emit(ProjectWalk *w, u8 kind, String8 text, u64 mask) {
+    i64 need = 3 + (kind == PROJECT_RECORD_FILE ? 8 : 0) + text.len;
+    if (w->batch->used + need > PROJECT_BATCH_BYTES && !project_send(w, 0)) return 0;
+    u8 *at = w->batch->data + w->batch->used;
+    u16 len = (u16)text.len;
+    at[0] = kind;
+    memcpy(at + 1, &len, 2);
+    at += 3;
+    if (kind == PROJECT_RECORD_FILE) {
+        memcpy(at, &mask, 8);
+        at += 8;
+    }
+    memcpy(at, text.data, (size_t)text.len);
+    w->batch->used += need;
+    return 1;
+}
+
+// The entries of one directory: rules, files out, subdirectories queued. False: stop (cancelled, limit).
+static b32 project_walk_dir(ProjectWalk *w, ProjectQueued *q, const IgnoreScope *top, const IgnoreScope *builtin,
+                            ProjectQueued **tail) {
+    ProjectScan *s = w->s;
+    Arena *temp = &s->temp;
+    arena_reset(temp);
+    String8 full = s->root;
+    if (q->rel.len) {
+        u8 *p = PUSH_ARRAY(temp, u8, s->root.len + 1 + q->rel.len);
+        memcpy(p, s->root.data, (size_t)s->root.len);
+        p[s->root.len] = '\\';
+        for (i64 i = 0; i < q->rel.len; i++) p[s->root.len + 1 + i] = q->rel.data[i] == '/' ? '\\' : q->rel.data[i];
+        full = str8(p, s->root.len + 1 + q->rel.len);
+    }
+    OsDirEntry *e;
+    i64 n;
+    if (os_list_dir(temp, full, &e, &n) != OS_FILE_OK) {
+        w->result.errors++;
+        return 1;
+    }
+    w->result.dirs++;
+    // Its .gitignore first: it applies to everything here and below.
+    const IgnoreScope *chain = q->chain;
+    for (i64 i = 0; i < n; i++) {
+        if (e[i].is_dir || e[i].name.len != 10 || !ignore_glob(STR8_LIT(".gitignore"), e[i].name)) continue;
+        String8 text;
+        if (os_read_small_file(temp, str8_fmt(temp, "%S\\.gitignore", full), PROJECT_GITIGNORE_MAX, &text) != OS_FILE_OK) break;
+        IgnoreScope *scope = PUSH_STRUCT(&s->arena, IgnoreScope);
+        scope->parent = chain;
+        scope->base = str8_copy(&s->arena, q->rel);
+        ignore_parse_lines(&s->arena, scope, text, 0);
+        if (scope->count) chain = scope;
+        break;
+    }
+    w->dir_sent = 0;
+    w->dir_rel = q->rel;
+    w->dir_mask = project_mask(q->rel) | (q->rel.len ? project_mask(STR8_LIT("/")) : 0);
+    u8 rel[PROJECT_PATH_MAX];
+    for (i64 i = 0; i < n; i++) {
+        if (project_cancelled(s)) return 0;
+        w->entries++;
+        if (s->dev_hold_entries && w->entries == s->dev_hold_entries) {
+            while (os_atomic_get(&s->dev_hold) && !project_cancelled(s)) os_event_wait(s->event, 0xFFFFFFFFu);
+        }
+        String8 name = e[i].name;
+        i64 len = q->rel.len + (q->rel.len ? 1 : 0) + name.len;
+        if (len > PROJECT_PATH_MAX || name.len > 0xFFFF) {
+            w->result.errors++;
+            continue;
+        }
+        memcpy(rel, q->rel.data, (size_t)q->rel.len);
+        if (q->rel.len) rel[q->rel.len] = '/';
+        memcpy(rel + len - name.len, name.data, (size_t)name.len);
+        String8 path = str8(rel, len);
+        if (e[i].is_dir) {
+            if (e[i].reparse || q->depth + 1 > PROJECT_MAX_DEPTH) continue; // a symlink or junction: not followed
+            if (ignore_path(top, chain, builtin, path, 1)) {
+                w->result.ignored++;
+                continue;
+            }
+            ProjectQueued *child = PUSH_STRUCT(&s->arena, ProjectQueued);
+            child->rel = str8_copy(&s->arena, path);
+            child->chain = chain;
+            child->depth = q->depth + 1;
+            (*tail)->next = child;
+            *tail = child;
+            continue;
+        }
+        if (ignore_path(top, chain, builtin, path, 0)) {
+            w->result.ignored++;
+            continue;
+        }
+        if (w->result.files >= s->max_files) {
+            w->result.limit = 1;
+            return 0;
+        }
+        if (!w->dir_sent) {
+            if (!project_emit(w, PROJECT_RECORD_DIR, w->dir_rel, 0)) return 0;
+            w->dir_sent = 1;
+        }
+        if (!project_emit(w, PROJECT_RECORD_FILE, name, w->dir_mask | project_mask(name))) return 0;
+        w->result.files++;
+    }
+    return 1;
+}
+
+static void project_scan_main(void *data) {
+    ProjectScan *s = data;
+    // Dev: a worker stuck in the file system, deaf to cancel, until the test releases it.
+    while (os_atomic_get(&s->dev_stuck)) os_event_wait(s->event, 0xFFFFFFFFu);
+    ProjectWalk w = { .s = s };
+    IgnoreScope *builtin = PUSH_STRUCT(&s->arena, IgnoreScope);
+    ignore_parse_words(&s->arena, builtin, s->builtin);
+    // .teal-project as one scope: [ignore], then [allow] as negations after it (the later patterns win).
+    IgnoreScope ign = { 0 }, all = { 0 };
+    ignore_parse_lines(&s->arena, &ign, s->ignore, 0);
+    ignore_parse_lines(&s->arena, &all, s->allow, 1);
+    IgnoreScope *top = PUSH_STRUCT(&s->arena, IgnoreScope);
+    top->patterns = PUSH_ARRAY(&s->arena, IgnorePattern, ign.count + all.count);
+    for (i32 i = 0; i < ign.count; i++) top->patterns[top->count++] = ign.patterns[i];
+    for (i32 i = 0; i < all.count; i++) top->patterns[top->count++] = all.patterns[i];
+    w.batch = PUSH_STRUCT(&s->arena, ProjectBatch);
+    w.batches = 1;
+    ProjectQueued *head = PUSH_STRUCT(&s->arena, ProjectQueued), *tail = head;
+    for (ProjectQueued *q = head; q; q = q->next) { // breadth first: the queue grows at its tail
+        if (project_cancelled(s) || !project_walk_dir(&w, q, top, builtin, &tail)) break;
+    }
+    w.result.cancelled = project_cancelled(s) && !w.result.limit;
+    if (!w.batch) { // cancelled while waiting for a batch: take one back, or make one
+        os_lock(&s->lock);
+        w.batch = s->free;
+        if (w.batch) s->free = w.batch->next;
+        os_unlock(&s->lock);
+        if (!w.batch) w.batch = PUSH_STRUCT(&s->arena, ProjectBatch);
+        w.batch->next = NULL;
+        w.batch->used = 0;
+    }
+    project_send(&w, 1);
+}
+
+// ---------------------------------------------------------------------------
+// The scanner, the main thread's side
+
+ProjectScan *project_scan_create(String8 root, String8 builtin, ProjectFile *file, i64 max_files) {
+    Arena arena = arena_create(GB(1));
+    ProjectScan *s = PUSH_STRUCT(&arena, ProjectScan);
+    s->root = str8_copy(&arena, root);
+    s->builtin = str8_copy(&arena, builtin);
+    if (file) {
+        s->ignore = str8_copy(&arena, file->ignore);
+        s->allow = str8_copy(&arena, file->allow);
+    }
+    s->max_files = max_files;
+    s->drain_dir = -1;
+    s->arena = arena; // its position already counts this struct
+    s->temp = arena_create(GB(1));
+    return s;
+}
+
+b32 project_scan_start(ProjectScan *s) {
+    if (!os_event_create(&s->event)) return 0;
+    if (!os_thread_start(&s->thread, project_scan_main, s)) {
+        os_event_destroy(s->event);
+        s->event.handle = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+void project_scan_cancel(ProjectScan *s) {
+    os_atomic_set(&s->cancel, 1);
+    os_event_set(s->event);
+}
+
+i64 project_scan_drain(ProjectScan *s, ProjectIndex *x) {
+    if (s->ended || !s->thread.handle) return 0;
+    os_lock(&s->lock);
+    ProjectBatch *b = s->ready;
+    s->ready = s->ready_last = NULL;
+    os_unlock(&s->lock);
+    i64 added = 0;
+    b32 last = 0;
+    ProjectBatch *back = NULL;
+    while (b) {
+        ProjectBatch *next = b->next;
+        for (i64 at = 0; at < b->used;) {
+            u8 kind = b->data[at];
+            u16 len;
+            memcpy(&len, b->data + at + 1, 2);
+            at += 3;
+            if (kind == PROJECT_RECORD_DIR) {
+                s->drain_dir = project_index_add_dir(x, str8(b->data + at, len));
+            } else {
+                u64 mask;
+                memcpy(&mask, b->data + at, 8);
+                at += 8;
+                project_index_add_file(x, s->drain_dir, str8(b->data + at, len), mask);
+                added++;
+            }
+            at += len;
+        }
+        if (b->last) {
+            last = 1;
+            s->result = b->result;
+        } else {
+            b->next = back;
+            back = b;
+        }
+        b = next;
+    }
+    if (back) {
+        os_lock(&s->lock);
+        for (ProjectBatch *r = back; r;) {
+            ProjectBatch *next = r->next;
+            r->next = s->free;
+            s->free = r;
+            r = next;
+        }
+        os_unlock(&s->lock);
+        os_event_set(s->event);
+    }
+    if (last) { // the worker has returned from its last os_* call: the join does not wait
+        os_thread_join(s->thread, 0xFFFFFFFFu);
+        s->thread.handle = NULL;
+        s->ended = 1;
+    }
+    return added;
+}
+
+b32 project_scan_join(ProjectScan *s, u32 timeout_ms) {
+    if (!s->thread.handle) return 1;
+    if (!os_thread_join(s->thread, timeout_ms)) return 0;
+    s->thread.handle = NULL;
+    s->ended = 1;
+    return 1;
+}
+
+void project_scan_free(ProjectScan *s) {
+    os_event_destroy(s->event);
+    os_release(s->temp.base);
+    os_release(s->arena.base); // the struct itself lives there
+}

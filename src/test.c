@@ -6107,6 +6107,211 @@ static b32 test_project_file(Test *t) {
     return 1;
 }
 
+// Writes files (relative paths with '/'), making their directories.
+static b32 test_make_tree(Test *t, String8 root, const char *const *files, i32 n) {
+    os_make_dir(root);
+    for (i32 i = 0; i < n; i++) {
+        String8 rel = str8_cstr(files[i]);
+        for (i64 k = 0; k < rel.len; k++) {
+            if (rel.data[k] == '/') os_make_dir(str8_fmt(&t->arena, "%S\\%S", root, str8(rel.data, k)));
+        }
+        u8 *p = PUSH_ARRAY(&t->arena, u8, rel.len);
+        for (i64 k = 0; k < rel.len; k++) p[k] = rel.data[k] == '/' ? '\\' : rel.data[k];
+        if (!os_write_file(str8_fmt(&t->arena, "%S\\%S", root, str8(p, rel.len)), STR8_LIT("x\n"))) return 0;
+    }
+    return 1;
+}
+
+// Waits for the worker's batches until the scan ends; false after the timeout.
+static b32 test_scan_finish(ProjectScan *s, ProjectIndex *x, u32 timeout_ms) {
+    u64 start = os_time_us();
+    while (!s->ended) {
+        os_dev_wake_wait(20);
+        project_scan_drain(s, x);
+        if (!s->ended && os_time_us() - start > (u64)timeout_ms * 1000) return 0;
+    }
+    return 1;
+}
+
+// The index's paths, sorted, joined by ','.
+static String8 test_index_paths(Test *t, ProjectIndex *x) {
+    String8 *p = PUSH_ARRAY(&t->arena, String8, x->file_count);
+    for (i64 i = 0; i < x->file_count; i++) {
+        u8 *buf = PUSH_ARRAY(&t->arena, u8, PROJECT_PATH_MAX);
+        p[i] = str8(buf, project_index_path(x, i, buf, PROJECT_PATH_MAX));
+    }
+    for (i64 i = 1; i < x->file_count; i++) { // insertion sort, bytewise
+        String8 v = p[i];
+        i64 j = i;
+        for (; j > 0; j--) {
+            String8 a = p[j - 1];
+            i64 k = 0;
+            while (k < a.len && k < v.len && a.data[k] == v.data[k]) k++;
+            b32 greater = k < a.len && (k == v.len || a.data[k] > v.data[k]);
+            if (!greater) break;
+            p[j] = p[j - 1];
+        }
+        p[j] = v;
+    }
+    String8 out = str8(NULL, 0);
+    for (i64 i = 0; i < x->file_count; i++) out = out.len ? str8_fmt(&t->arena, "%S,%S", out, p[i]) : p[i];
+    return out;
+}
+
+static ProjectScan *test_scan_make(Test *t, String8 root, i64 max_files) {
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+    config_init(c);
+    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    ProjectFile file;
+    project_file_read(&t->arena, root, &file);
+    return project_scan_create(root, str8(c->settings.project_ignore, c->settings.project_ignore_len), &file, max_files);
+}
+
+// The big generated tree (10,000 files in 100 directories), made once.
+static String8 test_big_tree(Test *t) {
+    String8 root = str8_fmt(&t->arena, "%S\\p11big", t->tmp_dir), done = str8_fmt(&t->arena, "%S\\p11big.done", t->tmp_dir);
+    OsFileInfo info;
+    if (os_file_info(done, &info) == OS_FILE_OK) return root;
+    os_make_dir(root);
+    for (i32 d = 0; d < 100; d++) {
+        String8 dir = str8_fmt(&t->arena, "%S\\d%02d", root, d);
+        os_make_dir(dir);
+        u64 mark = arena_pos(&t->arena);
+        for (i32 f = 0; f < 100; f++) os_write_file(str8_fmt(&t->arena, "%S\\file_%04d.c", dir, d * 100 + f), STR8_LIT("x"));
+        arena_pop_to(&t->arena, mark);
+    }
+    os_write_file(done, STR8_LIT("10000 files\n"));
+    return root;
+}
+
+// The scanner on a generated tree: the exact set (ignored directories, nested .gitignore, negation,
+// .teal-project, a junction looping back to the root), the ignored count, the file limit, a cancel in the
+// middle, 300 rounds of start and cancel, a worker stuck in the file system.
+static b32 test_scanner(Test *t, u64 seed) {
+    i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    String8 root = str8_fmt(&t->arena, "%S\\p11scan", t->tmp_dir);
+    static const char *const files[] = {
+        ".git/HEAD", "main.c", "readme.md", "app.log", "keep.log", "teal.exe", "build/out.c", "node_modules/x.js",
+        "src/a.c", "src/b.h", "src/gen/g.c", "src/x.log", "src/deep/d1/d2/z.c", "docs/draft/w.txt", "docs/guide.txt",
+        "vendor/lib.c", "bin/tool.c",
+    };
+    TEST_CHECK(t, test_make_tree(t, root, files, (i32)ARRAY_COUNT(files)), "scanner: cannot make the tree");
+    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\.gitignore", root), STR8_LIT("*.log\nbuild/\nvendor/\n!keep.log\n")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\src\\.gitignore", root), STR8_LIT("gen/\n!*.log\n")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), STR8_LIT("[ignore]\ndocs/draft/\n[allow]\nvendor/\n")),
+               "scanner: cannot write the rules");
+    String8 loop = str8_fmt(&t->arena, "%S\\src\\loop", root);
+    os_dev_remove_dir(loop);
+    TEST_CHECK(t, os_dev_make_junction(loop, root), "scanner: cannot make the junction");
+    ProjectIndex x;
+    project_index_init(&x);
+    ProjectScan *s = test_scan_make(t, root, 1000000);
+    TEST_CHECK(t, project_scan_start(s) && test_scan_finish(s, &x, 10000), "scanner: the scan did not end");
+    String8 got = test_index_paths(t, &x);
+    String8 want = STR8_LIT(".gitignore,.teal-project,bin/tool.c,docs/guide.txt,keep.log,main.c,readme.md,src/.gitignore,src/a.c,"
+                            "src/b.h,src/deep/d1/d2/z.c,src/x.log,vendor/lib.c");
+    ProjectScanResult r = s->result;
+    project_scan_free(s);
+    TEST_CHECK(t, str8_equal(got, want), "scanner: listed '%S', expected '%S'", got, want);
+    // Ignored: .git (built-in), app.log, teal.exe (built-in), build (.gitignore), node_modules (built-in), src/gen (nested),
+    // docs/draft (.teal-project). The junction is not followed and not counted.
+    TEST_CHECK(t, r.files == 13 && r.ignored == 7 && !r.limit && !r.cancelled && r.errors == 0, "scanner: %D files, %D ignored, %D errors",
+               r.files, r.ignored, r.errors);
+    // Breadth first: the root's files come before anything in a subdirectory.
+    u8 first[PROJECT_PATH_MAX];
+    i64 n0 = project_index_path(&x, 0, first, sizeof(first));
+    b32 shallow = 1;
+    for (i64 i = 0; i < x.file_count && i < 5; i++) shallow &= ((ProjectEntry *)x.files.base)[i].dir == 0;
+    TEST_CHECK(t, n0 > 0 && shallow, "scanner: the root's files first");
+    // The mask holds the path's characters, the directory part included.
+    u64 m = project_mask(STR8_LIT("src/deep/d1/d2/z.c"));
+    b32 mask_ok = 0;
+    for (i64 i = 0; i < x.file_count; i++) mask_ok |= ((ProjectEntry *)x.files.base)[i].mask == m;
+    TEST_CHECK(t, mask_ok, "scanner: the mask of a deep path");
+
+    // The file limit.
+    project_index_reset(&x);
+    s = test_scan_make(t, root, 5);
+    TEST_CHECK(t, project_scan_start(s) && test_scan_finish(s, &x, 10000), "scanner: limit: the scan did not end");
+    r = s->result;
+    project_scan_free(s);
+    TEST_CHECK(t, r.limit && r.files == 5 && x.file_count == 5, "scanner: limit: %D files, limit %d", r.files, r.limit);
+
+    // A cancel in the middle: held after the first batch of the big tree, then cancelled.
+    String8 big = test_big_tree(t);
+    project_index_reset(&x);
+    s = test_scan_make(t, big, 1000000);
+    s->dev_hold = 1;
+    s->dev_hold_after = 1;
+    TEST_CHECK(t, project_scan_start(s), "scanner: cancel: no thread");
+    for (i32 i = 0; i < 500 && !x.file_count; i++) {
+        os_dev_wake_wait(20);
+        project_scan_drain(s, &x);
+    }
+    TEST_CHECK(t, x.file_count > 0 && !s->ended, "scanner: cancel: the first batch (%D files) and still running", x.file_count);
+    project_scan_cancel(s);
+    TEST_CHECK(t, test_scan_finish(s, &x, 2000), "scanner: cancel: the worker did not end");
+    r = s->result;
+    project_scan_free(s);
+    TEST_CHECK(t, r.cancelled && r.files < 10000 && x.file_count == r.files, "scanner: cancel: %D files of 10000, cancelled %d", r.files, r.cancelled);
+    // The whole big tree, for the count.
+    project_index_reset(&x);
+    s = test_scan_make(t, big, 1000000);
+    TEST_CHECK(t, project_scan_start(s) && test_scan_finish(s, &x, 20000), "scanner: big: the scan did not end");
+    r = s->result;
+    project_scan_free(s);
+    TEST_CHECK(t, r.files == 10000 && x.file_count == 10000 && x.dir_count == 100, "scanner: big: %D files in %D directories", r.files, x.dir_count);
+
+    // Stress: 300 rounds of start and cancel, at a random entry or at once; each worker must end within
+    // 250 ms of its cancel.
+    u64 rng = seed ^ 0x9e3779b97f4a7c15ull;
+    u64 worst_us = 0;
+    OsEvent pause;
+    os_event_create(&pause);
+    for (i32 round = 0; round < 300; round++) {
+        rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+        project_index_reset(&x);
+        s = test_scan_make(t, big, 1000000);
+        if (round % 3 == 0) { // it stands still at a random entry until the cancel
+            s->dev_hold = 1;
+            s->dev_hold_entries = 1 + (i64)((rng >> 33) % 10000);
+        }
+        TEST_CHECK(t, project_scan_start(s), "scanner: stress: no thread in round %d", round);
+        if (round % 3 != 2) os_event_wait(pause, (u32)((rng >> 20) % 4)); // 0-3 ms in; every third round cancels at once
+        u64 t0 = os_time_us();
+        project_scan_cancel(s);
+        b32 ended = test_scan_finish(s, &x, 250);
+        u64 took = os_time_us() - t0;
+        worst_us = MAX(worst_us, took);
+        if (!ended) project_scan_join(s, 10000);
+        project_scan_free(s);
+        TEST_CHECK(t, ended, "scanner: stress: round %d: the worker took more than 250 ms after its cancel", round);
+    }
+    os_event_destroy(pause);
+    TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "scanner: stress: %d threads, %d events left",
+               os_dev_live_threads() - threads0, os_dev_live_events() - events0);
+
+    // A worker stuck in the file system (deaf to cancel): the join gives up at its bound; released, it ends.
+    s = test_scan_make(t, root, 1000000);
+    s->dev_stuck = 1;
+    TEST_CHECK(t, project_scan_start(s), "scanner: stuck: no thread");
+    project_scan_cancel(s);
+    u64 t0 = os_time_us();
+    b32 joined = project_scan_join(s, 200);
+    u64 waited = os_time_us() - t0;
+    TEST_CHECK(t, !joined && waited >= 150 * 1000, "scanner: stuck: the join returned %d after %U us", joined, waited);
+    os_atomic_set(&s->dev_stuck, 0);
+    os_event_set(s->event);
+    TEST_CHECK(t, project_scan_join(s, 10000), "scanner: stuck: released, it did not end");
+    project_scan_free(s);
+    project_index_destroy(&x);
+    TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "scanner: threads or events left");
+    LOG("test: ok: scanner (the exact set: built-in, .gitignore, nested .gitignore with negation, .teal-project [ignore] and [allow], "
+        "a junction not followed; 7 ignored; breadth first; the file limit; a cancel after the first batch; 10,000 files; 300 "
+        "start / cancel rounds, the slowest end %U us after its cancel; a stuck worker's join bounded; no threads or events left)", worst_us);
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Matching
 
@@ -7372,6 +7577,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_project_roots(&t);
     arena_reset(&t.arena);
     test_project_file(&t);
+    arena_reset(&t.arena);
+    test_scanner(&t, seed);
     arena_reset(&t.arena);
     test_matcher(&t);
     arena_reset(&t.arena);
