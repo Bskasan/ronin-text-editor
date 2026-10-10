@@ -7,7 +7,7 @@
 | `src/teal.c` | the unity translation unit; includes everything below except the .cpp, in order |
 | `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header teal uses, then `teal.c`, so a teal identifier that a system header defines as a macro fails the build |
 | `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
-| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS |
+| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call) |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
@@ -22,21 +22,25 @@
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
 | `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
-| `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, the minibuffer commands, M-x, goto-line |
+| `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, a prompt's own matcher (`MiniMatcher`: ranking across frames, rows, spans, a status), the minibuffer commands, M-x, goto-line |
+| `src/project.h/.c` | ignore rules (a .gitignore subset, scopes chained per directory), project roots (markers, the command-line directory, drive roots) and their cache, `.teal-project` (the config parser's lines and diagnostics), the file index (relative paths, 16 bytes a file, a character mask each), the scanner: a worker thread walking a root breadth first, its batches through one locked queue, cancel, join |
+| `src/fuzzy.h/.c` | fuzzy matching of paths (subsequences, smart case, terms, '/', the score and its spans) and the resumable ranking over an index (slices against a deadline, narrowing, the best 1,000 in a heap) |
+| `src/finder.h/.c` | part of the app (included after files.c): the projects kept (4), their scans and tree watches, `app_wake` (the workers' results), staleness and rescans, the project finder's matcher and its commands (project-find-file, -other-window, project-refresh); dev: smoke and bench helpers |
 | `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded, over the gap buffer's two segments in place, resumable with a budget of positions, SSE2 scan for the first byte |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing, the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`) |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--scan-hold`, junctions, the input tests' shield) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `files.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `command.c`, `keymap.c`, `config.c`, `test.c`)
-includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
+Core (`app.c`, `files.c`, `finder.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`, `fuzzy.c`,
+`command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
+The scanner's worker (project.c) calls only the os_* functions platform.h marks "any thread".
 
 ## Startup and frame loop
 
@@ -58,17 +62,19 @@ includes only `platform.h` and `render.h`; `font.c` additionally calls `font_bac
    reads the keys typed ahead. If Windows refuses the foreground, the window is still shown and
    appears when uncloaked. The smoke and `--idle-check` show it without activation, screenshot runs
    and `--dpi-check` never show it.
-3. Loop: if no redraw is pending, block in `MsgWaitForMultipleObjectsEx` on the messages and the
-   directory watches, with no timeout unless the app asks for one (`app_wait_ms`: only while a
-   config read is to be retried). Signalled watches become `EVENT_DIR_CHANGED`. Drain every queued
+3. Loop: if no redraw is pending, block in `MsgWaitForMultipleObjectsEx` on the messages, the
+   directory watches (a project's tree watch only while armed) and the wake event of the workers, with
+   no timeout unless the app asks for one (`app_wait_ms`: only while a config read is to be retried).
+   Signalled watches become `EVENT_DIR_CHANGED`; the wake event makes the loop call `app_wake`, which
+   takes the scans' batches and asks for a frame only when something shown changed. Drain every queued
    message; the window procedure turns them into `Event`s in a fixed array (consecutive
    mouse-move and resize events are coalesced). If the array is nearly full, run a frame
    mid-drain instead of dropping anything. If anything requested a redraw, run exactly one
    frame: `app_update_and_render` → `font_frame_begin`, `r_begin_frame`, `r_push_rect` /
    `font_draw_text`…, `r_end_frame` (flush + `Present(1, 0)`). Scratch resets after each frame.
    Background work has one deadline per frame (2 ms): search slices first (isearch, query-replace,
-   replace-all), then lexer states with what is left; while either is pending the app asks for
-   another frame, otherwise none.
+   replace-all), then a prompt's ranking (the project finder), then lexer states with what is left;
+   while any is pending the app asks for another frame, otherwise none.
 4. `WM_SIZE` resizes the swap chain and renders immediately, so live resize stays crisp
    inside the modal size loop. Minimized = frames are no-ops.
 
@@ -332,6 +338,42 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
   216.1-217.3). A window costs a View slot inside App and two markers per buffer it remembers.
 - Release exe 343,552 bytes (323,584 after Phase 9); the same six DLLs; user32 adds SetCursor and
   MsgWaitForMultipleObjects.
+
+## Measurements (Phase 11)
+
+Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe --bench-project`.
+
+- Ranking a query typed a character at a time ("winmai"), then deleted, twice (24 keystrokes); frame =
+  command + frame build; "until ranked" includes the Presents of those frames (one refresh each when DWM
+  shows the window as an overlay):
+
+| paths | index | keystroke's frame avg / worst | frames until ranked avg / worst | longest frame | a whole ranking at once (RET) |
+|---|---|---|---|---|---|
+| 10,000 | 388 KB | 274 / 776 us | 1 / 1 | 776 us | 85 us |
+| 100,000 | 3.3 MB | 1,462 / 2,062 us | 1 / 2 | 2,062 us | 1,046 us |
+| 1,000,000 | 32 MB | 1,884 / 2,097 us | 8 / 14 | 2,097 us | 10.1 ms |
+
+  No frame was over 2.1 ms (the 2 ms budget plus 100 us). The first version reached 2.8 ms: narrowing
+  copied up to 4 MB of survivors inside the command, a slice of 4096 candidates cost up to ~600 us on a
+  one-letter query (nearly everything matches), and sorting the kept rows came after the deadline (perf
+  commit: the copy is part of the budgeted work, slices of 512, the sort's time reserved).
+- Scans (read only): the generated tree, 10,000 files in 100 directories: 16 ms, index 324 KB (33 bytes
+  a file). `C:\Windows`: 156,905 files, 55,316 ignored (binary extensions), 46 directories unreadable,
+  11.8 s cold / 7.6 s warm, index 15 MB (98 bytes a file: long paths), private bytes +11 MB.
+- Typing at line 1,000,000 of the 100 MB file, 10,000 self-inserts (command + frame build), alternated:
+  no scan 9-20 us avg, worst 251-282 us; while `C:\Windows` was scanned (44,000-56,000 files listed during
+  the typing) 9-19 us avg, worst 221-420 us. Unchanged. The worst first insert of a run (5.4-5.9 ms) is the
+  gap moving to line 1,000,000, as in earlier phases.
+- `--test`'s thread stress: 300 rounds of start and cancel on the 10,000-file tree, the slowest worker
+  ended 263-286 us after its cancel; a worker stuck in the file system is left after exactly the bound.
+- Idle after C-x p f on teal's tree (`--idle-check`): 0 frames, 0 main loop passes, 15.6 ms of CPU (one
+  scheduler tick) over 5 s. A run disturbed by the mouse over the window failed and said so.
+- Memory (release, private bytes idle, 3 runs): *scratch* 76.1-77.6 MB; src\keymap.c 76.3-77.5 MB; the
+  100 MB .txt 192.3-193.3 MB; the 100 MB .c 216.3-217.7 MB (Phase 10: 76.1-77.3, 77.1-77.8, 191.8-193.4,
+  216.2-216.9). A project costs its index (above) and, while a scan runs, the worker's batches (8 x 64 KB)
+  and directory queue.
+- Release exe 378,368 bytes (343,552 after Phase 10); the same six DLLs; kernel32 adds CreateEventW,
+  SetEvent, AcquireSRWLockExclusive, ReleaseSRWLockExclusive and GetFileSizeEx.
 
 ## Roadmap
 
@@ -915,6 +957,86 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
   TranslateMessage (`win32_translate`; F10 excepted), so they type their characters instead of
   becoming Alt chords.
 
+### Projects and fuzzy file open (Phase 11)
+
+- A project needs no setup. Its root is the nearest directory at or above the buffer's file that holds a
+  marker (project_markers: .git, .hg, .svn or a .teal-project file; a marker may be a file, as .git is in
+  a worktree). A marker at a drive or share root does not count, so nothing ever scans a whole drive by
+  itself. A directory given on the command line (`teal <directory>`) is a project too: for the files
+  inside it, unless a marker below it is nearer (the search stops at it, so a repository around it does
+  not take over), and for buffers without a file (*scratch*). The current directory never becomes a root
+  by itself: a terminal usually starts in the profile, and `teal Documents\a.txt` must not make the profile
+  a project. Otherwise: "Not in a project (no .git found; start teal with a directory, or add a
+  .teal-project file)". Roots are cached per directory (256, reset by project-refresh).
+- `teal <directory>` opens no buffer for the directory (it used to say "is a directory"): *scratch* is
+  shown, and *scratch* and C-x C-f start in it. The process's current directory is not changed.
+- The file list comes from a worker thread (CLAUDE.md has the threading rules). It walks the root breadth
+  first (shallow files first) with its own two arenas, hands records to the main thread in 64 KB batches
+  through one locked queue (at most 8 in flight: it waits for one to come back), and wakes the main loop
+  (one wake event for all workers; `app_wake` takes the batches without a frame unless the finder shows
+  them). The last batch carries the counts. Cancel is an atomic flag checked at every directory entry
+  plus the worker's event; the main thread joins a worker when its last batch arrives. A scan lives at the
+  start of its own reservation, so a worker that never comes back from the file system touches no freed
+  memory: at exit every worker is cancelled, then joined within 1,000 ms in all; one still inside a
+  file-system call is left to the process exit (logged in dev builds).
+- Reparse points: a directory that is one (symlink, junction) is not entered; a file that is one (a cloud
+  placeholder) is listed. Depth is capped at 256, a relative path at 4,096 bytes (counted as errors).
+- Ignore rules, one ordered list in which the last matching pattern decides: the built-in project_ignore,
+  the .gitignore files from the root down (each scoped to its directory, read by the worker as it enters
+  it), then .teal-project's [ignore], then its [allow] as negations. Supported: comments, blank lines,
+  trailing blanks trimmed, '*' and '?' within a segment, "**" as a leading "**/", a trailing "/**" and a
+  middle "/**/", a leading or inner '/' anchoring to the file's directory, a trailing '/' for directories
+  only, '!' negation; ASCII is matched case-insensitively. Not supported: character classes ([a-z]),
+  backslash escapes (\#, \!, "\ "), .git/info/exclude, core.excludesFile and the global gitignore. An
+  ignored directory is never entered, so nothing below it can be included again (git behaves the same). In
+  .teal-project a pattern cannot start with '[' (that is a section header).
+- The built-in list holds only names that cannot be source directories (.git/ .hg/ .svn/ .vs/
+  node_modules/ __pycache__/) and binary extensions. build/, out/, bin/, obj/, target/ and dist/ are not
+  in it: a name pattern matches at any depth and would silently hide real source directories; they belong
+  in the project's .gitignore or .teal-project. When a scan ends the echo area says "<N> files in <root>/
+  (<M> ignored)" (M counts what a rule left out, not what was inside an ignored directory).
+- The index: per file 16 bytes (the 64-bit character mask of its relative path, its directory, its name's
+  offset), the name once (u16 length first), each directory's path once; about 33 bytes a file for short
+  names. At most 4 projects are kept; the least recently used goes (its scan cancelled, its arenas
+  released). project_max_files (1,000,000) stops a scan: "Project has more than N files; listed the first
+  N" and "stopped at N files" in the finder.
+- Staleness: a tree watch on the root (file and directory names) marks the index stale on its first
+  change and is not re-armed until the next scan starts (one wake-up per index, however many files a build
+  creates; re-armed with a fresh notification just before the walk, so a change during the walk marks the
+  new index stale again). A stale index is rescanned the next time C-x p f needs it, into a second index
+  while the first stays in use; the two are swapped when the scan is complete. The first scan of a root
+  fills the live index directly, so the finder fills in as batches arrive.
+- The finder never waits: the prompt opens at once with what is known; while the first scan runs it says
+  "scanning: N files" after the count, "rescanning" during a rescan. An empty input lists the files
+  visited this session (find-file, the finder, the command line; most recent first) that lie under the
+  root, then the index in scan order. Rows show the path relative to the root; a row too long loses its
+  left part ("…" first); matched characters are in completion_match. RET while the ranking for the
+  current input is unfinished completes it first (bounded by the index: ~10 ms for a million paths), then
+  takes the selected row; while the scan itself still runs RET uses what is known. C-j takes the input as
+  typed, relative to the root (a new file). TAB takes the selected row.
+- Fuzzy matching (fuzzy.c) is the finder's own matcher behind the minibuffer's `MiniMatcher`; M-x, buffers
+  and find-file keep the Phase 7 matcher. A query is space-separated terms that must all match as
+  subsequences; smart case (an uppercase letter anywhere makes it exact); '/' or '\' matches the separator.
+  A term without '/' is tried inside the file name first (6 a character more), else over the whole path,
+  from its leftmost place and from up to 8 later segment or word starts; the score: 16 a character, a
+  segment start (after '/') 10, a word start (after _ - . or space) 8, a lower-to-upper change 7, the
+  first character's bonus doubled, a run of consecutive characters keeping its first one's bonus (at least
+  4), a gap -3 and -1 a byte more. A file name equal to the whole query ranks first; equal scores go to the
+  shorter path, then index order.
+- Ranking stays inside the frame budget: the clock is read every 512 candidates (a slice), the 64-bit
+  character mask rejects first, the best 1,000 are kept in a heap and only they are sorted (after the work,
+  whose deadline leaves the last sort's time). When the input only grows, the next pass looks only at the
+  previous survivors (also those of a pass cut short), then at what it never reached; entries that arrive
+  during a pass extend it. Spans are computed only for the rows drawn.
+- The input tests' shield (answer 3 of Phase 10): the retry of 1b48e43 is gone. Each case waits (at most
+  2 s) until no physical modifier is down and records GetLastInputInfo; a case that fails while real input
+  arrived, or whose own key state did not hold with real input in the last 2 s, is inconclusive (logged,
+  repeated, at most 5 attempts); any other failure counts. Measured: Windows replaces a thread's key state
+  with the keyboard's some time after real input, also input from before the case (16-625 ms in the
+  failures seen). One failure without real input in the 2 s before was seen once afterwards (open).
+- The benches never take the focus: their window is shown cloaked without activation, as the smoke's and
+  --idle-check's. Screenshot runs take the workers' results (until none came for 300 ms) before the frame.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -955,7 +1077,13 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
 - Candidates' bindings from the minibuffer keymap in M-x annotations (only global ones are shown).
 - A change on disk within the same file-time tick at the same size goes unseen (a content hash on
   activation would catch it, at the cost of reading every file).
-- Slow directory listings (network shares) block the UI while find-file lists a directory.
+- Slow directory listings (network shares) block the UI while find-file lists a directory (the scanner's
+  worker could list it now).
+- Projects: updating an index from the change notifications (ReadDirectoryChangesW) instead of rescanning;
+  following symlinks and junctions with loop detection; character classes and escapes in ignore patterns,
+  .git/info/exclude and the global excludes file; frecency (a bonus for visited files in non-empty
+  queries); an optimal alignment for scoring (fzf v2's) instead of a few greedy starts; ranking a million
+  paths on several threads.
 - Revert: map positions through a line diff of the old and new text, so a marker in an unchanged
   line that moved keeps its place in it (now: line and column inside the replaced range).
 - JSX tags in JavaScript / TypeScript highlighting.

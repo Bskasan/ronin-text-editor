@@ -102,7 +102,8 @@ the exe size.
 Command line, every build: `teal [[+LINE[:COLUMN]] file ...]` (1-based, as in Emacs): every file
 is opened, each at the +LINE[:COLUMN] before it (one with no file after it: the file before it, or
 *scratch*); the first is shown, and with startup_windows = 2 the second window shows the second.
-Any unrecognized argument starting with `--` (or a flag missing its value) exits at once with
+A directory instead of a file is opened as the project (`teal <directory>`): nothing is visited for it,
+*scratch* and C-x C-f start there, C-x p f lists it. Any unrecognized argument starting with `--` (or a flag missing its value) exits at once with
 code 10, before a window exists.
 
 `--startup-ms` works in both builds: it exits right after the first Present with exit code =
@@ -170,6 +171,17 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
     build/teal_bench.exe --bench-windows                  # 100 MB file: frames with one window and with four
                                                           # (top, middle, line 1,000,000, end); typing at
                                                           # line 1,000,000 with one window and with two
+    build/teal_bench.exe --bench-project                  # fuzzy ranking on 10,000 / 100,000 / 1,000,000
+                                                          # synthetic paths (each keystroke's frame, frames
+                                                          # until ranked, the longest frame, RET's whole
+                                                          # ranking); scans of build\tmp\p11big and of
+                                                          # %SystemRoot% (read only); typing at line
+                                                          # 1,000,000 with and without a scan running
+    build/teal_debug.exe <dir> --scan-hold N --keys "C-x p f ..." --screenshot ..   # project scans stand
+                                                          # still after N batches (the finder while scanning)
+
+The benches never take the focus (shown cloaked without activation, as the smoke and --idle-check);
+screenshot runs take the project scans' results (until none came for 300 ms) before their frame.
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
@@ -209,7 +221,11 @@ side (stage 6): the left one selected with focus and a 400-character line, the r
 buffer: the divider in window_divider over the full height (nothing of the long line in it), the right
 window's first column exactly background, the long line drawn up to the divider, the inverse mode
 line on the left and mode_line_inactive_background / _text on the right, the filled cursor on the left
-and the hollow one on the right; then back to one window. Every syntax
+and the hollow one on the right, the right window's active region not drawn (only the selected window
+shows its region); then back to one window. The project finder over a known in-memory list with "ap"
+typed (stage 7): the prompt color, the selected row's empty part in completion_selection, the matched
+characters of the selected and of another row in completion_match, the unmatched part in the text
+color, an unselected row's empty part in the background. Every syntax
 frame also has a number pixel in its color. The window
 title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
@@ -298,8 +314,20 @@ DefWindowProc for Alt / F10 / Alt+Space, describe-key on keys without a chord, t
 posted as WM_SYSKEYDOWN without Alt (no focus window) typing its letter, C-x 3 / C-x o / C-M-v /
 C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding through describe-key (a
 plain character from a dead key typed as the dead key and Space; the bindings whose US keys run
-something else on the layout are listed), Alt+F4. Also the command line's files and +LINE:COLUMN. A failed dev ASSERT logs its file, line and condition before breaking,
-so a crash shows up in build\teal.log.
+something else on the layout are listed), Alt+F4. Also the command line's files and +LINE:COLUMN. The
+modifier test, the key test and every harness case are shielded from real input (DevShield): each waits
+until no physical modifier is down, checks that its key state held, and a case that real input disturbed
+is logged as "test: inconclusive: ..." and repeated (at most 5 attempts); a self-test drives those
+decisions. Phase 11: threads (a lock under contention, events, the wake), a tree watch (500 files: one
+wake-up until re-armed), junctions and small reads; ignore rules (globs and 30 decisions); project roots (a
+fake file system table, real directories, the cache, the built-in settings); .teal-project; the scanner
+on generated trees in build\tmp\p11scan and p11big (the exact set, a junction loop, the file limit, a
+cancel, 300 start / cancel rounds each ending within 250 ms, a stuck worker's bounded join); fuzzy
+ranking (goldens, spans, sliced and narrowed equal to full scoring on 20,000 paths); the project finder
+through the headless app (build\tmp\p11find: query and RET, the empty query, RET with one candidate a
+frame, a stale index, the other window, project-refresh, teal <directory>, a held scan, the file limit,
+not in a project, shutdown with a scan running and with a stuck worker); the region in windows. A failed
+dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
 check exact colors with an independent decoder, e.g. PowerShell `System.Drawing.Bitmap`.
