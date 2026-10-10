@@ -7,6 +7,7 @@
 #define CONFIG_H
 
 #define CONFIG_FONT_CAP 128        // bytes of the font family name
+#define CONFIG_LIST_CAP 2048       // bytes of a blank-separated list setting (project_markers, project_ignore)
 #define CONFIG_MAX_FILE_SIZE MB(4) // a larger teal.conf is refused
 #define CONFIG_DIAG_CAP 1000       // diagnostics kept per load (all are counted)
 
@@ -31,6 +32,11 @@ struct Settings {
     b32 show_paren_mode;      // the bracket at point and its match are highlighted
     i32 split_width_threshold; // columns: a single window pops up a buffer side by side from this frame width on
     i32 startup_windows;      // 1, or 2: the frame starts split side by side
+    u8 project_markers[CONFIG_LIST_CAP]; // blank-separated names whose presence makes a directory a project root
+    i32 project_markers_len;
+    u8 project_ignore[CONFIG_LIST_CAP];  // blank-separated .gitignore patterns never listed in a project
+    i32 project_ignore_len;
+    i32 project_max_files;    // a project scan stops there
 };
 
 typedef struct Theme { // 0xRRGGBB

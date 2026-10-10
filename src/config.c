@@ -143,6 +143,14 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "completion_lines", offsetof(Settings, completion_lines), 1, 40 },
     { "split_width_threshold", offsetof(Settings, split_width_threshold), 1, 10000 },
     { "startup_windows", offsetof(Settings, startup_windows), 1, 2 },
+    { "project_max_files", offsetof(Settings, project_max_files), 1000, 10000000 },
+};
+
+// Text settings: the bytes and their length, at most cap - 1 bytes.
+static const struct { const char *name; u32 offset, len_offset, cap; } config_text_settings[] = {
+    { "font", offsetof(Settings, font), offsetof(Settings, font_len), CONFIG_FONT_CAP },
+    { "project_markers", offsetof(Settings, project_markers), offsetof(Settings, project_markers_len), CONFIG_LIST_CAP },
+    { "project_ignore", offsetof(Settings, project_ignore), offsetof(Settings, project_ignore_len), CONFIG_LIST_CAP },
 };
 
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {
@@ -177,14 +185,17 @@ static void config_setting(ConfigParser *p, String8 name, String8 value) {
         }
         return;
     }
-    if (str8_equal(name, STR8_LIT("font"))) {
-        if (value.len > CONFIG_FONT_CAP - 1) {
-            config_diag(p, 0, "font name longer than %d bytes", CONFIG_FONT_CAP - 1);
+    for (i32 i = 0; i < ARRAY_COUNT(config_text_settings); i++) {
+        if (!str8_equal(name, str8_cstr(config_text_settings[i].name))) continue;
+        if (value.len > (i64)config_text_settings[i].cap - 1) {
+            config_diag(p, 0, "%S longer than %d bytes", name, (i32)config_text_settings[i].cap - 1);
             return;
         }
-        memcpy(s->font, value.data, (size_t)value.len);
-        s->font_len = (i32)value.len;
-    } else if (str8_equal(name, STR8_LIT("font_size"))) {
+        memcpy((u8 *)s + config_text_settings[i].offset, value.data, (size_t)value.len);
+        *(i32 *)((u8 *)s + config_text_settings[i].len_offset) = (i32)value.len;
+        return;
+    }
+    if (str8_equal(name, STR8_LIT("font_size"))) {
         if (!config_parse_number(value, &x)) {
             config_diag(p, 0, "font_size: '%S' is not a number", config_quote(value));
             return;
