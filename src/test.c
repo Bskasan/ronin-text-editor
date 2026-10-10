@@ -6666,6 +6666,32 @@ static b32 test_window_same_buffer(Test *t) {
     return 1;
 }
 
+// Only the selected window shows its active region (Emacs' highlight-nonselected-windows nil), also
+// while the minibuffer reads from it, and with two windows on one buffer.
+static b32 test_window_region(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "region: app_create failed");
+    test_win_lines(t, app, 300);
+    app_dev_feed(app, "C-x 3 C-SPC C-n C-n", &t->arena);
+    TEST_CHECK(t, app_dev_window_shows_region(app, 0) && !app_dev_window_shows_region(app, 1),
+               "region: the selected window shows its region, the other (same buffer, no region) does not");
+    app_dev_feed(app, "C-x o", &t->arena);
+    TEST_CHECK(t, test_win(app, 0)->cursors[0].mark_active && !app_dev_window_shows_region(app, 0) && !app_dev_window_shows_region(app, 1),
+               "region: after C-x o the left window's region is still active but not shown");
+    app_dev_feed(app, "C-SPC C-n", &t->arena);
+    TEST_CHECK(t, !app_dev_window_shows_region(app, 0) && app_dev_window_shows_region(app, 1), "region: the right window's own region is shown");
+    app_dev_feed(app, "C-x o", &t->arena);
+    TEST_CHECK(t, app_dev_window_shows_region(app, 0) && !app_dev_window_shows_region(app, 1), "region: back in the left window, its region is shown");
+    app_dev_feed(app, "M-x", &t->arena);
+    TEST_CHECK(t, app->mini.active && app_dev_window_shows_region(app, 0) && !app_dev_window_shows_region(app, 1),
+               "region: while the minibuffer reads, the window it was called from still shows its region");
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "region")) return 0;
+    LOG("test: ok: the region in windows (only the selected window shows its active region; C-x o and back; while the minibuffer "
+        "reads; two windows on one buffer)");
+    return 1;
+}
+
 // Clicks, the wheel, divider and mode-line drags, drag selections, the mouse cursor.
 static b32 test_window_mouse(Test *t) {
     App *app = test_app_create(t);
@@ -6963,6 +6989,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_window_popup(&t);
     arena_reset(&t.arena);
     test_window_same_buffer(&t);
+    arena_reset(&t.arena);
+    test_window_region(&t);
     arena_reset(&t.arena);
     test_window_mouse(&t);
     arena_reset(&t.arena);

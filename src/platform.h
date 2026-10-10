@@ -278,6 +278,7 @@ void app_dev_frame_size(App *app, i32 width, i32 height); // headless: the frame
 i32  app_dev_window_count(App *app);
 i32  app_dev_window_selected(App *app);           // the selected window's index in cyclic order
 i64  app_dev_window_top(App *app, i32 index);     // the top line of the index-th window in cyclic order
+b32  app_dev_window_shows_region(App *app, i32 index); // the index-th window in cyclic order draws its active region
 b32  app_dev_feed(App *app, const char *keys, Arena *scratch);               // headless: --keys notation, one event at a time
 void app_dev_use_config(App *app, String8 path); // switches to this config file and reloads it (as C-c r)
 b32  app_dev_visit(App *app, String8 path);      // visits a file in the active view

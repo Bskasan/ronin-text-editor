@@ -857,7 +857,9 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
   switching buffers back and forth in one window does not disturb another. A window new to a buffer
   starts where the most recently used other window showing it is, else where the buffer was last
   shown anywhere (the buffer list's entry), else at the start. Marks are per window too (per cursor,
-  as before); each window highlights its own active region.
+  as before); only the selected window highlights its active region (Emacs'
+  highlight-nonselected-windows nil, Phase 11; also while the minibuffer reads from it), the others
+  keep theirs unhighlighted.
 - Layout: a split gives its first child its ratio of the size in whole cells from the split's own
   origin, clamped by the minimum sizes (4 lines with the mode line, 10 columns: Emacs'
   window-min-height and window-min-width) when they fit, the second child the rest; the leaves tile
