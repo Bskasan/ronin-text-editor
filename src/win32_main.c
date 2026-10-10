@@ -92,6 +92,7 @@ typedef struct Platform {
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
+    i32 scan_hold; // --scan-hold N: every project scan stands still after N batches (the finder while scanning)
     String8 keys; // --keys: injected after startup
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
@@ -752,6 +753,14 @@ b32 os_dev_wake_wait(u32 timeout_ms) {
 
 i32 os_dev_live_threads(void) {
     return (i32)InterlockedOr(&g_platform->live_threads, 0);
+}
+
+void os_dev_thread_abandoned(void) {
+    InterlockedDecrement(&g_platform->live_threads); // still running, but the process exit ends it: not a leak
+}
+
+void os_dev_thread_reclaimed(void) {
+    InterlockedIncrement(&g_platform->live_threads);
 }
 
 i32 os_dev_live_events(void) {
@@ -2380,7 +2389,9 @@ static i32 win32_write_outputs(Platform *p) {
         win32_frame(p);
     }
     if (p->quit) return EXIT_OK;
-    for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p); // the colors of what is shown
+    // The workers' results (a project scan), taken until none came for 300 ms (a held scan stops there).
+    while (os_dev_wake_wait(300)) if (app_wake(p->app)) win32_frame(p);
+    for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p); // the colors of what is shown, a ranking
     r_request_capture(p->renderer);
     win32_frame(p);
     i32 result = EXIT_OK;
@@ -3420,6 +3431,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
         if (str8_equal(a, STR8_LIT("--config")) && has_value) { p->config_path = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--scan-hold")) && has_value) { p->scan_hold = win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
@@ -3547,6 +3559,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                          .files = p->files, .file_count = p->file_count };
 #if TEAL_DEV
     app_args.config_path = p->config_path;
+    app_args.scan_hold = p->scan_hold;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
                              p->bench_syntax || p->bench_search || p->bench_windows || p->type_ahead_check); // defaults
 #endif

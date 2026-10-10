@@ -160,8 +160,9 @@ b32 project_path_inside(String8 path, String8 dir) {
     return path.len == dir.len || project_is_sep(path.data[dir.len]);
 }
 
-String8 project_root_find(Arena *arena, String8 dir, String8 markers, ProjectExistsFn *exists, void *data) {
+String8 project_root_find(Arena *arena, String8 dir, String8 markers, String8 stop, ProjectExistsFn *exists, void *data) {
     String8 cur = project_strip_seps(dir);
+    stop = project_strip_seps(stop);
     while (cur.len && !project_is_drive_root(cur)) {
         for (i64 i = 0; i < markers.len;) {
             while (i < markers.len && ignore_is_blank(markers.data[i])) i++;
@@ -174,6 +175,7 @@ String8 project_root_find(Arena *arena, String8 dir, String8 markers, ProjectExi
             arena_pop_to(arena, mark);
             if (found) return str8_copy(arena, cur);
         }
+        if (stop.len && cur.len == stop.len && project_path_inside(cur, stop)) break;
         i64 sep = cur.len;
         while (sep > 0 && !project_is_sep(cur.data[sep - 1])) sep--;
         if (sep == 0) break;
@@ -205,16 +207,20 @@ void project_cache_destroy(ProjectRootCache *c) {
 String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_dir, String8 markers, ProjectExistsFn *exists,
                          void *data) {
     if (!file_dir.len) return cmdline_dir;
+    // Inside the command-line directory the search stops there: teal <directory> makes that directory the
+    // project, unless a repository nested in it is nearer.
+    String8 stop = cmdline_dir.len && project_path_inside(file_dir, cmdline_dir) ? cmdline_dir : str8(NULL, 0);
     String8 root = { 0 };
     i32 found = -1;
-    for (i32 i = 0; i < c->count && found < 0; i++) if (str8_equal(c->dirs[i], file_dir)) found = i;
+    for (i32 i = 0; i < c->count && found < 0; i++) if (str8_equal(c->dirs[i], file_dir) && str8_equal(c->stops[i], stop)) found = i;
     if (found >= 0) {
         root = c->roots[found];
     } else {
         if (c->count == PROJECT_ROOT_CACHE) project_cache_reset(c);
         c->queries++;
-        root = project_root_find(&c->arena, file_dir, markers, exists, data);
+        root = project_root_find(&c->arena, file_dir, markers, stop, exists, data);
         c->dirs[c->count] = str8_copy(&c->arena, file_dir);
+        c->stops[c->count] = str8_copy(&c->arena, stop);
         c->roots[c->count++] = root;
     }
     if (root.len) return root;
@@ -639,12 +645,12 @@ i64 project_scan_drain(ProjectScan *s, ProjectIndex *x) {
             memcpy(&len, b->data + at + 1, 2);
             at += 3;
             if (kind == PROJECT_RECORD_DIR) {
-                s->drain_dir = project_index_add_dir(x, str8(b->data + at, len));
+                if (x) s->drain_dir = project_index_add_dir(x, str8(b->data + at, len));
             } else {
                 u64 mask;
                 memcpy(&mask, b->data + at, 8);
                 at += 8;
-                project_index_add_file(x, s->drain_dir, str8(b->data + at, len), mask);
+                if (x) project_index_add_file(x, s->drain_dir, str8(b->data + at, len), mask);
                 added++;
             }
             at += len;

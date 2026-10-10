@@ -85,6 +85,8 @@ typedef enum MiniHistoryKind {
     MINI_HISTORY_SEARCH,  // isearch strings (M-p / M-n in isearch, C-s C-s)
     MINI_HISTORY_REPLACE, // query-replace: what to replace and with what
     MINI_HISTORY_TEXT, // tests and anything else
+    MINI_HISTORY_PROJECT, // project-find-file's inputs
+    MINI_HISTORY_VISITED, // every file visited this session, full paths (the project finder's empty query)
     MINI_HISTORY_COUNT,
 } MiniHistoryKind;
 
