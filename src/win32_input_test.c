@@ -96,6 +96,19 @@ static void it_post(InputTest *t, u32 vk_msg, u32 scan, b32 ext, b32 down, b32 w
     PostMessageW(t->hwnd, msg, vk_msg, lp);
 }
 
+// After a key went through the window procedure: did the modifiers the harness set still hold? Windows
+// replaces the thread's key state with the keyboard's some time after real input (DevShield).
+static void it_check_state(InputTest *t) {
+    if (!t->shield.running) return;
+    static const u32 vks[] = { VK_SHIFT, VK_CONTROL, VK_MENU };
+    for (i32 i = 0; i < ARRAY_COUNT(vks); i++) {
+        if (((GetKeyState((int)vks[i]) & 0x8000) != 0) != ((t->state[vks[i]] & 0x80) != 0)) {
+            win32_shield_state_lost(&t->shield);
+            return;
+        }
+    }
+}
+
 // One key goes down or up: modifiers by their left / right virtual key.
 static void it_key(InputTest *t, u32 vk, b32 down, b32 ext) {
     u32 vk_msg = vk, scan;
@@ -116,6 +129,7 @@ static void it_key(InputTest *t, u32 vk, b32 down, b32 ext) {
     SetKeyboardState(t->state);
     it_post(t, vk_msg, scan, ext, down, was_down, alone_alt_up);
     it_pump();
+    it_check_state(t);
 }
 
 // AltGr: a synthetic Left Ctrl, then Right Alt, with the same message time (the window procedure
@@ -134,6 +148,7 @@ static void it_altgr(InputTest *t, b32 down) {
                      (LPARAM)(1u | 0x38u << 16 | 1u << 24 | (down ? 0u : 3u << 30)));
         if (GetTickCount() == t0) {
             it_pump();
+            it_check_state(t);
             return;
         }
         MSG msg;
