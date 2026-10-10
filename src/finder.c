@@ -282,6 +282,8 @@ static b32 finder_work(void *data, u64 deadline, i64 budget) {
     App *app = data;
     Finder *f = &app->finder;
     if (!f->open) return 1;
+    // The rows are sorted after the work, inside the same frame: the work leaves the last sort's time.
+    if (deadline) deadline = MAX(deadline - f->rank.sort_us, os_time_us() + 1);
     if (!f->empty) return fuzzy_rank_work(&f->rank, deadline, budget);
     // The empty query: the index in scan order after the visited files, without them again.
     ProjectIndex *x = finder_index(f);

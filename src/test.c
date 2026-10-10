@@ -6243,6 +6243,17 @@ static b32 test_fuzzy(Test *t, u64 seed) {
         fuzzy_rank_begin(&full, &x, query, 0);
         fuzzy_rank_finish(&full);
         TEST_CHECK(t, test_fuzzy_same(&r, &full), "fuzzy: '%S' after a cut-short pass and a finish differs from full scoring", query);
+        // Narrowed twice with no work in between (the first narrowing's list still being completed).
+        if (query.len >= 3) {
+            fuzzy_rank_begin(&r, &x, str8(query.data, 1), 0);
+            fuzzy_rank_work(&r, 0, 1 + TEST_RNG() % 15000);
+            fuzzy_rank_begin(&r, &x, str8(query.data, 2), 1);
+            fuzzy_rank_begin(&r, &x, str8(query.data, 3), 1);
+            fuzzy_rank_finish(&r);
+            fuzzy_rank_begin(&full, &x, str8(query.data, 3), 0);
+            fuzzy_rank_finish(&full);
+            TEST_CHECK(t, test_fuzzy_same(&r, &full), "fuzzy: '%S' narrowed twice without work differs from full scoring", str8(query.data, 3));
+        }
     }
     // Entries added during a pass are looked at too.
     fuzzy_rank_begin(&r, &x, STR8_LIT("zebra"), 0);

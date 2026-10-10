@@ -7,7 +7,7 @@
 
 #define FUZZY_TERMS 16       // space-separated terms; every one must match
 #define FUZZY_TOP 1000       // results kept, best first
-#define FUZZY_SLICE 4096     // candidates between two looks at the clock
+#define FUZZY_SLICE 512      // candidates between two looks at the clock (a slice of the costliest queries: ~75 us)
 #define FUZZY_EXACT_NAME (1 << 20) // added when the file name is the whole (single-term) query
 
 typedef struct FuzzyTerm {
@@ -51,6 +51,8 @@ typedef struct FuzzyRank {
     i64 to_count;
     i64 at_from;           // progress in the survivor list
     i64 at;                // progress in [covered, file_count)
+    u32 *copy_src;         // narrowing: the rest of the previous list, still to be appended to `from`
+    i64 copy_left;
     b32 started;           // a query is set
     i64 total;             // matches so far in this pass
     FuzzyHit heap[FUZZY_TOP]; // the best so far: a min-heap, the worst at the root
@@ -58,6 +60,7 @@ typedef struct FuzzyRank {
     u32 rows[FUZZY_TOP];   // the heap sorted best first (fuzzy_rank_rows)
     i32 row_count;
     b32 rows_stale;
+    u64 sort_us;           // the last sort of the rows: the work leaves that much of its deadline for it
     // Assembling paths: the directory part is copied once per directory.
     u8 path[PROJECT_PATH_MAX];
     i64 path_dir;          // the directory in `path`, -1 none
