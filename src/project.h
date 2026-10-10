@@ -95,5 +95,110 @@ typedef struct ProjectFile {
 } ProjectFile;
 
 void project_file_parse(Arena *arena, String8 text, String8 file_name, ProjectFile *out);
+// Reads and parses root\.teal-project (OS_FILE_NOT_FOUND: none, `out` empty).
+OsFileStatus project_file_read(Arena *arena, String8 root, ProjectFile *out);
+
+// ---------------------------------------------------------------------------
+// The index: the files of one root as paths relative to it, '/' separators, in scan order (breadth
+// first: shallow files first). Compact for a million files: 16 bytes a file, its name once (u16 length
+// first), each directory's path once.
+
+#define PROJECT_PATH_MAX 4096 // bytes of a relative path; deeper ones are skipped (counted as errors)
+
+typedef struct ProjectDir {
+    u32 path_off, path_len; // in `names`: "" for the root, "src/sub"
+} ProjectDir;
+
+typedef struct ProjectEntry {
+    u64 mask;     // project_mask of the whole relative path: the matcher's cheap rejection
+    u32 dir;      // index into dirs
+    u32 name_off; // in `names`: a u16 length, then the bytes
+} ProjectEntry;
+
+typedef struct ProjectIndex {
+    Arena dirs, files, names; // ProjectDir[], ProjectEntry[], bytes; reserved large, committed on demand
+    i64 dir_count, file_count;
+} ProjectIndex;
+
+void    project_index_init(ProjectIndex *x);
+void    project_index_reset(ProjectIndex *x);
+void    project_index_destroy(ProjectIndex *x);
+u64     project_index_memory(ProjectIndex *x); // committed bytes
+i64     project_index_add_dir(ProjectIndex *x, String8 rel);
+void    project_index_add_file(ProjectIndex *x, i64 dir, String8 name, u64 mask);
+String8 project_index_dir(ProjectIndex *x, i64 dir);
+String8 project_index_name(ProjectIndex *x, i64 file);
+// The relative path of a file into `buf`; its length (0 when it does not fit).
+i64     project_index_path(ProjectIndex *x, i64 file, u8 *buf, i64 cap);
+// The characters of a path as a 64-bit set: a-z (folded), 0-9, '_', '-', '.', '/', ' ', anything else
+// ASCII, anything non-ASCII.
+u64     project_mask(String8 s);
+
+// ---------------------------------------------------------------------------
+// The scanner: a worker thread walks a root with the ignore rules and hands the index records to the
+// main thread in batches through one synchronized queue (CLAUDE.md has the threading rules). Reparse
+// points that are directories (symlinks, junctions) are not entered; files that are reparse points
+// (cloud placeholders) are listed.
+
+#define PROJECT_BATCH_BYTES KB(64)
+#define PROJECT_BATCH_POOL 8     // batches in flight; the worker waits for one to come back
+#define PROJECT_MAX_DEPTH 256
+#define PROJECT_GITIGNORE_MAX MB(1)
+
+typedef struct ProjectScanResult {
+    i64 files, dirs;   // listed, directories walked
+    i64 ignored;       // entries a rule left out (not counting what was inside an ignored directory)
+    i64 errors;        // directories that could not be listed, paths too long
+    b32 limit;         // stopped at max_files
+    b32 cancelled;
+} ProjectScanResult;
+
+typedef struct ProjectBatch {
+    struct ProjectBatch *next;
+    i64 used;
+    b32 last;                 // the worker's final batch: `result` is filled
+    ProjectScanResult result;
+    u8 data[PROJECT_BATCH_BYTES];
+} ProjectBatch;
+
+// Lives at the start of its own reservation (the worker's arena), so a worker abandoned at exit never
+// touches freed memory.
+typedef struct ProjectScan {
+    // The request: set before project_scan_start, read-only while the worker runs.
+    String8 root;          // full path, no trailing separator
+    String8 builtin;       // project_ignore: blank-separated patterns
+    String8 ignore, allow; // .teal-project's patterns, one per line
+    i64 max_files;
+    // Shared.
+    OsLock lock;           // guards the two lists
+    ProjectBatch *ready;   // to the main thread, oldest first
+    ProjectBatch *ready_last;
+    ProjectBatch *free;    // back to the worker
+    volatile i32 cancel;
+    OsEvent event;         // the worker waits on it: a batch came back, a cancel, a dev release
+    volatile i32 dev_hold; // dev: after dev_hold_after batches, wait while this is set (or until cancelled)
+    i32 dev_hold_after;
+    i64 dev_hold_entries;  // dev: ... or after this many entries (0 = never)
+    volatile i32 dev_stuck; // dev: ignore cancel and wait while set (a file system that hangs)
+    // The worker's own.
+    Arena arena;           // the scope chains, the directory queue, the batches (and this struct)
+    Arena temp;            // one directory's listing at a time
+    // The main thread's.
+    OsThread thread;
+    i64 drain_dir;         // the index directory of the last directory record drained
+    b32 ended;             // the last batch arrived and the worker was joined
+    ProjectScanResult result;
+} ProjectScan;
+
+// A scan for `root` in its own reservation; set the other request fields, then start it.
+ProjectScan *project_scan_create(String8 root, String8 builtin, ProjectFile *file, i64 max_files);
+b32  project_scan_start(ProjectScan *s); // false: no thread (the scan then never runs; free it)
+void project_scan_cancel(ProjectScan *s); // any time; the worker ends soon after and sends its last batch
+// Main thread: appends the batches that arrived to `x`; returns how many files it added. When the last
+// one arrives, the worker is joined and s->ended is set (s->result has the counts).
+i64  project_scan_drain(ProjectScan *s, ProjectIndex *x);
+// Joins within the timeout: false when the worker is still running (stuck in the file system).
+b32  project_scan_join(ProjectScan *s, u32 timeout_ms);
+void project_scan_free(ProjectScan *s); // only once it ended (or was joined)
 
 #endif // PROJECT_H
