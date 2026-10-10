@@ -1798,6 +1798,12 @@ static b32 win32_shield_again(DevShield *s, i32 *failures) {
         waited += 10;
     }
     s->held = win32_shield_mods_down(s);
+    // Real input since this thread last read its key state (earlier, not during the case: a mouse move
+    // counts) leaves Windows a pending synchronization of the thread's key state with the keyboard's,
+    // which it applies at the next read and which would wipe the state the case is about to set. Reading
+    // the state here applies it first.
+    BYTE sync[256];
+    GetKeyboardState(sync);
     s->input_tick = win32_shield_input_tick(s);
     s->pending = 0;
     s->running = 1;
@@ -1911,10 +1917,14 @@ static i32 win32_dev_test_mods(Platform *p) {
             KeyChord chord = 0;
             b32 made = key_chord_from_event(KEY_NONE, cases[i].codepoint, win32_mods(p), &chord);
             if (!made || chord != cases[i].want) {
-                u8 got[32], want[32], text[160];
+                u8 got[32], want[32], text[256];
                 i64 gn = made ? key_chord_print(chord, got, sizeof(got)) : fmt_buf(got, sizeof(got), "no chord");
                 i64 wn = key_chord_print(cases[i].want, want, sizeof(want));
-                i64 n = fmt_buf(text, sizeof(text), "win32 modifiers: %s: got %S, expected %S", cases[i].what, str8(got, gn), str8(want, wn));
+                BYTE now[256];
+                GetKeyboardState(now);
+                i64 n = fmt_buf(text, sizeof(text), "win32 modifiers: %s: got %S, expected %S (the key state reads back: Menu %x LMenu %x Ctrl %x "
+                                "Shift %x; GetKeyState(VK_MENU) %x; altgr %d)", cases[i].what, str8(got, gn), str8(want, wn), (u32)now[VK_MENU],
+                                (u32)now[VK_LMENU], (u32)now[VK_CONTROL], (u32)now[VK_SHIFT], (u32)(u16)GetKeyState(VK_MENU), p->altgr);
                 win32_shield_fail(&shield, str8(text, n));
             }
         }
