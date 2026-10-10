@@ -389,6 +389,16 @@ static void app_draw_span(Renderer *r, AppLayout *l, View *v, i64 start, i64 end
     }
 }
 
+// Whether a window shows its active region: only the selected window does (Emacs'
+// highlight-nonselected-windows is nil). While the minibuffer reads, the selected window is still the
+// one it was called from (the minibuffer is not in the tree), so its region stays visible.
+static b32 app_window_shows_region(App *app, i32 index) {
+    if (index != app->windows.selected) return 0;
+    View *v = app->windows.nodes[index].view;
+    for (i32 k = 0; k < v->cursor_count; k++) if (view_region_active(v, &v->cursors[k], &app->config->settings)) return 1;
+    return 0;
+}
+
 // The selection color behind an active region.
 static void app_draw_region(App *app, Renderer *r, AppLayout *l, View *v, Cursor *c, i32 draw_rows) {
     i64 start, end;
@@ -503,7 +513,9 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
     // Only the visible lines: the partial one above the mode line too.
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
-    for (i32 k = 0; k < v->cursor_count; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
+    if (app_window_shows_region(app, index)) {
+        for (i32 k = 0; k < v->cursor_count; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
+    }
     i64 pair[2];
     if (active && app->config->settings.show_paren_mode && app_paren(app, index, in->scratch, &pair[0], &pair[1])) {
         for (i32 k = 0; k < 2; k++) {
@@ -2149,6 +2161,9 @@ void app_dev_smoke_windows(App *app) {
     buffer_replace(buf, 0, 0, STR8_LIT("\n\nright\n"));
     View *v = app->windows.nodes[right].view;
     app_switch_buffer(app, v, buf);
+    // An active region from point (line 1) to the end, line 1's newline included: not drawn, since the
+    // window is not selected.
+    view_set_mark(v, &v->cursors[0], buffer_size(buf), 1);
     view_set_point(v, &v->cursors[0], 1);
     app->force_focus = 1;
 }
@@ -2195,6 +2210,8 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
                            .what = "windows: the hollow cursor in the other window, left edge");
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx + t, .y0 = lh + t, .x1 = rx + cw - t, .y1 = 2 * lh - t, .rgb = th->background,
                            .what = "windows: the hollow cursor in the other window, inside");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx + 6 * cw, .y0 = lh, .x1 = right->x + right->w, .y1 = 3 * lh,
+                           .rgb = th->background, .what = "windows: the other window's active region is not drawn");
         }
     } else if (stage == 0) {
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(0, 0), .rgb = app->config->theme.background,
@@ -2326,6 +2343,12 @@ i64 app_dev_window_top(App *app, i32 index) {
     View *views[WINDOW_MAX];
     i32 n = app_views(app, views);
     return index >= 0 && index < n ? view_top_line(views[index]) : -1;
+}
+
+b32 app_dev_window_shows_region(App *app, i32 index) {
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(&app->windows, leaves);
+    return index >= 0 && index < n && app_window_shows_region(app, leaves[index]);
 }
 
 // --keys notation through a headless app, one event at a time. False = quit.
