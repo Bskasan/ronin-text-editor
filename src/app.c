@@ -75,6 +75,7 @@ struct App {
     i32 title_len;
     i32 laid_w, laid_h, laid_cell_w, laid_line_h; // the layout the views were last fitted to
     b32 syntax_pending;          // some view's visible lines still need lexer states: another frame
+    Finder finder;               // finder.c: the projects kept, their scans, the project finder
 #if TEAL_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
@@ -861,6 +862,11 @@ static Buffer *app_new_buffer(App *app, String8 name) {
 
 // The buffer visiting `path`: the one already open, a newly loaded one, or a new empty one
 // visiting a path that does not exist (Emacs). NULL, with a message, when it cannot be opened.
+// A file visited this session (the project finder lists them first); none before the minibuffer exists.
+static void app_record_visit(App *app, Buffer *buf) {
+    if (app->mini.history_arena.base && buf->path.len) minibuffer_history_add(&app->mini, MINI_HISTORY_VISITED, buf->path);
+}
+
 static Buffer *app_find_file(App *app, String8 path) {
     Buffer *buf = buffer_create(STR8_LIT(""));
     if (!buf) {
@@ -871,6 +877,7 @@ static Buffer *app_find_file(App *app, String8 path) {
     Buffer *open = buffer_list_find_path(&app->buffers, full.len ? full : path);
     if (open) {
         buffer_destroy(buf);
+        app_record_visit(app, open);
         return open;
     }
 #if TEAL_DEV
@@ -896,6 +903,7 @@ static Buffer *app_find_file(App *app, String8 path) {
     app_buffer_settings(app, buf);
     buffer_list_add(&app->buffers, buf);
     app_uniquify(app, buf);
+    app_record_visit(app, buf);
     return buf;
 }
 
@@ -909,6 +917,11 @@ static Buffer *app_other_buffer(App *app, Buffer *buf) {
     }
     return best ? best->buffer : NULL;
 }
+
+// finder.c: projects and the project finder.
+static void finder_init(App *app);
+static void finder_shutdown(App *app);
+static b32  finder_watch_event(App *app, OsWatch watch);
 
 // files.c: files changed outside the editor.
 static void files_check_all(App *app);
@@ -984,6 +997,17 @@ App *app_create(Arena *perm, AppArgs *args) {
             scratch_goto = f;
             continue;
         }
+        // teal <directory>: that directory is the project (without a marker too), nothing is opened.
+        OsFileInfo info;
+        if (os_file_info(f->path, &info) == OS_FILE_OK && info.is_dir) {
+            String8 dir = os_full_path(perm, f->path);
+            if (dir.len && dir.len <= PROJECT_PATH_MAX) {
+                while (dir.len > 3 && (dir.data[dir.len - 1] == '\\' || dir.data[dir.len - 1] == '/')) dir.len--;
+                memcpy(app->finder.cmdline_buf, dir.data, (size_t)dir.len);
+                app->finder.cmdline_dir = str8(app->finder.cmdline_buf, dir.len);
+            }
+            continue;
+        }
         Buffer *buf = app_find_file(app, f->path);
         if (!buf) continue;
         app_goto_arg(app, buf, f);
@@ -1013,6 +1037,14 @@ App *app_create(Arena *perm, AppArgs *args) {
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);
+    for (i64 i = app->buffers.count - 1; i >= 0; i--) { // the command line's files count as visited (the first most recent)
+        Buffer *b = app->buffers.entries[i].buffer;
+        if (b->path.len) minibuffer_history_add(&app->mini, MINI_HISTORY_VISITED, b->path);
+    }
+    finder_init(app);
+#if TEAL_DEV
+    app->finder.dev_hold_after = args->scan_hold;
+#endif
     isearch_init(&app->isearch, &app->mini);
     app->ctx.isearch = &app->isearch;
     replace_init(&app->replace);
@@ -1041,6 +1073,7 @@ App *app_create(Arena *perm, AppArgs *args) {
 }
 
 i32 app_shutdown(App *app) {
+    finder_shutdown(app); // first: the workers get their bounded time to end
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
     View *views[WINDOW_MAX];
     for (i32 i = 0, n = app_views(app, views); i < n; i++) view_destroy(views[i]);
@@ -1820,12 +1853,6 @@ b32 app_wants_frame(App *app) {
     return app->syntax_pending || app->search_pending || app->rank_pending;
 }
 
-// No worker reports here yet.
-b32 app_wake(App *app) {
-    (void)app;
-    return 0;
-}
-
 u32 app_wait_ms(App *app) {
     return MIN(config_wait_ms(&app->config_source, os_time_us()), files_wait_ms(app));
 }
@@ -1881,6 +1908,7 @@ static b32 app_update(App *app, FrameInput *in) {
             break;
         case EVENT_DIR_CHANGED:
             if (e->watch == app->config_watch) config_notify(&app->config_source, os_time_us());
+            else if (finder_watch_event(app, e->watch)) {} // a project's tree: its index is stale
             else if (app->focused) files_notify(app, e->watch); // without focus, the activation check covers it
             break;
         default:

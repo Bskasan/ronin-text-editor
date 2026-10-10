@@ -17,6 +17,7 @@
 #include "project.h"
 #include "minibuffer.h"
 #include "fuzzy.h"
+#include "finder.h"
 #include "search.h"
 #include "isearch.h"
 
@@ -41,6 +42,7 @@
 #include "isearch.c"
 #include "app.c"
 #include "files.c"
+#include "finder.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only
 

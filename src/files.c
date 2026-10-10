@@ -38,10 +38,11 @@ static String8 files_resolve(Arena *arena, String8 input) {
     return s;
 }
 
-// The directory of a buffer's file (else the current directory), with forward slashes and a trailing
-// slash: the initial input of find-file and write-file.
-static String8 files_default_dir(Arena *arena, Buffer *buf) {
-    String8 dir = buf->path.len ? str8(buf->path.data, buf->path.len - config_file_name(buf->path).len) : os_full_path(arena, STR8_LIT("."));
+// The directory of a buffer's file (else the directory given on the command line, else the current
+// directory), with forward slashes and a trailing slash: the initial input of find-file and write-file.
+static String8 files_default_dir(App *app, Arena *arena, Buffer *buf) {
+    String8 dir = buf->path.len ? str8(buf->path.data, buf->path.len - config_file_name(buf->path).len)
+                : app->finder.cmdline_dir.len ? app->finder.cmdline_dir : os_full_path(arena, STR8_LIT("."));
     String8 s = str8_fmt(arena, "%S/", dir);
     for (i64 i = 0; i < s.len; i++) if (s.data[i] == '\\') s.data[i] = '/';
     if (s.len >= 2 && s.data[s.len - 2] == '/') s.len--; // it had one already
@@ -111,7 +112,7 @@ static void cmd_find_file_other_window(CommandContext *ctx) {
     App *app = ctx->app;
     arena_reset(&app->files_arena);
     MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file in other window: "),
-                        .initial = files_default_dir(&app->files_arena, ctx->view->buffer), .history = MINI_HISTORY_FILE,
+                        .initial = files_default_dir(app, &app->files_arena, ctx->view->buffer), .history = MINI_HISTORY_FILE,
                         .done = files_find_other_done, .candidates = files_file_candidates, .data = app, .file = 1 };
     minibuffer_read(ctx, &req);
 }
@@ -119,7 +120,7 @@ static void cmd_find_file_other_window(CommandContext *ctx) {
 static void cmd_find_file(CommandContext *ctx) {
     App *app = ctx->app;
     arena_reset(&app->files_arena);
-    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file: "), .initial = files_default_dir(&app->files_arena, ctx->view->buffer),
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file: "), .initial = files_default_dir(app, &app->files_arena, ctx->view->buffer),
                         .history = MINI_HISTORY_FILE, .done = files_find_done, .candidates = files_file_candidates, .data = app, .file = 1 };
     minibuffer_read(ctx, &req);
 }
@@ -166,7 +167,7 @@ static void files_write_done(CommandContext *ctx, MiniResult *r) {
 static void cmd_write_file(CommandContext *ctx) {
     App *app = ctx->app;
     arena_reset(&app->files_arena);
-    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Write file: "), .initial = files_default_dir(&app->files_arena, ctx->view->buffer),
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Write file: "), .initial = files_default_dir(app, &app->files_arena, ctx->view->buffer),
                         .history = MINI_HISTORY_FILE, .done = files_write_done, .candidates = files_file_candidates, .data = app, .file = 1 };
     minibuffer_read(ctx, &req);
 }

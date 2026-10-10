@@ -153,7 +153,9 @@ void os_atomic_set(volatile i32 *v, i32 x);
 void os_wake_main(void);
 #if TEAL_DEV
 b32  os_dev_wake_wait(u32 timeout_ms); // headless tests: the wake was set (and is consumed)
-i32  os_dev_live_threads(void);        // started and not joined
+i32  os_dev_live_threads(void);        // started and not joined (nor abandoned)
+void os_dev_thread_abandoned(void);    // a worker left to the process exit at shutdown: not a leak
+void os_dev_thread_reclaimed(void);    // ... joined after all (tests): os_thread_join counts it again
 i32  os_dev_live_events(void);         // created and not destroyed
 b32  os_dev_make_junction(String8 link, String8 target); // a new directory junction (no admin rights needed)
 b32  os_dev_remove_dir(String8 path);                     // an empty directory, or a junction (not its target)
@@ -263,6 +265,7 @@ typedef struct AppArgs {
     String8 config_path; // --config: this file instead of the user's teal.conf
     b32 user_config;     // read the user's teal.conf (off in the smoke and the benches: defaults only)
     b32 headless;        // --test: no font, no window; driven through app_dev_feed
+    i32 scan_hold;       // --scan-hold N: project scans stand still after N batches (0 = never)
 #endif
 } AppArgs;
 

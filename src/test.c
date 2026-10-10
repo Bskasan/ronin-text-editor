@@ -6011,6 +6011,8 @@ static b32 test_project_roots(Test *t) {
         { "C:\\w\\none\\a", "c:\\W\\", "c:\\W\\", "no marker, inside the command-line directory (case, trailing separator)" },
         { "C:\\other\\x", "C:\\w", "", "no marker, outside the command-line directory" },
         { "C:\\w\\repo2\\x", "C:\\w\\repo", "", "a sibling with the command-line directory as a name prefix" },
+        { "C:\\w\\repo\\src\\x", "C:\\w\\repo\\src", "C:\\w\\repo\\src", "inside the command-line directory: a marker above it does not count" },
+        { "C:\\w\\repo\\sub\\inner\\deep", "C:\\w\\repo", "C:\\w\\repo\\sub\\inner", "inside the command-line directory: a nearer nested marker wins" },
         { "C:\\", "", "", "a file at a drive root" },
         { "", "", "", "*scratch* without a command-line directory" },
         { "", "C:\\w", "C:\\w", "*scratch* with a command-line directory" },
@@ -6612,10 +6614,10 @@ static b32 test_manual_files(Test *t) {
                "manual C3: a new file: echo '%S'", app ? test_echo(app) : none);
     if (!test_app_destroy(t, app, "manual C3")) return 0;
 
-    // A directory: an error message, *scratch* stays.
+    // A directory (Phase 11): it becomes the project, *scratch* stays, no message.
     app = test_manual_app(t, dir, 0, 0, none);
-    TEST_CHECK(t, app && test_current_is(app, "*scratch*") && str8_starts_with(test_echo(app), STR8_LIT("Cannot open ")) &&
-                  test_contains(test_echo(app), "is a directory"), "manual C4: a directory: echo '%S'", app ? test_echo(app) : none);
+    TEST_CHECK(t, app && test_current_is(app, "*scratch*") && !test_echo(app).len && str8_equal(app->finder.cmdline_dir, dir),
+               "manual C4: a directory: echo '%S', the project '%S'", app ? test_echo(app) : none, app ? app->finder.cmdline_dir : none);
     if (!test_app_destroy(t, app, "manual C4")) return 0;
 
     // Editing shows "**", saving says "Wrote ..." and the flag goes.
@@ -7611,6 +7613,198 @@ static b32 test_window_startup(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// The project finder through the headless app (Phase 11)
+
+static void test_frame(Test *t, App *app) {
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+}
+
+// Frames until the finder's ranking is done.
+static void test_finder_settle(Test *t, App *app) {
+    test_frame(t, app);
+    for (i32 i = 0; i < 2000 && app->rank_pending; i++) test_frame(t, app);
+}
+
+static String8 test_finder_row(Test *t, App *app, i64 row) {
+    u32 flags;
+    String8 annotation;
+    if (row >= app->mini.match_count) return STR8_LIT("(none)");
+    return minibuffer_row_text(&app->mini, &t->arena, row, &flags, &annotation);
+}
+
+static String8 test_finder_status(Test *t, App *app) {
+    const MiniMatcher *m = app->mini.matcher;
+    return m && m->status ? m->status(app->mini.candidates_data, &t->arena) : str8(NULL, 0);
+}
+
+static b32 test_finder(Test *t) {
+    i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p11find", t->tmp_dir));
+    static const char *const files[] = { ".git/HEAD", "main.c", "src/app.c", "src/apple.c", "src/fuzzy.c", "src/map_app.c", "docs/readme.md",
+                                         "build/out.c" };
+    TEST_CHECK(t, test_make_tree(t, root, files, (i32)ARRAY_COUNT(files)), "finder: cannot make the tree");
+    String8 newfile = str8_fmt(&t->arena, "%S\\src\\newfile.c", root);
+    os_file_delete(newfile);
+    String8 none = { 0 };
+
+    // A file in a repository: C-x p f lists its tree, without waiting for the scan.
+    App *app = test_manual_app(t, str8_fmt(&t->arena, "%S\\main.c", root), 0, 0, none);
+    TEST_CHECK(t, app, "finder: app_create failed");
+    app_dev_feed(app, "C-x p f", &t->arena);
+    String8 prompt = app_dev_prompt(app);
+    String8 want_prompt = str8_fmt(&t->arena, "Find file in %S/: ", root);
+    for (i64 i = 0; i < want_prompt.len; i++) if (want_prompt.data[i] == '\\') want_prompt.data[i] = '/';
+    TEST_CHECK(t, str8_equal(prompt, want_prompt), "finder: prompt '%S', expected '%S'", prompt, want_prompt);
+    TEST_CHECK(t, finder_dev_wait(app, 5000), "finder: the scan did not end");
+    TEST_CHECK(t, test_contains(test_echo(app), "7 files in ") && test_contains(test_echo(app), "/p11find/ (1 ignored)"),
+               "finder: the end of the scan: '%S'", test_echo(app));
+    test_finder_settle(t, app);
+    TEST_CHECK(t, app->mini.match_count == 7 && str8_equal(test_finder_row(t, app, 0), STR8_LIT("main.c")),
+               "finder: the empty query: %D rows, the first '%S' (the visited main.c)", app->mini.match_count, test_finder_row(t, app, 0));
+    app_dev_feed(app, "f u z", &t->arena);
+    test_finder_settle(t, app);
+    TEST_CHECK(t, str8_equal(test_finder_row(t, app, 0), STR8_LIT("src/fuzzy.c")), "finder: 'fuz' ranks '%S' first", test_finder_row(t, app, 0));
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, !app->mini.active && test_current_is(app, "fuzzy.c"), "finder: RET visits src/fuzzy.c ('%S')", test_current(app)->name);
+    // The empty query again: the files visited this session first, the most recent one first.
+    app_dev_feed(app, "C-x p f", &t->arena);
+    test_finder_settle(t, app);
+    TEST_CHECK(t, str8_equal(test_finder_row(t, app, 0), STR8_LIT("src/fuzzy.c")) && str8_equal(test_finder_row(t, app, 1), STR8_LIT("main.c")) &&
+                  app->mini.match_count == 7, "finder: visited first: '%S', '%S' (%D rows)", test_finder_row(t, app, 0), test_finder_row(t, app, 1),
+               app->mini.match_count);
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // One candidate a frame: the input and RET in one frame still visit the best match (RET finishes the
+    // ranking first); typed without RET, the list has looked at one candidate.
+    app->dev_work_budget = 1;
+    test_app_feed_batch(t, app, "C-x p f a p p . c");
+    TEST_CHECK(t, app->mini.active && app->mini.match_count <= 1 && app->rank_pending, "finder: one candidate a frame: %D rows after a frame",
+               app->mini.match_count);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "app.c"), "finder: RET after one frame visits '%S', expected app.c", test_current(app)->name);
+    test_app_feed_batch(t, app, "C-x p f m a p RET");
+    TEST_CHECK(t, test_current_is(app, "map_app.c"), "finder: input and RET in one frame visit '%S', expected map_app.c", test_current(app)->name);
+    app->dev_work_budget = 0;
+
+    // A file added under the root: the tree watch marks the index stale; C-x p f shows the old list while
+    // the rescan runs, then the new one.
+    TEST_CHECK(t, os_write_file(newfile, STR8_LIT("new\n")), "finder: cannot write the new file");
+    // Every notification within a while (the buffer directories' watches may come before the tree's).
+    Event events[16];
+    i32 got = 0;
+    OsEvent pause;
+    os_event_create(&pause);
+    for (i32 i = 0; i < 100 && got < 16; i++) {
+        got += os_dev_poll_watches(events + got, 16 - got);
+        os_event_wait(pause, 10);
+    }
+    os_event_destroy(pause);
+    TEST_CHECK(t, got > 0, "finder: no change notification for the new file");
+    app_dev_feed_events(app, events, MIN(got, 16), &t->arena);
+    TEST_CHECK(t, app->finder.open && app->finder.open->stale, "finder: the index is not stale");
+    app_dev_feed(app, "C-x p f n e w f", &t->arena);
+    test_finder_settle(t, app);
+    TEST_CHECK(t, app->mini.match_count == 0 && str8_equal(test_finder_status(t, app), STR8_LIT("rescanning")),
+               "finder: during the rescan the old list (%D rows, status '%S')", app->mini.match_count, test_finder_status(t, app));
+    TEST_CHECK(t, finder_dev_wait(app, 5000), "finder: the rescan did not end");
+    test_finder_settle(t, app);
+    TEST_CHECK(t, str8_equal(test_finder_row(t, app, 0), STR8_LIT("src/newfile.c")), "finder: after the rescan '%S'", test_finder_row(t, app, 0));
+    app_dev_feed(app, "C-g", &t->arena);
+    os_file_delete(newfile);
+
+    // The other window; C-x p f inside the minibuffer; project-refresh.
+    app_dev_feed(app, "M-x p r o j e c t - f i n d - f i l e - o t h e r - w i n d o w RET", &t->arena);
+    finder_dev_wait(app, 5000);
+    app_dev_feed(app, "r e a d RET", &t->arena);
+    TEST_CHECK(t, app_dev_window_count(app) == 2 && test_current_is(app, "readme.md"), "finder: the other window: %d windows, '%S'",
+               app_dev_window_count(app), test_current(app)->name);
+    app_dev_feed(app, "C-x 1 M-x C-x p f", &t->arena);
+    TEST_CHECK(t, test_contains(test_echo(app), "Command attempted to use minibuffer while in minibuffer"), "finder: inside the minibuffer: '%S'",
+               test_echo(app));
+    app_dev_feed(app, "C-g M-x p r o j e c t - r e f r e s h RET", &t->arena);
+    TEST_CHECK(t, test_contains(test_echo(app), "Scanning ") && test_contains(test_echo(app), "/p11find/..."), "finder: project-refresh: '%S'",
+               test_echo(app));
+    TEST_CHECK(t, finder_dev_wait(app, 5000) && test_contains(test_echo(app), "files in "), "finder: project-refresh ended: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "finder")) return 0;
+
+    // teal <directory> (no marker in it): *scratch* and C-x C-f start there, C-x p f lists it. A scan held
+    // after its first batch: the finder says it is scanning and lists what is known; RET takes the best of
+    // that; released, the list fills in.
+    String8 big = os_full_path(&t->arena, test_big_tree(t));
+    app = test_manual_app(t, big, 0, 0, none);
+    TEST_CHECK(t, app && test_current_is(app, "*scratch*") && !test_echo(app).len, "finder: teal <directory>: '%S', echo '%S'",
+               app ? test_current(app)->name : none, app ? test_echo(app) : none);
+    app_dev_feed(app, "C-x C-f", &t->arena);
+    String8 initial = minibuffer_input(&app->mini, &t->arena);
+    String8 want_initial = str8_fmt(&t->arena, "%S/", big);
+    for (i64 i = 0; i < want_initial.len; i++) if (want_initial.data[i] == '\\') want_initial.data[i] = '/';
+    TEST_CHECK(t, str8_equal(initial, want_initial), "finder: C-x C-f starts in the directory: '%S'", initial);
+    app_dev_feed(app, "C-g", &t->arena);
+    app->finder.dev_hold_after = 1;
+    app_dev_feed(app, "C-x p f", &t->arena);
+    Project *p = app->finder.open;
+    for (i32 i = 0; i < 500 && p && !p->index[p->live].file_count; i++) {
+        os_dev_wake_wait(20);
+        app_wake(app);
+    }
+    test_finder_settle(t, app);
+    String8 status = test_finder_status(t, app);
+    i64 known = p ? p->index[p->live].file_count : 0;
+    TEST_CHECK(t, p && p->scan && known > 0 && known < 10000 && str8_starts_with(status, STR8_LIT("scanning: ")) && app->mini.match_count > 0,
+               "finder: while scanning: %D files known, status '%S', %D rows", known, status, app->mini.match_count);
+    app_dev_feed(app, "f i l e _ 0 0 0 1 RET", &t->arena);
+    TEST_CHECK(t, test_current_is(app, "file_0001.c") && p->scan, "finder: RET while scanning visits '%S'", test_current(app)->name);
+    finder_dev_release(app);
+    TEST_CHECK(t, finder_dev_wait(app, 10000) && p->index[p->live].file_count == 10000, "finder: released, the scan ends with %D files",
+               p->index[p->live].file_count);
+    app_dev_feed(app, "C-x p f f i l e _ 9 9 9 9", &t->arena);
+    test_finder_settle(t, app);
+    TEST_CHECK(t, str8_equal(test_finder_row(t, app, 0), STR8_LIT("d99/file_9999.c")), "finder: after the scan '%S'", test_finder_row(t, app, 0));
+    app_dev_feed(app, "C-g", &t->arena);
+    // Destroyed with a scan running: every worker ends quickly, none is abandoned.
+    app_dev_feed(app, "M-x p r o j e c t - r e f r e s h RET", &t->arena);
+    u64 t0 = os_time_us();
+    if (!test_app_destroy(t, app, "finder: directory")) return 0;
+    u64 took = os_time_us() - t0;
+    TEST_CHECK(t, took < (u64)PROJECT_SHUTDOWN_MS * 1000 && app->finder.dev_abandoned == 0 && os_dev_live_threads() == threads0,
+               "finder: shutdown with a scan running took %U us, %d abandoned, %d threads left", took, app->finder.dev_abandoned,
+               os_dev_live_threads() - threads0);
+
+    // *scratch* started with no directory: not in a project.
+    app = test_app_create(t);
+    TEST_CHECK(t, app, "finder: app_create failed");
+    app_dev_feed(app, "C-x p f", &t->arena);
+    TEST_CHECK(t, !app->mini.active && str8_equal(test_echo(app), STR8_LIT(PROJECT_NOT_IN_PROJECT)), "finder: no project: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "finder: no project")) return 0;
+
+    // A worker stuck in the file system at exit: the shutdown waits PROJECT_SHUTDOWN_MS in all, then leaves it.
+    app = test_manual_app(t, str8_fmt(&t->arena, "%S\\main.c", root), 0, 0, none);
+    TEST_CHECK(t, app, "finder: app_create failed");
+    app->finder.dev_stuck_next = 1;
+    app_dev_feed(app, "C-x p f", &t->arena);
+    ProjectScan *stuck = app->finder.dev_last_scan;
+    t0 = os_time_us();
+    if (!test_app_destroy(t, app, "finder: stuck")) return 0;
+    took = os_time_us() - t0;
+    TEST_CHECK(t, stuck && app->finder.dev_abandoned == 1 && took >= (u64)(PROJECT_SHUTDOWN_MS - 100) * 1000 &&
+                  took < (u64)(PROJECT_SHUTDOWN_MS + 500) * 1000, "finder: a stuck worker: shutdown in %U us, %d abandoned", took,
+               app->finder.dev_abandoned);
+    os_atomic_set(&stuck->dev_stuck, 0); // the test ends it after all
+    os_event_set(stuck->event);
+    os_dev_thread_reclaimed();
+    TEST_CHECK(t, project_scan_join(stuck, 10000), "finder: the stuck worker did not end once released");
+    project_scan_free(stuck);
+    TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "finder: %d threads, %d events left",
+               os_dev_live_threads() - threads0, os_dev_live_events() - events0);
+    LOG("test: ok: project finder (the prompt at once, the end-of-scan message with the ignored count, the empty query with visited "
+        "files first, a query and RET, RET with one candidate a frame and with the input in the same frame, a stale index shown "
+        "until its rescan ends, the other window, inside the minibuffer, project-refresh, teal <directory> with *scratch* and "
+        "C-x C-f there, a held scan: status, partial list, RET, then filled; shutdown with a scan running in %U us; not in a project; "
+        "a stuck worker abandoned after %d ms)", took, PROJECT_SHUTDOWN_MS);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -7734,6 +7928,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_scanner(&t, seed);
     arena_reset(&t.arena);
     test_fuzzy(&t, seed);
+    arena_reset(&t.arena);
+    test_finder(&t);
     arena_reset(&t.arena);
     test_matcher(&t);
     arena_reset(&t.arena);
