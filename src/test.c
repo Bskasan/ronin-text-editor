@@ -6107,6 +6107,159 @@ static b32 test_project_file(Test *t) {
     return 1;
 }
 
+// An index from relative paths (directories looked up among the ones added so far).
+static void test_index_from(ProjectIndex *x, const char *const *paths, i64 n) {
+    project_index_reset(x);
+    for (i64 i = 0; i < n; i++) {
+        String8 p = str8_cstr(paths[i]);
+        i64 slash = p.len;
+        while (slash > 0 && p.data[slash - 1] != '/') slash--;
+        String8 dir = str8(p.data, slash ? slash - 1 : 0), name = str8(p.data + slash, p.len - slash);
+        i64 d = -1;
+        for (i64 k = 0; k < x->dir_count && d < 0; k++) if (str8_equal(project_index_dir(x, k), dir)) d = k;
+        if (d < 0) d = project_index_add_dir(x, dir);
+        project_index_add_file(x, d, name, project_mask(p));
+    }
+}
+
+// The ranked rows as "a,b,c" (the first `max`).
+static String8 test_fuzzy_rows(Test *t, FuzzyRank *r, i32 max) {
+    i32 n = fuzzy_rank_rows(r);
+    String8 out = str8(NULL, 0);
+    for (i32 i = 0; i < n && i < max; i++) {
+        u8 *buf = PUSH_ARRAY(&t->arena, u8, PROJECT_PATH_MAX);
+        String8 p = str8(buf, fuzzy_rank_path(r, r->rows[i], buf, PROJECT_PATH_MAX));
+        out = out.len ? str8_fmt(&t->arena, "%S,%S", out, p) : p;
+    }
+    return out;
+}
+
+static b32 test_fuzzy_same(FuzzyRank *a, FuzzyRank *b) {
+    i32 n = fuzzy_rank_rows(a);
+    if (n != fuzzy_rank_rows(b) || a->total != b->total) return 0;
+    for (i32 i = 0; i < n; i++) if (a->rows[i] != b->rows[i]) return 0;
+    return 1;
+}
+
+// Fuzzy ranking goldens, spans, slicing, narrowing.
+static b32 test_fuzzy(Test *t, u64 seed) {
+    ProjectIndex x;
+    project_index_init(&x);
+    FuzzyRank r, full;
+    fuzzy_rank_init(&r);
+    fuzzy_rank_init(&full);
+    static const char *const sets[][6] = {
+        { "docs/app/readme.md", "src/map_app.c" },                 // the file name beats the directory part
+        { "src/mapper.c", "src/apple.c" },                         // a segment start beats the middle of a word
+        { "src/a1b2c.c", "src/abcdef.c" },                         // consecutive beats scattered
+        { "src/Makefile.am", "src/makefile.old", "deep/dir/Makefile" }, // the exact file name first
+        { "src/minibuffer.c", "src/ui/MiniBuffer.cpp" },           // smart case: uppercase is exact
+        { "src/minibuffer.c", "src/ui/MiniBuffer.cpp" },           // ... lowercase matches both
+        { "lib/slex.c", "src/lex_c.c" },                           // '/' in the query
+        { "a/b/app.c", "app.c" },                                  // shorter on equal scores
+        { "src/app.c", "src/notes.c", "docs/app/notes.md" },        // several terms
+        { "src/win32_main.c", "src/winmain.c" },                    // a word start after '_'
+        { "src/FooBar.c", "src/foobar_util.c" },                   // camel case start
+        { "src/App.c", "src/app.c" },                              // an exact name with case: smart case decides
+    };
+    static const struct { i32 set; const char *query, *first; i64 matches; } cases[] = {
+        { 0, "app", "src/map_app.c", 2 },
+        { 1, "ap", "src/apple.c", 2 },
+        { 2, "abc", "src/abcdef.c", 2 },
+        { 3, "makefile", "deep/dir/Makefile", 3 },
+        { 4, "MB", "src/ui/MiniBuffer.cpp", 1 },
+        { 5, "mb", "src/ui/MiniBuffer.cpp", 2 },
+        { 6, "s/l", "src/lex_c.c", 1 },
+        { 7, "app", "app.c", 2 },
+        { 8, "app notes", "docs/app/notes.md", 1 },
+        { 9, "wm", "src/win32_main.c", 2 },
+        { 10, "fb", "src/FooBar.c", 2 },
+        { 11, "App.c", "src/App.c", 1 },
+        { 11, "app.c", "src/App.c", 2 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        i64 n = 0;
+        while (n < 6 && sets[cases[i].set][n]) n++;
+        test_index_from(&x, sets[cases[i].set], n);
+        fuzzy_rank_begin(&r, &x, str8_cstr(cases[i].query), 0);
+        fuzzy_rank_finish(&r);
+        String8 rows = test_fuzzy_rows(t, &r, 6);
+        String8 first = test_fuzzy_rows(t, &r, 1);
+        TEST_CHECK(t, str8_equal(first, str8_cstr(cases[i].first)) && r.total == cases[i].matches,
+                   "fuzzy: '%s': ranked '%S' (%D matches), expected '%s' first and %D matches", cases[i].query, rows, r.total,
+                   cases[i].first, cases[i].matches);
+    }
+    // Spans: merged runs of matched characters.
+    FuzzyQuery q = fuzzy_query(&t->arena, STR8_LIT("ap"));
+    MatchSpan spans[8];
+    i32 ns;
+    i32 sc = fuzzy_score(&q, STR8_LIT("src/apple.c"), 4, spans, 8, &ns);
+    TEST_CHECK(t, sc != FUZZY_NO_MATCH && ns == 1 && spans[0].start == 4 && spans[0].end == 6, "fuzzy: spans of 'ap' in src/apple.c");
+    q = fuzzy_query(&t->arena, STR8_LIT("s/ac"));
+    sc = fuzzy_score(&q, STR8_LIT("src/app.c"), 4, spans, 8, &ns);
+    TEST_CHECK(t, sc != FUZZY_NO_MATCH && ns == 3 && spans[0].start == 0 && spans[0].end == 1 && spans[1].start == 3 && spans[1].end == 5 &&
+                  spans[2].start == 8, "fuzzy: spans of 's/ac' in src/app.c (%d)", ns);
+    q = fuzzy_query(&t->arena, STR8_LIT("zz"));
+    TEST_CHECK(t, fuzzy_score(&q, STR8_LIT("src/app.c"), 4, NULL, 0, NULL) == FUZZY_NO_MATCH, "fuzzy: no match");
+
+    // Slicing and narrowing against full scoring on 20,000 generated paths.
+    static const char *const words[] = { "app", "main", "buffer", "view", "render", "font", "win32", "test", "config", "mini",
+                                         "Search", "isearch", "lex", "syntax", "project", "fuzzy", "Window", "edit", "key", "map" };
+    i32 nw = (i32)ARRAY_COUNT(words);
+    u64 rng = seed ^ 0xF00Dull;
+#define TEST_RNG() (rng = rng * 6364136223846793005ull + 1442695040888963407ull, (u32)(rng >> 33))
+    project_index_reset(&x);
+    for (i32 d = 0; d < 400; d++) {
+        String8 dir = str8_fmt(&t->arena, "%s/%s_%d", words[TEST_RNG() % nw], words[TEST_RNG() % nw], d);
+        i64 di = project_index_add_dir(&x, dir);
+        for (i32 f = 0; f < 50; f++) {
+            String8 name = str8_fmt(&t->arena, "%s%s_%d.%s", words[TEST_RNG() % nw], words[TEST_RNG() % nw], f, (TEST_RNG() & 1) ? "c" : "h");
+            project_index_add_file(&x, di, name, project_mask(str8_fmt(&t->arena, "%S/%S", dir, name)));
+        }
+    }
+    static const char *const queries[] = { "app", "mainbuf", "s/a", "win", "Search", "fz pr", "x", "con.h", "edit key", "map_1" };
+    i32 compared = 0;
+    for (i32 k = 0; k < ARRAY_COUNT(queries); k++) {
+        String8 query = str8_cstr(queries[k]);
+        // Typed one character at a time: narrowing (with passes cut short at random) equals full scoring.
+        for (i64 len = 1; len <= query.len; len++) {
+            String8 part = str8(query.data, len);
+            fuzzy_rank_begin(&full, &x, part, 0);
+            fuzzy_rank_finish(&full);
+            fuzzy_rank_begin(&r, &x, part, len > 1);
+            while (!fuzzy_rank_work(&r, 0, 1 + TEST_RNG() % 5000)) {} // sliced
+            TEST_CHECK(t, test_fuzzy_same(&r, &full), "fuzzy: '%S' sliced and narrowed differs from full scoring (%D / %D matches)", part,
+                       r.total, full.total);
+            compared++;
+        }
+        // Cut short, then narrowed: the next pass keeps what was not looked at yet; finish equals full.
+        fuzzy_rank_begin(&r, &x, str8(query.data, 1), 0);
+        fuzzy_rank_work(&r, 0, 1 + TEST_RNG() % 15000);
+        fuzzy_rank_begin(&r, &x, query, 1);
+        fuzzy_rank_work(&r, 0, 1 + TEST_RNG() % 3000);
+        fuzzy_rank_finish(&r);
+        fuzzy_rank_begin(&full, &x, query, 0);
+        fuzzy_rank_finish(&full);
+        TEST_CHECK(t, test_fuzzy_same(&r, &full), "fuzzy: '%S' after a cut-short pass and a finish differs from full scoring", query);
+    }
+    // Entries added during a pass are looked at too.
+    fuzzy_rank_begin(&r, &x, STR8_LIT("zebra"), 0);
+    fuzzy_rank_finish(&r);
+    i64 before = r.total;
+    project_index_add_file(&x, 0, STR8_LIT("zebra.c"), project_mask(str8_fmt(&t->arena, "%S/zebra.c", project_index_dir(&x, 0))));
+    TEST_CHECK(t, !fuzzy_rank_done(&r), "fuzzy: a new entry makes the pass unfinished");
+    fuzzy_rank_finish(&r);
+    TEST_CHECK(t, r.total == before + 1, "fuzzy: the new entry matched (%D, was %D)", r.total, before);
+#undef TEST_RNG
+    fuzzy_rank_destroy(&r);
+    fuzzy_rank_destroy(&full);
+    project_index_destroy(&x);
+    LOG("test: ok: fuzzy (%d ranking goldens: file name over directory, segment start, consecutive, exact name, smart case, '/', "
+        "shorter on ties, several terms, word and camel starts; spans; %d prefixes sliced and narrowed equal to full scoring on "
+        "20,000 paths; cut-short passes; entries added during a pass)", (i32)ARRAY_COUNT(cases), compared);
+    return 1;
+}
+
 // Writes files (relative paths with '/'), making their directories.
 static b32 test_make_tree(Test *t, String8 root, const char *const *files, i32 n) {
     os_make_dir(root);
@@ -7579,6 +7732,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_project_file(&t);
     arena_reset(&t.arena);
     test_scanner(&t, seed);
+    arena_reset(&t.arena);
+    test_fuzzy(&t, seed);
     arena_reset(&t.arena);
     test_matcher(&t);
     arena_reset(&t.arena);
