@@ -37,7 +37,11 @@ typedef struct InputTest {
     Arena arena;
     b32 quit;         // the app quit
     i32 failures;
+    DevShield shield; // each check is a case: repeated when real input disturbed it (win32_main.c)
 } InputTest;
+
+// A check of the harness, run again when it failed while real input arrived (DevShield). No break inside.
+#define IT_CASE(t, what) DEV_SHIELD_CASE(&(t)->shield, (what), &(t)->failures)
 
 static void it_fail(InputTest *t, const char *fmt, ...) {
     u8 text[512];
@@ -45,8 +49,14 @@ static void it_fail(InputTest *t, const char *fmt, ...) {
     va_start(args, fmt);
     i64 n = fmt_v(text, sizeof(text), fmt, args);
     va_end(args);
-    LOG("test: FAIL: input %s: %S", t->name, str8(text, MIN(n, (i64)sizeof(text))));
-    t->failures++;
+    String8 msg = str8(text, MIN(n, (i64)sizeof(text)));
+    if (t->shield.running) {
+        u8 full[640];
+        win32_shield_fail(&t->shield, str8(full, fmt_buf(full, sizeof(full), "input %s: %S", t->name, msg)));
+    } else {
+        LOG("test: FAIL: input %s: %S", t->name, msg);
+        t->failures++;
+    }
 }
 
 static void it_pump(void) {
@@ -257,15 +267,19 @@ static String8 it_expected(InputTest *t, String8 want) {
 }
 
 static void it_expect_describe(InputTest *t, const char *what, ItStroke s, String8 seq) {
-    String8 got = it_describe(t, &s, 1), want = it_expected(t, seq);
-    if (!str8_equal(got, want)) it_fail(t, "%s (%S): echo '%S', expected '%S'", what, it_stroke_name(t, &t->arena, s), got, want);
+    IT_CASE(t, what) {
+        String8 got = it_describe(t, &s, 1), want = it_expected(t, seq);
+        if (!str8_equal(got, want)) it_fail(t, "%s (%S): echo '%S', expected '%S'", what, it_stroke_name(t, &t->arena, s), got, want);
+    }
 }
 
 static void it_expect_text(InputTest *t, const char *what, ItStroke *s, i32 n, String8 want) {
-    app_dev_show_scratch(t->app, STR8_LIT(""));
-    for (i32 i = 0; i < n; i++) it_stroke(t, s[i]);
-    String8 got = app_dev_text(t->app, &t->arena);
-    if (!str8_equal(got, want)) it_fail(t, "%s: the buffer has '%S', expected '%S'", what, got, want);
+    IT_CASE(t, what) {
+        app_dev_show_scratch(t->app, STR8_LIT(""));
+        for (i32 i = 0; i < n; i++) it_stroke(t, s[i]);
+        String8 got = app_dev_text(t->app, &t->arena);
+        if (!str8_equal(got, want)) it_fail(t, "%s: the buffer has '%S', expected '%S'", what, got, want);
+    }
 }
 
 static String8 it_utf8(Arena *a, u32 c) {
@@ -293,7 +307,7 @@ static void it_cases(InputTest *t) {
     // A key pressed while no window has the keyboard focus (during an activation, type-ahead at startup):
     // Windows posts it to the active window as WM_SYSKEYDOWN / WM_SYSKEYUP without the Alt context bit. It
     // types its character, not an Alt chord.
-    {
+    IT_CASE(t, "a letter posted as WM_SYSKEYDOWN without Alt") {
         app_dev_show_scratch(t->app, STR8_LIT(""));
         u32 scan = MapVirtualKeyExW('A', MAPVK_VK_TO_VSC, t->hkl);
         PostMessageW(t->hwnd, WM_SYSKEYDOWN, 'A', (LPARAM)(1u | (scan & 0xFF) << 16));
@@ -420,52 +434,60 @@ static void it_cases(InputTest *t) {
     LOG("test: input %s: %d dead key accent(s) of ´ ` ^ ¨ tested", t->name, dead_found);
 
     // Alt alone, F10, Alt + Space: no system menu, no beep (nothing left to DefWindowProc).
-    i32 paths = t->p->dev_menu_paths, keymenu = t->p->dev_keymenu;
-    it_stroke(t, (ItStroke){ IT_LALT, 0, 0 });
-    it_stroke(t, (ItStroke){ IT_RALT, 0, 0 });
-    it_stroke(t, (ItStroke){ 0, VK_F10, 0 });
-    it_stroke(t, (ItStroke){ IT_LALT, VK_SPACE, 0 });
-    if (t->p->dev_menu_paths != paths || t->p->dev_keymenu != keymenu) {
-        it_fail(t, "Alt alone, F10, Alt + Space: %d message(s) left to DefWindowProc, %d SC_KEYMENU", t->p->dev_menu_paths - paths,
-                t->p->dev_keymenu - keymenu);
+    IT_CASE(t, "Alt alone, F10, Alt + Space") {
+        i32 paths = t->p->dev_menu_paths, keymenu = t->p->dev_keymenu;
+        it_stroke(t, (ItStroke){ IT_LALT, 0, 0 });
+        it_stroke(t, (ItStroke){ IT_RALT, 0, 0 });
+        it_stroke(t, (ItStroke){ 0, VK_F10, 0 });
+        it_stroke(t, (ItStroke){ IT_LALT, VK_SPACE, 0 });
+        if (t->p->dev_menu_paths != paths || t->p->dev_keymenu != keymenu) {
+            it_fail(t, "Alt alone, F10, Alt + Space: %d message(s) left to DefWindowProc, %d SC_KEYMENU", t->p->dev_menu_paths - paths,
+                    t->p->dev_keymenu - keymenu);
+        }
     }
     it_expect_describe(t, "F10", (ItStroke){ 0, VK_F10, 0 }, STR8_LIT("<f10>"));
     it_expect_describe(t, "Left Alt + Space", (ItStroke){ IT_LALT, VK_SPACE, 0 }, STR8_LIT("M-SPC"));
 
     // describe-key is never silent: a key press that makes no chord is reported (and ends it); a dead
     // key is reported and the composed character is described.
-    t->state[VK_NUMLOCK] |= 1;
-    String8 got = it_describe(t, &(ItStroke){ IT_LCTRL, VK_NUMPAD5, 0 }, 1);
-    t->state[VK_NUMLOCK] &= (BYTE)~1;
-    String8 want_nc = str8_fmt(a, "Ctrl+%S is not a key chord (no character with these modifiers)",
-                               os_key_name(a, MapVirtualKeyExW(VK_NUMPAD5, MAPVK_VK_TO_VSC, t->hkl)));
-    if (!str8_equal(got, want_nc)) it_fail(t, "describe-key, Ctrl + keypad 5: echo '%S', expected '%S'", got, want_nc);
+    IT_CASE(t, "describe-key, Ctrl + keypad 5") {
+        t->state[VK_NUMLOCK] |= 1;
+        String8 got = it_describe(t, &(ItStroke){ IT_LCTRL, VK_NUMPAD5, 0 }, 1);
+        t->state[VK_NUMLOCK] &= (BYTE)~1;
+        String8 want_nc = str8_fmt(a, "Ctrl+%S is not a key chord (no character with these modifiers)",
+                                   os_key_name(a, MapVirtualKeyExW(VK_NUMPAD5, MAPVK_VK_TO_VSC, t->hkl)));
+        if (!str8_equal(got, want_nc)) it_fail(t, "describe-key, Ctrl + keypad 5: echo '%S', expected '%S'", got, want_nc);
+    }
     if (t->altgr) {
         u32 vk = 'A';
         while (vk <= 'Z' && (it_layout_char(t, t->hkl, vk, IT_RALT, NULL) || it_layout_char(t, t->hkl, vk, IT_RALT | IT_LSHIFT, NULL))) vk++;
         if (vk <= 'Z') {
-            got = it_describe(t, &(ItStroke){ IT_RALT, vk, 0 }, 1);
-            String8 want_ag = str8_fmt(a, "AltGr+%S is not a key chord (the key types nothing)",
-                                       os_key_name(a, MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, t->hkl)));
-            if (!str8_equal(got, want_ag)) it_fail(t, "describe-key, AltGr + %c: echo '%S', expected '%S'", (int)vk, got, want_ag);
+            IT_CASE(t, "describe-key, AltGr + a key that types nothing") {
+                String8 got = it_describe(t, &(ItStroke){ IT_RALT, vk, 0 }, 1);
+                String8 want_ag = str8_fmt(a, "AltGr+%S is not a key chord (the key types nothing)",
+                                           os_key_name(a, MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, t->hkl)));
+                if (!str8_equal(got, want_ag)) it_fail(t, "describe-key, AltGr + %c: echo '%S', expected '%S'", (int)vk, got, want_ag);
+            }
         }
     }
     for (u32 k = 0x08; k < 0xFF; k++) {
         b32 is_dead;
         u32 accent = it_layout_char(t, t->hkl, k, 0, &is_dead);
         if (!is_dead || accent != 0xB4) continue;
-        it_stroke(t, (ItStroke){ IT_LCTRL, 'H', 0 });
-        it_stroke(t, (ItStroke){ 0, 'K', 0 });
-        it_stroke(t, (ItStroke){ 0, k, 0 });
-        String8 dead_echo = str8_copy(a, app_dev_echo(t->app));
-        it_stroke(t, (ItStroke){ 0, 'E', 0 });
-        String8 composed = str8_copy(a, app_dev_echo(t->app));
-        app_dev_feed(t->app, "C-g", a);
-        String8 want_dead = str8_fmt(a, "Describe key: %S is a dead key, it composes with the next key", it_utf8(a, 0xB4));
-        String8 want_composed = str8_fmt(a, "%S runs the command self-insert-command", it_utf8(a, 0xE9));
-        if (!str8_equal(dead_echo, want_dead) || !str8_equal(composed, want_composed)) {
-            it_fail(t, "describe-key, dead key then e: echo '%S' then '%S', expected '%S' then '%S'", dead_echo, composed, want_dead,
-                    want_composed);
+        IT_CASE(t, "describe-key, dead key then e") {
+            it_stroke(t, (ItStroke){ IT_LCTRL, 'H', 0 });
+            it_stroke(t, (ItStroke){ 0, 'K', 0 });
+            it_stroke(t, (ItStroke){ 0, k, 0 });
+            String8 dead_echo = str8_copy(a, app_dev_echo(t->app));
+            it_stroke(t, (ItStroke){ 0, 'E', 0 });
+            String8 composed = str8_copy(a, app_dev_echo(t->app));
+            app_dev_feed(t->app, "C-g", a);
+            String8 want_dead = str8_fmt(a, "Describe key: %S is a dead key, it composes with the next key", it_utf8(a, 0xB4));
+            String8 want_composed = str8_fmt(a, "%S runs the command self-insert-command", it_utf8(a, 0xE9));
+            if (!str8_equal(dead_echo, want_dead) || !str8_equal(composed, want_composed)) {
+                it_fail(t, "describe-key, dead key then e: echo '%S' then '%S', expected '%S' then '%S'", dead_echo, composed, want_dead,
+                        want_composed);
+            }
         }
         break;
     }
@@ -495,7 +517,8 @@ static void it_cases(InputTest *t) {
                    it_chord_stroke(t, t->hkl, t->altgr, 'v' | CHORD_CTRL | CHORD_META | CHORD_SHIFT, &scroll_down);
         if (!keys) {
             it_fail(t, "windows: C-x, 3, o or C-M-v has no keys");
-        } else {
+        } else IT_CASE(t, "windows: C-x 3, C-x o, C-M-v, C-M-S-v") {
+            app_dev_show_scratch(t->app, str8(text, n));
             it_stroke(t, cx);
             it_stroke(t, three);
             i32 count = app_dev_window_count(t->app);
@@ -516,7 +539,7 @@ static void it_cases(InputTest *t) {
     }
 
     // A mouse move without a button, and WM_SETCURSOR: no frame requested (the move only queues its event).
-    {
+    IT_CASE(t, "a mouse move and WM_SETCURSOR request no frame") {
         Platform *p = t->p;
         p->redraw = 0;
         i32 events = p->event_count;
@@ -580,12 +603,13 @@ static void it_bindings(InputTest *t) {
                     if (!(c & (CHORD_CTRL | CHORD_META | CHORD_NAMED))) it_layout_char(t, t->hkl, here[k].vk, here[k].mods, &dead);
                     if (dead) strokes[n++] = (ItStroke){ 0, VK_SPACE, 0 };
                 }
-                String8 got = it_describe(t, strokes, n);
-                b32 ok = map == 0 ? str8_equal(got, want) : str8_starts_with(got, str8_fmt(a, "%S ", want));
-                if (!ok) {
-                    wrong++;
-                    it_fail(t, "binding %S (%s) with keys %S: echo '%S'", text, command, it_stroke_name(t, a, here[0]), got);
+                b32 ok = 1;
+                IT_CASE(t, "a binding through its own keys") {
+                    String8 got = it_describe(t, strokes, n);
+                    ok = map == 0 ? str8_equal(got, want) : str8_starts_with(got, str8_fmt(a, "%S ", want));
+                    if (!ok) it_fail(t, "binding %S (%s) with keys %S: echo '%S'", text, command, it_stroke_name(t, a, here[0]), got);
                 }
+                if (!ok) wrong++;
             }
             if (t->hkl != t->us && us_ok) {
                 String8 got = it_describe(t, us, seq.len);
@@ -680,12 +704,14 @@ static DWORD WINAPI it_thread(void *param) {
 
         // Alt + F4 last: its key is the one teal leaves to DefWindowProc, which makes it SC_CLOSE for an
         // active window (not for this one, never activated: SC_CLOSE is sent here); the unmodified app quits.
-        i32 paths = p->dev_menu_paths;
-        it_stroke(&t, (ItStroke){ IT_LALT, VK_F4, 0 });
-        b32 to_default = p->dev_menu_paths == paths + 1;
-        SendMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
-        it_flush(&t);
-        if (!to_default || !t.quit) it_fail(&t, "Alt + F4: %d message(s) to DefWindowProc (1 expected), quit after SC_CLOSE %d", p->dev_menu_paths - paths, t.quit);
+        IT_CASE(&t, "Alt + F4") {
+            i32 paths = p->dev_menu_paths;
+            it_stroke(&t, (ItStroke){ IT_LALT, VK_F4, 0 });
+            b32 to_default = p->dev_menu_paths == paths + 1;
+            SendMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+            it_flush(&t);
+            if (!to_default || !t.quit) it_fail(&t, "Alt + F4: %d message(s) to DefWindowProc (1 expected), quit after SC_CLOSE %d", p->dev_menu_paths - paths, t.quit);
+        }
 
         i32 leaks = app_shutdown(t.app);
         if (leaks) it_fail(&t, "%d leak(s) at shutdown", leaks);
@@ -694,6 +720,7 @@ static DWORD WINAPI it_thread(void *param) {
                 "dead keys, no menu for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, C-x 3 / C-x o / C-M-v / C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding, Alt+F4", t.name, (u64)(uintptr_t)hkl,
                 t.altgr ? "AltGr" : "no AltGr", t.altgr ? "AltGr text and Left Alt + AltGr" : "Right Alt as Meta");
         }
+        if (t.shield.inconclusive) LOG("test: input %s: %d inconclusive attempt(s) (real input during a case)", t.name, t.shield.inconclusive);
         run->failures += t.failures;
         arena = t.arena;
         arena_reset(&arena);
