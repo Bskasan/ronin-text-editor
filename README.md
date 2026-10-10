@@ -12,7 +12,8 @@ changed.
 
 ## Status
 
-Early. teal is built in 15 phases (the roadmap is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)).
+Early and experimental: teal is a learning project (see [How this project is
+made](#how-this-project-is-made)). It is built in 15 phases (the roadmap is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)).
 Phases 1 to 11 are done: window and renderer, font, text buffer, views, commands and the config file,
 editing, the minibuffer, syntax highlighting, isearch and query-replace, window splitting, projects
 and fuzzy file open. Still to come: 12 project-wide search, 13 build and jump to error, 14 multiple
@@ -258,7 +259,13 @@ many messages). The naysayer-theme for Emacs and the Witness color scheme served
 the colors. The fuzzy file finder's scoring weights follow fzf's. teal is not affiliated with or
 endorsed by any of these projects or their authors.
 
-The code was written with Claude Code under my direction, phase by phase.
+## How this project is made
+
+teal is a learning project. I am building it to learn how a text editor works, from the renderer
+and the text buffer to the keymap and the search, and it was developed with the support of AI: the
+code was written with Claude Code under my direction, one phase at a time. I review the source code
+day by day and improve it as I come to understand each part of it. It is an experimental project,
+not a finished product.
 
 ## License
 
