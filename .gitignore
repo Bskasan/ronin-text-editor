@@ -1,1 +1,16 @@
 build/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.log
+/*.png
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+.claude/settings.local.json
