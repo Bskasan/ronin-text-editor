@@ -16,16 +16,21 @@ void config_init(Config *c) {
 // ---------------------------------------------------------------------------
 // Diagnostics
 
+// The state of one parse. Files in the config format other than teal.conf (.teal-project) use the
+// lines, the diagnostics and the helpers below with their own sections (config == NULL).
 typedef struct ConfigParser {
     Config *config;
+    ConfigDiags *diags;
     Arena *arena;
     String8 file;
-    i64 line;    // 1-based
+    String8 text;
+    i64 pos;      // the next line starts here
+    i64 line;     // 1-based: the line last returned
     Keymap *keys; // the map of the current [keys ...] section
 } ConfigParser;
 
 static void config_diag(ConfigParser *p, b32 warning, const char *fmt, ...) {
-    Config *c = p->config;
+    ConfigDiags *c = p->diags;
     if (warning) c->warnings++;
     else c->errors++;
     if (c->errors + c->warnings > CONFIG_DIAG_CAP) return;
@@ -37,9 +42,9 @@ static void config_diag(ConfigParser *p, b32 warning, const char *fmt, ...) {
     ConfigDiag *d = PUSH_STRUCT(p->arena, ConfigDiag);
     d->warning = warning;
     d->text = str8_fmt(p->arena, "%S:%D: %s%S", p->file, p->line, warning ? "warning: " : "", str8(message, n));
-    if (c->last_diag) c->last_diag->next = d;
-    else c->first_diag = d;
-    c->last_diag = d;
+    if (c->last) c->last->next = d;
+    else c->first = d;
+    c->last = d;
 }
 
 // User text quoted in a message: at most 60 bytes, cut on a character boundary.
@@ -285,35 +290,53 @@ typedef enum ConfigSection {
     CONFIG_SECTION_KEYS,
 } ConfigSection;
 
+// The next line that is neither blank nor a comment ('#' first), trimmed; false at the end. p->line is
+// its number.
+static b32 config_next_line(ConfigParser *p, String8 *line) {
+    while (p->pos < p->text.len) {
+        i64 end = p->pos;
+        while (end < p->text.len && p->text.data[end] != '\n') end++;
+        *line = config_trim(str8(p->text.data + p->pos, end - p->pos));
+        p->pos = end + 1;
+        p->line++;
+        if (line->len && line->data[0] != '#') return 1;
+    }
+    return 0;
+}
+
+// A "[name]" line: 1 with the name trimmed, -1 for a '[' line without its ']', 0 for any other line.
+static i32 config_header(String8 line, String8 *name) {
+    if (!line.len || line.data[0] != '[') return 0;
+    if (line.data[line.len - 1] != ']') return -1;
+    *name = config_trim(str8(line.data + 1, line.len - 2));
+    return 1;
+}
+
 void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
-    ConfigParser p = { c, arena, file_name, 0, &c->global };
+    ConfigParser p = { .config = c, .diags = &c->diags, .arena = arena, .file = file_name, .text = text, .keys = &c->global };
     ConfigSection section = CONFIG_SECTION_NONE;
-    for (i64 i = 0; i < text.len;) {
-        i64 end = i;
-        while (end < text.len && text.data[end] != '\n') end++;
-        String8 line = config_trim(str8(text.data + i, end - i));
-        i = end + 1;
-        p.line++;
-        if (!line.len || line.data[0] == '#') continue;
-        if (line.data[0] == '[') {
-            if (line.data[line.len - 1] != ']') {
+    String8 line;
+    while (config_next_line(&p, &line)) {
+        String8 head;
+        i32 header = config_header(line, &head);
+        if (header) {
+            if (header < 0) {
                 config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer] or [keys isearch])");
                 section = CONFIG_SECTION_UNKNOWN;
                 continue;
             }
-            String8 name = config_trim(str8(line.data + 1, line.len - 2));
-            section = str8_equal(name, STR8_LIT("settings")) ? CONFIG_SECTION_SETTINGS
-                    : str8_equal(name, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
+            section = str8_equal(head, STR8_LIT("settings")) ? CONFIG_SECTION_SETTINGS
+                    : str8_equal(head, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
                     : CONFIG_SECTION_UNKNOWN;
             // [keys] and [keys global] bind in the global map, [keys minibuffer] and [keys isearch] in theirs.
-            if (str8_starts_with(name, STR8_LIT("keys")) && (name.len == 4 || config_is_blank(name.data[4]))) {
-                String8 map = config_trim(str8(name.data + 4, name.len - 4));
+            if (str8_starts_with(head, STR8_LIT("keys")) && (head.len == 4 || config_is_blank(head.data[4]))) {
+                String8 map = config_trim(str8(head.data + 4, head.len - 4));
                 p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
                        : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer
                        : str8_equal(map, STR8_LIT("isearch"))          ? &c->isearch : NULL;
                 if (p.keys) section = CONFIG_SECTION_KEYS;
             }
-            if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(name));
+            if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(head));
             continue;
         }
         switch (section) {
@@ -377,9 +400,9 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
     config_parse(c, arena, config_default_text(), STR8_LIT("<built-in>"));
     // Dev: the built-in config parses cleanly, so every command it names exists.
 #if TEAL_DEV
-    for (ConfigDiag *d = c->first_diag; d; d = d->next) LOG("config: built-in: %S", d->text);
+    for (ConfigDiag *d = c->diags.first; d; d = d->next) LOG("config: built-in: %S", d->text);
 #endif
-    ASSERT(c->errors == 0 && c->warnings == 0);
+    ASSERT(c->diags.errors == 0 && c->diags.warnings == 0);
     memset(info, 0, sizeof(*info));
     if (!path.len) return OS_FILE_NOT_FOUND;
     String8 text;

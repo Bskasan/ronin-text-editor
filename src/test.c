@@ -3724,12 +3724,12 @@ static b32 test_config_minibuffer(Test *t) {
                   keymap_get(&c->global, &b) == &CMD_BACKWARD_CHAR && test_binding(c, "C-c c") == &CMD_NEXT_LINE &&
                   !keymap_get(&c->global, &d) && !keymap_get(&c->minibuffer, &d),
                "config minibuffer: sections bind in the right map");
-    TEST_CHECK(t, c->errors == 2 && c->warnings == 1 && c->settings.completion_lines == 40 && !c->settings.auto_revert &&
-                  c->theme.prompt == 0x123456, "config minibuffer: %d errors, %d warnings, completion_lines %d", c->errors,
-               c->warnings, c->settings.completion_lines);
-    TEST_CHECK(t, str8_equal(c->first_diag->text, STR8_LIT("t.conf:7: unknown section [keys bogus]")) &&
-                  str8_equal(c->first_diag->next->text, STR8_LIT("t.conf:9: unknown section [keysminibuffer]")),
-               "config minibuffer: diagnostics '%S'", c->first_diag->text);
+    TEST_CHECK(t, c->diags.errors == 2 && c->diags.warnings == 1 && c->settings.completion_lines == 40 && !c->settings.auto_revert &&
+                  c->theme.prompt == 0x123456, "config minibuffer: %d errors, %d warnings, completion_lines %d", c->diags.errors,
+               c->diags.warnings, c->settings.completion_lines);
+    TEST_CHECK(t, str8_equal(c->diags.first->text, STR8_LIT("t.conf:7: unknown section [keys bogus]")) &&
+                  str8_equal(c->diags.first->next->text, STR8_LIT("t.conf:9: unknown section [keysminibuffer]")),
+               "config minibuffer: diagnostics '%S'", c->diags.first->text);
     LOG("test: ok: config: [keys minibuffer], completion_lines, auto_revert, minibuffer colors");
     return 1;
 }
@@ -3742,7 +3742,7 @@ static b32 test_config(Test *t, u64 seed) {
     config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
     Settings *s = &c->settings;
     Theme *th = &c->theme;
-    TEST_CHECK(t, c->errors == 0 && c->warnings == 0, "config: defaults: %d errors, %d warnings", c->errors, c->warnings);
+    TEST_CHECK(t, c->diags.errors == 0 && c->diags.warnings == 0, "config: defaults: %d errors, %d warnings", c->diags.errors, c->diags.warnings);
     TEST_CHECK(t, str8_equal(str8(s->font, s->font_len), STR8_LIT("Consolas")) && s->font_size == 12.0f &&
                   s->line_height == 100 && s->render_mode == FB_RENDER_NATURAL_SYMMETRIC && s->tab_width == 4 &&
                   !s->underscore_is_word && s->fsync_on_save, "config: default settings");
@@ -3769,7 +3769,7 @@ static b32 test_config(Test *t, u64 seed) {
         config_parse(w, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
         config_parse(w, &t->arena, STR8_LIT("[colors]\nbackground = #101010\ntext = #202020\n[settings]\nstartup_windows = 3\n"), STR8_LIT("a.conf"));
         b32 follows = w->theme.mode_line_inactive_background == 0x101010 && w->theme.mode_line_inactive_text == 0x202020;
-        b32 clamped = w->settings.startup_windows == 2 && w->warnings == 1;
+        b32 clamped = w->settings.startup_windows == 2 && w->diags.warnings == 1;
         config_parse(w, &t->arena, STR8_LIT("[colors]\nmode_line_inactive_background = #303030\n"), STR8_LIT("b.conf"));
         config_parse(w, &t->arena, STR8_LIT("[colors]\nbackground = #404040\n"), STR8_LIT("c.conf"));
         b32 kept = w->theme.mode_line_inactive_background == 0x303030 && w->theme.mode_line_inactive_text == 0x202020;
@@ -3795,7 +3795,7 @@ static b32 test_config(Test *t, u64 seed) {
                                         "font = Courier New\n[colors]\nbackground = #102030\n[keys]\n"
                                         "C-x C-s   forward-char\n=  newline\nC-f none\n<f9> <f9> <f9> <f9> backward-char\n"),
                  STR8_LIT("user.conf"));
-    TEST_CHECK(t, c->errors == 0 && c->warnings == 0, "config: valid user file: %d errors, %d warnings", c->errors, c->warnings);
+    TEST_CHECK(t, c->diags.errors == 0 && c->diags.warnings == 0, "config: valid user file: %d errors, %d warnings", c->diags.errors, c->diags.warnings);
     TEST_CHECK(t, s->font_size == 10.5f && s->tab_width == 8 && s->underscore_is_word && s->fsync_on_save &&
                   s->line_height == 100 && str8_equal(str8(s->font, s->font_len), STR8_LIT("Courier New")),
                "config: user settings over the defaults");
@@ -3854,12 +3854,12 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:25: bad key sequence 'font =': more than one character (separate chords with spaces)",
     };
     i32 k = 0;
-    for (ConfigDiag *d = c->first_diag; d; d = d->next, k++) {
+    for (ConfigDiag *d = c->diags.first; d; d = d->next, k++) {
         TEST_CHECK(t, k < ARRAY_COUNT(expected) && str8_equal(d->text, str8_cstr(expected[k])),
                    "config: diagnostic %d is '%S', expected '%s'", k, d->text, k < ARRAY_COUNT(expected) ? expected[k] : "(none)");
     }
-    TEST_CHECK(t, k == ARRAY_COUNT(expected) && c->errors == 14 && c->warnings == 4,
-               "config: %d diagnostics (%d errors, %d warnings), expected %d", k, c->errors, c->warnings, (i32)ARRAY_COUNT(expected));
+    TEST_CHECK(t, k == ARRAY_COUNT(expected) && c->diags.errors == 14 && c->diags.warnings == 4,
+               "config: %d diagnostics (%d errors, %d warnings), expected %d", k, c->diags.errors, c->diags.warnings, (i32)ARRAY_COUNT(expected));
     TEST_CHECK(t, c->settings.line_height == 80 && c->settings.font_size == 96.0f && c->settings.tab_width == 1,
                "config: clamped values are applied");
     TEST_CHECK(t, !test_binding(c, "C-c q") && test_binding(c, "C-c q x") == &CMD_BACKWARD_CHAR, "config: the later binding wins");
@@ -3869,13 +3869,13 @@ static b32 test_config(Test *t, u64 seed) {
     String8 user = STR8_LIT("[keys]\nC-x C-s none\n[colors]\ncursor = #ff0000\n");
     TEST_CHECK(t, os_write_file(path, user), "config: writing %S", path);
     OsFileInfo info;
-    TEST_CHECK(t, config_load(c, &t->arena, path, &info) == OS_FILE_OK && info.size == user.len && c->errors == 0 &&
+    TEST_CHECK(t, config_load(c, &t->arena, path, &info) == OS_FILE_OK && info.size == user.len && c->diags.errors == 0 &&
                   !test_binding(c, "C-x C-s") && test_binding(c, "C-f") == &CMD_FORWARD_CHAR && c->theme.cursor == 0xff0000 &&
                   c->theme.background == 0x072626 && c->settings.font_size == 12.0f, "config: load layers the user file over the defaults");
     String8 missing = str8_fmt(&t->arena, "%S\\cfg_missing.conf", t->tmp_dir);
     os_file_delete(missing);
     TEST_CHECK(t, config_load(c, &t->arena, missing, &info) == OS_FILE_NOT_FOUND && test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER &&
-                  config_load(c, &t->arena, str8(NULL, 0), &info) == OS_FILE_NOT_FOUND && c->errors == 0,
+                  config_load(c, &t->arena, str8(NULL, 0), &info) == OS_FILE_NOT_FOUND && c->diags.errors == 0,
                "config: no user file gives the defaults");
     TEST_CHECK(t, str8_equal(config_file_name(STR8_LIT("C:\\a\\b\\teal.conf")), STR8_LIT("teal.conf")), "config: file name");
 
@@ -3897,10 +3897,10 @@ static b32 test_config(Test *t, u64 seed) {
         config_init(c);
         config_parse(c, &t->arena, str8(junk, len), STR8_LIT("junk.conf"));
         i64 stored = 0;
-        for (ConfigDiag *d = c->first_diag; d; d = d->next) stored++;
-        TEST_CHECK(t, stored == MIN((i64)(c->errors + c->warnings), (i64)CONFIG_DIAG_CAP) && c->global.count <= KEYMAP_CAP,
-                   "config: fuzz iteration %d: %D diagnostics stored of %d", iter, stored, c->errors + c->warnings);
-        diags += c->errors + c->warnings;
+        for (ConfigDiag *d = c->diags.first; d; d = d->next) stored++;
+        TEST_CHECK(t, stored == MIN((i64)(c->diags.errors + c->diags.warnings), (i64)CONFIG_DIAG_CAP) && c->global.count <= KEYMAP_CAP,
+                   "config: fuzz iteration %d: %D diagnostics stored of %d", iter, stored, c->diags.errors + c->diags.warnings);
+        diags += c->diags.errors + c->diags.warnings;
         arena_pop_to(&t->arena, mark);
     }
 

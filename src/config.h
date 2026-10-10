@@ -52,6 +52,12 @@ typedef struct ConfigDiag {
     String8 text; // "teal.conf:12: unknown command 'foo'", "teal.conf:3: warning: ..."
 } ConfigDiag;
 
+// The diagnostics of one load, of teal.conf or of another file in the same format (.teal-project).
+typedef struct ConfigDiags {
+    ConfigDiag *first, *last; // in the arena given to the parser, at most CONFIG_DIAG_CAP
+    i32 errors, warnings;     // all of them
+} ConfigDiags;
+
 typedef struct Config {
     Settings settings;
     Theme theme;
@@ -59,8 +65,7 @@ typedef struct Config {
     Keymap minibuffer; // [keys minibuffer]: searched before global while the minibuffer is active
     Keymap isearch;    // [keys isearch]: searched before global while an isearch is active
     u32 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
-    ConfigDiag *first_diag, *last_diag; // in the arena given to config_parse, at most CONFIG_DIAG_CAP
-    i32 errors, warnings;               // all of them
+    ConfigDiags diags;
 } Config;
 
 String8 config_default_text(void);
