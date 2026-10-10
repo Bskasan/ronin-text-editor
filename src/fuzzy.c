@@ -208,19 +208,20 @@ static void fuzzy_heap_add(FuzzyRank *r, FuzzyHit hit) {
 
 void fuzzy_rank_begin(FuzzyRank *r, ProjectIndex *x, String8 input, b32 narrow) {
     if (narrow && r->started && r->x == x) {
-        // What is still possible: this pass's survivors so far, the rest of its survivor list, then the
-        // range it did not reach (its survivors are all before that range).
-        i64 rest = r->from_count - r->at_from;
-        if (rest > 0) {
-            u32 *more = PUSH_ARRAY(&r->lists[r->to_list], u32, rest);
-            memcpy(more, r->from + r->at_from, (size_t)rest * 4);
-            r->to_count += rest;
+        // What is still possible: this pass's survivors so far, the rest of its survivor list (appended in
+        // fuzzy_rank_work, in chunks within the budget: up to 4 MB for a million paths), then the range it
+        // did not reach (its survivors are all before that range).
+        // While that copy is still pending no candidate was looked at: the list stays as it is.
+        if (!r->copy_left) {
+            r->copy_src = r->from + r->at_from;
+            r->copy_left = r->from_count - r->at_from;
+            r->covered = r->at;
+            r->from = (u32 *)r->lists[r->to_list].base;
+            r->from_count = r->to_count + r->copy_left;
+            r->to_list ^= 1;
         }
-        r->covered = r->at;
-        r->from = (u32 *)r->lists[r->to_list].base;
-        r->from_count = r->to_count;
-        r->to_list ^= 1;
     } else {
+        r->copy_left = 0;
         arena_reset(&r->lists[0]);
         r->from = NULL;
         r->from_count = 0;
@@ -267,11 +268,20 @@ static void fuzzy_consider(FuzzyRank *r, u32 index) {
 }
 
 b32 fuzzy_rank_done(FuzzyRank *r) {
-    return !r->started || (r->at_from >= r->from_count && r->at >= r->x->file_count);
+    return !r->started || (!r->copy_left && r->at_from >= r->from_count && r->at >= r->x->file_count);
 }
 
 b32 fuzzy_rank_work(FuzzyRank *r, u64 deadline, i64 budget) {
     if (!r->started) return 1;
+    // First the rest of the narrowed list, 64 K entries at a time: no candidate is looked at before it is whole.
+    while (r->copy_left > 0) {
+        i64 chunk = MIN(r->copy_left, (i64)65536);
+        u32 *dst = PUSH_ARRAY(&r->lists[r->to_list ^ 1], u32, chunk);
+        memcpy(dst, r->copy_src, (size_t)chunk * 4);
+        r->copy_src += chunk;
+        r->copy_left -= chunk;
+        if (deadline && os_time_us() >= deadline) return 0;
+    }
     i64 used = 0;
     while (!fuzzy_rank_done(r)) {
         i64 slice = budget > 0 ? MIN((i64)FUZZY_SLICE, budget - used) : FUZZY_SLICE;
@@ -291,6 +301,7 @@ void fuzzy_rank_finish(FuzzyRank *r) {
 
 i32 fuzzy_rank_rows(FuzzyRank *r) {
     if (!r->rows_stale) return r->row_count;
+    u64 t0 = os_time_us();
     FuzzyHit h[FUZZY_TOP];
     i32 count = r->heap_count;
     memcpy(h, r->heap, sizeof(FuzzyHit) * (size_t)count);
@@ -301,6 +312,7 @@ i32 fuzzy_rank_rows(FuzzyRank *r) {
     }
     r->row_count = count;
     r->rows_stale = 0;
+    r->sort_us = os_time_us() - t0;
     return count;
 }
 
