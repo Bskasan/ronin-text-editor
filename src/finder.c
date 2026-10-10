@@ -445,6 +445,43 @@ static b32 finder_dev_wait(App *app, u32 timeout_ms) {
     }
 }
 
+// Smoke stage 7: the finder over a known in-memory list (no scan, no watch), focus on; the smoke then
+// types "ap": src/app.c (selected), src/apple.c and docs/map.md match.
+void app_dev_smoke_finder(App *app) {
+    static const char *const paths[] = { "build.bat", "README.md", "src/app.c", "src/apple.c", "src/win32_main.c", "docs/map.md" };
+    Finder *f = &app->finder;
+    Project *p = finder_project(app, STR8_LIT("C:\\smoke"));
+    ProjectIndex *x = &p->index[p->live];
+    if (!x->files.base) project_index_init(x);
+    project_index_reset(x);
+    for (i32 i = 0; i < ARRAY_COUNT(paths); i++) {
+        String8 path = str8_cstr(paths[i]);
+        i64 slash = path.len;
+        while (slash > 0 && path.data[slash - 1] != '/') slash--;
+        String8 dir = str8(path.data, slash ? slash - 1 : 0);
+        i64 d = -1;
+        for (i64 k = 0; k < x->dir_count && d < 0; k++) if (str8_equal(project_index_dir(x, k), dir)) d = k;
+        if (d < 0) d = project_index_add_dir(x, dir);
+        project_index_add_file(x, d, str8(path.data + slash, path.len - slash), project_mask(path));
+    }
+    p->scanned = 1;
+    f->open = p;
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    ctx.cursor = &ctx.view->cursors[0];
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file in C:/smoke/: "), .history = MINI_HISTORY_PROJECT,
+                        .done = finder_done, .matcher = &FINDER_MATCHER, .data = app };
+    if (minibuffer_read(&ctx, &req)) app->mini.state.text = str8_copy(&app->mini.arena, p->root);
+    app->force_focus = 1;
+}
+
+// ... and the prompt and the list gone.
+void app_dev_smoke_finder_end(App *app) {
+    minibuffer_abort(&app->mini);
+    finder_close_project(app, app->finder.open);
+    app->finder.open = NULL;
+}
+
 // Releases every held scan (--scan-hold).
 static void finder_dev_release(App *app) {
     for (i32 i = 0; i < PROJECT_KEPT; i++) {

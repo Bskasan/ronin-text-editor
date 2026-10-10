@@ -2275,6 +2275,23 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx + 6 * cw, .y0 = lh, .x1 = right->x + right->w, .y1 = 3 * lh,
                            .rgb = th->background, .what = "windows: the other window's active region is not drawn");
         }
+    } else if (stage == 7) {
+        // app_dev_smoke_finder after "a p": three rows above the minibuffer line, src/app.c (selected), src/apple.c,
+        // docs/map.md; "ap" at columns 4-5 of the first two rows.
+        Theme *th = &app->config->theme;
+        i32 y0 = l.minibuffer_y - 3 * lh, lx = in->width - 1;
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = l.minibuffer_y, .x1 = x + 9 * cw, .y1 = l.minibuffer_y + lh,
+                       .rgb = th->prompt, .what = "finder: the prompt in the prompt color");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 30 * cw, .y0 = y0, .x1 = lx, .y1 = y0 + lh, .rgb = th->completion_selection,
+                       .what = "finder: the selected row's empty part");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x + 4 * cw, .y0 = y0, .x1 = x + 6 * cw, .y1 = y0 + lh, .rgb = th->completion_match,
+                       .what = "finder: the matched 'ap' of src/app.c in completion_match (selected row)");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x + 4 * cw, .y0 = y0 + lh, .x1 = x + 6 * cw, .y1 = y0 + 2 * lh,
+                       .rgb = th->completion_match, .what = "finder: the matched 'ap' of src/apple.c in completion_match");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 30 * cw, .y0 = y0 + lh, .x1 = lx, .y1 = y0 + 2 * lh, .rgb = th->background,
+                       .what = "finder: an unselected row's empty part");
+        APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = y0 + lh, .x1 = x + 3 * cw, .y1 = y0 + 2 * lh, .rgb = th->text,
+                       .what = "finder: the unmatched 'src' of the second row in the text color");
     } else if (stage == 0) {
         APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_DIFFERS, CELL(0, 0), .rgb = app->config->theme.background,
                        .what = "buffer: text cell 'i' (line 0, column 0)");

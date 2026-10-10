@@ -312,7 +312,9 @@ void app_dev_smoke_region(App *app);      // stage 2: an active region over line
 void app_dev_smoke_isearch(App *app);     // stage 4: "foo bar foo", point 0 (then C-s f o o C-s)
 void app_dev_smoke_windows(App *app);     // stage 6: two windows side by side, a long line in the left one
 void app_dev_smoke_windows_end(App *app); // ... and back to one window
-i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list, 4: isearch, 5: failing isearch, 6: two windows
+void app_dev_smoke_finder(App *app);      // stage 7: the project finder over a known list (then "a p" is typed)
+void app_dev_smoke_finder_end(App *app);  // ... and closed
+i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list, 4: isearch, 5: failing isearch, 6: two windows, 7: project finder
 void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
 void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
 b32  app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b); // show_paren_mode's pair in the active view
