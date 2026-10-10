@@ -1798,6 +1798,12 @@ b32 app_wants_frame(App *app) {
     return app->syntax_pending || app->search_pending;
 }
 
+// No worker reports here yet.
+b32 app_wake(App *app) {
+    (void)app;
+    return 0;
+}
+
 u32 app_wait_ms(App *app) {
     return MIN(config_wait_ms(&app->config_source, os_time_us()), files_wait_ms(app));
 }
