@@ -5749,6 +5749,125 @@ static b32 test_list_dir(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// Platform threads, the wake, tree watches, junctions, small files (Phase 11)
+
+typedef struct TestWorker {
+    OsLock lock;
+    OsEvent go;
+    i64 counter;
+    volatile i32 done;
+} TestWorker;
+
+static void test_worker_main(void *data) {
+    TestWorker *w = data;
+    os_event_wait(w->go, 10000);
+    for (i32 i = 0; i < 100000; i++) {
+        os_lock(&w->lock);
+        w->counter++;
+        os_unlock(&w->lock);
+    }
+    os_atomic_set(&w->done, 1);
+    os_wake_main();
+}
+
+static b32 test_threads(Test *t) {
+    i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    while (os_dev_wake_wait(0)) {} // nothing left over
+    TestWorker w = { 0 };
+    TEST_CHECK(t, os_event_create(&w.go), "threads: no event");
+    OsThread th;
+    TEST_CHECK(t, os_thread_start(&th, test_worker_main, &w), "threads: no thread");
+    TEST_CHECK(t, !os_thread_join(th, 0) && os_dev_live_threads() == threads0 + 1, "threads: a waiting worker is still running");
+    os_event_set(w.go);
+    for (i32 i = 0; i < 100000; i++) {
+        os_lock(&w.lock);
+        w.counter++;
+        os_unlock(&w.lock);
+    }
+    TEST_CHECK(t, os_thread_join(th, 10000), "threads: the worker did not end");
+    TEST_CHECK(t, w.counter == 200000 && os_atomic_get(&w.done) == 1, "threads: the lock lost increments (%D)", w.counter);
+    TEST_CHECK(t, os_dev_wake_wait(0) && !os_dev_wake_wait(0), "threads: os_wake_main set the wake once (auto-reset)");
+    os_event_destroy(w.go);
+    TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "threads: counters back (%d threads, %d events)",
+               os_dev_live_threads(), os_dev_live_events());
+    LOG("test: ok: threads (start, join with a timeout, a lock under contention, an auto-reset event, os_wake_main, the live counters)");
+    return 1;
+}
+
+// Polls the platform's watches until one event arrives or `ms` pass; returns the events seen.
+static i32 test_poll_watch(OsWatch w, u32 ms) {
+    OsEvent pause = { 0 };
+    os_event_create(&pause);
+    i32 seen = 0;
+    for (u32 waited = 0; waited <= ms && !seen; waited += 10) {
+        Event e[8];
+        i32 n = os_dev_poll_watches(e, 8);
+        for (i32 i = 0; i < MIN(n, 8); i++) seen += e[i].kind == EVENT_DIR_CHANGED && e[i].watch == w;
+        if (!seen && ms) os_event_wait(pause, 10);
+    }
+    os_event_destroy(pause);
+    return seen;
+}
+
+// A tree watch fires once for a storm of 500 new files (and their deletion) and stays quiet until it is
+// re-armed; then one change fires it once more.
+static b32 test_tree_watch(Test *t) {
+    String8 root = str8_fmt(&t->arena, "%S\\p11watch", t->tmp_dir), sub = str8_fmt(&t->arena, "%S\\sub", root);
+    os_make_dir(root);
+    os_make_dir(sub);
+    for (i32 i = 0; i < 500; i++) os_file_delete(str8_fmt(&t->arena, "%S\\w%03d.txt", sub, i));
+    os_file_delete(str8_fmt(&t->arena, "%S\\again.txt", root));
+    OsWatch w = os_watch_tree(root);
+    TEST_CHECK(t, w, "tree watch: cannot watch %S", root);
+    i32 events = 0;
+    for (i32 i = 0; i < 500; i++) {
+        TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\w%03d.txt", sub, i), STR8_LIT("x")), "tree watch: cannot write");
+        if (i % 50 == 49) events += test_poll_watch(w, 0);
+    }
+    for (i32 i = 0; i < 500; i++) os_file_delete(str8_fmt(&t->arena, "%S\\w%03d.txt", sub, i));
+    events += test_poll_watch(w, events ? 0 : 1000);
+    events += test_poll_watch(w, 200); // nothing more, however long
+    TEST_CHECK(t, events == 1, "tree watch: %d wake-up(s) for 500 files created and deleted, expected 1", events);
+    TEST_CHECK(t, os_watch_rearm(w, root), "tree watch: cannot re-arm");
+    TEST_CHECK(t, test_poll_watch(w, 0) == 0, "tree watch: re-armed, it does not fire for the earlier changes");
+    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\again.txt", root), STR8_LIT("x")), "tree watch: cannot write");
+    i32 again = test_poll_watch(w, 1000);
+    os_file_delete(str8_fmt(&t->arena, "%S\\again.txt", root));
+    again += test_poll_watch(w, 100);
+    TEST_CHECK(t, again == 1, "tree watch: %d wake-up(s) after the re-arm, expected 1", again);
+    os_unwatch(w);
+    LOG("test: ok: tree watch (500 files created and deleted in a subdirectory: 1 wake-up; quiet until re-armed; then 1 more)");
+    return 1;
+}
+
+// A junction is listed as a reparse point; small files are read whole, a larger one is refused.
+static b32 test_junction_small_file(Test *t) {
+    String8 dir = str8_fmt(&t->arena, "%S\\p11junction", t->tmp_dir), target = str8_fmt(&t->arena, "%S\\target", dir);
+    String8 link = str8_fmt(&t->arena, "%S\\link", dir);
+    os_make_dir(dir);
+    os_make_dir(target);
+    os_dev_remove_dir(link);
+    TEST_CHECK(t, os_dev_make_junction(link, target), "junction: cannot make %S", link);
+    OsDirEntry *e;
+    i64 n;
+    TEST_CHECK(t, os_list_dir(&t->arena, dir, &e, &n) == OS_FILE_OK, "junction: cannot list");
+    i32 seen = 0;
+    for (i64 i = 0; i < n; i++) {
+        if (str8_equal(e[i].name, STR8_LIT("link")) && e[i].is_dir && e[i].reparse) seen |= 1;
+        if (str8_equal(e[i].name, STR8_LIT("target")) && e[i].is_dir && !e[i].reparse) seen |= 2;
+    }
+    TEST_CHECK(t, seen == 3, "junction: the link is a reparse directory, the target a plain one (%d)", seen);
+    TEST_CHECK(t, os_dev_remove_dir(link) && os_file_info(target, &(OsFileInfo){ 0 }) == OS_FILE_OK, "junction: removed, the target stays");
+    String8 short_file = str8_fmt(&t->arena, "%S\\small.txt", dir), got;
+    TEST_CHECK(t, os_write_file(short_file, STR8_LIT("hello\n")), "small file: cannot write");
+    TEST_CHECK(t, os_read_small_file(&t->arena, short_file, 6, &got) == OS_FILE_OK && str8_equal(got, STR8_LIT("hello\n")), "small file: read");
+    TEST_CHECK(t, os_read_small_file(&t->arena, short_file, 5, &got) == OS_FILE_TOO_LARGE && !got.len, "small file: over the limit");
+    TEST_CHECK(t, os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\nope", dir), 5, &got) == OS_FILE_NOT_FOUND, "small file: missing");
+    LOG("test: ok: junctions (listed as reparse points, removed without their target) and small file reads");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Matching
 
 static void test_candidates(Arena *arena, const char **texts, i64 n, Candidate *out) {
@@ -7001,6 +7120,12 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_window_startup(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
+    arena_reset(&t.arena);
+    test_threads(&t);
+    arena_reset(&t.arena);
+    test_tree_watch(&t);
+    arena_reset(&t.arena);
+    test_junction_small_file(&t);
     arena_reset(&t.arena);
     test_matcher(&t);
     arena_reset(&t.arena);

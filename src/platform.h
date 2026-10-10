@@ -67,11 +67,14 @@ OsFileStatus os_file_info(String8 path, OsFileInfo *info);
 typedef struct OsDirEntry {
     String8 name; // UTF-8, no directory part
     b32 is_dir;
+    b32 reparse;  // a reparse point: a symlink, a junction, a cloud placeholder ...
 } OsDirEntry;
 
 // The entries of a directory, "." and ".." left out, in the order the file system gives them. The
-// array and the names go into `arena`.
+// array, the names and the listing's temporary memory go into `arena`. Any thread.
 OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *count);
+// A whole file of at most `max` bytes (else OS_FILE_TOO_LARGE), read into `arena`. Any thread.
+OsFileStatus os_read_small_file(Arena *arena, String8 path, i64 max, String8 *out);
 OsFileStatus os_file_open_read(String8 path, OsFile *file, OsFileInfo *info); // shares read, write, delete
 OsFileStatus os_file_read(OsFile file, void *dst, i64 size); // exactly size bytes
 // A new, empty file next to `target` (same directory, so it can replace it); its path goes into `arena`.
@@ -105,14 +108,55 @@ void os_dev_clipboard_external(String8 text); // the fake: as if another program
 // delivered as EVENT_DIR_CHANGED. Waited on with the messages: no polling, no timers.
 
 typedef u32 OsWatch; // 0 = none
+struct Event;
 
 OsWatch os_watch_dir(String8 dir); // 0 on failure (no such directory, too many watches)
+// A whole tree (names of files and directories only), one-shot: it delivers one EVENT_DIR_CHANGED,
+// then nothing until os_watch_rearm, however many changes follow (a build creating hundreds of files
+// is one wake-up).
+OsWatch os_watch_tree(String8 dir);
+b32     os_watch_rearm(OsWatch watch, String8 dir); // a tree watch: a fresh notification (earlier changes forgotten)
 void    os_unwatch(OsWatch watch);
 #if TEAL_DEV
 b32     os_dev_watch_wait(OsWatch watch, u32 timeout_ms); // true when it signalled (then re-armed)
 i32     os_dev_watch_count(void);                         // watches still open
+i32     os_dev_poll_watches(struct Event *out, i32 cap);  // the platform's watch poll once: its events (taken off the queue)
 b32     os_dev_unsaved_files(void);                       // what the app last reported (os_set_unsaved_files)
 OsFileStatus os_dev_lock_file(String8 path, OsFile *file); // opened without sharing: readers get a sharing violation
+#endif
+
+// ---------------------------------------------------------------------------
+// Threads (CLAUDE.md has the rules). Everything in this section may be called from any thread, as
+// may os_reserve / os_commit / os_decommit / os_release, os_time_us, os_list_dir and
+// os_read_small_file. Nothing else in this file may be called from a worker.
+
+typedef struct OsThread { void *handle; } OsThread;
+typedef void OsThreadFn(void *data);
+b32  os_thread_start(OsThread *thread, OsThreadFn *fn, void *data);
+// True when the thread has ended within the timeout (its handle is then closed); false: still running.
+b32  os_thread_join(OsThread thread, u32 timeout_ms);
+
+typedef struct OsLock { void *state; } OsLock; // a slim reader-writer lock, exclusive only; zeroed = unlocked
+void os_lock(OsLock *lock);
+void os_unlock(OsLock *lock);
+
+typedef struct OsEvent { void *handle; } OsEvent; // auto-reset: one wait consumes a set
+b32  os_event_create(OsEvent *event);
+void os_event_set(OsEvent event);
+b32  os_event_wait(OsEvent event, u32 timeout_ms); // true when it was set
+void os_event_destroy(OsEvent event);
+
+i32  os_atomic_get(volatile i32 *v);
+void os_atomic_set(volatile i32 *v, i32 x);
+
+// The main loop calls app_wake soon after (sets coalesce): a worker has results.
+void os_wake_main(void);
+#if TEAL_DEV
+b32  os_dev_wake_wait(u32 timeout_ms); // headless tests: the wake was set (and is consumed)
+i32  os_dev_live_threads(void);        // started and not joined
+i32  os_dev_live_events(void);         // created and not destroyed
+b32  os_dev_make_junction(String8 link, String8 target); // a new directory junction (no admin rights needed)
+b32  os_dev_remove_dir(String8 path);                     // an empty directory, or a junction (not its target)
 #endif
 
 // ---------------------------------------------------------------------------
@@ -236,6 +280,7 @@ typedef enum MouseCursor {
 } MouseCursor;
 MouseCursor app_mouse_cursor(App *app, i32 x, i32 y);
 b32  app_wants_frame(App *app); // another frame right away: highlighting is still catching up
+b32  app_wake(App *app);        // os_wake_main was called: take the workers' results; true = draw a frame
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
 #if TEAL_DEV

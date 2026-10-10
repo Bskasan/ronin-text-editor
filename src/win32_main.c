@@ -31,8 +31,13 @@ typedef struct Platform {
     Event events[EVENT_CAPACITY];
     i32 event_count;
     HANDLE watches[WIN32_MAX_WATCHES]; // change notifications; OsWatch = index + 1, NULL = free
+    u8 watch_tree[WIN32_MAX_WATCHES];  // os_watch_tree: one-shot
+    u8 watch_fired[WIN32_MAX_WATCHES]; // ... it fired: out of the wait until os_watch_rearm
+    HANDLE wake;                       // os_wake_main: set by workers, part of the wait (auto-reset)
     HCURSOR cursors[MOUSE_CURSOR_COUNT]; // loaded once; app_mouse_cursor picks one
 #if TEAL_DEV
+    volatile LONG live_threads;        // os_thread_start minus joined
+    volatile LONG live_events;         // os_event_create minus destroyed
     b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
     u16 *clip_text;          // in its own reservation
     i64 clip_len;
@@ -242,22 +247,21 @@ String8 os_full_path(Arena *arena, String8 path) {
     return result;
 }
 
+// Any thread: the pattern, the names and the list nodes all go into the caller's arena (the platform
+// scratch is the main thread's).
 OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *count) {
     typedef struct Node { struct Node *next; OsDirEntry e; } Node;
     *entries = NULL;
     *count = 0;
-    Arena *scratch = &g_platform->scratch;
-    u64 mark = arena_pos(scratch);
     b32 slash = dir.len && (dir.data[dir.len - 1] == '\\' || dir.data[dir.len - 1] == '/');
-    WCHAR *pattern = win32_path16(str8_fmt(scratch, slash ? "%S*" : "%S\\*", dir));
+    WCHAR *pattern = (WCHAR *)str16_from_str8(arena, str8_fmt(arena, slash ? "%S*" : "%S\\*", dir)).data;
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileExW(pattern, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
-        arena_pop_to(scratch, mark);
         return error == ERROR_FILE_NOT_FOUND ? OS_FILE_OK : win32_file_status(error); // an empty directory (a root)
     }
-    // The names go into `arena` as they come, the nodes into scratch; then one array.
+    // The names and the nodes as they come, then one array.
     Node *first = NULL, *last = NULL;
     i64 n = 0;
     do {
@@ -265,9 +269,10 @@ OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *c
         if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
         i64 len = 0;
         while (name[len]) len++;
-        Node *node = PUSH_STRUCT(scratch, Node);
+        Node *node = PUSH_STRUCT(arena, Node);
         node->e.name = str8_from_str16(arena, (u16 *)name, len);
         node->e.is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        node->e.reparse = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         if (last) last->next = node;
         else first = node;
         last = node;
@@ -277,10 +282,36 @@ OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *c
     OsDirEntry *out = PUSH_ARRAY(arena, OsDirEntry, n);
     i64 i = 0;
     for (Node *node = first; node; node = node->next) out[i++] = node->e;
-    arena_pop_to(scratch, mark);
     *entries = out;
     *count = n;
     return OS_FILE_OK;
+}
+
+// Any thread: everything in the caller's arena.
+OsFileStatus os_read_small_file(Arena *arena, String8 path, i64 max, String8 *out) {
+    *out = str8(NULL, 0);
+    u64 mark = arena_pos(arena);
+    WCHAR *path16 = (WCHAR *)str16_from_str8(arena, path).data;
+    HANDLE h = CreateFileW(path16, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    arena_pop_to(arena, mark);
+    if (h == INVALID_HANDLE_VALUE) return win32_last_file_status();
+    LARGE_INTEGER size;
+    OsFileStatus status = OS_FILE_OK;
+    if (!GetFileSizeEx(h, &size)) status = win32_last_file_status();
+    else if (size.QuadPart > max) status = OS_FILE_TOO_LARGE;
+    if (status == OS_FILE_OK) {
+        u8 *data = PUSH_ARRAY(arena, u8, size.QuadPart);
+        DWORD got = 0;
+        if (size.QuadPart && (!ReadFile(h, data, (DWORD)size.QuadPart, &got, NULL) || got != (DWORD)size.QuadPart)) {
+            status = OS_FILE_IO_ERROR;
+            arena_pop_to(arena, mark);
+        } else {
+            *out = str8(data, size.QuadPart);
+        }
+    }
+    CloseHandle(h);
+    return status;
 }
 
 static void win32_fill_info(OsFileInfo *info, BY_HANDLE_FILE_INFORMATION *bhfi) {
@@ -583,12 +614,196 @@ OsWatch os_watch_dir(String8 dir) {
     return (OsWatch)(slot + 1);
 }
 
+static HANDLE win32_tree_notification(Platform *p, String8 dir) {
+    u64 mark = arena_pos(&p->scratch);
+    HANDLE h = FindFirstChangeNotificationW(win32_path16(dir), TRUE, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME);
+    arena_pop_to(&p->scratch, mark);
+    return h;
+}
+
+OsWatch os_watch_tree(String8 dir) {
+    Platform *p = g_platform;
+    i32 slot = 0;
+    while (slot < WIN32_MAX_WATCHES && p->watches[slot]) slot++;
+    if (slot == WIN32_MAX_WATCHES) return 0;
+    HANDLE h = win32_tree_notification(p, dir);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    p->watches[slot] = h;
+    p->watch_tree[slot] = 1;
+    p->watch_fired[slot] = 0;
+    return (OsWatch)(slot + 1);
+}
+
+// A fresh notification instead of FindNextChangeNotification: the changes made since it fired would
+// signal that one at once.
+b32 os_watch_rearm(OsWatch watch, String8 dir) {
+    Platform *p = g_platform;
+    if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1] || !p->watch_tree[watch - 1]) return 0;
+    HANDLE h = win32_tree_notification(p, dir);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    FindCloseChangeNotification(p->watches[watch - 1]);
+    p->watches[watch - 1] = h;
+    p->watch_fired[watch - 1] = 0;
+    return 1;
+}
+
 void os_unwatch(OsWatch watch) {
     Platform *p = g_platform;
     if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1]) return;
     FindCloseChangeNotification(p->watches[watch - 1]);
     p->watches[watch - 1] = NULL;
+    p->watch_tree[watch - 1] = p->watch_fired[watch - 1] = 0;
 }
+
+// ---------------------------------------------------------------------------
+// Threads: any thread may call these (platform.h). The dev counters are interlocked.
+
+typedef struct Win32ThreadStart {
+    OsThreadFn *fn;
+    void *data;
+} Win32ThreadStart;
+
+static DWORD WINAPI win32_thread_main(void *param) {
+    Win32ThreadStart start = *(Win32ThreadStart *)param;
+    VirtualFree(param, 0, MEM_RELEASE);
+    start.fn(start.data);
+    return 0;
+}
+
+b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data) {
+    thread->handle = NULL;
+    // The start block lives in its own page, freed by the thread: no allocator is shared between threads.
+    Win32ThreadStart *start = VirtualAlloc(NULL, sizeof(Win32ThreadStart), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!start) return 0;
+    start->fn = fn;
+    start->data = data;
+    HANDLE h = CreateThread(NULL, 0, win32_thread_main, start, 0, NULL);
+    if (!h) {
+        VirtualFree(start, 0, MEM_RELEASE);
+        return 0;
+    }
+    thread->handle = h;
+#if TEAL_DEV
+    InterlockedIncrement(&g_platform->live_threads);
+#endif
+    return 1;
+}
+
+b32 os_thread_join(OsThread thread, u32 timeout_ms) {
+    if (!thread.handle) return 1;
+    if (WaitForSingleObject(thread.handle, timeout_ms) != WAIT_OBJECT_0) return 0;
+    CloseHandle(thread.handle);
+#if TEAL_DEV
+    InterlockedDecrement(&g_platform->live_threads);
+#endif
+    return 1;
+}
+
+_Static_assert(sizeof(OsLock) == sizeof(SRWLOCK), "OsLock holds an SRWLOCK");
+
+void os_lock(OsLock *lock) {
+    AcquireSRWLockExclusive((PSRWLOCK)lock);
+}
+
+void os_unlock(OsLock *lock) {
+    ReleaseSRWLockExclusive((PSRWLOCK)lock);
+}
+
+b32 os_event_create(OsEvent *event) {
+    event->handle = CreateEventW(NULL, FALSE, FALSE, NULL);
+#if TEAL_DEV
+    if (event->handle) InterlockedIncrement(&g_platform->live_events);
+#endif
+    return event->handle != NULL;
+}
+
+void os_event_set(OsEvent event) {
+    if (event.handle) SetEvent(event.handle);
+}
+
+b32 os_event_wait(OsEvent event, u32 timeout_ms) {
+    return event.handle && WaitForSingleObject(event.handle, timeout_ms) == WAIT_OBJECT_0;
+}
+
+void os_event_destroy(OsEvent event) {
+    if (!event.handle) return;
+    CloseHandle(event.handle);
+#if TEAL_DEV
+    InterlockedDecrement(&g_platform->live_events);
+#endif
+}
+
+i32 os_atomic_get(volatile i32 *v) {
+    return (i32)InterlockedOr((volatile LONG *)v, 0);
+}
+
+void os_atomic_set(volatile i32 *v, i32 x) {
+    InterlockedExchange((volatile LONG *)v, x);
+}
+
+void os_wake_main(void) {
+    SetEvent(g_platform->wake);
+}
+
+#if TEAL_DEV
+b32 os_dev_wake_wait(u32 timeout_ms) {
+    return WaitForSingleObject(g_platform->wake, timeout_ms) == WAIT_OBJECT_0;
+}
+
+i32 os_dev_live_threads(void) {
+    return (i32)InterlockedOr(&g_platform->live_threads, 0);
+}
+
+i32 os_dev_live_events(void) {
+    return (i32)InterlockedOr(&g_platform->live_events, 0);
+}
+
+// A directory junction (a mount point reparse point), as mklink /J makes it: no admin rights needed.
+// REPARSE_DATA_BUFFER is a driver-kit type, so its mount-point layout is spelled out here.
+#define TEAL_FSCTL_SET_REPARSE_POINT 0x000900A4
+b32 os_dev_make_junction(String8 link, String8 target) {
+    Platform *p = g_platform;
+    u64 mark = arena_pos(&p->scratch);
+    String16 substitute = str16_from_str8(&p->scratch, str8_fmt(&p->scratch, "\\??\\%S", target));
+    String16 print = str16_from_str8(&p->scratch, target);
+    WCHAR *link16 = win32_path16(link);
+    b32 ok = 0;
+    if (CreateDirectoryW(link16, NULL)) {
+        HANDLE h = CreateFileW(link16, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            u16 sub_bytes = (u16)(substitute.len * 2), print_bytes = (u16)(print.len * 2);
+            u16 path_bytes = (u16)(sub_bytes + 2 + print_bytes + 2);
+            u32 total = 8 + 8 + path_bytes; // the header, the mount point fields, the two NUL-terminated names
+            u8 *buf = PUSH_ARRAY(&p->scratch, u8, total);
+            u32 tag = IO_REPARSE_TAG_MOUNT_POINT;
+            u16 data_len = (u16)(8 + path_bytes), zero = 0, print_off = (u16)(sub_bytes + 2);
+            memcpy(buf + 0, &tag, 4);
+            memcpy(buf + 4, &data_len, 2);
+            memcpy(buf + 6, &zero, 2);
+            memcpy(buf + 8, &zero, 2);          // SubstituteNameOffset
+            memcpy(buf + 10, &sub_bytes, 2);    // SubstituteNameLength
+            memcpy(buf + 12, &print_off, 2);    // PrintNameOffset
+            memcpy(buf + 14, &print_bytes, 2);  // PrintNameLength
+            memcpy(buf + 16, substitute.data, sub_bytes + 2);
+            memcpy(buf + 16 + print_off, print.data, print_bytes + 2);
+            DWORD returned = 0;
+            ok = DeviceIoControl(h, TEAL_FSCTL_SET_REPARSE_POINT, buf, total, NULL, 0, &returned, NULL) != 0;
+            CloseHandle(h);
+        }
+        if (!ok) RemoveDirectoryW(link16);
+    }
+    arena_pop_to(&p->scratch, mark);
+    return ok;
+}
+
+b32 os_dev_remove_dir(String8 path) {
+    Platform *p = g_platform;
+    u64 mark = arena_pos(&p->scratch);
+    b32 ok = RemoveDirectoryW(win32_path16(path)) != 0;
+    arena_pop_to(&p->scratch, mark);
+    return ok;
+}
+#endif
 
 static void win32_push_event(Platform *p, Event e);
 #if TEAL_DEV
@@ -597,15 +812,25 @@ static u64 win32_dev_hash(String8 s);
 static void win32_dev_idle_check_mark(Platform *p, b32 end);
 #endif
 
-// Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it.
+// Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it; a tree watch is not re-armed (it
+// stays out of the wait until os_watch_rearm).
 static void win32_poll_watches(Platform *p) {
     for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) {
-        if (!p->watches[i] || WaitForSingleObject(p->watches[i], 0) != WAIT_OBJECT_0) continue;
-        FindNextChangeNotification(p->watches[i]);
+        if (!p->watches[i] || p->watch_fired[i] || WaitForSingleObject(p->watches[i], 0) != WAIT_OBJECT_0) continue;
+        if (p->watch_tree[i]) p->watch_fired[i] = 1;
+        else FindNextChangeNotification(p->watches[i]);
         Event e = { .kind = EVENT_DIR_CHANGED, .watch = (OsWatch)(i + 1) };
         win32_push_event(p, e);
         p->redraw = 1;
     }
+}
+
+// The handles the main loop waits on besides the messages: the armed watches and the wake event.
+static DWORD win32_wait_handles(Platform *p, HANDLE *out) {
+    DWORD n = 0;
+    for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) if (p->watches[i] && !p->watch_fired[i]) out[n++] = p->watches[i];
+    if (p->wake) out[n++] = p->wake;
+    return n;
 }
 
 #if TEAL_DEV
@@ -620,6 +845,16 @@ b32 os_dev_watch_wait(OsWatch watch, u32 timeout_ms) {
 i32 os_dev_watch_count(void) {
     i32 n = 0;
     for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) n += g_platform->watches[i] != NULL;
+    return n;
+}
+
+i32 os_dev_poll_watches(Event *out, i32 cap) {
+    Platform *p = g_platform;
+    i32 before = p->event_count;
+    win32_poll_watches(p);
+    i32 n = 0;
+    for (i32 i = before; i < p->event_count; i++) if (n < cap) out[n++] = p->events[i];
+    p->event_count = before;
     return n;
 }
 
@@ -3137,6 +3372,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->instance = instance;
     p->qpc_start = qpc_start;
     p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
+    p->wake = CreateEventW(NULL, FALSE, FALSE, NULL); // os_wake_main (auto-reset); none: workers' results wait for input
 #if TEAL_DEV
     p->seed = 0x7ea1;
 #endif
@@ -3467,9 +3703,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         // Block until there is something to do: 0% CPU when idle. The directory watches are part of
         // the wait; a timeout only while the app asks for one (a config read to retry).
         if (!p->redraw) {
-            HANDLE handles[WIN32_MAX_WATCHES];
-            DWORD count = 0;
-            for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) if (p->watches[i]) handles[count++] = p->watches[i];
+            HANDLE handles[WIN32_MAX_WATCHES + 1];
+            DWORD count = win32_wait_handles(p, handles);
             DWORD timeout = app_wait_ms(p->app);
             if (MsgWaitForMultipleObjectsEx(count, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_TIMEOUT) {
                 Event e = { .kind = EVENT_WAKEUP };
@@ -3478,6 +3713,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             }
         }
         win32_poll_watches(p);
+        // Workers' results: the app takes them without a frame unless something shown changed.
+        if (p->wake && WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0 && app_wake(p->app)) p->redraw = 1;
 #if TEAL_DEV
         p->idle_wakeups++;
 #endif
@@ -3572,6 +3809,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (os_dev_watch_count()) {
         LOG("app: %d directory watch(es) still open after close", os_dev_watch_count());
         font_refs += os_dev_watch_count();
+    }
+    if (os_dev_live_threads() || os_dev_live_events()) {
+        LOG("app: %d worker thread(s) not joined, %d event(s) not destroyed after close", os_dev_live_threads(), os_dev_live_events());
+        font_refs += os_dev_live_threads() + os_dev_live_events();
     }
 #endif
 
