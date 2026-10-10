@@ -89,6 +89,7 @@ typedef struct Platform {
     b32 bench_syntax;
     b32 bench_search;
     b32 bench_windows;
+    b32 bench_project;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -988,7 +989,8 @@ void os_fatal(String8 message) {
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
-                       g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search)) interactive = 0;
+                       g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
+                       g_platform->bench_project)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -3059,6 +3061,119 @@ static void win32_bench_complete(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-project, scanning: a project scan of `root` through the app, waited for; its numbers.
+static void win32_bench_scan(Platform *p, String8 root, const char *what) {
+    u64 before = os_dev_private_bytes(), t0 = os_time_us();
+    app_dev_bench_scan_start(p->app, root);
+    i64 files = 0, ignored = 0, errors = 0;
+    u64 memory = 0;
+    while (app_dev_bench_scan_state(p->app, root, &files, &ignored, &errors, &memory)) {
+        if (os_dev_wake_wait(100)) app_wake(p->app);
+    }
+    u64 took = os_time_us() - t0, after = os_dev_private_bytes();
+    LOG("bench-project: scan of %s (%S): %D files, %D ignored, %D unreadable or too long, %U ms; index %U KB committed (%U bytes a "
+        "file); private bytes +%U KB", what, root, files, ignored, errors, took / 1000, memory / 1024, files ? memory / (u64)files : 0,
+        after > before ? (after - before) / 1024 : 0);
+    app_dev_bench_scan_close(p->app, root);
+}
+
+// --bench-project: fuzzy ranking on 10,000, 100,000 and 1,000,000 synthetic paths (a query typed a
+// character at a time, then deleted: each keystroke's frame, the frames until the ranking is done, the
+// longest frame; a whole ranking at once, as RET does); scans of the generated tree and of %SystemRoot%
+// (read only); typing at line 1,000,000 of the 100 MB file with and without a scan running.
+static void win32_bench_project(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    static const char *const keys[] = { "w", "i", "n", "m", "a", "i", "DEL", "DEL", "DEL", "DEL", "DEL", "DEL" };
+    static const i64 sizes[] = { 10000, 100000, 1000000 };
+    for (i32 s = 0; s < ARRAY_COUNT(sizes); s++) {
+        u64 t0 = os_time_us();
+        u64 memory = app_dev_bench_finder_open(p->app, sizes[s]);
+        u64 made = os_time_us() - t0;
+        win32_bench_keys(p, "");
+        u64 first_sum = 0, first_max = 0, frames_sum = 0, frames_max = 0, done_sum = 0, done_max = 0, longest = 0, count = 0, over = 0;
+        for (i32 round = 0; round < 2; round++) {
+            for (i32 k = 0; k < ARRAY_COUNT(keys); k++) {
+                u64 start = os_time_us();
+                u64 b = win32_bench_keys(p, keys[k]);
+                first_sum += b;
+                first_max = MAX(first_max, b);
+                longest = MAX(longest, b);
+                u64 frames = 1;
+                if (b > SYNTAX_FRAME_BUDGET_US + 100) over++;
+                while (app_wants_frame(p->app) && frames < 100000) {
+                    u64 f = win32_bench_keys(p, "");
+                    longest = MAX(longest, f);
+                    if (f > SYNTAX_FRAME_BUDGET_US + 100) over++;
+                    frames++;
+                }
+                u64 done = os_time_us() - start;
+                frames_sum += frames;
+                frames_max = MAX(frames_max, frames);
+                done_sum += done;
+                done_max = MAX(done_max, done);
+                count++;
+            }
+        }
+        u64 finish = app_dev_bench_finder_finish(p->app, STR8_LIT("winmai"));
+        i64 matches = app_dev_bench_matches(p->app);
+        LOG("bench-project: %D paths (index %U KB, made in %U ms), %U keystrokes: the keystroke's frame (command + build) avg %U us, "
+            "worst %U us; frames until ranked avg %U, worst %U; time until ranked avg %U us, worst %U us; longest frame %U us, %U "
+            "frame(s) over %d us (the budget plus 100 us); a whole ranking at once ('winmai', %D matches, as RET does) %U us",
+            sizes[s], memory / 1024, made / 1000, count, first_sum / count, first_max, frames_sum / count, frames_max, done_sum / count,
+            done_max, longest, over, SYNTAX_FRAME_BUDGET_US + 100, matches, finish);
+        app_dev_bench_finder_close(p->app);
+        win32_bench_keys(p, "");
+    }
+
+    // Scans: the generated tree (as --test makes it) and the Windows directory.
+    String8 tree = str8_fmt(&p->perm, "%S\\tmp\\p11big", p->exe_dir);
+    if (os_file_info(str8_fmt(&p->perm, "%S\\tmp\\p11big.done", p->exe_dir), &(OsFileInfo){ 0 }) != OS_FILE_OK) {
+        os_make_dir(tree);
+        for (i32 d = 0; d < 100; d++) {
+            String8 dir = str8_fmt(&p->perm, "%S\\d%02d", tree, d);
+            os_make_dir(dir);
+            for (i32 f = 0; f < 100; f++) os_write_file(str8_fmt(&p->scratch, "%S\\file_%04d.c", dir, d * 100 + f), STR8_LIT("x"));
+            arena_reset(&p->scratch);
+        }
+        os_write_file(str8_fmt(&p->perm, "%S\\tmp\\p11big.done", p->exe_dir), STR8_LIT("10000 files\n"));
+    }
+    String8 windows = os_get_env(&p->perm, STR8_LIT("SystemRoot"));
+    win32_bench_scan(p, tree, "the generated tree");
+    if (windows.len) win32_bench_scan(p, windows, "%SystemRoot%");
+
+    // Typing at line 1,000,000 (a fresh line each time), without and with a scan of the Windows directory
+    // running; its batches are taken between frames, as the main loop does. Only the frames while it runs count.
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    i64 line = 1000000;
+    for (i32 round = 0; round < 2 && windows.len; round++) {
+        for (i32 with_scan = 0; with_scan < 2; with_scan++) {
+            b32 scanning = (round == 0) == (with_scan == 1);
+            BenchStat st = { 0 }, skip = { 0 };
+            app_dev_goto_line(p->app, line);
+            line += 2;
+            if (scanning) app_dev_bench_scan_start(p->app, windows);
+            win32_bench_view_step(p, plain, &skip);
+            i64 files = 0, ignored, errors;
+            u64 memory;
+            for (i32 i = 0; i < 10000; i++) {
+                if (scanning) {
+                    if (os_dev_wake_wait(0)) app_wake(p->app);
+                    if (!app_dev_bench_scan_state(p->app, windows, &files, &ignored, &errors, &memory)) break;
+                }
+                win32_bench_view_step(p, type, &st);
+            }
+            win32_bench_log(p, "bench-project", scanning ? "self-insert at line 1,000,000 while %SystemRoot% is scanned" : "self-insert at line 1,000,000, no scan", &st);
+            if (scanning) {
+                LOG("bench-project: the scan listed %D files during those %U frames", files, st.count);
+                app_dev_bench_scan_close(p->app, windows);
+            }
+        }
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 // --idle-check: after a second to settle, five seconds without input: the process's CPU time, the
 // frames drawn and the main loop's passes over them, and the private bytes. Two posted messages mark
 // the period (the only wakeups it should have); the window is shown without taking the focus.
@@ -3284,7 +3399,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-           p->bench_search || p->bench_windows ||
+           p->bench_search || p->bench_windows || p->bench_project ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -3452,6 +3567,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-search"))) { p->bench_search = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-windows"))) { p->bench_windows = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-project"))) { p->bench_project = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
@@ -3496,7 +3612,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
-                                   : p->bench_windows ? "bench-windows"
+                                   : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -3515,7 +3631,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows) { // generated before the app opens it; measured after startup
+    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project) { // generated before the app opens it; measured after startup
         p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
         p->file_count = 1;
     }
@@ -3586,7 +3702,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     app_args.config_path = p->config_path;
     app_args.scan_hold = p->scan_hold;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
-                             p->bench_syntax || p->bench_search || p->bench_windows || p->type_ahead_check); // defaults
+                             p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project ||
+                             p->type_ahead_check); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -3735,6 +3852,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_search && !p->quit) {
         win32_bench_search(p);
+        p->quit = 1;
+    }
+    if (p->bench_project && !p->quit) {
+        win32_bench_project(p);
         p->quit = 1;
     }
     if (p->bench_windows && !p->quit) {
