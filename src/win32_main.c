@@ -3735,11 +3735,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // there it slowed the device thread down (first Present 174 ms median against 167; here 168). The
     // first frame is presented before uncloaking, so the window never shows an unpainted (white) client
     // area. If Windows refuses the foreground, the window is still shown and appears when it is
-    // uncloaked. The smoke and --idle-check show it later without activation; screenshot runs and
-    // --dpi-check never show it.
+    // uncloaked. The smoke, --idle-check and the benches show it later without activation (they never take
+    // the focus from whatever the user is typing in); screenshot runs and --dpi-check never show it.
     b32 show_early = 1;
 #if TEAL_DEV
-    show_early = !(p->smoke || p->idle_check || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+    b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+                p->bench_search || p->bench_windows || p->bench_project;
+    show_early = !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early) {
         BOOL cloak = TRUE;
@@ -3807,7 +3809,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
     if (!p->quit) {
         BOOL cloak = TRUE;
-        if (!show_early) { // the smoke and --idle-check: shown cloaked, never activated
+        if (!show_early) { // the smoke, --idle-check, the benches: shown cloaked, never activated
             DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
             ShowWindow(p->hwnd, SW_SHOWNA);
         }
