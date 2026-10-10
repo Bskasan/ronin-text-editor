@@ -125,3 +125,161 @@ b32 ignore_path(const IgnoreScope *top, const IgnoreScope *chain, const IgnoreSc
     if (d < 0 && builtin) d = ignore_scope_decide(builtin, rel, is_dir);
     return d == 1;
 }
+
+// ---------------------------------------------------------------------------
+// Roots
+
+static b32 project_is_sep(u8 c) {
+    return c == '\\' || c == '/';
+}
+
+static String8 project_strip_seps(String8 s) {
+    while (s.len && project_is_sep(s.data[s.len - 1])) s.len--;
+    return s;
+}
+
+b32 project_is_drive_root(String8 dir) {
+    dir = project_strip_seps(dir);
+    if (dir.len == 2 && dir.data[1] == ':') return 1;
+    if (dir.len > 2 && project_is_sep(dir.data[0]) && project_is_sep(dir.data[1])) { // \\server\share
+        i32 seps = 0;
+        for (i64 i = 2; i < dir.len; i++) seps += project_is_sep(dir.data[i]);
+        return seps <= 1;
+    }
+    return 0;
+}
+
+b32 project_path_inside(String8 path, String8 dir) {
+    dir = project_strip_seps(dir);
+    if (!dir.len || path.len < dir.len) return 0;
+    for (i64 i = 0; i < dir.len; i++) {
+        u8 a = path.data[i], b = dir.data[i];
+        if (project_is_sep(a) && project_is_sep(b)) continue;
+        if (ignore_lower(a) != ignore_lower(b)) return 0;
+    }
+    return path.len == dir.len || project_is_sep(path.data[dir.len]);
+}
+
+String8 project_root_find(Arena *arena, String8 dir, String8 markers, ProjectExistsFn *exists, void *data) {
+    String8 cur = project_strip_seps(dir);
+    while (cur.len && !project_is_drive_root(cur)) {
+        for (i64 i = 0; i < markers.len;) {
+            while (i < markers.len && ignore_is_blank(markers.data[i])) i++;
+            i64 start = i;
+            while (i < markers.len && !ignore_is_blank(markers.data[i])) i++;
+            if (i == start) continue;
+            u64 mark = arena_pos(arena);
+            String8 path = str8_fmt(arena, "%S\\%S", cur, str8(markers.data + start, i - start));
+            b32 found = exists(data, path);
+            arena_pop_to(arena, mark);
+            if (found) return str8_copy(arena, cur);
+        }
+        i64 sep = cur.len;
+        while (sep > 0 && !project_is_sep(cur.data[sep - 1])) sep--;
+        if (sep == 0) break;
+        cur = project_strip_seps(str8(cur.data, sep));
+    }
+    return str8(NULL, 0);
+}
+
+b32 project_exists_fs(void *data, String8 path) {
+    (void)data;
+    OsFileInfo info;
+    return os_file_info(path, &info) == OS_FILE_OK && info.exists;
+}
+
+void project_cache_init(ProjectRootCache *c) {
+    memset(c, 0, sizeof(*c));
+    c->arena = arena_create(MB(16));
+}
+
+void project_cache_reset(ProjectRootCache *c) {
+    arena_reset(&c->arena);
+    c->count = 0;
+}
+
+void project_cache_destroy(ProjectRootCache *c) {
+    os_release(c->arena.base);
+}
+
+String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_dir, String8 markers, ProjectExistsFn *exists,
+                         void *data) {
+    if (!file_dir.len) return cmdline_dir;
+    String8 root = { 0 };
+    i32 found = -1;
+    for (i32 i = 0; i < c->count && found < 0; i++) if (str8_equal(c->dirs[i], file_dir)) found = i;
+    if (found >= 0) {
+        root = c->roots[found];
+    } else {
+        if (c->count == PROJECT_ROOT_CACHE) project_cache_reset(c);
+        c->queries++;
+        root = project_root_find(&c->arena, file_dir, markers, exists, data);
+        c->dirs[c->count] = str8_copy(&c->arena, file_dir);
+        c->roots[c->count++] = root;
+    }
+    if (root.len) return root;
+    if (cmdline_dir.len && project_path_inside(file_dir, cmdline_dir)) return cmdline_dir;
+    return str8(NULL, 0);
+}
+
+// ---------------------------------------------------------------------------
+// .teal-project
+
+typedef enum ProjectSection {
+    PROJECT_SECTION_NONE,
+    PROJECT_SECTION_UNKNOWN,
+    PROJECT_SECTION_IGNORE,
+    PROJECT_SECTION_ALLOW,
+} ProjectSection;
+
+// The patterns of a section joined with '\n'.
+static String8 project_join(Arena *arena, String8 *lines, i64 n) {
+    i64 len = 0;
+    for (i64 i = 0; i < n; i++) len += lines[i].len + 1;
+    u8 *out = PUSH_ARRAY(arena, u8, len);
+    i64 at = 0;
+    for (i64 i = 0; i < n; i++) {
+        memcpy(out + at, lines[i].data, (size_t)lines[i].len);
+        at += lines[i].len;
+        out[at++] = '\n';
+    }
+    return str8(out, len);
+}
+
+void project_file_parse(Arena *arena, String8 text, String8 file_name, ProjectFile *out) {
+    memset(out, 0, sizeof(*out));
+    ConfigParser p = { .diags = &out->diags, .arena = arena, .file = file_name, .text = text };
+    i64 cap = 1;
+    for (i64 i = 0; i < text.len; i++) cap += text.data[i] == '\n';
+    String8 *ignore = PUSH_ARRAY(arena, String8, cap), *allow = PUSH_ARRAY(arena, String8, cap);
+    i64 n_ignore = 0, n_allow = 0;
+    ProjectSection section = PROJECT_SECTION_NONE;
+    String8 line;
+    while (config_next_line(&p, &line)) {
+        String8 head;
+        i32 header = config_header(line, &head);
+        if (header) {
+            section = header < 0 ? PROJECT_SECTION_UNKNOWN
+                    : str8_equal(head, STR8_LIT("ignore")) ? PROJECT_SECTION_IGNORE
+                    : str8_equal(head, STR8_LIT("allow"))  ? PROJECT_SECTION_ALLOW : PROJECT_SECTION_UNKNOWN;
+            if (header < 0) config_diag(&p, 0, "bad section header (expected [ignore] or [allow])");
+            else if (section == PROJECT_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S] (expected [ignore] or [allow])", config_quote(head));
+            continue;
+        }
+        if (section == PROJECT_SECTION_NONE) {
+            config_diag(&p, 0, "line outside a section ([ignore] or [allow])");
+            continue;
+        }
+        if (section == PROJECT_SECTION_UNKNOWN) continue;
+        for (i64 i = 0; i < line.len; i++) {
+            if (line.data[i] == '[' || line.data[i] == '\\') {
+                config_diag(&p, 1, "'%S': character classes and backslash escapes are not supported (matched literally)", config_quote(line));
+                break;
+            }
+        }
+        if (section == PROJECT_SECTION_IGNORE) ignore[n_ignore++] = line;
+        else allow[n_allow++] = line;
+    }
+    out->ignore = project_join(arena, ignore, n_ignore);
+    out->allow = project_join(arena, allow, n_allow);
+}

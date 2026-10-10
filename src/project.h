@@ -48,4 +48,52 @@ i32  ignore_scope_decide(const IgnoreScope *scope, String8 rel, b32 is_dir);
 b32  ignore_path(const IgnoreScope *top, const IgnoreScope *chain, const IgnoreScope *builtin, String8 rel, b32 is_dir);
 b32  ignore_glob(String8 glob, String8 s); // '*', '?', "**" over a lowercased path (exposed for tests)
 
+// ---------------------------------------------------------------------------
+// Roots. A project needs no setup: its root is the nearest directory at or above the buffer's file
+// that holds a marker (project_markers: .git, .hg, .svn, .teal-project; a file or a directory). A
+// marker at a drive or share root does not count. With no marker, the only fallback is a directory
+// given on the command line: for the files inside it and for buffers without a file. The current
+// directory never becomes a root by itself. Paths are full Windows paths; roots have no trailing
+// separator.
+
+#define PROJECT_NOT_IN_PROJECT "Not in a project (no .git found; start teal with a directory, or add a .teal-project file)"
+#define PROJECT_ROOT_CACHE 256
+
+typedef b32 ProjectExistsFn(void *data, String8 path); // a file or directory exists at path
+
+b32     project_is_drive_root(String8 dir);          // "C:\", "C:", "\\server\share" (and with a trailing separator)
+b32     project_path_inside(String8 path, String8 dir); // path is dir or below it (ASCII case-insensitive, either separator)
+// The nearest directory at or above `dir` holding a marker, or empty.
+String8 project_root_find(Arena *arena, String8 dir, String8 markers, ProjectExistsFn *exists, void *data);
+b32     project_exists_fs(void *data, String8 path); // the file system (main thread)
+
+// The roots found per directory, so the file system is asked once per directory. Reset when full and on
+// project-refresh.
+typedef struct ProjectRootCache {
+    Arena arena;
+    i32 count;
+    String8 dirs[PROJECT_ROOT_CACHE], roots[PROJECT_ROOT_CACHE]; // an empty root: none
+    u64 queries;                                                // project_root_find calls (tests)
+} ProjectRootCache;
+
+void    project_cache_init(ProjectRootCache *c);
+void    project_cache_reset(ProjectRootCache *c);
+void    project_cache_destroy(ProjectRootCache *c);
+// The project root of a buffer whose file is in `file_dir` (empty: no file), with the command-line
+// directory (empty: none). Empty: not in a project. The result lives in the cache's arena until a reset.
+String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_dir, String8 markers, ProjectExistsFn *exists,
+                         void *data);
+
+// ---------------------------------------------------------------------------
+// .teal-project at a root: the config format with [ignore] and [allow] sections, one pattern per line.
+
+#define PROJECT_FILE_NAME ".teal-project"
+
+typedef struct ProjectFile {
+    String8 ignore, allow; // the patterns, one per line
+    ConfigDiags diags;
+} ProjectFile;
+
+void project_file_parse(Arena *arena, String8 text, String8 file_name, ProjectFile *out);
+
 #endif // PROJECT_H

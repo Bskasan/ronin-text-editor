@@ -5972,6 +5972,141 @@ static b32 test_ignore_rules(Test *t) {
     return 1;
 }
 
+// A fake file system for root detection: the paths that exist (case-insensitive), and the queries made.
+typedef struct TestFakeFs {
+    const char *const *paths;
+    i32 count;
+    i32 queries;
+} TestFakeFs;
+
+static b32 test_fake_exists(void *data, String8 path) {
+    TestFakeFs *fs = data;
+    fs->queries++;
+    for (i32 i = 0; i < fs->count; i++) {
+        String8 p = str8_cstr(fs->paths[i]);
+        if (p.len == path.len && project_path_inside(path, p)) return 1;
+    }
+    return 0;
+}
+
+// Root detection: each marker, nested repositories, no marker (the command-line directory only, never the
+// current directory), *scratch*, drive and share roots; the cache; the built-in settings; the real
+// file system.
+static b32 test_project_roots(Test *t) {
+    static const char *const paths[] = {
+        "C:\\w\\repo\\.git", "C:\\w\\repo\\sub\\inner\\.hg", "C:\\w\\wt\\.git", "C:\\w\\tp\\.teal-project", "C:\\w\\svn\\.svn",
+        "C:\\.git", "\\\\srv\\share\\.git",
+    };
+    TestFakeFs fs = { paths, (i32)ARRAY_COUNT(paths), 0 };
+    String8 markers = STR8_LIT(".git .hg .svn .teal-project");
+    static const struct { const char *dir, *cmdline, *want, *what; } cases[] = {
+        { "C:\\w\\repo\\src\\x", "", "C:\\w\\repo", ".git above the file" },
+        { "C:\\w\\repo", "", "C:\\w\\repo", ".git in the file's own directory" },
+        { "C:\\w\\repo\\sub\\inner\\deep", "", "C:\\w\\repo\\sub\\inner", "nested repositories: the inner one" },
+        { "C:\\w\\wt\\a", "", "C:\\w\\wt", ".git as a file (a worktree)" },
+        { "C:\\w\\tp\\a\\b", "", "C:\\w\\tp", ".teal-project" },
+        { "C:\\w\\svn", "", "C:\\w\\svn", ".svn" },
+        { "C:\\w\\none\\a", "", "", "no marker, no command-line directory: not in a project (a marker at C:\\ does not count)" },
+        { "C:\\w\\none\\a", "C:\\w", "C:\\w", "no marker, inside the command-line directory" },
+        { "C:\\w\\none\\a", "c:\\W\\", "c:\\W\\", "no marker, inside the command-line directory (case, trailing separator)" },
+        { "C:\\other\\x", "C:\\w", "", "no marker, outside the command-line directory" },
+        { "C:\\w\\repo2\\x", "C:\\w\\repo", "", "a sibling with the command-line directory as a name prefix" },
+        { "C:\\", "", "", "a file at a drive root" },
+        { "", "", "", "*scratch* without a command-line directory" },
+        { "", "C:\\w", "C:\\w", "*scratch* with a command-line directory" },
+        { "", "C:\\", "C:\\", "an explicit drive root on the command line is used as given" },
+        { "\\\\srv\\share\\a", "", "", "a marker at a share root does not count" },
+    };
+    ProjectRootCache cache;
+    project_cache_init(&cache);
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        String8 got = project_root_for(&cache, str8_cstr(cases[i].dir), str8_cstr(cases[i].cmdline), markers, test_fake_exists, &fs);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(cases[i].want)), "roots: %s: '%S', expected '%s'", cases[i].what, got, cases[i].want);
+    }
+    // The cache: the same directory again asks the file system nothing.
+    i32 queries = fs.queries;
+    u64 finds = cache.queries;
+    String8 again = project_root_for(&cache, STR8_LIT("C:\\w\\repo\\src\\x"), str8(NULL, 0), markers, test_fake_exists, &fs);
+    TEST_CHECK(t, str8_equal(again, STR8_LIT("C:\\w\\repo")) && fs.queries == queries && cache.queries == finds,
+               "roots: a cached directory asked the file system again (%d queries)", fs.queries - queries);
+    project_cache_reset(&cache);
+    project_root_for(&cache, STR8_LIT("C:\\w\\repo\\src\\x"), str8(NULL, 0), markers, test_fake_exists, &fs);
+    TEST_CHECK(t, fs.queries > queries, "roots: after a reset the file system is asked again");
+    TEST_CHECK(t, project_is_drive_root(STR8_LIT("D:")) && project_is_drive_root(STR8_LIT("D:\\")) &&
+                  project_is_drive_root(STR8_LIT("\\\\srv\\share\\")) && !project_is_drive_root(STR8_LIT("\\\\srv\\share\\x")) &&
+                  !project_is_drive_root(STR8_LIT("D:\\x")), "roots: drive and share roots");
+
+    // The real file system: build\tmp\p11roots\outer\.git (a directory) and outer\in\.teal-project (a file).
+    String8 base = str8_fmt(&t->arena, "%S\\p11roots", t->tmp_dir);
+    String8 outer = str8_fmt(&t->arena, "%S\\outer", base), in = str8_fmt(&t->arena, "%S\\in", outer);
+    String8 deep = str8_fmt(&t->arena, "%S\\deep", in), plain = str8_fmt(&t->arena, "%S\\plain", base);
+    os_make_dir(base);
+    os_make_dir(outer);
+    os_make_dir(str8_fmt(&t->arena, "%S\\.git", outer));
+    os_make_dir(in);
+    os_make_dir(deep);
+    os_make_dir(plain);
+    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", in), STR8_LIT("[ignore]\n")), "roots: cannot write");
+    project_cache_reset(&cache);
+    String8 r1 = project_root_for(&cache, deep, str8(NULL, 0), markers, project_exists_fs, NULL);
+    String8 r2 = project_root_for(&cache, str8_fmt(&t->arena, "%S\\.git", outer), str8(NULL, 0), markers, project_exists_fs, NULL);
+    String8 r3 = project_root_for(&cache, plain, str8(NULL, 0), markers, project_exists_fs, NULL);
+    String8 r4 = project_root_for(&cache, plain, base, markers, project_exists_fs, NULL);
+    b32 in_repo = r3.len != 0; // build\tmp may itself be inside a repository with a marker (teal's own .git)
+    TEST_CHECK(t, str8_equal(r1, in) && str8_equal(r2, outer) && (in_repo || (!r3.len && str8_equal(r4, base))),
+               "roots: real directories: '%S', '%S', '%S', '%S'", r1, r2, r3, r4);
+    project_cache_destroy(&cache);
+
+    // The settings' built-in values.
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+    config_init(c);
+    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    Settings *s = &c->settings;
+    String8 ignore = str8(s->project_ignore, s->project_ignore_len);
+    IgnoreScope builtin = { 0 };
+    ignore_parse_words(&t->arena, &builtin, ignore);
+    TEST_CHECK(t, str8_equal(str8(s->project_markers, s->project_markers_len), STR8_LIT(".git .hg .svn .teal-project")) &&
+                  s->project_max_files == 1000000 && c->diags.errors == 0, "roots: the built-in project settings");
+    static const struct { const char *path; b32 dir, want; } defaults[] = {
+        { ".git", 1, 1 }, { "a/.hg", 1, 1 }, { ".svn", 1, 1 }, { ".vs", 1, 1 }, { "web/node_modules", 1, 1 }, { "x/__pycache__", 1, 1 },
+        { "teal.exe", 0, 1 }, { "a/b.pdb", 0, 1 }, { "img/logo.PNG", 0, 1 }, { "build", 1, 0 }, { "src/bin", 1, 0 }, { "out", 1, 0 },
+        { "obj", 1, 0 }, { "target", 1, 0 }, { "dist", 1, 0 }, { "src/app.c", 0, 0 }, { ".gitignore", 0, 0 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(defaults); i++) {
+        b32 got = ignore_path(NULL, NULL, &builtin, str8_cstr(defaults[i].path), defaults[i].dir);
+        TEST_CHECK(t, got == defaults[i].want, "roots: the built-in project_ignore on '%s': %d, expected %d", defaults[i].path, got,
+                   defaults[i].want);
+    }
+    LOG("test: ok: project roots (%d cases: each marker, nested repositories, .git as a file, no marker with and without a "
+        "command-line directory, *scratch*, drive and share roots; the cache; real directories; the built-in settings, build "
+        "directories not ignored by default)", (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
+// .teal-project: [ignore] and [allow] with their diagnostics.
+static b32 test_project_file(Test *t) {
+    ProjectFile f;
+    project_file_parse(&t->arena, STR8_LIT("# a comment\n[ignore]\nbuild/\n*.log\n\n[allow]\nbuild/keep/\n[bogus]\nx\n[ignore\nloose\n[ignore]\nsrc/[ab].c\n"),
+                       STR8_LIT(".teal-project"), &f);
+    TEST_CHECK(t, str8_equal(f.ignore, STR8_LIT("build/\n*.log\nsrc/[ab].c\n")) && str8_equal(f.allow, STR8_LIT("build/keep/\n")),
+               "project file: patterns '%S' / '%S'", f.ignore, f.allow);
+    static const char *const want[] = {
+        ".teal-project:8: unknown section [bogus] (expected [ignore] or [allow])",
+        ".teal-project:10: bad section header (expected [ignore] or [allow])",
+        ".teal-project:13: warning: 'src/[ab].c': character classes and backslash escapes are not supported (matched literally)",
+    };
+    i32 k = 0;
+    for (ConfigDiag *d = f.diags.first; d; d = d->next, k++) {
+        TEST_CHECK(t, k < ARRAY_COUNT(want) && str8_equal(d->text, str8_cstr(want[k])), "project file: diagnostic %d '%S'", k, d->text);
+    }
+    TEST_CHECK(t, k == ARRAY_COUNT(want) && f.diags.errors == 2 && f.diags.warnings == 1, "project file: %d diagnostics", k);
+    project_file_parse(&t->arena, STR8_LIT("stray\n"), STR8_LIT(".teal-project"), &f);
+    TEST_CHECK(t, f.diags.errors == 1 && str8_equal(f.diags.first->text, STR8_LIT(".teal-project:1: line outside a section ([ignore] or [allow])")),
+               "project file: a line before any section");
+    LOG("test: ok: .teal-project ([ignore], [allow], unknown and bad sections, a line outside a section, unsupported syntax)");
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Matching
 
@@ -7233,6 +7368,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_junction_small_file(&t);
     arena_reset(&t.arena);
     test_ignore_rules(&t);
+    arena_reset(&t.arena);
+    test_project_roots(&t);
+    arena_reset(&t.arena);
+    test_project_file(&t);
     arena_reset(&t.arena);
     test_matcher(&t);
     arena_reset(&t.arena);
