@@ -16,6 +16,7 @@
 #include "config.h"
 #include "project.h"
 #include "minibuffer.h"
+#include "fuzzy.h"
 #include "search.h"
 #include "isearch.h"
 
@@ -35,6 +36,7 @@
 #include "config.c"
 #include "project.c"
 #include "minibuffer.c"
+#include "fuzzy.c"
 #include "search.c"
 #include "isearch.c"
 #include "app.c"
