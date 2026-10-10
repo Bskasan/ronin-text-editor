@@ -1955,9 +1955,12 @@ static i32 win32_dev_test_mods(Platform *p) {
                 i64 wn = key_chord_print(cases[i].want, want, sizeof(want));
                 BYTE now[256];
                 GetKeyboardState(now);
+                LASTINPUTINFO li = { .cbSize = sizeof(li) };
+                GetLastInputInfo(&li);
                 i64 n = fmt_buf(text, sizeof(text), "win32 modifiers: %s: got %S, expected %S (the key state reads back: Menu %x LMenu %x Ctrl %x "
-                                "Shift %x; GetKeyState(VK_MENU) %x; altgr %d)", cases[i].what, str8(got, gn), str8(want, wn), (u32)now[VK_MENU],
-                                (u32)now[VK_LMENU], (u32)now[VK_CONTROL], (u32)now[VK_SHIFT], (u32)(u16)GetKeyState(VK_MENU), p->altgr);
+                                "Shift %x; GetKeyState(VK_MENU) %x; altgr %d; the last real input %u ms before)", cases[i].what, str8(got, gn),
+                                str8(want, wn), (u32)now[VK_MENU], (u32)now[VK_LMENU], (u32)now[VK_CONTROL], (u32)now[VK_SHIFT],
+                                (u32)(u16)GetKeyState(VK_MENU), p->altgr, (u32)(GetTickCount() - li.dwTime));
                 win32_shield_fail(&shield, str8(text, n));
             }
         }
