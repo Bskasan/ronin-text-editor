@@ -390,7 +390,7 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
   however many it opened (fixes `f((x) => {` giving two levels).
 - [x] 9. isearch and query-replace
 - [x] 10. Window splitting
-- [ ] 11. Project + fuzzy file open
+- [x] 11. Project + fuzzy file open
 - [ ] 12. Project-wide search
 - [ ] 13. Build + jump to error
 - [ ] 14. Multiple cursors
