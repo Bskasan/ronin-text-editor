@@ -237,6 +237,7 @@ static b32 results_add(App *app, Results *r, String8 path, i64 line, i64 col, i6
     memcpy(PUSH_ARRAY(&r->pend, u8, n), buf, (size_t)n); // written with the frame's other lines (results_flush)
     r->count++;
     r->found++;
+    if (r->found == 1) r->first_us = os_time_us();
     if (arena_pos(&r->pend) >= RESULTS_FLUSH_BYTES) results_flush(app, r);
     return 1;
 }
@@ -542,6 +543,9 @@ static b32 results_running(App *app) {
 // searched. True while some of it can go on at once (another frame).
 static b32 results_work(App *app, u64 deadline, i64 budget) {
     b32 pending = 0;
+#if TEAL_DEV
+    u64 t0 = os_time_us();
+#endif
     for (i32 i = 0; i < RESULTS_MAX; i++) {
         Results *r = &app->results[i];
         if (!r->buffer || !r->running) continue;
@@ -559,6 +563,10 @@ static b32 results_work(App *app, u64 deadline, i64 budget) {
         results_progress(app, r);
         if (r->follow && r->source && r->source->files.base && r->fed < r->source->file_count) pending = 1;
     }
+#if TEAL_DEV
+    u64 took = os_time_us() - t0;
+    app->dev_results_max_us = MAX(app->dev_results_max_us, took);
+#endif
     return pending;
 }
 
@@ -1021,6 +1029,12 @@ static b32 results_dev_wait(App *app, Arena *scratch, u32 timeout_ms) {
     }
 }
 
+u64 app_dev_results_work_max(App *app) {
+    u64 m = app->dev_results_max_us;
+    app->dev_results_max_us = 0;
+    return m;
+}
+
 b32 app_dev_results_busy(App *app) {
     b32 busy = app->grep_dying_count > 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) busy |= app->results[i].buffer && app->results[i].running;
@@ -1046,6 +1060,36 @@ void app_dev_smoke_results(App *app, String8 tmp_dir) {
 }
 
 void app_dev_smoke_results_end(App *app) {
+    app_run_command(app, &CMD_DELETE_OTHER_WINDOWS, 0, 0);
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*search*"));
+    if (b) files_kill_buffer(app, b);
+}
+
+// --bench-grep: a search for `needle` under `root` with these settings, *search* in the other window (not
+// selected); its state; and gone again.
+void app_dev_bench_grep_start(App *app, String8 root, String8 needle, i32 workers, i32 max_results) {
+    app->config->settings.search_workers = workers;
+    app->config->settings.search_max_results = max_results;
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    ctx.cursor = &ctx.view->cursors[0];
+    ctx.scratch = &app->files_arena;
+    results_project_search(&ctx, root, needle, !search_has_upper(needle), 0);
+}
+
+b32 app_dev_bench_grep_state(App *app, i64 *found, i64 *bytes, i64 *files, u64 *first_us, u64 *total_us, b32 *limited) {
+    Results *r = results_of(app, buffer_list_find_name(&app->buffers, STR8_LIT("*search*")));
+    if (!r) return 0;
+    *found = r->found;
+    *bytes = r->bytes;
+    *files = r->files_seen;
+    *first_us = r->first_us ? r->first_us - r->start_us : 0;
+    *total_us = (r->running ? os_time_us() : r->end_us) - r->start_us;
+    *limited = r->limited;
+    return r->running || app->grep_dying_count > 0;
+}
+
+void app_dev_bench_grep_close(App *app) {
     app_run_command(app, &CMD_DELETE_OTHER_WINDOWS, 0, 0);
     Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*search*"));
     if (b) files_kill_buffer(app, b);

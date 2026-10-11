@@ -78,7 +78,7 @@ typedef struct Results {
     b32 point_set;       // point was put on the first location
     // The run.
     b32 running;
-    u64 start_us, end_us;
+    u64 start_us, end_us, first_us; // first_us: the first location written
     i64 found;           // locations written
     i64 files_seen;      // list files done, in any order (progress)
     i64 files_searched, files_with_matches, binary, unreadable, from_memory;

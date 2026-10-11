@@ -279,6 +279,7 @@ typedef struct AppArgs {
     b32 user_config;     // read the user's teal.conf (off in the smoke and the benches: defaults only)
     b32 headless;        // --test: no font, no window; driven through app_dev_feed
     i32 scan_hold;       // --scan-hold N: project scans stand still after N batches (0 = never)
+    i32 grep_hold;       // --grep-hold N: a search's workers stand still after N files each (0 = never)
 #endif
 } AppArgs;
 
@@ -330,7 +331,13 @@ void app_dev_smoke_finder_end(App *app);  // ... and closed
 void app_dev_smoke_results(App *app, String8 tmp_dir); // stage 8: *search* for "foo" over tmp_dir\smoke_grep (not selected)
 void app_dev_smoke_results_end(App *app);              // ... and gone, one window again
 b32  app_dev_results_busy(App *app);                    // a search runs or is still ending
-void app_dev_results_log(App *app, const char *why);   // every search's state to the log
+// --bench-grep: a project search with these settings (*search* in the other window, not selected), its
+// state (true while it runs or its workers end), and closed.
+void app_dev_bench_grep_start(App *app, String8 root, String8 needle, i32 workers, i32 max_results);
+b32  app_dev_bench_grep_state(App *app, i64 *found, i64 *bytes, i64 *files, u64 *first_us, u64 *total_us, b32 *limited);
+void app_dev_bench_grep_close(App *app);
+void app_dev_results_log(App *app, const char *why); // every search's state to the log
+u64  app_dev_results_work_max(App *app); // the longest results work of a frame since the last call
 // --bench-project: the finder on `count` synthetic paths (returns the index's memory), a whole ranking at
 // once (its time), the matches; a scan owned by the app (its batches through app_wake) and its state.
 u64  app_dev_bench_finder_open(App *app, i64 count);
