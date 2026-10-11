@@ -90,8 +90,8 @@ Only what exists today.
 ## Numbers
 
 Measured during development and recorded in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the
-"Measurements" sections). Machine: AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz (the startup
-figure was taken with a 1920x1080 display at 75 Hz), a 1280x800 window.
+"Measurements" sections). Machine: AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800
+window.
 
 | what | value | where |
 |---|---|---|
