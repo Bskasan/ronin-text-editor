@@ -103,6 +103,12 @@ String8  str8_copy(Arena *arena, String8 s);
 
 u32      utf8_decode(u8 *s, i64 len, i64 *advance);
 i64      utf8_encode(u32 codepoint, u8 *out); // out must hold 4 bytes
+// UTF-16 (LE or BE) to UTF-8, one chunk at a time: `in` is an even number of bytes; a high surrogate at
+// the end of a chunk waits in *pending (0: none) for the next chunk, utf16_flush writes one left at the
+// end. Unpaired surrogates become 3-byte WTF-8, so a round trip stays exact. `out` needs
+// in_len / 2 * 3 + 3 bytes. Returns the bytes written. (Loading files, the project-wide search.)
+i64      utf16_to_utf8_chunk(const u8 *in, i64 in_len, b32 big_endian, u32 *pending, u8 *out);
+i64      utf16_flush(u32 *pending, u8 *out);
 String16 str16_from_str8(Arena *arena, String8 s);
 // Simple case mapping for the scripts keyboards type directly: ASCII, Latin-1, Latin Extended-A,
 // basic Greek and Cyrillic (the default Unicode mapping: 'I' <-> 'i', also on Turkish layouts).

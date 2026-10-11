@@ -144,6 +144,45 @@ i64 utf8_encode(u32 cp, u8 *out) {
     return 4;
 }
 
+// UTF-8 for any 16-bit unit, lone surrogates included (3-byte WTF-8, which utf8_encode refuses).
+static i64 utf16_encode_unit(u32 cp, u8 *out) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) {
+        out[0] = (u8)(0xE0 | (cp >> 12));
+        out[1] = (u8)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (u8)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    return utf8_encode(cp, out);
+}
+
+i64 utf16_to_utf8_chunk(const u8 *in, i64 in_len, b32 big_endian, u32 *pending, u8 *out) {
+    u8 *start = out;
+    u32 high = *pending;
+    for (i64 i = 0; i + 1 < in_len; i += 2) {
+        u32 u = big_endian ? ((u32)in[i] << 8 | in[i + 1]) : ((u32)in[i + 1] << 8 | in[i]);
+        if (high) {
+            if (u >= 0xDC00 && u <= 0xDFFF) {
+                out += utf8_encode(0x10000 + ((high - 0xD800) << 10) + (u - 0xDC00), out);
+                high = 0;
+                continue;
+            }
+            out += utf16_encode_unit(high, out);
+            high = 0;
+        }
+        if (u >= 0xD800 && u <= 0xDBFF) high = u;
+        else out += utf16_encode_unit(u, out);
+    }
+    *pending = high;
+    return out - start;
+}
+
+i64 utf16_flush(u32 *pending, u8 *out) {
+    if (!*pending) return 0;
+    i64 n = utf16_encode_unit(*pending, out);
+    *pending = 0;
+    return n;
+}
+
 String16 str16_from_str8(Arena *arena, String8 s) {
     // Every UTF-8 byte yields at most one UTF-16 unit.
     u16 *out = PUSH_ARRAY(arena, u16, s.len + 1);
