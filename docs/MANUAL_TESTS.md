@@ -32,6 +32,8 @@ dev builds; they are not part of the repository.
 | `--type-ahead-check` | Real input (SendInput, letters and Shift only), run on demand only: types five keys while teal starts and checks they arrived in order before the first frame. |
 | `--bench-windows` | Frames with one and four windows, typing with one and two windows, on the 100 MB file. |
 | `--bench-project` | Fuzzy ranking on 10,000 / 100,000 / 1,000,000 synthetic paths (frames, the longest frame, RET's whole ranking), scans of the generated tree and of `C:\Windows`, typing with and without a scan running. Never takes the focus. |
+| `--bench-grep` | The project search on ~100 MB in 3,000 generated files with 1, 2, 4 and 8 workers (first result, total, MB/s, the longest frame and its results work, memory), typing while 8 workers search, the workers' priority. Never takes the focus. |
+| search tests | The `--test` groups logged as "test: ok: grep file", "grep search", "grep sharing", "results" and "occur" (Phase 12). |
 | project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".teal-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
@@ -297,6 +299,35 @@ named as in the evidence table.
 | M23 | Typing in another window while `--test` runs does not make it fail | AUTOMATED-NEW + HUMAN | shield self-test (every decision); the cases check that their key state held. Real typing meanwhile: HUMAN step 18. |
 | M24 | The benches and the smoke never take the focus | HUMAN | They show their window without activation (code); only a person typing elsewhere meanwhile can tell. HUMAN step 18. |
 
+## N. Project-wide search (Phase 12)
+
+"grep tests" below are the `--test` groups logged as "test: ok: grep file", "grep search" and "grep sharing";
+"results tests" is "test: ok: results", "occur tests" is "test: ok: occur". Screenshots are in build/shots.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| N1 | C-x p g in a file of a project asks "Search project for: ", offering the symbol at point (or the region) as the default | AUTOMATED-NEW | results tests: the prompt "Search project for (default foo): " with point on foo, "(default int foo;)" with a region; RET on the empty input searches the default. harness: C-x p g among the default bindings on every layout. |
+| N2 | RET: *search* opens in another window, selected, with a header, one line per match ("path:line:col: text") and a summary line | AUTOMATED-NEW | results tests: the exact text of *search* (header, lines, "7 matches in 5 files; 6 files searched, 1 binary skipped"), shown in another window and selected, point on the first match. Screenshot p12_1_search_teal.png ("search_begin" in teal's tree: 16 matches in 6 files, 0.02 s). |
+| N3 | File names and line numbers in their own colors, the matched text highlighted | AUTOMATED-NEW | smoke stage 8: the file name exactly search_file, "line:col" exactly search_line_number, the match on lazy_highlight with its text in the text color, the rest of the line on the background. Screenshots p12_1 and p12_3 inspected: white file names, teal line numbers, tan text, the matches highlighted. |
+| N4 | RET on a match visits it in the other window and selects that window | AUTOMATED-NEW | results tests (RET visits a.c at 1:5, two windows, a.c selected); screenshot p12_3_visited.png (n n RET: src/isearch.c:87:5 in the upper window, selected, the cursor on the match). |
+| N5 | n and p show the next and previous match in the other window; the results window stays selected | AUTOMATED-NEW | results tests (n: *search* stays selected on the next line, the other window shows a.c at 2:1; p back; p before the first: "No more matches"). |
+| N6 | g searches again; q closes the results window | AUTOMATED-NEW | results tests (5 runs of g give the same text; q leaves one window). |
+| N7 | M-g n / M-g p (and C-x \`) from another window walk the matches; at the ends "No more matches" | AUTOMATED-NEW | results tests (next-error from the other window through all 7 matches, past the end; previous-error back and before the first; "No next-error capable buffer found" with no results). |
+| N8 | The same search gives the same list in the same order every time | AUTOMATED-NEW | results tests (the exact text and the next-error order with 1, 2, 4 and 8 workers and 5 reruns, a large file early in the list so later files finish first); grep tests (the same matches with 1-8 workers). |
+| N9 | A big project: the list fills in while the search runs, the last line counts files and matches; typing stays fast | AUTOMATED-NEW + HUMAN | `--bench-grep` (100 MB in 3,000 files: first result after ~2 ms, all in 23-139 ms with 8 to 1 workers; a key's frame 36-38 us while 8 workers search, 28-39 us without); results tests (the progress line "Searching... N/M files, K matches" of a held search); screenshot p12_2_running.png ("Searching... 8/71 files, 9 matches"). On a big real repository: HUMAN step 19. |
+| N10 | Binary files are skipped (and counted); UTF-16 files are found | AUTOMATED-NEW | grep tests (a NUL in the first 8 KB: binary; after it: searched; UTF-16 LE and BE with a BOM; a UTF-8 BOM skipped); results tests (bin.dat skipped and counted, u16.txt found). |
+| N11 | A file with unsaved changes is searched as it is in teal, not as on disk; a new file not saved yet too | AUTOMATED-NEW | results tests (b/c.txt edited in teal: its disk text "foo on disk" not listed; a modified file the ignore rules leave out and a new file after the list, in path order; an empty new buffer and *scratch* not searched; "3 from unsaved buffers"). |
+| N12 | At 10,000 matches the search stops and says so | AUTOMATED-NEW | results tests (search_max_results = 2: exactly the first two matches in list order, "Stopped at 2 matches (search_max_results) in 1 file"); `--bench-grep` (10,000 at the default cap, stopped). |
+| N13 | Saving a file, a build or git while a search runs: nothing fails because of teal | AUTOMATED-NEW | grep sharing (two files held open by the workers: one saved through the temp file and ReplaceFileW, one renamed and deleted; all succeed). A real build or git command during a search: not tried by hand. |
+| N14 | A new search, or killing *search*, stops the running one | AUTOMATED-NEW | results tests (C-x k on a held search: the buffer goes, the workers end); grep tests (300 start / cancel rounds, each ending within 250 ms). |
+| N15 | Closing teal during a search exits at once, also with a stuck file system | AUTOMATED-NEW | results tests (shutdown with a search running: well under 1 s; a stuck worker left after the shared 1,000 ms bound). |
+| N16 | C-x p g outside a project says how to get one | AUTOMATED-NEW | results tests (*scratch*: "Not in a project ..."). |
+| N17 | M-s o (occur) lists the matching lines of the current buffer, unsaved text included, with the same keys | AUTOMATED-NEW | occur tests (the exact *occur* text, n, RET, next-error past the end, g after an edit, 10,000 lines over many frames, the buffer killed meanwhile); screenshot p12_4_occur.png. |
+| N18 | The results keys can be rebound in [keys search-results], and they work only in results buffers | AUTOMATED-NEW | results tests (z bound to next-error-no-select; n types n in *scratch* and in the window next to *search*; describe-key in *search*); buffer keymap test. |
+| N19 | After a search teal is idle: 0% CPU | AUTOMATED-NEW | `teal_debug.exe . --keys "C-x p g s e a r c h _ b e g i n RET" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
+| N20 | A very long line shows a part around the match with "…" at each cut | AUTOMATED-NEW | grep tests (a long line cut on character boundaries with an ellipsis at each end, an invalid byte at the cut). |
+| N21 | `teal --no-activate` shows the window without taking the focus | HUMAN | Real focus. Checked during this phase with a PowerShell script around the memory measurements: GetForegroundWindow before and after each of 12 starts, unchanged; the command-line test covers the flag in every build. Typing elsewhere meanwhile: HUMAN step 20. |
+
 ## HUMAN steps
 
 In this order, with `build\teal.exe` (or teal_debug.exe):
@@ -337,6 +368,13 @@ Phase 11, projects:
 18. **M23, M24**: Type in Notepad while `teal_debug.exe --test` and `teal_bench.exe --bench-project` run.
     Notepad keeps every key and the focus; `--test` passes (lines "test: inconclusive: ..." in build\teal.log
     are allowed, a FAIL is not).
+
+Phase 12, project-wide search:
+
+19. **N9**: In a big real repository, C-x p g a common word and type in another window at once. The list
+    fills in from the top, the last line counts up, and the typing is never held up.
+20. **N21**: While typing in Notepad, start `build\teal.exe --no-activate` from a terminal. Notepad keeps
+    the focus and every key; teal's window appears behind it.
 
 Dev helpers that take most of the work out of the others: `teal_debug.exe --idle-check` (A4, Z1),
 `teal_debug.exe --dpi-check build\shots\dpi` (A9), and `teal_debug.exe --clipboard-check` (E14,

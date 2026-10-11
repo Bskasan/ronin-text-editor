@@ -26,7 +26,9 @@
 | `src/project.h/.c` | ignore rules (a .gitignore subset, scopes chained per directory), project roots (markers, the command-line directory, drive roots) and their cache, `.teal-project` (the config parser's lines and diagnostics), the file index (relative paths, 16 bytes a file, a character mask each), the scanner: a worker thread walking a root breadth first, its batches through one locked queue, cancel, join |
 | `src/fuzzy.h/.c` | fuzzy matching of paths (subsequences, smart case, terms, '/', the score and its spans) and the resumable ranking over an index (slices against a deadline, narrowing, the best 1,000 in a heap) |
 | `src/finder.h/.c` | part of the app (included after files.c): the projects kept (4), their scans and tree watches, `app_wake` (the workers' results), staleness and rescans, the project finder's matcher and its commands (project-find-file, -other-window, project-refresh); dev: smoke and bench helpers |
-| `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded, over the gap buffer's two segments in place, resumable with a budget of positions, SSE2 scan for the first byte |
+| `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded; its core (a pattern, the SSE2 candidate scan on the first and second byte, the comparison) on plain byte ranges, and on top of it the search over the gap buffer's two segments in place, resumable with a budget of positions |
+| `src/grep.h/.c` | the project-wide search's worker side: one file in fixed chunks that overlap (encodings, binary files, lines counted, long lines cut), the workers claiming files of an append-only list in order, their batches through one locked queue, cancel, bounded join |
+| `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*), the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; dev: smoke and bench helpers |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
@@ -38,9 +40,10 @@
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `files.c`, `finder.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`, `fuzzy.c`,
-`command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c` additionally calls `font_backend.h`.
-The scanner's worker (project.c) calls only the os_* functions platform.h marks "any thread".
+Core (`app.c`, `files.c`, `finder.c`, `results.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
+`fuzzy.c`, `search.c`, `grep.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
+additionally calls `font_backend.h`. The scanner's worker (project.c) and the search's workers (grep.c) call only the os_* functions
+platform.h marks "any thread".
 
 ## Startup and frame loop
 
@@ -73,8 +76,10 @@ The scanner's worker (project.c) calls only the os_* functions platform.h marks 
    frame: `app_update_and_render` → `font_frame_begin`, `r_begin_frame`, `r_push_rect` /
    `font_draw_text`…, `r_end_frame` (flush + `Present(1, 0)`). Scratch resets after each frame.
    Background work has one deadline per frame (2 ms): search slices first (isearch, query-replace,
-   replace-all), then a prompt's ranking (the project finder), then lexer states with what is left;
-   while any is pending the app asks for another frame, otherwise none.
+   replace-all), then a prompt's ranking (the project finder), then the results buffers' work (the
+   project search's list and its files written in order, buffers searched from memory; not in frames
+   that carry input), then lexer states with what is left; while any is pending the app asks for another
+   frame, otherwise none.
 4. `WM_SIZE` resizes the swap chain and renders immediately, so live resize stays crisp
    inside the modal size loop. Minimized = frames are no-ops.
 
@@ -374,6 +379,46 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
   and directory queue.
 - Release exe 378,368 bytes (343,552 after Phase 10); the same six DLLs; kernel32 adds CreateEventW,
   SetEvent, AcquireSRWLockExclusive, ReleaseSRWLockExclusive and GetFileSizeEx.
+
+## Measurements (Phase 12)
+
+Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe`.
+
+- The second-byte filter (`--bench-search`, 100 MB, the needle pasted at once): folded, needle at the end
+  43 -> 17 ms (20 -> 9 frames), missing 41 -> 17 ms; exact 5-7 ms before and after.
+- `--bench-grep` on build\tmp\p12bench (101,815,831 bytes in 3,001 files, warm file cache, best of three; the
+  list is the fresh index; *search* filling in the other window):
+
+| workers | common word (52,118 matches): first result / all / MB/s | missing word: all / MB/s | longest frame (its results work) |
+|---|---|---|---|
+| 1 | 1.7 ms / 139 ms / 722 | 124 ms / 811 | 368 us (313 us) |
+| 2 | 1.9 ms / 74 ms / 1,358 | 67 ms / 1,506 | 384 us (350 us) |
+| 4 | 2.0 ms / 42 ms / 2,401 | 36 ms / 2,820 | 462 us (432 us) |
+| 8 | 2.2 ms / 28 ms / 3,619 | 23 ms / 4,301 | 981 us (948 us) |
+
+  No frame over 2,100 us. The default cap (10,000 matches) stops the common word after 9.7-11 ms. Private
+  bytes at the peak: +3.6 MB for the missing word, +13 to +22 MB for 52,118 matches (the results buffer's
+  text and locations, the held records, the workers' windows and batches); after the searches +3.5 MB.
+  search_workers = 0 now takes half the logical processors, at most 8 (8 here).
+- The first version wrote every line with its own buffer_replace and did the results work in every frame:
+  the frames between keys reached 2.7 ms of results work and a key's frame averaged ~370 us while 8 workers
+  searched. Now the lines of a frame go in with one insert, frames with input leave the results work to
+  the next frame, and the claim window moves once a frame.
+- Typing at line 1,000,000 of the 100 MB file (left window), 3,000 keys, searches for the common word with
+  8 workers running back to back (127-128 searches of ~30 ms ended meanwhile), alternated with no search and
+  a finished *search* shown in the same two windows: a key's frame (command + build) 36-38 us avg, worst
+  309-359 us, against 28-39 us avg, worst 112 us without (and one 5.8 ms first insert moving the gap). The
+  frames the main loop runs between keys: 228-235 us avg, worst 1.6-1.9 ms, results work at most 1.6-1.8 ms.
+- Priority, alternated (8 workers, typing as above): one step below normal 41 / 47 us avg, worst 330 / 366
+  us, a search 29.8 / 30.3 ms; normal 43 / 45 us avg, worst 1,124 / 539 us, a search 29.9 / 29.4 ms. Kept
+  below normal: the same search time, a better worst case for typing.
+- The project search on teal's own tree (71 files): 0.01-0.02 s. `--idle-check` after it: 0 frames, 0 us of
+  CPU in 5 s.
+- Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`, which never takes the
+  foreground): *scratch* 75.6-77.2 MB; src\keymap.c 75.8-76.2 MB; the 100 MB .txt 191.9-193.5 MB; the 100 MB
+  .c 216.0-216.8 MB (Phase 11, activated: 76.1-77.6, 76.3-77.5, 192.3-193.3, 216.3-217.7).
+- Release exe 416,768 bytes (378,368 after Phase 11); the same six DLLs; kernel32 adds SetThreadPriority and
+  GetActiveProcessorCount.
 
 ## Roadmap
 
@@ -1040,6 +1085,76 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
 - The benches never take the focus: their window is shown cloaked without activation, as the smoke's and
   --idle-check's. Screenshot runs take the workers' results (until none came for 300 ms) before the frame.
 
+### Search over files and results (Phase 12)
+
+- Literal search with isearch's smart case (an uppercase letter makes it exact). Regular expressions,
+  whole words, project-wide replace and locations that follow later edits are in Later.
+- The search engine's core works on plain byte ranges (a SearchPattern; the SSE2 candidate scan; the
+  comparison); the gap-buffer search sits on top of it (each segment through the core's scan, a candidate
+  across the gap compared through the window). The second-byte filter: the 16-byte mask of the first byte
+  is ANDed with the mask of the second byte one position on ((b | 0x20) for a folded ASCII letter,
+  equality otherwise), for exact needles of two bytes or more and for folded needles whose first two bytes
+  are ASCII (a non-ASCII character never folds to an ASCII one); the vector path stops where the 17th byte
+  would leave the valid range. Folded search over 100 MB: 41-43 ms -> 17 ms.
+- Files are searched on worker threads under the threading rules (CLAUDE.md). A search lives at the start
+  of its own reservation; each worker owns its arena and one fixed window (256 KB of text a step plus the
+  overlap). Chunks overlap by the needle's length plus the shown context (GREP_LINE_SHOW + 4 bytes before
+  the next start, GREP_LINE_SHOW after the last accepted one): a match is taken only while that much
+  follows it, except at the end of the file, so nothing is reported twice or missed and the shown line
+  needs no second read. Lines are counted while scanning (SSE2, up to each match and to the end of each
+  step). Memory does not depend on file size. The number of workers is search_workers (1-16), or with 0
+  half the logical processors, at most 8 (--bench-grep: 8 read 50% faster than 4 without slowing typing).
+- A file is opened sharing read, write and delete and closed before the worker claims the next one: a
+  search never makes a save (ReplaceFileW included), a build or git fail. --test holds two files open in
+  the workers and saves, renames and deletes them.
+- Binary files (a NUL in the first 8 KB) are skipped and counted; UTF-16 with a BOM (and an even size, the
+  loader's rule) is converted chunk by chunk (utf16_to_utf8_chunk, shared with the loader); a UTF-8 BOM is
+  skipped. Columns are 0-based byte offsets in the line (as the buffer holds the line), shown 1-based (grep
+  and ripgrep do the same). A line longer than 200 bytes is shown cut around the match on character
+  boundaries, "…" at each cut.
+- The file list is the search's own, append-only: the main thread copies relative paths into it and
+  publishes the count; a worker reads only entries below the count it read, which never change. The list
+  is the project's index when it is fresh (copied inside the frame budget, the workers start at once),
+  otherwise the running scan's files as they arrive (a first scan's live index, a rescan's shadow). Before
+  finder.c resets or destroys an index a search follows, the search copies the rest of it; a followed scan
+  that was cancelled makes the summary say the list is incomplete. So the list a search works on stays
+  valid until it ends or is cancelled.
+- Deterministic order: the results buffer receives files strictly in the order of the list, whatever the
+  number of workers or the timing. Workers claim files in list order (a compare-and-swap below
+  min(published, claim_limit)); a file's records are held until its DONE record and every earlier file is
+  written (emit_next, the low-water mark). The claim limit is emit_next + 1,024 and is not raised while the
+  held records pass 16 MB, so what is held stays bounded; the file at emit_next is always claimed already,
+  so progress never stops. search_max_results keeps the first N matches in that order (a file that crosses
+  it is cut at N, the workers are cancelled). The same search on the same files gives the same text and the
+  same next-error order every time (--test: 1, 2, 4 and 8 workers, reruns, a large file early in the list).
+- Buffers with unsaved changes under the root are searched from their text on the main thread, inside the
+  frame budget: a listed one in its file's place (its file on disk is skipped by the workers), an unlisted
+  one (a new file not yet on disk, or a file the ignore rules leave out) after the list, in the order of
+  their paths. Unmodified buffers are their files and are searched from disk; buffers without a file, the
+  results buffers and *Messages* are never searched.
+- Results stream into the read-only buffer through the inhibit_read_only path: the workers' batches are
+  taken by app_wake (a copy), and the frame's results work (after the search slices and the ranking, before
+  the lexer states) feeds the list, writes the files in order and searches buffers, within the frame's
+  deadline; the lines of a frame go into the buffer with one insert. Frames that carry input (keys, clicks,
+  the wheel) leave the results work to the next frame, which is requested at once: a keystroke's frame
+  never waits for it. The UI never waits for a search.
+- One "locations" mechanism: a results buffer owns its locations (a file or buffer, a line, a byte column,
+  a length); location i is on line first_line + i, so drawing, RET, n and p need no lookup. next-error and
+  previous-error walk the most recent results buffer (the one last started, or used with RET, n or p) from
+  any window; from a window showing it they act as RET, elsewhere they visit in that window (Emacs).
+  Phase 13's build errors will use the same mechanism.
+- A buffer can have its own keymap (Buffer.keymap), placed before the global one while that buffer is
+  selected and neither the minibuffer nor an isearch is active. [keys search-results] is the first: RET
+  compile-goto-error, n / p next- / previous-error-no-select, g recompile, q quit-window (Emacs' names).
+- *search* is shown through the pop-up rule and selected (Emacs does so for grep), so RET works at once:
+  point goes to the first match when it arrives, unless it was moved. Starting a new search or killing the
+  buffer cancels the running one; a cancelled search ends on its own and is freed once its workers are
+  done. At exit the searches and the scans share one shutdown bound of 1,000 ms.
+- Search workers and scan workers run one step below normal priority (THREAD_PRIORITY_BELOW_NORMAL), so the
+  main thread wins when every core is busy (Measurements (Phase 12) has the comparison).
+- Colors: search_file (the keyword color unless set: white file names read best next to the line numbers)
+  and search_line_number (the number color); the match on lazy_highlight.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -1091,12 +1206,14 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
   line that moved keeps its place in it (now: line and column inside the replaced range).
 - JSX tags in JavaScript / TypeScript highlighting.
 - Resumable lexing inside very long lines (a 5 MB minified line costs ~10 ms per keystroke).
-- Regular-expression search (isearch-forward-regexp, query-replace-regexp).
+- Regular-expression search (isearch-forward-regexp, query-replace-regexp, and in project-search and occur).
 - A total match count in isearch ("3/41").
 - Editing the search string in the minibuffer (M-e in isearch).
-- occur.
 - Queueing the keys typed while query-replace searches for its next match on a huge buffer (now
   ignored beyond one slice).
 - Turkish-aware case folding for search (İ / i, I / ı).
-- A second-byte filter for folded searches whose first letter is common (now ~2.6 GB/s against
-  ~25 GB/s for a rare first byte).
+- Project-wide replace (query-replace over the locations of *search*).
+- Whole-word search (project-search, occur, isearch).
+- Locations that follow later edits (markers in the visited buffers; now a location is its line and
+  byte column as found, so an edit above it moves the target).
+- Columns in characters instead of bytes in results lines (now 1-based byte columns, as grep and ripgrep).
