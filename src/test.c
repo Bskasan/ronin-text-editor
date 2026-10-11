@@ -2938,10 +2938,11 @@ static b32 test_search(Test *t, u64 seed) {
                                     "\xc3\xbf", "\xc5\xb8", "\xcf\x83", "\xce\xa3", "\xcf\x82", "\xd0\xb4", "\xd0\x94",
                                     "\xd1\x80", "\xd0\xa0", "\x80", "\xc3", "\n", " ", "aa", "x" };
     Search *s = PUSH_STRUCT(&t->arena, Search);
+    SearchPattern *pat = PUSH_STRUCT(&t->arena, SearchPattern);
     TestRef ref = { 0 };
     ref.cap = KB(4);
     ref.data = PUSH_ARRAY(&t->arena, u8, ref.cap);
-    i64 searches = 0, found = 0, straddled = 0, sliced_runs = 0;
+    i64 searches = 0, found = 0, straddled = 0, sliced_runs = 0, core_runs = 0;
     for (i32 round = 0; round < 1500; round++) {
         // A haystack of up to ~300 bytes.
         ref.len = 0;
@@ -2978,6 +2979,16 @@ static b32 test_search(Test *t, u64 seed) {
             i64 hi = test_below(t, 4) ? ref.len : lo + test_below(t, ref.len - lo + 1);
             i64 from = test_below(t, 3) ? test_below(t, ref.len + 1) : forward ? lo : hi;
             i64 want = test_search_ref(t, &ref, needle, fold, forward, from, lo, hi);
+            // The core on the plain bytes: the same answer.
+            {
+                i64 clo = CLAMP(lo, 0, ref.len), chi = CLAMP(hi, clo, ref.len), cfrom = CLAMP(from, clo, chi);
+                search_pattern_init(pat, needle, fold);
+                i64 core = forward ? search_bytes_forward(pat, ref.data, 0, ref.len, cfrom, chi)
+                                   : search_bytes_backward(pat, ref.data, 0, ref.len, clo, cfrom);
+                TEST_CHECK(t, core == want, "search: core: round %d query %d (seed 0x%X): '%S' fold %d forward %d from %D in [%D, %D): got %D, want %D",
+                           round, q, seed, needle, fold, forward, from, lo, hi, core, want);
+                core_runs++;
+            }
             // The gap: random, or inside the expected match.
             i64 gap = want >= 0 && needle.len > 1 && test_below(t, 2) ? want + 1 + test_below(t, needle.len - 1) : test_below(t, ref.len + 1);
             buffer_replace(buf, gap, gap, STR8_LIT("#"));
@@ -3057,8 +3068,8 @@ static b32 test_search(Test *t, u64 seed) {
         TEST_CHECK(t, enc[0] == first[0] || (n == 2 && enc[0] == first[1]), "search: U+%x folds to U+%x, whose first bytes miss it", c, f);
     }
     LOG("test: ok: search: %D searches against the reference (%D found, %D across the gap, %D runs in several slices), "
-        "%d fixed cases, restart after an edit, needle limits, Turkish i (known limit), smart case, first bytes",
-        searches, found, straddled, sliced_runs, (i32)ARRAY_COUNT(fixed));
+        "%D on plain bytes (the core), %d fixed cases, restart after an edit, needle limits, Turkish i (known limit), smart case, "
+        "first bytes", searches, found, straddled, sliced_runs, core_runs, (i32)ARRAY_COUNT(fixed));
     return 1;
 }
 
