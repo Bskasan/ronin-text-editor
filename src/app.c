@@ -1711,7 +1711,8 @@ String8 app_dev_text(App *app, Arena *arena) {
 }
 
 String8 app_dev_binding(App *app, Arena *arena, i32 keymap, i32 index, const char **command) {
-    Keymap *map = keymap == 0 ? &app->config->global : keymap == 1 ? &app->config->minibuffer : &app->config->isearch;
+    Keymap *map = keymap == 0 ? &app->config->global : keymap == 1 ? &app->config->minibuffer : keymap == 2 ? &app->config->isearch
+                                                                                                           : &app->config->search_results;
     if (index < 0 || index >= map->count) return str8(NULL, 0);
     *command = map->bindings[index].command->name;
     u8 *text = PUSH_ARRAY(arena, u8, KEY_SEQ_TEXT_CAP);
@@ -1744,13 +1745,19 @@ static void app_describe_no_chord(App *app, Event *e) {
 // A KEY_DOWN or text event through the keymap stack: [minibuffer, global] while the minibuffer
 // is active, [isearch, global] while an isearch is, else [global]. A single-key prompt takes the key
 // itself, after the keymap has said what the key is bound to, so the quit keys still abort it.
+// A buffer's own keymap (placed before the global one), or NULL.
+static Keymap *app_buffer_keymap(App *app, Buffer *buf) {
+    return buf->keymap == BUFFER_KEYMAP_SEARCH_RESULTS ? &app->config->search_results : NULL;
+}
+
 static void app_key_event(App *app, Event *e) {
-    Keymap *stack[2];
+    Keymap *stack[3];
     i32 count = 0;
     b32 isearch = app->isearch.active && !app->mini.active;
     b32 replacing = app->replace.state != REPLACE_OFF && !app->mini.active;
     if (app->mini.active) stack[count++] = &app->config->minibuffer;
     else if (isearch) stack[count++] = &app->config->isearch;
+    else if (app_buffer_keymap(app, app_selected_view(app)->buffer)) stack[count++] = app_buffer_keymap(app, app_selected_view(app)->buffer);
     stack[count++] = &app->config->global;
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);

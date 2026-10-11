@@ -40,6 +40,11 @@ typedef enum BufferLanguage {
     BUFFER_LANG_TYPESCRIPT,
 } BufferLanguage;
 
+enum {
+    BUFFER_KEYMAP_NONE,
+    BUFFER_KEYMAP_SEARCH_RESULTS, // [keys search-results]: *search*, *occur*
+};
+
 // A position that survives edits: buffer_replace adjusts every live marker. Handle = slot + 1.
 typedef u32 BufferMarker;
 
@@ -171,6 +176,9 @@ typedef struct Buffer {
     b32 indent_tabs;     // indentation with tabs (indent-tabs-mode): from the config, or detected
     b32 indent_detected; // indent_tabs was decided from the file's contents
     BufferUndo undo;
+    // The buffer's own keymap, placed before the global one in the keymap stack (BUFFER_KEYMAP_*; the app
+    // owns the keymaps, buffer.c never reads this).
+    i32 keymap;
 #if TEAL_DEV
     b32 dev_saved_by_swap; // the last save went through the temp file and ReplaceFileW / MoveFileExW (not in place)
 #endif
