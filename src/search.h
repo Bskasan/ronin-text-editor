@@ -31,6 +31,11 @@ typedef struct SearchPattern {
     u8 first[2];        // fast path: the bytes a match can start with
     i32 first_count;
     b32 check_boundary; // the needle starts with a continuation byte: a match must start on a character boundary
+    // The second-byte filter: a candidate's next byte must be `second` too ((b | 0x20) == second for a
+    // folded ASCII letter). On for exact needles of two bytes or more, and for folded ones whose first two
+    // bytes are ASCII (a non-ASCII character never folds to an ASCII one).
+    b32 second_on, second_fold;
+    u8 second;
 } SearchPattern;
 
 // The pattern of `needle` (folded first when `fold`). False, with len 0, for an empty needle or one

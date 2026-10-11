@@ -101,6 +101,9 @@ b32 search_pattern_init(SearchPattern *pat, String8 needle, b32 fold) {
         pat->first[1] = pat->first[pat->first_count - 1];
     }
     pat->check_boundary = (b & 0xC0) == 0x80;
+    pat->second_on = pat->len >= 2 && (!fold || (b < 0x80 && pat->needle[1] < 0x80));
+    pat->second = pat->second_on ? pat->needle[1] : 0;
+    pat->second_fold = fold && pat->second >= 'a' && pat->second <= 'z';
     return 1;
 }
 
@@ -108,6 +111,14 @@ static b32 search_is_first(const SearchPattern *pat, u8 b) {
     return pat->ascii_fold ? (u8)(b | 0x20) == pat->first[0] : b == pat->first[0] || b == pat->first[1];
 }
 
+// p[i] can start a match: its first byte, and its second when that filter is on and p[i + 1] is valid.
+static b32 search_is_candidate(const SearchPattern *pat, const u8 *p, i64 i, i64 valid) {
+    if (!search_is_first(pat, p[i])) return 0;
+    if (!pat->second_on || i + 1 >= valid) return 1;
+    return pat->second_fold ? (u8)(p[i + 1] | 0x20) == pat->second : p[i + 1] == pat->second;
+}
+
+// The candidates among p[0..16): the first byte, and the second (p[1..17), so p[16] must be valid).
 static u32 search_mask16(const SearchPattern *pat, const u8 *p) {
     __m128i v = _mm_loadu_si128((const __m128i *)p);
     __m128i m;
@@ -116,13 +127,18 @@ static u32 search_mask16(const SearchPattern *pat, const u8 *p) {
     } else {
         m = _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8((char)pat->first[0])), _mm_cmpeq_epi8(v, _mm_set1_epi8((char)pat->first[1])));
     }
+    if (pat->second_on) {
+        __m128i w = _mm_loadu_si128((const __m128i *)(p + 1));
+        if (pat->second_fold) w = _mm_or_si128(w, _mm_set1_epi8(0x20));
+        m = _mm_and_si128(m, _mm_cmpeq_epi8(w, _mm_set1_epi8((char)pat->second)));
+    }
     return (u32)_mm_movemask_epi8(m);
 }
 
-// 16 bytes at a time.
+// 16 bytes at a time; with the second-byte filter only while the 17th byte is valid.
 i64 search_candidate_forward(const SearchPattern *pat, const u8 *p, i64 i, i64 end, i64 valid) {
-    (void)valid;
-    for (; i + 16 <= end; i += 16) {
+    i64 vec_end = pat->second_on ? MIN(end, valid - 1) : end;
+    for (; i + 16 <= vec_end; i += 16) {
         u32 mask = search_mask16(pat, p + i);
         if (mask) {
             unsigned long bit;
@@ -130,12 +146,14 @@ i64 search_candidate_forward(const SearchPattern *pat, const u8 *p, i64 i, i64 e
             return i + (i64)bit;
         }
     }
-    for (; i < end; i++) if (search_is_first(pat, p[i])) return i;
+    for (; i < end; i++) if (search_is_candidate(pat, p, i, valid)) return i;
     return -1;
 }
 
 i64 search_candidate_backward(const SearchPattern *pat, const u8 *p, i64 low, i64 high, i64 valid) {
-    (void)valid;
+    if (pat->second_on) { // the positions whose second byte is the last valid one or past it: one at a time
+        for (; high >= low && high > valid - 2; high--) if (search_is_candidate(pat, p, high, valid)) return high;
+    }
     for (; high - 15 >= low; high -= 16) {
         u32 mask = search_mask16(pat, p + high - 15);
         if (mask) {
@@ -144,7 +162,7 @@ i64 search_candidate_backward(const SearchPattern *pat, const u8 *p, i64 low, i6
             return high - 15 + (i64)bit;
         }
     }
-    for (; high >= low; high--) if (search_is_first(pat, p[high])) return high;
+    for (; high >= low; high--) if (search_is_candidate(pat, p, high, valid)) return high;
     return -1;
 }
 
