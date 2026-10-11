@@ -615,7 +615,7 @@ ProjectScan *project_scan_create(String8 root, String8 builtin, ProjectFile *fil
 
 b32 project_scan_start(ProjectScan *s) {
     if (!os_event_create(&s->event)) return 0;
-    if (!os_thread_start(&s->thread, project_scan_main, s)) {
+    if (!os_thread_start(&s->thread, project_scan_main, s, 1)) {
         os_event_destroy(s->event);
         s->event.handle = NULL;
         return 0;

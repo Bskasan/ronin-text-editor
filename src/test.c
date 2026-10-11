@@ -5803,6 +5803,10 @@ static void test_worker_main(void *data) {
     os_wake_main();
 }
 
+static void test_waiter_main(void *data) {
+    os_event_wait(*(OsEvent *)data, 10000);
+}
+
 static b32 test_threads(Test *t) {
     i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
     while (os_dev_wake_wait(0)) {} // nothing left over
@@ -5811,8 +5815,20 @@ static b32 test_threads(Test *t) {
     TEST_CHECK(t, os_write_file(w.file, STR8_LIT("abcdefghijklmnopqrstuvwxyz")), "threads: cannot write %S", w.file);
     TEST_CHECK(t, os_event_create(&w.go), "threads: no event");
     OsThread th;
-    TEST_CHECK(t, os_thread_start(&th, test_worker_main, &w), "threads: no thread");
+    TEST_CHECK(t, os_thread_start(&th, test_worker_main, &w, 0), "threads: no thread");
     TEST_CHECK(t, !os_thread_join(th, 0) && os_dev_live_threads() == threads0 + 1, "threads: a waiting worker is still running");
+    TEST_CHECK(t, os_dev_thread_priority(th) == 0, "threads: a foreground worker's priority is %d, not normal", os_dev_thread_priority(th));
+    {
+        OsEvent quit;
+        TEST_CHECK(t, os_event_create(&quit), "threads: no event");
+        OsThread bg;
+        TEST_CHECK(t, os_thread_start(&bg, test_waiter_main, &quit, 1), "threads: no background thread");
+        i32 prio = os_dev_thread_priority(bg);
+        os_event_set(quit);
+        TEST_CHECK(t, os_thread_join(bg, 10000), "threads: the background worker did not end");
+        os_event_destroy(quit);
+        TEST_CHECK(t, prio == -1, "threads: a background worker's priority is %d, not one below normal (-1)", prio);
+    }
     os_event_set(w.go);
     for (i32 i = 0; i < 100000; i++) {
         os_lock(&w.lock);
@@ -5832,7 +5848,8 @@ static b32 test_threads(Test *t) {
     TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "threads: counters back (%d threads, %d events)",
                os_dev_live_threads(), os_dev_live_events());
     LOG("test: ok: threads (start, join with a timeout, a lock and os_atomic_add / os_atomic_cas under contention, a file read in "
-        "pieces on the worker, an auto-reset event, os_wake_main, the live counters; %d logical processors)", os_cpu_count());
+        "pieces on the worker, a background worker one step below normal priority, an auto-reset event, os_wake_main, the live "
+        "counters; %d logical processors)", os_cpu_count());
     return 1;
 }
 

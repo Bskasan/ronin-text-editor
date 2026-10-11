@@ -38,6 +38,7 @@ typedef struct Platform {
 #if TEAL_DEV
     volatile LONG live_threads;        // os_thread_start minus joined
     volatile LONG live_events;         // os_event_create minus destroyed
+    b32 background_normal;             // --bench-grep: background workers at normal priority (the comparison)
     b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
     u16 *clip_text;          // in its own reservation
     i64 clip_len;
@@ -707,7 +708,7 @@ static DWORD WINAPI win32_thread_main(void *param) {
     return 0;
 }
 
-b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data) {
+b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data, b32 background) {
     thread->handle = NULL;
     // The start block lives in its own page, freed by the thread: no allocator is shared between threads.
     Win32ThreadStart *start = VirtualAlloc(NULL, sizeof(Win32ThreadStart), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -720,11 +721,26 @@ b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data) {
         return 0;
     }
     thread->handle = h;
+    // Background workers one step below normal: when every core is busy, the main thread (input,
+    // frames) wins.
+    b32 lower = background;
 #if TEAL_DEV
+    lower = lower && !g_platform->background_normal;
     InterlockedIncrement(&g_platform->live_threads);
 #endif
+    if (lower) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
     return 1;
 }
+
+#if TEAL_DEV
+void os_dev_background_normal(b32 on) {
+    g_platform->background_normal = on;
+}
+
+i32 os_dev_thread_priority(OsThread thread) {
+    return GetThreadPriority(thread.handle);
+}
+#endif
 
 b32 os_thread_join(OsThread thread, u32 timeout_ms) {
     if (!thread.handle) return 1;
