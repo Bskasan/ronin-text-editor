@@ -66,6 +66,7 @@ typedef struct Platform {
 
     // Command-line options.
     b32 startup_ms;       // --startup-ms: exit after the first Present, exit code = ms since process creation
+    b32 no_activate;      // --no-activate: shown without taking the foreground (memory measurements)
     f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
     AppFileArg *files;    // the arguments that are not flags, with the +LINE[:COLUMN] before each
     i32 file_count;
@@ -3496,6 +3497,14 @@ static void win32_files_done(Platform *p, i64 goto_line, i64 goto_col) {
     }
 }
 
+// The flags of every build: true when `a` is one (and sets it).
+static b32 win32_release_flag(Platform *p, String8 a) {
+    if (str8_equal(a, STR8_LIT("--startup-ms"))) p->startup_ms = 1;
+    else if (str8_equal(a, STR8_LIT("--no-activate"))) p->no_activate = 1;
+    else return 0;
+    return 1;
+}
+
 #if TEAL_DEV
 // --test: command lines through win32_file_arg / win32_files_done.
 static i32 win32_dev_test_args(Platform *p) {
@@ -3528,7 +3537,22 @@ static i32 win32_dev_test_args(Platform *p) {
     }
     p->files = saved;
     p->file_count = saved_count;
-    if (!failures) LOG("test: ok: command line files (+LINE[:COLUMN] before each file, a trailing one, *scratch*, flags between, not a number)");
+    // The flags of every build.
+    b32 saved_startup = p->startup_ms, saved_no_activate = p->no_activate;
+    p->startup_ms = p->no_activate = 0;
+    b32 flags_ok = win32_release_flag(p, STR8_LIT("--no-activate")) && p->no_activate && !p->startup_ms &&
+                   win32_release_flag(p, STR8_LIT("--startup-ms")) && p->startup_ms && !win32_release_flag(p, STR8_LIT("--no-activat")) &&
+                   !win32_release_flag(p, STR8_LIT("--smoke"));
+    p->startup_ms = saved_startup;
+    p->no_activate = saved_no_activate;
+    if (!flags_ok) {
+        LOG("test: FAIL: command line: --no-activate / --startup-ms not recognized as flags of every build (or another one was)");
+        failures++;
+    }
+    if (!failures) {
+        LOG("test: ok: command line files (+LINE[:COLUMN] before each file, a trailing one, *scratch*, flags between, not a number); "
+            "--no-activate and --startup-ms in every build");
+    }
     return failures;
 }
 #endif
@@ -3567,7 +3591,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     for (i32 i = 1; i < arg_count && !bad_arg.len; i++) {
         String8 a = args[i];
         if (win32_file_arg(p, a, &goto_line, &goto_col)) continue;
-        if (str8_equal(a, STR8_LIT("--startup-ms"))) { p->startup_ms = 1; continue; }
+        if (win32_release_flag(p, a)) continue;
 #if TEAL_DEV
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) { p->smoke = 1; continue; }
@@ -3752,11 +3776,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // area. If Windows refuses the foreground, the window is still shown and appears when it is
     // uncloaked. The smoke, --idle-check and the benches show it later without activation (they never take
     // the focus from whatever the user is typing in); screenshot runs and --dpi-check never show it.
-    b32 show_early = 1;
+    // --no-activate (every build) shows it as the benches do: for measurements that must not take the focus.
+    b32 show_early = !p->no_activate;
 #if TEAL_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
                 p->bench_search || p->bench_windows || p->bench_project;
-    show_early = !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+    show_early = show_early && !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early) {
         BOOL cloak = TRUE;
@@ -3824,7 +3849,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
     if (!p->quit) {
         BOOL cloak = TRUE;
-        if (!show_early) { // the smoke, --idle-check, the benches: shown cloaked, never activated
+        if (!show_early) { // the smoke, --idle-check, the benches, --no-activate: shown cloaked, never activated
             DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
             ShowWindow(p->hwnd, SW_SHOWNA);
         }
