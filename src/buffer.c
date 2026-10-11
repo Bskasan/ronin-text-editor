@@ -733,20 +733,10 @@ static i64 buffer_scan_loaded(Buffer *buf, i64 n) {
     return n;
 }
 
-// UTF-8 for any 16-bit unit, lone surrogates included (3-byte WTF-8, which utf8_encode refuses).
-static i64 buffer_encode_unit(u32 cp, u8 *out) {
-    if (cp >= 0xD800 && cp <= 0xDFFF) {
-        out[0] = (u8)(0xE0 | (cp >> 12));
-        out[1] = (u8)(0x80 | ((cp >> 6) & 0x3F));
-        out[2] = (u8)(0x80 | (cp & 0x3F));
-        return 3;
-    }
-    return utf8_encode(cp, out);
-}
-
 // Streams UTF-16 into the buffer as UTF-8 through a fixed chunk: `prefix` (the even number of
 // bytes already read after the BOM), then `bytes` more from the file. The text grows at
-// gap_start. A pair split by a chunk boundary is joined; unpaired surrogates stay as WTF-8.
+// gap_start. A pair split by a chunk boundary is joined; unpaired surrogates stay as WTF-8
+// (utf16_to_utf8_chunk).
 static OsFileStatus buffer_load_utf16(Buffer *buf, OsFile file, u8 *prefix, i64 prefix_len, i64 bytes, b32 big_endian) {
     u8 chunk[BUFFER_CHUNK];
     u32 high = 0; // pending high surrogate
@@ -761,26 +751,11 @@ static OsFileStatus buffer_load_utf16(Buffer *buf, OsFile file, u8 *prefix, i64 
         have = 0;
         // At most 3 bytes per unit, plus a flushed pending surrogate.
         if (!buffer_reserve_gap(buf, c / 2 * 3 + 3)) return OS_FILE_OUT_OF_MEMORY;
-        u8 *out = buf->text + buf->gap_start;
-        for (i64 i = 0; i < c; i += 2) {
-            u32 u = big_endian ? ((u32)chunk[i] << 8 | chunk[i + 1]) : ((u32)chunk[i + 1] << 8 | chunk[i]);
-            if (high) {
-                if (u >= 0xDC00 && u <= 0xDFFF) {
-                    out += utf8_encode(0x10000 + ((high - 0xD800) << 10) + (u - 0xDC00), out);
-                    high = 0;
-                    continue;
-                }
-                out += buffer_encode_unit(high, out);
-                high = 0;
-            }
-            if (u >= 0xD800 && u <= 0xDBFF) high = u;
-            else out += buffer_encode_unit(u, out);
-        }
-        buf->gap_start = out - buf->text;
+        buf->gap_start += utf16_to_utf8_chunk(chunk, c, big_endian, &high, buf->text + buf->gap_start);
     }
     if (high) {
         if (!buffer_reserve_gap(buf, 3)) return OS_FILE_OUT_OF_MEMORY;
-        buf->gap_start += buffer_encode_unit(high, buf->text + buf->gap_start);
+        buf->gap_start += utf16_flush(&high, buf->text + buf->gap_start);
     }
     return OS_FILE_OK;
 }
