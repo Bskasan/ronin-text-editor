@@ -88,6 +88,7 @@ struct App {
     i32 dev_grep_abandoned;      // search workers left to the process exit by the shutdown
     i32 dev_claim_ahead;         // tests: the claim window instead of RESULTS_CLAIM_AHEAD (0 = it)
     u64 dev_held_max;            // tests: the held records' limit instead of RESULTS_HELD_MAX (0 = it)
+    u64 dev_results_max_us;      // benches: the longest results_work of a frame since it was last read
 #endif
 #if TEAL_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
@@ -1086,6 +1087,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     finder_init(app);
 #if TEAL_DEV
     app->finder.dev_hold_after = args->scan_hold;
+    app->dev_grep_hold_after = args->grep_hold;
 #endif
     isearch_init(&app->isearch, &app->mini);
     app->ctx.isearch = &app->isearch;

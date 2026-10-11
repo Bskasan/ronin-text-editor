@@ -92,10 +92,12 @@ typedef struct Platform {
     b32 bench_search;
     b32 bench_windows;
     b32 bench_project;
+    b32 bench_grep;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
     i32 scan_hold; // --scan-hold N: every project scan stands still after N batches (the finder while scanning)
+    i32 grep_hold; // --grep-hold N: every search's workers stand still after N files each (a search still running)
     String8 keys; // --keys: injected after startup
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
@@ -1049,7 +1051,7 @@ void os_fatal(String8 message) {
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
                        g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
-                       g_platform->bench_project)) interactive = 0;
+                       g_platform->bench_project || g_platform->bench_grep)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -3253,6 +3255,222 @@ static void win32_bench_project(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-grep's tree: ~100 MB in 3,000 files (30 directories of 100), source-like lines; the common word
+// about once per 2 KB (one word in 340), the missing one nowhere; every 100th file binary (a NUL first), every 300th UTF-16.
+#define BENCH_GREP_COMMON "teal_grep_common"
+#define BENCH_GREP_MISSING "zq_never_here"
+static String8 win32_bench_grep_tree(Platform *p) {
+    String8 root = str8_fmt(&p->perm, "%S\\tmp\\p12bench", p->exe_dir), done = str8_fmt(&p->perm, "%S\\tmp\\p12bench.done", p->exe_dir);
+    if (os_file_info(done, &(OsFileInfo){ 0 }) == OS_FILE_OK) return root;
+    static const char *const words[] = { "static", "void", "buffer", "return", "if", "for", "while", "app", "view", "render", "search", "i64",
+                                         "u8", "const", "struct", "line", "text", "count", "the", "index", "file", "path", "arena", "=" };
+    os_make_dir(root);
+    os_write_file(str8_fmt(&p->perm, "%S\\.teal-project", root), STR8_LIT("[ignore]\n"));
+    u64 rng = 0x12AB;
+    i64 cap = KB(40), total = 0;
+    u8 *text = PUSH_ARRAY(&p->perm, u8, cap), *wide = PUSH_ARRAY(&p->perm, u8, cap * 2 + 2);
+    for (i32 d = 0; d < 30; d++) {
+        String8 dir = str8_fmt(&p->scratch, "%S\\dir%02d", root, d);
+        os_make_dir(dir);
+        for (i32 f = 0; f < 100; f++) {
+            i64 n = 0;
+            i32 id = d * 100 + f;
+            if (id % 100 == 7) text[n++] = 0; // binary
+            while (n < KB(33)) {
+                i32 words_n = 3 + (i32)((rng = rng * 6364136223846793005ull + 1442695040888963407ull) >> 60);
+                for (i32 w = 0; w < words_n; w++) {
+                    rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+                    const char *word = (rng >> 33) % 340 == 0 ? BENCH_GREP_COMMON : words[(rng >> 40) % ARRAY_COUNT(words)];
+                    n += fmt_buf(text + n, cap - n, "%s%s", w ? " " : "    ", word);
+                }
+                text[n++] = '\n';
+            }
+            String8 content = str8(text, n);
+            if (id % 300 == 150) { // UTF-16 LE with a BOM
+                wide[0] = 0xFF;
+                wide[1] = 0xFE;
+                for (i64 i = 0; i < n; i++) {
+                    wide[2 + 2 * i] = text[i];
+                    wide[3 + 2 * i] = 0;
+                }
+                content = str8(wide, 2 + 2 * n);
+            }
+            os_write_file(str8_fmt(&p->scratch, "%S\\file_%04d.c", dir, id), content);
+            total += content.len;
+        }
+        arena_reset(&p->scratch);
+    }
+    os_write_file(done, str8_fmt(&p->perm, "3000 files, %D bytes\n", total));
+    return root;
+}
+
+// One search to its end through the main loop's way of working (a frame when a worker woke it or work is
+// pending); its numbers.
+typedef struct BenchGrepRun {
+    i64 found, bytes, files;
+    u64 first_us, total_us, longest_us, frames, over, work_max_us;
+    b32 limited;
+    u64 peak_private;
+} BenchGrepRun;
+
+static BenchGrepRun win32_bench_grep_run(Platform *p, String8 root, const char *needle, i32 workers, i32 max_results) {
+    BenchGrepRun run = { 0 };
+    app_dev_results_work_max(p->app);
+    app_dev_bench_grep_start(p->app, root, str8_cstr(needle), workers, max_results);
+    win32_bench_keys(p, ""); // the frame the command runs in (its results work starts there)
+    u64 start = os_time_us();
+    for (;;) {
+        if (os_time_us() - start > 60 * 1000000ull) {
+            app_dev_results_log(p->app, "bench-grep: a search over 60 s");
+            break;
+        }
+        b32 woke = os_dev_wake_wait(app_wants_frame(p->app) ? 0 : 50);
+        b32 frame = app_wants_frame(p->app);
+        if (woke) frame |= app_wake(p->app);
+        if (frame) {
+            u64 b = win32_bench_keys(p, "");
+            run.longest_us = MAX(run.longest_us, b);
+            run.over += b > SYNTAX_FRAME_BUDGET_US + 100;
+            run.frames++;
+            if ((run.frames & 15) == 0) run.peak_private = MAX(run.peak_private, os_dev_private_bytes());
+        }
+        if (!app_dev_bench_grep_state(p->app, &run.found, &run.bytes, &run.files, &run.first_us, &run.total_us, &run.limited)) break;
+    }
+    run.peak_private = MAX(run.peak_private, os_dev_private_bytes());
+    run.work_max_us = app_dev_results_work_max(p->app);
+    return run;
+}
+
+// Typing at line `line` of the 100 MB file (left window) while searches for the common word run one after
+// another with `workers` threads (or none). After each key's frame (measured in st), the frames the main
+// loop runs before the next key: the workers' results and the pending work (at most 8; measured in bg).
+static void win32_bench_grep_typing(Platform *p, String8 root, i32 workers, i64 line, i32 keys, BenchStat *st, BenchStat *bg, u64 *search_us,
+                                    i32 *searches) {
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    BenchStat skip = { 0 };
+    app_dev_goto_line(p->app, line);
+    win32_bench_view_step(p, plain, &skip);
+    *search_us = 0;
+    *searches = 0;
+    b32 running = 0;
+    // Without workers: a finished search stays shown in the other window (the same two windows to draw).
+    if (!workers) win32_bench_grep_run(p, root, BENCH_GREP_COMMON, 8, 1000000);
+    app_dev_results_work_max(p->app);
+    for (i32 i = 0; i < keys; i++) {
+        if (workers) {
+            i64 found, bytes, files;
+            u64 first, total;
+            b32 limited;
+            if (!running) {
+                app_dev_bench_grep_start(p->app, root, str8_cstr(BENCH_GREP_COMMON), workers, 1000000);
+                win32_bench_keys(p, "");
+                running = 1;
+            }
+            if (os_dev_wake_wait(0)) app_wake(p->app);
+            if (!app_dev_bench_grep_state(p->app, &found, &bytes, &files, &first, &total, &limited)) {
+                *search_us += total;
+                (*searches)++;
+                running = 0;
+                app_dev_bench_grep_close(p->app);
+                continue;
+            }
+        }
+        win32_bench_view_step(p, type, st);
+        for (i32 k = 0; k < 8; k++) {
+            b32 woke = os_dev_wake_wait(0);
+            b32 frame = app_wants_frame(p->app);
+            if (woke) frame |= app_wake(p->app);
+            if (!frame) break;
+            win32_bench_keys(p, "");
+            win32_bench_record(p, bg);
+        }
+    }
+    if (running) { // let it end before the next round
+        i64 found, bytes, files;
+        u64 first, total;
+        b32 limited;
+        while (app_dev_bench_grep_state(p->app, &found, &bytes, &files, &first, &total, &limited)) {
+            if (os_dev_wake_wait(5)) app_wake(p->app);
+            win32_bench_keys(p, "");
+        }
+        app_dev_bench_grep_close(p->app);
+    }
+    if (!workers) app_dev_bench_grep_close(p->app);
+}
+
+static void win32_bench_grep(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    String8 root = win32_bench_grep_tree(p);
+    String8 info = { 0 };
+    os_read_small_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp\\p12bench.done", p->exe_dir), 256, &info);
+    LOG("bench-grep: the tree %S: %S (warm file cache after the first search); %d logical processors, automatic workers %d", root, info,
+        os_cpu_count(), grep_auto_workers());
+    u64 private0 = os_dev_private_bytes();
+    win32_bench_grep_run(p, root, BENCH_GREP_MISSING, 4, 10000); // the project scan, the file cache
+    app_dev_bench_grep_close(p->app);
+    static const i32 workers[] = { 1, 2, 4, 8 };
+    for (i32 k = 0; k < 2; k++) {
+        const char *needle = k ? BENCH_GREP_MISSING : BENCH_GREP_COMMON;
+        for (i32 w = 0; w < ARRAY_COUNT(workers); w++) {
+            BenchGrepRun best = { 0 };
+            for (i32 rep = 0; rep < 3; rep++) { // the best of three
+                BenchGrepRun run = win32_bench_grep_run(p, root, needle, workers[w], 1000000);
+                if (!rep || run.total_us < best.total_us) best = run;
+                app_dev_bench_grep_close(p->app);
+            }
+            LOG("bench-grep: '%s', %d worker(s): %D matches in %D files, %D MB; first result %U us, all %U us (%U MB/s); %U frames, the "
+                "longest %U us (its results work at most %U us), %U over %d us; private bytes +%U KB at the peak (best of 3)", needle, workers[w],
+                best.found, best.files, best.bytes >> 20, best.first_us, best.total_us, best.total_us ? (u64)best.bytes / best.total_us : 0,
+                best.frames, best.longest_us, best.work_max_us, best.over, SYNTAX_FRAME_BUDGET_US + 100, best.peak_private > private0 ? (best.peak_private - private0) / 1024 : 0);
+        }
+    }
+    BenchGrepRun capped = win32_bench_grep_run(p, root, BENCH_GREP_COMMON, 0, 10000);
+    LOG("bench-grep: '%s' at the default cap (10000), automatic workers: %D matches%s in %U us, first result %U us, the longest frame %U us",
+        BENCH_GREP_COMMON, capped.found, capped.limited ? " (stopped)" : "", capped.total_us, capped.first_us, capped.longest_us);
+    app_dev_bench_grep_close(p->app);
+    LOG("bench-grep: private bytes after the searches: %U KB (%D KB more than before the first)", os_dev_private_bytes() / 1024,
+        ((i64)os_dev_private_bytes() - (i64)private0) / 1024);
+
+    // Typing at line 1,000,000 of the 100 MB file with *search* filling in the other window, against none.
+    i64 line = 1000000;
+    for (i32 round = 0; round < 2; round++) {
+        for (i32 with = 0; with < 2; with++) {
+            b32 searching = (round == 0) == (with == 1);
+            BenchStat st = { 0 }, bg = { 0 };
+            u64 search_us;
+            i32 searches;
+            win32_bench_grep_typing(p, root, searching ? 8 : 0, line, 3000, &st, &bg, &search_us, &searches);
+            line += 2;
+            win32_bench_log(p, "bench-grep", searching ? "self-insert at line 1,000,000 while 8 workers search (the key's frames)"
+                                                       : "self-insert at line 1,000,000, no search (a finished *search* shown)", &st);
+            if (searching) {
+                win32_bench_log(p, "bench-grep", "... the frames between the keys (the search's results)", &bg);
+                LOG("bench-grep: ... the longest results work in one of those frames: %U us", app_dev_results_work_max(p->app));
+                LOG("bench-grep: %d searches ended during those frames, %U us each on average", searches, searches ? search_us / (u64)searches : 0);
+            }
+        }
+    }
+    // The workers' priority: one step below normal (kept) against normal, alternated.
+    for (i32 round = 0; round < 2; round++) {
+        for (i32 k = 0; k < 2; k++) {
+            b32 normal = (round == 0) == (k == 1);
+            os_dev_background_normal(normal);
+            BenchStat st = { 0 }, bg = { 0 };
+            u64 search_us;
+            i32 searches;
+            win32_bench_grep_typing(p, root, 8, line, 3000, &st, &bg, &search_us, &searches);
+            line += 2;
+            win32_bench_log(p, "bench-grep", normal ? "priority: workers at normal priority, typing" : "priority: workers below normal, typing", &st);
+            LOG("bench-grep: priority %s: %d searches, %U us each on average", normal ? "normal" : "below normal", searches,
+                searches ? search_us / (u64)searches : 0);
+        }
+    }
+    os_dev_background_normal(0);
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 // --idle-check: after a second to settle, five seconds without input: the process's CPU time, the
 // frames drawn and the main loop's passes over them, and the private bytes. Two posted messages mark
 // the period (the only wakeups it should have); the window is shown without taking the focus.
@@ -3478,7 +3696,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-           p->bench_search || p->bench_windows || p->bench_project ||
+           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -3675,6 +3893,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--scale")) && has_value) { p->forced_scale = (f32)win32_parse_i32(args[++i]) / 100.0f; continue; }
         if (str8_equal(a, STR8_LIT("--config")) && has_value) { p->config_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--scan-hold")) && has_value) { p->scan_hold = win32_parse_i32(args[++i]); continue; }
+        if (str8_equal(a, STR8_LIT("--grep-hold")) && has_value) { p->grep_hold = win32_parse_i32(args[++i]); continue; }
+        if (str8_equal(a, STR8_LIT("--bench-grep"))) { p->bench_grep = 1; continue; }
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
@@ -3714,7 +3934,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
-                                   : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project"
+                                   : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -3733,7 +3953,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project) { // generated before the app opens it; measured after startup
+    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep) { // generated before the app opens it; measured after startup
         p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
         p->file_count = 1;
     }
@@ -3803,8 +4023,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if TEAL_DEV
     app_args.config_path = p->config_path;
     app_args.scan_hold = p->scan_hold;
+    app_args.grep_hold = p->grep_hold;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
-                             p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project ||
+                             p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
                              p->type_ahead_check); // defaults
 #endif
 #if TEAL_DEV
@@ -3843,7 +4064,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     b32 show_early = !p->no_activate;
 #if TEAL_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-                p->bench_search || p->bench_windows || p->bench_project;
+                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep;
     show_early = show_early && !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early) {
@@ -3961,6 +4182,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_project && !p->quit) {
         win32_bench_project(p);
+        p->quit = 1;
+    }
+    if (p->bench_grep && !p->quit) {
+        win32_bench_grep(p);
         p->quit = 1;
     }
     if (p->bench_windows && !p->quit) {
