@@ -8719,10 +8719,28 @@ static b32 test_results(Test *t) {
     // Killing *search* while its search runs; then a shutdown with a search running, and with a stuck worker.
     u64 took = 0;
     {
-        App *app = test_manual_app(t, a_c, 0, 0, none);
-        app->dev_grep_hold_after = 1;
+        App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p12one.conf", "[settings]\nsearch_workers = 1\n"));
+        app->dev_grep_hold_after = 1; // one worker, standing still after one file
         app_dev_feed(app, "C-x p g f o o RET", &t->arena);
         TEST_CHECK(t, test_results_buffer(app) && results_of(app, test_results_buffer(app))->running, "results: a held search runs");
+        // The progress line while it stands still: "Searching... N/M files, K matches" (what the held workers
+        // finished first is shown).
+        for (i32 i = 0; i < 50; i++) {
+            if (os_dev_wake_wait(10)) app_wake(app);
+            app_dev_feed_events(app, NULL, 0, &t->arena);
+        }
+        {
+            Buffer *rb = test_results_buffer(app);
+            i64 last = buffer_line_count(rb) - 1;
+            String8 progress = buffer_text(rb, &t->arena, buffer_line_start(rb, last), buffer_size(rb));
+            i64 seen = 0, total = 0, at = 13;
+            b32 ok = progress.len > 13 && mem_equal(progress.data, "Searching... ", 13);
+            while (ok && at < progress.len && progress.data[at] >= '0' && progress.data[at] <= '9') seen = seen * 10 + progress.data[at++] - '0';
+            ok = ok && at < progress.len && progress.data[at++] == '/';
+            while (ok && at < progress.len && progress.data[at] >= '0' && progress.data[at] <= '9') total = total * 10 + progress.data[at++] - '0';
+            ok = ok && test_contains(progress, " files, ") && seen >= 1 && seen <= total && total <= 20;
+            TEST_CHECK(t, ok, "results: the progress line of a held search: '%S'", progress);
+        }
         app_dev_feed(app, "C-x k RET", &t->arena);
         TEST_CHECK(t, !test_results_buffer(app) && app->grep_dying_count == 1, "results: killing *search* stops its search");
         results_dev_release(app);

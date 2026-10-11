@@ -431,7 +431,11 @@ static void grep_worker_main(void *data) {
         }
         if (!go_on || !grep_emit_done(&st, kind, bytes)) break;
         files++;
-        if (s->dev_hold_after && files >= s->dev_hold_after) { // dev: stand still (a search "still running")
+        if (s->dev_hold_after && files >= s->dev_hold_after && os_atomic_get(&s->dev_hold)) { // dev: stand still (a search "still running")
+            if (st.batch->used) { // what it found so far shows meanwhile
+                st.last_send = os_time_us();
+                if (!grep_send(wk, &st.batch, 0)) break;
+            }
             while (os_atomic_get(&s->dev_hold) && !grep_cancelled(s)) os_event_wait(wk->event, 0xFFFFFFFFu);
         }
         if (st.batch->used && os_time_us() - st.last_send >= GREP_SEND_US) {
