@@ -25,6 +25,7 @@
 #define RESULTS_HELD_MAX MB(16)      // records held for files not in the buffer yet: no new claims above it
 #define RESULTS_DYING_MAX 16         // cancelled searches still ending
 #define RESULTS_LINES_PER_CHECK 64   // lines written between two looks at the clock
+#define RESULTS_FLUSH_BYTES KB(256)  // added lines go into the buffer at the end of the frame's work, or at this size
 
 typedef enum ResultsKind {
     RESULTS_PROJECT, // project-search: files under a root
@@ -64,6 +65,7 @@ typedef struct Results {
     ResultsKind kind;
     Arena arena;         // the query, the root, the file table, the candidates (reset by every run)
     Arena loc_arena;     // Location[]
+    Arena pend;          // the lines added this frame, written with one insert (results_flush)
     Location *locs;
     i64 count;
     i64 current;         // next-error's position: -1 before the first location
@@ -108,7 +110,6 @@ typedef struct Results {
     i64 mem_found_before; // r->found when it started (files with matches)
     Search msearch;
 #if TEAL_DEV
-    u64 dev_max_us;      // the longest results_work in a frame
     i32 dev_max_ahead;   // the most files claimed past emit_next seen
     i32 dev_held_back;   // times the claim limit was not raised (held records over the limit)
 #endif

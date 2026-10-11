@@ -126,6 +126,7 @@ static void results_shutdown(App *app, u64 deadline);
 static void results_index_changing(App *app, ProjectIndex *x, b32 incomplete);
 static Results *results_of(App *app, Buffer *buf);
 static b32  results_wake(App *app);
+static b32  results_running(App *app);
 
 // Shows `buf` in `v`: where `v` last showed it, else where the most recently used other window showing
 // it is, else where it was last shown (view_switch_buffer).
@@ -1979,7 +1980,14 @@ static b32 app_update(App *app, FrameInput *in) {
     rank_budget = app->dev_work_budget;
 #endif
     app->rank_pending = app->mini.matcher_pending && minibuffer_work(&app->mini, rank_budget ? 0 : deadline, rank_budget);
-    app->results_pending = results_work(app, deadline, rank_budget); // the search's lists and results, in order
+    // The search's lists and results, in order; only in frames without input: a keystroke's frame never
+    // waits for them (the next frame, requested at once, does the work).
+    b32 input = 0;
+    for (i32 i = 0; i < in->event_count; i++) {
+        EventKind k = in->events[i].kind;
+        input |= k == EVENT_KEY_DOWN || k == EVENT_TEXT || k == EVENT_MOUSE_DOWN || k == EVENT_MOUSE_WHEEL;
+    }
+    app->results_pending = input ? results_running(app) : results_work(app, deadline, rank_budget);
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
