@@ -19,6 +19,7 @@
 #include "fuzzy.h"
 #include "finder.h"
 #include "search.h"
+#include "grep.h"
 #include "isearch.h"
 
 #include "base.c"
@@ -39,6 +40,7 @@
 #include "minibuffer.c"
 #include "fuzzy.c"
 #include "search.c"
+#include "grep.c"
 #include "isearch.c"
 #include "app.c"
 #include "files.c"
