@@ -141,7 +141,7 @@ static void results_progress(App *app, Results *r) {
     u8 text[160];
     i64 n;
     if (r->kind == RESULTS_PROJECT) {
-        n = fmt_buf(text, sizeof(text), "Searching... %D/%D%s files, %D %s", r->files_seen, r->list_count, r->list_done ? "" : "+", r->found,
+        n = fmt_buf(text, sizeof(text), "Searching... %D/%D%s files, %D %s", r->files_seen, (i64)r->list_count, r->list_done ? "" : "+", r->found,
                     results_plural(r->found, "match", "matches"));
     } else {
         n = fmt_buf(text, sizeof(text), "Searching... %D %s", r->found, results_plural(r->found, "match", "matches"));
