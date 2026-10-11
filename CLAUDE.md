@@ -324,9 +324,10 @@ C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding throug
 plain character from a dead key typed as the dead key and Space; the bindings whose US keys run
 something else on the layout are listed), Alt+F4. Also the command line's files and +LINE:COLUMN. The
 modifier test, the key test and every harness case are shielded from real input (DevShield): each waits
-until no physical modifier is down, checks that its key state held, and a case that real input disturbed
-is logged as "test: inconclusive: ..." and repeated (at most 5 attempts); a self-test drives those
-decisions. Phase 11: threads (a lock under contention, events, the wake), a tree watch (500 files: one
+until no physical modifier is down and checks that its key state held; a case whose key state did not
+hold (passed or failed) is logged as "test: inconclusive: ..." with the reason and repeated (at most 5
+attempts, then "key state unstable"); a case whose state held and whose result is wrong fails at once; a
+self-test drives those decisions with fakes. Phase 11: threads (a lock under contention, events, the wake), a tree watch (500 files: one
 wake-up until re-armed), junctions and small reads; ignore rules (globs and 30 decisions); project roots (a
 fake file system table, real directories, the cache, the built-in settings); .teal-project; the scanner
 on generated trees in build\tmp\p11scan and p11big (the exact set, a junction loop, the file limit, a

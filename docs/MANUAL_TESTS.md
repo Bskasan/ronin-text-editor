@@ -33,7 +33,7 @@ dev builds; they are not part of the repository.
 | `--bench-windows` | Frames with one and four windows, typing with one and two windows, on the 100 MB file. |
 | `--bench-project` | Fuzzy ranking on 10,000 / 100,000 / 1,000,000 synthetic paths (frames, the longest frame, RET's whole ranking), scans of the generated tree and of `C:\Windows`, typing with and without a scan running. Never takes the focus. |
 | project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".teal-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
-| shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case that real input disturbed is logged as "test: inconclusive: ..." and repeated. |
+| shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
 ## A. Startup and window
 
