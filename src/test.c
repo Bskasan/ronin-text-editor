@@ -2942,7 +2942,7 @@ static b32 test_search(Test *t, u64 seed) {
     TestRef ref = { 0 };
     ref.cap = KB(4);
     ref.data = PUSH_ARRAY(&t->arena, u8, ref.cap);
-    i64 searches = 0, found = 0, straddled = 0, sliced_runs = 0, core_runs = 0;
+    i64 searches = 0, found = 0, straddled = 0, sliced_runs = 0, core_runs = 0, second_runs = 0;
     for (i32 round = 0; round < 1500; round++) {
         // A haystack of up to ~300 bytes.
         ref.len = 0;
@@ -2988,6 +2988,7 @@ static b32 test_search(Test *t, u64 seed) {
                 TEST_CHECK(t, core == want, "search: core: round %d query %d (seed 0x%X): '%S' fold %d forward %d from %D in [%D, %D): got %D, want %D",
                            round, q, seed, needle, fold, forward, from, lo, hi, core, want);
                 core_runs++;
+                second_runs += pat->second_on;
             }
             // The gap: random, or inside the expected match.
             i64 gap = want >= 0 && needle.len > 1 && test_below(t, 2) ? want + 1 + test_below(t, needle.len - 1) : test_below(t, ref.len + 1);
@@ -3068,8 +3069,9 @@ static b32 test_search(Test *t, u64 seed) {
         TEST_CHECK(t, enc[0] == first[0] || (n == 2 && enc[0] == first[1]), "search: U+%x folds to U+%x, whose first bytes miss it", c, f);
     }
     LOG("test: ok: search: %D searches against the reference (%D found, %D across the gap, %D runs in several slices), "
-        "%D on plain bytes (the core), %d fixed cases, restart after an edit, needle limits, Turkish i (known limit), smart case, "
-        "first bytes", searches, found, straddled, sliced_runs, core_runs, (i32)ARRAY_COUNT(fixed));
+        "%D on plain bytes (the core; %D with the second-byte filter), %d fixed cases, restart after an edit, needle limits, "
+        "Turkish i (known limit), smart case, first bytes", searches, found, straddled, sliced_runs, core_runs, second_runs,
+        (i32)ARRAY_COUNT(fixed));
     return 1;
 }
 
