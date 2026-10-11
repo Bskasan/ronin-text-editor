@@ -314,6 +314,8 @@ static const char config_default[] =
     "C-x `       next-error\n"
     "M-g p       previous-error\n"
     "M-g M-p     previous-error\n"
+    "# M-s o lists the lines of the current buffer that contain a text in *occur* (the same keys).\n"
+    "M-s o       occur\n"
     "\n"
     "# Text size for this session\n"
     "C-x C-+     text-scale-increase\n"
