@@ -12,7 +12,7 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 
 ## Hard rules
 
-- C11, MSVC (cl.exe), x64 only, Windows 10 1903+. No C++, except src/win32_dwrite.cpp
+- C11, MSVC (cl.exe), Windows 10 or later, x64; developed and tested on Windows 11 only. No C++, except src/win32_dwrite.cpp
   (dwrite.h cannot be consumed from C). That file is C-style C++: no exceptions (/EH off),
   no RTTI (/GR-), no STL, no new/delete, no classes, no static constructors, no CRT calls,
   nothing but DirectWrite calls behind the extern "C" API in src/font_backend.h.
@@ -70,6 +70,8 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   failing test and the fix commit), or HUMAN (why only a person can judge it, the shortest exact
   instructions, and a dev helper for most of it where possible). Check each step against its own
   wording, not against what the code does; a difference is a finding.
+- Every phase keeps README.md current: what the phase adds (features, keys, configuration,
+  limits, status, numbers), each claim checked against the code, the tests and the measurements.
 
 ## Commit policy (every phase)
 

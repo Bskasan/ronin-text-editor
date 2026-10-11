@@ -86,6 +86,7 @@ String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_
 
 // ---------------------------------------------------------------------------
 // .teal-project at a root: the config format with [ignore] and [allow] sections, one pattern per line.
+// A pattern cannot start with '[': such a line is a section header.
 
 #define PROJECT_FILE_NAME ".teal-project"
 

@@ -5,6 +5,7 @@
 // the query's first character twice; a run of consecutive characters keeps the bonus of its first one
 // (at least FUZZY_CONSECUTIVE); a gap costs FUZZY_GAP_START plus FUZZY_GAP_EXTEND per further byte; a
 // term matched inside the file name earns FUZZY_NAME per character.
+// Credit: the match, boundary, camel-case, consecutive and gap values follow fzf's (Junegunn Choi, MIT).
 #define FUZZY_MATCH 16
 #define FUZZY_SEGMENT 10
 #define FUZZY_WORD 8
