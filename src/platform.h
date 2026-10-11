@@ -139,7 +139,9 @@ i32  os_cpu_count(void); // logical processors (at least 1)
 
 typedef struct OsThread { void *handle; } OsThread;
 typedef void OsThreadFn(void *data);
-b32  os_thread_start(OsThread *thread, OsThreadFn *fn, void *data);
+// `background`: a worker one step below normal priority (the project scan, the search), so the main
+// thread wins when every core is busy.
+b32  os_thread_start(OsThread *thread, OsThreadFn *fn, void *data, b32 background);
 // True when the thread has ended within the timeout (its handle is then closed); false: still running.
 b32  os_thread_join(OsThread thread, u32 timeout_ms);
 
@@ -166,6 +168,8 @@ i32  os_dev_live_threads(void);        // started and not joined (nor abandoned)
 void os_dev_thread_abandoned(void);    // a worker left to the process exit at shutdown: not a leak
 void os_dev_thread_reclaimed(void);    // ... joined after all (tests): os_thread_join counts it again
 i32  os_dev_live_events(void);         // created and not destroyed
+void os_dev_background_normal(b32 on); // --bench-grep: background workers start at normal priority (the comparison)
+i32  os_dev_thread_priority(OsThread thread); // the thread's priority (Win32 value: 0 normal, -1 below normal)
 b32  os_dev_make_junction(String8 link, String8 target); // a new directory junction (no admin rights needed)
 b32  os_dev_remove_dir(String8 path);                     // an empty directory, or a junction (not its target)
 #endif
