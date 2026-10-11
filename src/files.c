@@ -579,6 +579,7 @@ static void cmd_switch_to_buffer(CommandContext *ctx) {
 // Kills a buffer: the views showing it show the most recently shown other buffer, then it leaves
 // the list and its memory is released. *scratch* is created again at once.
 static void files_kill_buffer(App *app, Buffer *buf) {
+    results_buffer_killed(app, buf); // a results buffer's search stops; a buffer being searched is dropped
     Buffer *fresh = NULL;
     if (!buf->path.len && str8_equal(buf->name, STR8_LIT("*scratch*"))) {
         fresh = buffer_create(STR8_LIT("*scratch*"));

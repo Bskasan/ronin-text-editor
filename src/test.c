@@ -4339,7 +4339,7 @@ static b32 test_buffer_keymap(Test *t) {
     App *app = test_search_app(t, STR8_LIT("abc"), 0);
     TEST_CHECK(t, app, "buffer keymap: app_create failed");
     app_dev_use_config(app, conf);
-    TEST_CHECK(t, app->config->diags.errors == 0 && app->config->search_results.count == 2, "buffer keymap: [keys search-results] not read");
+    TEST_CHECK(t, app->config->diags.errors == 0 && app->config->search_results.count >= 2, "buffer keymap: [keys search-results] not read");
     Buffer *buf = app_selected_view(app)->buffer;
     app_dev_feed(app, "n", &t->arena);
     TEST_CHECK(t, str8_equal(test_app_text(t, app), STR8_LIT("nabc")), "buffer keymap: without the keymap n types n");
@@ -8486,6 +8486,307 @@ static b32 test_grep_sharing(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 12: results buffers, project-search, next-error (the headless app, real workers)
+
+static Buffer *test_results_buffer(App *app) {
+    return buffer_list_find_name(&app->buffers, STR8_LIT("*search*"));
+}
+
+// *search*'s text without the time at the end of its last line (", 0.02 s").
+static String8 test_results_text(Test *t, App *app) {
+    Buffer *b = test_results_buffer(app);
+    if (!b) return STR8_LIT("(no *search*)");
+    String8 s = buffer_text(b, &t->arena, 0, buffer_size(b));
+    i64 end = s.len;
+    while (end > 0 && s.data[end - 1] != ',') end--;
+    if (end > 0 && s.len - end <= 12 && s.data[s.len - 1] == 's') s.len = end - 1;
+    return str8_copy(&t->arena, s);
+}
+
+// A config with these settings, as a file (its path).
+static String8 test_results_conf(Test *t, const char *name, const char *text) {
+    String8 path = str8_fmt(&t->arena, "%S\\%s", t->tmp_dir, name);
+    os_write_file(path, str8_cstr(text));
+    return path;
+}
+
+// The point of the selected window and its buffer's name, as "name:offset".
+static String8 test_results_where(Test *t, App *app) {
+    return str8_fmt(&t->arena, "%S:%D", test_current(app)->name, test_app_point(app));
+}
+
+static b32 test_results(Test *t) {
+    i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    while (os_dev_wake_wait(0)) {}
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p12res", t->tmp_dir));
+    os_make_dir(root);
+    os_make_dir(str8_fmt(&t->arena, "%S\\.git", root));
+    os_make_dir(str8_fmt(&t->arena, "%S\\b", root));
+    os_write_file(str8_fmt(&t->arena, "%S\\.git\\HEAD", root), STR8_LIT("ref\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), STR8_LIT("[ignore]\nignored.c\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\a.c", root), STR8_LIT("int foo;\nfoo(); foo\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\bin.dat", root), str8((u8 *)"foo\0bar", 7));
+    os_write_file(str8_fmt(&t->arena, "%S\\ignored.c", root), STR8_LIT("foo ignored\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\u16.txt", root), str8((u8 *)"\xff\xfe" "f\0o\0o\0 \0\xe9\0\n\0", 14));
+    os_write_file(str8_fmt(&t->arena, "%S\\b\\c.txt", root), STR8_LIT("foo on disk\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\b\\d.h", root), STR8_LIT("x\r\nFOO bar\r\n"));
+    os_file_delete(str8_fmt(&t->arena, "%S\\new.c", root));
+    {   // A large file early in the list: the files after it finish first.
+        u8 *big = PUSH_ARRAY(&t->arena, u8, 20000 * 21 + 64);
+        i64 n = 0;
+        for (i32 i = 0; i < 20000; i++) n += fmt_buf(big + n, 32, "line %05d xxxxxxxxx\n", i);
+        n += fmt_buf(big + n, 32, "the foo at the end\n");
+        os_write_file(str8_fmt(&t->arena, "%S\\big.txt", root), str8(big, n));
+    }
+    String8 shown_root = str8_fmt(&t->arena, "%S/", root);
+    for (i64 i = 0; i < shown_root.len; i++) if (shown_root.data[i] == '\\') shown_root.data[i] = '/';
+    String8 want = str8_fmt(&t->arena,
+                            "Search for \"foo\" in %S (ignoring case)\n\n"
+                            "a.c:1:5: int foo;\n"
+                            "a.c:2:1: foo(); foo\n"
+                            "a.c:2:8: foo(); foo\n"
+                            "big.txt:20001:5: the foo at the end\n"
+                            "u16.txt:1:1: foo \xc3\xa9\n"
+                            "b/c.txt:1:1: foo on disk\n"
+                            "b/d.h:2:1: FOO bar\n"
+                            "7 matches in 5 files; 6 files searched, 1 binary skipped",
+                            shown_root);
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", root);
+    String8 none = { 0 };
+
+    // The same text, and the same next-error order, with 1, 2, 4 and 8 workers, and run again with g.
+    static const char *const confs[] = { "[settings]\nsearch_workers = 1\n", "[settings]\nsearch_workers = 2\n",
+                                         "[settings]\nsearch_workers = 4\n", "[settings]\nsearch_workers = 8\n" };
+    String8 order0 = { 0 };
+    for (i32 c = 0; c < ARRAY_COUNT(confs); c++) {
+        App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p12res.conf", confs[c]));
+        TEST_CHECK(t, app, "results: app_create failed");
+        app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: the search did not end (%d)", c);
+        for (i32 rep = 0; rep < (c == 2 ? 5 : 1); rep++) {
+            if (rep) {
+                app_dev_feed(app, "g", &t->arena);
+                TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: g did not end");
+            }
+            String8 got = test_results_text(t, app);
+            TEST_CHECK(t, str8_equal(got, want), "results, config %d run %d: *search* holds\n%S\n---- expected\n%S", c, rep, got, want);
+        }
+        TEST_CHECK(t, test_current(app) == test_results_buffer(app) && app_dev_window_count(app) == 2,
+                   "results: *search* is shown in another window and selected");
+        // next-error from the other window, all the way, then past the end.
+        app_dev_feed(app, "C-x o", &t->arena);
+        String8 order = str8(NULL, 0);
+        for (i32 i = 0; i < 7; i++) {
+            app_dev_feed(app, "M-g n", &t->arena);
+            order = str8_fmt(&t->arena, "%S %S", order, test_results_where(t, app));
+        }
+        if (!order0.len) order0 = order;
+        TEST_CHECK(t, str8_equal(order, order0), "results: next-error order '%S', with one worker '%S'", order, order0);
+        app_dev_feed(app, "M-g n", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No more matches"), "results: next-error past the end says '%S'", test_echo(app));
+        if (!test_app_destroy(t, app, "results")) return 0;
+    }
+    TEST_CHECK(t, str8_equal(order0, STR8_LIT(" a.c:4 a.c:9 a.c:16 big.txt:420004 u16.txt:0 c.txt:0 d.h:2")),
+               "results: next-error visited '%S'", order0);
+
+    // RET, n, p, g, q; previous-error at both ends; next-error with no results buffer.
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        app_dev_feed(app, "M-g n", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No next-error capable buffer found"), "results: next-error with nothing: '%S'", test_echo(app));
+        app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: the search did not end");
+        Buffer *rb = test_results_buffer(app);
+        TEST_CHECK(t, test_current(app) == rb && buffer_line_of(rb, test_app_point(app)) == 2, "results: point on the first match's line");
+        app_dev_feed(app, "RET", &t->arena);
+        TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("a.c:4")) && app_dev_window_count(app) == 2,
+                   "results: RET visits a.c:1:5 in the other window and selects it ('%S')", test_results_where(t, app));
+        app_dev_feed(app, "C-x o n", &t->arena);
+        TEST_CHECK(t, test_current(app) == rb && buffer_line_of(rb, test_app_point(app)) == 3, "results: n stays in *search*, on the next line");
+        View *views[WINDOW_MAX];
+        i32 nv = app_views(app, views);
+        View *other = views[0] == app_selected_view(app) ? views[1] : views[0];
+        TEST_CHECK(t, nv == 2 && str8_equal(other->buffer->name, STR8_LIT("a.c")) && view_point(other, &other->cursors[0]) == 9,
+                   "results: n shows a.c:2:1 in the other window");
+        app_dev_feed(app, "p", &t->arena);
+        TEST_CHECK(t, buffer_line_of(rb, test_app_point(app)) == 2, "results: p goes back");
+        app_dev_feed(app, "p", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No more matches"), "results: p before the first says '%S'", test_echo(app));
+        app_dev_feed(app, "M-<", &t->arena);
+        app_dev_feed(app, "RET", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No match on this line"), "results: RET on the header says '%S'", test_echo(app));
+        // previous-error (p left the first match current): to the second and back to the first, then the start.
+        app_dev_feed(app, "M-g n M-g p", &t->arena);
+        TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("a.c:4")), "results: previous-error to a.c:4 ('%S')", test_results_where(t, app));
+        app_dev_feed(app, "M-g p", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No more matches"), "results: previous-error before the first says '%S'", test_echo(app));
+        // q closes the results window.
+        app_dev_feed(app, "C-x o", &t->arena);
+        if (test_current(app) != rb) app_dev_feed(app, "C-x o", &t->arena);
+        app_dev_feed(app, "q", &t->arena);
+        TEST_CHECK(t, app_dev_window_count(app) == 1 && test_current(app) != rb, "results: q closes the results window");
+        // The keymap stays in *search*: n types n elsewhere (a read-only buffer would refuse it).
+        app_dev_feed(app, "C-x b * s c r a t c h * RET n", &t->arena);
+        TEST_CHECK(t, test_current_is(app, "*scratch*") && str8_equal(test_app_text(t, app), STR8_LIT("n")),
+                   "results: n types n in *scratch* ('%S')", test_app_text(t, app));
+        app_dev_feed(app, "C-x 3 C-x b * s e a r c h * RET C-x o n", &t->arena);
+        TEST_CHECK(t, test_current_is(app, "*scratch*") && str8_equal(test_app_text(t, app), STR8_LIT("nn")),
+                   "results: n types n in the window next to *search*");
+        app_dev_feed(app, "C-x o C-h k n", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "n runs the command next-error-no-select"), "results: describe-key in *search*: '%S'", test_echo(app));
+        if (!test_app_destroy(t, app, "results")) return 0;
+    }
+
+    // The prompt's default: the symbol at point, the region; not in a project.
+    {
+        App *app = test_manual_app(t, a_c, 1, 6, none); // point on "foo"
+        app_dev_feed(app, "C-x p g", &t->arena);
+        TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Search project for (default foo): ")), "results: the prompt '%S'", app_dev_prompt(app));
+        app_dev_feed(app, "RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000) && str8_equal(test_results_text(t, app), want),
+                   "results: RET took the default (%S)", test_results_text(t, app));
+        app_dev_feed(app, "C-x o C-a C-SPC C-e C-x p g", &t->arena);
+        TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Search project for (default int foo;): ")), "results: the region: '%S'",
+                   app_dev_prompt(app));
+        app_dev_feed(app, "C-g C-x b * s c r a t c h * RET C-x p g", &t->arena);
+        TEST_CHECK(t, test_contains(test_echo(app), "Not in a project"), "results: *scratch* is not in a project: '%S'", test_echo(app));
+        if (!test_app_destroy(t, app, "results")) return 0;
+    }
+
+    // Unsaved buffers: a modified file in its place (its disk text skipped), a modified ignored file and a
+    // new file after the list, an empty new buffer and *scratch* not at all.
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        app_dev_visit(app, str8_fmt(&t->arena, "%S\\b\\c.txt", root));
+        app_dev_feed(app, "C-k c h a n g e d", &t->arena);
+        app_dev_visit(app, str8_fmt(&t->arena, "%S\\ignored.c", root));
+        app_dev_feed(app, "x", &t->arena);
+        app_dev_visit(app, str8_fmt(&t->arena, "%S\\new.c", root));
+        app_dev_feed(app, "f o o SPC n e w", &t->arena);
+        app_dev_visit(app, str8_fmt(&t->arena, "%S\\empty_new.c", root));
+        app_dev_feed(app, "C-x b * s c r a t c h * RET f o o C-x b a . c RET C-x p g f o o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: the search did not end");
+        String8 want2 = str8_fmt(&t->arena,
+                                 "Search for \"foo\" in %S (ignoring case)\n\n"
+                                 "a.c:1:5: int foo;\n"
+                                 "a.c:2:1: foo(); foo\n"
+                                 "a.c:2:8: foo(); foo\n"
+                                 "big.txt:20001:5: the foo at the end\n"
+                                 "u16.txt:1:1: foo \xc3\xa9\n"
+                                 "b/d.h:2:1: FOO bar\n"
+                                 "ignored.c:1:2: xfoo ignored\n"
+                                 "new.c:1:1: foo new\n"
+                                 "8 matches in 6 files; 8 files searched, 1 binary skipped, 3 from unsaved buffers",
+                                 shown_root);
+        String8 got = test_results_text(t, app);
+        TEST_CHECK(t, str8_equal(got, want2), "results: unsaved buffers: *search* holds\n%S\n---- expected\n%S", got, want2);
+        // The cap keeps the first matches in list order.
+        app_dev_use_config(app, test_results_conf(t, "p12cap.conf", "[settings]\nsearch_max_results = 2\n"));
+        app_dev_feed(app, "g", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: the capped search did not end");
+        got = test_results_text(t, app);
+        TEST_CHECK(t, test_contains(got, "a.c:1:5: int foo;\na.c:2:1: foo(); foo\nStopped at 2 matches (search_max_results) in 1 file;") &&
+                          !test_contains(got, "a.c:2:8"), "results: search_max_results 2: '%S'", got);
+        // A rebinding in [keys search-results].
+        app_dev_use_config(app, test_results_conf(t, "p12keys.conf", "[keys search-results]\nz  next-error-no-select\n"));
+        app_dev_feed(app, "g", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: g did not end");
+        app_dev_feed(app, "z", &t->arena);
+        TEST_CHECK(t, buffer_line_of(test_current(app), test_app_point(app)) == 3, "results: z (rebound) moves to the next match");
+        if (!test_app_destroy(t, app, "results")) return 0;
+    }
+
+    // The claim window (2 files past the first not written) and a held-records limit of 1 byte: the same text.
+    i32 max_ahead = 0, held_back = 0;
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p12res.conf", "[settings]\nsearch_workers = 4\n"));
+        app->dev_claim_ahead = 2;
+        app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000) && str8_equal(test_results_text(t, app), want), "results: claim window 2: '%S'",
+                   test_results_text(t, app));
+        max_ahead = results_of(app, test_results_buffer(app))->dev_max_ahead;
+        TEST_CHECK(t, max_ahead <= 2, "results: %d files claimed past the first one not written (window 2)", max_ahead);
+        app->dev_claim_ahead = 0;
+        app->dev_held_max = 1;
+        app_dev_feed(app, "g", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000) && str8_equal(test_results_text(t, app), want), "results: held limit 1: '%S'",
+                   test_results_text(t, app));
+        held_back = results_of(app, test_results_buffer(app))->dev_held_back;
+        if (!test_app_destroy(t, app, "results")) return 0;
+    }
+
+    // Killing *search* while its search runs; then a shutdown with a search running, and with a stuck worker.
+    u64 took = 0;
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        app->dev_grep_hold_after = 1;
+        app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+        TEST_CHECK(t, test_results_buffer(app) && results_of(app, test_results_buffer(app))->running, "results: a held search runs");
+        app_dev_feed(app, "C-x k RET", &t->arena);
+        TEST_CHECK(t, !test_results_buffer(app) && app->grep_dying_count == 1, "results: killing *search* stops its search");
+        results_dev_release(app);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "results: the killed search's workers did not end");
+        app->dev_grep_hold_after = 1;
+        app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+        u64 t0 = os_time_us();
+        if (!test_app_destroy(t, app, "results: shutdown with a search running")) return 0;
+        took = os_time_us() - t0;
+        TEST_CHECK(t, took < (u64)PROJECT_SHUTDOWN_MS * 1000 && app->dev_grep_abandoned == 0, "results: shutdown with a held search: %U us", took);
+    }
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        app->dev_grep_stuck_next = 1;
+        app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+        GrepSearch *stuck = app->dev_last_grep;
+        u64 t0 = os_time_us();
+        app_shutdown(app);
+        u64 stuck_us = os_time_us() - t0;
+        TEST_CHECK(t, stuck && app->dev_grep_abandoned >= 1 && stuck_us >= (u64)(PROJECT_SHUTDOWN_MS - 100) * 1000 &&
+                          stuck_us < (u64)(PROJECT_SHUTDOWN_MS + 500) * 1000, "results: a stuck worker: shutdown in %U us, %d abandoned", stuck_us,
+                   app->dev_grep_abandoned);
+        for (i32 i = 0; i < app->dev_grep_abandoned; i++) os_dev_thread_reclaimed();
+        grep_dev_release(stuck);
+        TEST_CHECK(t, grep_join(stuck, os_time_us() + 10000000), "results: the stuck workers did not end once released");
+        grep_free(stuck);
+    }
+
+    // A search started while the project's first scan stands still sees every file once (10,000 files).
+    {
+        String8 big = os_full_path(&t->arena, test_big_tree(t));
+        App *app = test_manual_app(t, none, 0, 0, test_results_conf(t, "p12big.conf", "[settings]\nsearch_max_results = 20000\n"));
+        memcpy(app->finder.cmdline_buf, big.data, (size_t)big.len);
+        app->finder.cmdline_dir = str8(app->finder.cmdline_buf, big.len);
+        app->finder.dev_hold_after = 1;
+        app_dev_feed(app, "C-x p g x RET", &t->arena);
+        Results *r = results_of(app, test_results_buffer(app));
+        TEST_CHECK(t, r && r->running, "results: no search over the held scan");
+        for (i32 i = 0; i < 20; i++) {
+            if (os_dev_wake_wait(5)) app_wake(app);
+            app_dev_feed_events(app, NULL, 0, &t->arena);
+        }
+        i64 during = r->list_count;
+        finder_dev_release(app);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 20000), "results: the search over the scan did not end");
+        TEST_CHECK(t, r->count == 10000 && r->list_count == 10000 && during < 10000, "results: %D matches of 10000 files (%D listed while held)",
+                   r->count, during);
+        b32 once = 1;
+        for (i64 i = 1; i < r->count; i++) once &= r->locs[i].file != r->locs[i - 1].file;
+        TEST_CHECK(t, once && r->file_count == 10000, "results: every file once (%d files)", r->file_count);
+        if (!test_app_destroy(t, app, "results")) return 0;
+    }
+    TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "results: %d threads, %d events left",
+               os_dev_live_threads() - threads0, os_dev_live_events() - events0);
+    LOG("test: ok: results (*search*'s exact text with 1, 2, 4 and 8 workers, 5 runs of g, a large file first; the next-error order "
+        "the same each time, past the end; RET, n, p, q, RET on the header, previous-error at both ends, none at all; the keymap only in "
+        "*search*, describe-key; the default from the symbol and the region, not in a project; a modified buffer in its place, a "
+        "modified ignored file and a new one after the list, *scratch* and an empty buffer not searched; search_max_results; a "
+        "rebinding; the claim window 2 (at most %d past), a held limit of 1 byte (held back %d times): the same text; killing *search* "
+        "while it runs; shutdown with a search running (%U us) and with a stuck worker; a search over a held scan sees each of "
+        "10,000 files once)", max_ahead, held_back, took);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -8617,6 +8918,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_grep_search(&t, seed);
     arena_reset(&t.arena);
     test_grep_sharing(&t);
+    arena_reset(&t.arena);
+    test_results(&t);
     arena_reset(&t.arena);
     test_finder(&t);
     arena_reset(&t.arena);

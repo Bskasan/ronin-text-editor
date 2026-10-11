@@ -98,7 +98,7 @@ static i64 grep_text(GrepInput *in, u8 *dst, i64 cap) {
 // otherwise up to GREP_CONTEXT bytes before the match and GREP_LINE_SHOW in all, cut on character
 // boundaries with "…" at each cut. ls: the line's start in the window (-1: before it). The window holds at
 // least GREP_LINE_SHOW + 1 bytes from c on, or the rest of the file (at_end).
-static void grep_show(GrepScan *sc, const u8 *w, i64 wn, i64 ls, i64 c, i64 len, b32 at_end, GrepMatch *m) {
+void grep_show_text(u8 *out, const u8 *w, i64 wn, i64 ls, i64 c, i64 len, b32 at_end, GrepMatch *m) {
     i64 limit = MIN(wn, c + GREP_LINE_SHOW + 1);
     i64 le = -1; // the line's end ('\n' or the end of the file), when found within reach
     for (i64 i = c; i < limit && le < 0; i++) if (w[i] == '\n') le = i;
@@ -122,17 +122,17 @@ static void grep_show(GrepScan *sc, const u8 *w, i64 wn, i64 ls, i64 c, i64 len,
     static const u8 ellipsis[3] = { 0xE2, 0x80, 0xA6 };
     i64 n = 0;
     if (pre) {
-        memcpy(sc->show, ellipsis, 3);
+        memcpy(out, ellipsis, 3);
         n = 3;
     }
-    memcpy(sc->show + n, w + s0, (size_t)(s1 - s0));
+    memcpy(out + n, w + s0, (size_t)(s1 - s0));
     i64 off = n + (c - s0);
     n += s1 - s0;
     if (post) {
-        memcpy(sc->show + n, ellipsis, 3);
+        memcpy(out + n, ellipsis, 3);
         n += 3;
     }
-    m->text = str8(sc->show, n);
+    m->text = str8(out, n);
     m->match_off = off;
     m->match_shown = CLAMP(MIN(c + len, s1) - c, 0, len);
 }
@@ -203,7 +203,7 @@ GrepFileResult grep_file(const SearchPattern *pat, GrepScan *sc, i64 size, GrepR
             if (last >= 0) line_start = wbase + counted + last + 1;
             counted = c;
             GrepMatch m = { .line = line, .col = wbase + c - line_start, .len = pat->len };
-            grep_show(sc, w, wn, line_start >= wbase ? line_start - wbase : -1, c, pat->len, eof, &m);
+            grep_show_text(sc->show, w, wn, line_start >= wbase ? line_start - wbase : -1, c, pat->len, eof, &m);
             r.matches++;
             next = c + pat->len;
             if (!emit(emit_data, &m)) {
