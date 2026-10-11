@@ -2328,6 +2328,30 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx + 6 * cw, .y0 = lh, .x1 = right->x + right->w, .y1 = 3 * lh,
                            .rgb = th->background, .what = "windows: the other window's active region is not drawn");
         }
+    } else if (stage == 8) {
+        // app_dev_smoke_results: *search* in the other window, from its top: the header, a blank line, then
+        // "match.c:1:5: int foo = 1;" (the file name in columns 0-6, "1:5" in 8-10, "int" in 13-15, "foo" in 17-19).
+        Theme *th = &app->config->theme;
+        View *views[WINDOW_MAX];
+        View *rv = NULL;
+        for (i32 i = 0, k = app_views(app, views); i < k; i++) if (results_of(app, views[i]->buffer)) rv = views[i];
+        if (rv && view_top_line(rv) == 0) {
+            i32 rx = rv->x + l.pad, ry = rv->y + 2 * lh, my = rv->y + rv->h - lh;
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = ry, .x1 = rx + 7 * cw, .y1 = ry + lh, .rgb = th->search_file,
+                           .what = "results: the file name 'match.c' in search_file");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx + 8 * cw, .y0 = ry, .x1 = rx + 11 * cw, .y1 = ry + lh, .rgb = th->search_line_number,
+                           .what = "results: the line and column '1:5' in search_line_number");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx + 17 * cw, .y0 = ry, .x1 = rx + 20 * cw, .y1 = ry + lh, .rgb = th->lazy_highlight,
+                           .what = "results: the match 'foo' on the lazy_highlight background");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx + 17 * cw, .y0 = ry, .x1 = rx + 20 * cw, .y1 = ry + lh, .rgb = th->text,
+                           .what = "results: the match's text drawn over it in the text color");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx + 13 * cw, .y0 = ry, .x1 = rx + 16 * cw, .y1 = ry + lh, .rgb = th->text,
+                           .what = "results: the line's other text 'int' in the text color");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx + 13 * cw, .y0 = ry, .x1 = rx + 16 * cw, .y1 = ry + lh, .rgb = th->background,
+                           .what = "results: ... on the background (not highlighted)");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = my, .x1 = rx + 24 * cw, .y1 = my + lh, .rgb = th->mode_line_inactive_text,
+                           .what = "results: the results window's mode line (not selected) in mode_line_inactive_text");
+        }
     } else if (stage == 7) {
         // app_dev_smoke_finder after "a p": three rows above the minibuffer line, src/app.c (selected), src/apple.c,
         // docs/map.md; "ap" at columns 4-5 of the first two rows.

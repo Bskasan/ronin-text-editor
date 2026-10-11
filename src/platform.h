@@ -327,6 +327,9 @@ void app_dev_smoke_windows(App *app);     // stage 6: two windows side by side, 
 void app_dev_smoke_windows_end(App *app); // ... and back to one window
 void app_dev_smoke_finder(App *app);      // stage 7: the project finder over a known list (then "a p" is typed)
 void app_dev_smoke_finder_end(App *app);  // ... and closed
+void app_dev_smoke_results(App *app, String8 tmp_dir); // stage 8: *search* for "foo" over tmp_dir\smoke_grep (not selected)
+void app_dev_smoke_results_end(App *app);              // ... and gone, one window again
+b32  app_dev_results_busy(App *app);                    // a search runs or is still ending
 // --bench-project: the finder on `count` synthetic paths (returns the index's memory), a whole ranking at
 // once (its time), the matches; a scan owned by the app (its batches through app_wake) and its state.
 u64  app_dev_bench_finder_open(App *app, i64 count);
@@ -336,7 +339,7 @@ i64  app_dev_bench_matches(App *app);
 void app_dev_bench_scan_start(App *app, String8 root);
 b32  app_dev_bench_scan_state(App *app, String8 root, i64 *files, i64 *ignored, i64 *errors, u64 *memory); // true while it runs
 void app_dev_bench_scan_close(App *app, String8 root);
-i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list, 4: isearch, 5: failing isearch, 6: two windows, 7: project finder
+i32  app_dev_buffer_probes(App *app, FrameInput *input, DevProbe *out, i32 cap, i32 stage); // 0: hollow cursor, 1: filled after the click, 2: region, 3: M-x list, 4: isearch, 5: failing isearch, 6: two windows, 7: project finder, 8: results
 void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // the click of stage 1
 void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
 b32  app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b); // show_paren_mode's pair in the active view
