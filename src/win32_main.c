@@ -457,6 +457,40 @@ void os_file_close(OsFile file) {
     if (file.handle) CloseHandle((HANDLE)file.handle);
 }
 
+// Any thread: the path in the caller's arena.
+OsFileStatus os_file_open_read_arena(Arena *arena, String8 path, OsFile *file, i64 *size) {
+    file->handle = NULL;
+    *size = 0;
+    u64 mark = arena_pos(arena);
+    WCHAR *path16 = (WCHAR *)str16_from_str8(arena, path).data;
+    HANDLE h = CreateFileW(path16, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    arena_pop_to(arena, mark);
+    if (h == INVALID_HANDLE_VALUE) return win32_last_file_status();
+    LARGE_INTEGER s;
+    if (!GetFileSizeEx(h, &s)) {
+        OsFileStatus status = win32_last_file_status();
+        CloseHandle(h);
+        return status;
+    }
+    file->handle = h;
+    *size = s.QuadPart;
+    return OS_FILE_OK;
+}
+
+OsFileStatus os_file_read_some(OsFile file, void *dst, i64 cap, i64 *got) {
+    DWORD n = 0;
+    *got = 0;
+    if (!ReadFile((HANDLE)file.handle, dst, (DWORD)MIN(cap, (i64)MB(256)), &n, NULL)) return win32_last_file_status();
+    *got = n;
+    return OS_FILE_OK;
+}
+
+i32 os_cpu_count(void) {
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return n ? (i32)n : 1;
+}
+
 OsFileStatus os_file_replace(String8 target, String8 temp) {
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
@@ -742,6 +776,14 @@ i32 os_atomic_get(volatile i32 *v) {
 
 void os_atomic_set(volatile i32 *v, i32 x) {
     InterlockedExchange((volatile LONG *)v, x);
+}
+
+i32 os_atomic_add(volatile i32 *v, i32 x) {
+    return (i32)InterlockedAdd((volatile LONG *)v, x);
+}
+
+i32 os_atomic_cas(volatile i32 *v, i32 expected, i32 x) {
+    return (i32)InterlockedCompareExchange((volatile LONG *)v, x, expected);
 }
 
 void os_wake_main(void) {

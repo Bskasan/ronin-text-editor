@@ -127,8 +127,15 @@ OsFileStatus os_dev_lock_file(String8 path, OsFile *file); // opened without sha
 
 // ---------------------------------------------------------------------------
 // Threads (CLAUDE.md has the rules). Everything in this section may be called from any thread, as
-// may os_reserve / os_commit / os_decommit / os_release, os_time_us, os_list_dir and
-// os_read_small_file. Nothing else in this file may be called from a worker.
+// may os_reserve / os_commit / os_decommit / os_release, os_time_us, os_list_dir,
+// os_read_small_file and os_file_close. Nothing else in this file may be called from a worker.
+
+// A file opened for reading, the path converted in the caller's arena (popped again). Shares read, write
+// and delete, so a reader never makes a save, a rename or a delete by anyone else fail. *size: its size.
+OsFileStatus os_file_open_read_arena(Arena *arena, String8 path, OsFile *file, i64 *size);
+// One read of at most `cap` bytes; *got 0 at the end of the file (a file that shrank ends early).
+OsFileStatus os_file_read_some(OsFile file, void *dst, i64 cap, i64 *got);
+i32  os_cpu_count(void); // logical processors (at least 1)
 
 typedef struct OsThread { void *handle; } OsThread;
 typedef void OsThreadFn(void *data);
@@ -148,6 +155,8 @@ void os_event_destroy(OsEvent event);
 
 i32  os_atomic_get(volatile i32 *v);
 void os_atomic_set(volatile i32 *v, i32 x);
+i32  os_atomic_add(volatile i32 *v, i32 x);                 // returns the new value
+i32  os_atomic_cas(volatile i32 *v, i32 expected, i32 x);   // sets x if *v == expected; returns the old value
 
 // The main loop calls app_wake soon after (sets coalesce): a worker has results.
 void os_wake_main(void);

@@ -5769,6 +5769,10 @@ typedef struct TestWorker {
     OsEvent go;
     i64 counter;
     volatile i32 done;
+    volatile i32 added, swapped; // os_atomic_add and os_atomic_cas increments from both threads
+    String8 file;                // read by the worker in small pieces (any thread)
+    i64 file_got;                // its bytes as read, -1 on an error
+    b32 file_same;
 } TestWorker;
 
 static void test_worker_main(void *data) {
@@ -5778,7 +5782,23 @@ static void test_worker_main(void *data) {
         os_lock(&w->lock);
         w->counter++;
         os_unlock(&w->lock);
+        os_atomic_add(&w->added, 1);
+        for (i32 old = os_atomic_get(&w->swapped); os_atomic_cas(&w->swapped, old, old + 1) != old;) old = os_atomic_get(&w->swapped);
     }
+    // A file read in 7-byte pieces through the worker's own arena.
+    Arena arena = arena_create(MB(1));
+    OsFile f;
+    i64 size;
+    w->file_got = -1;
+    if (os_file_open_read_arena(&arena, w->file, &f, &size) == OS_FILE_OK) {
+        u8 *bytes = PUSH_ARRAY(&arena, u8, size + 1);
+        i64 got = 0, n;
+        while (os_file_read_some(f, bytes + got, MIN(7, size + 1 - got), &n) == OS_FILE_OK && n) got += n;
+        os_file_close(f);
+        w->file_got = got;
+        w->file_same = got == size && got == 26 && mem_equal(bytes, "abcdefghijklmnopqrstuvwxyz", 26);
+    }
+    os_release(arena.base);
     os_atomic_set(&w->done, 1);
     os_wake_main();
 }
@@ -5787,6 +5807,8 @@ static b32 test_threads(Test *t) {
     i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
     while (os_dev_wake_wait(0)) {} // nothing left over
     TestWorker w = { 0 };
+    w.file = str8_fmt(&t->arena, "%S\\threads_read.txt", t->tmp_dir);
+    TEST_CHECK(t, os_write_file(w.file, STR8_LIT("abcdefghijklmnopqrstuvwxyz")), "threads: cannot write %S", w.file);
     TEST_CHECK(t, os_event_create(&w.go), "threads: no event");
     OsThread th;
     TEST_CHECK(t, os_thread_start(&th, test_worker_main, &w), "threads: no thread");
@@ -5796,14 +5818,21 @@ static b32 test_threads(Test *t) {
         os_lock(&w.lock);
         w.counter++;
         os_unlock(&w.lock);
+        os_atomic_add(&w.added, 1);
+        for (i32 old = os_atomic_get(&w.swapped); os_atomic_cas(&w.swapped, old, old + 1) != old;) old = os_atomic_get(&w.swapped);
     }
     TEST_CHECK(t, os_thread_join(th, 10000), "threads: the worker did not end");
     TEST_CHECK(t, w.counter == 200000 && os_atomic_get(&w.done) == 1, "threads: the lock lost increments (%D)", w.counter);
+    TEST_CHECK(t, os_atomic_get(&w.added) == 200000 && os_atomic_get(&w.swapped) == 200000, "threads: atomics lost increments (add %d, cas %d)",
+               os_atomic_get(&w.added), os_atomic_get(&w.swapped));
+    TEST_CHECK(t, w.file_same, "threads: the worker read %D bytes of the file, not the 26 written", w.file_got);
+    TEST_CHECK(t, os_cpu_count() >= 1, "threads: os_cpu_count");
     TEST_CHECK(t, os_dev_wake_wait(0) && !os_dev_wake_wait(0), "threads: os_wake_main set the wake once (auto-reset)");
     os_event_destroy(w.go);
     TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "threads: counters back (%d threads, %d events)",
                os_dev_live_threads(), os_dev_live_events());
-    LOG("test: ok: threads (start, join with a timeout, a lock under contention, an auto-reset event, os_wake_main, the live counters)");
+    LOG("test: ok: threads (start, join with a timeout, a lock and os_atomic_add / os_atomic_cas under contention, a file read in "
+        "pieces on the worker, an auto-reset event, os_wake_main, the live counters; %d logical processors)", os_cpu_count());
     return 1;
 }
 
