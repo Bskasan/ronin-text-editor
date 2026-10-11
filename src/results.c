@@ -611,7 +611,7 @@ static void results_shutdown(App *app, u64 deadline) {
 // Starting a search
 
 // The project search for `query` under `root` into *search*, shown through the pop-up rule and selected.
-static Results *results_project_search(CommandContext *ctx, String8 root, String8 query, b32 fold) {
+static Results *results_project_search(CommandContext *ctx, String8 root, String8 query, b32 fold, b32 select) {
     App *app = ctx->app;
     Results *r = results_open(app, STR8_LIT("*search*"), RESULTS_PROJECT);
     if (!r) {
@@ -674,8 +674,14 @@ static Results *results_project_search(CommandContext *ctx, String8 root, String
     r->start_us = os_time_us();
     results_progress(app, r);
     app->results_last = r;
-    app_pop_to_buffer(ctx, r->buffer);
-    view_set_point(ctx->view, ctx->cursor, 0); // a window that showed it before remembers an old point
+    // A window that showed it before remembers an old point: the start, until the first location.
+    if (select) {
+        app_pop_to_buffer(ctx, r->buffer);
+        view_set_point(ctx->view, ctx->cursor, 0);
+    } else {
+        View *v = app_display_buffer(app, r->buffer, 0);
+        view_set_point(v, &v->cursors[0], 0);
+    }
     return r;
 }
 
@@ -720,7 +726,7 @@ static void results_project_done(CommandContext *ctx, MiniResult *res) {
         return;
     }
     if (!res->text.len) minibuffer_history_add(ctx->mini, MINI_HISTORY_SEARCH, query);
-    results_project_search(ctx, root, query, !search_has_upper(query));
+    results_project_search(ctx, root, query, !search_has_upper(query), 1);
 }
 
 static void cmd_project_search(CommandContext *ctx) {
@@ -928,7 +934,7 @@ static void cmd_recompile(CommandContext *ctx) {
     if (!r) return;
     String8 root = str8_copy(ctx->scratch, r->root), query = str8_copy(ctx->scratch, r->query);
     if (r->kind == RESULTS_PROJECT) {
-        results_project_search(ctx, root, query, r->fold);
+        results_project_search(ctx, root, query, r->fold, 1);
         return;
     }
     Buffer *target = buffer_list_find_name(&ctx->app->buffers, root);
@@ -981,6 +987,36 @@ static b32 results_dev_wait(App *app, Arena *scratch, u32 timeout_ms) {
         if (os_dev_wake_wait(app_wants_frame(app) ? 0 : 5)) app_wake(app);
         app_dev_feed_events(app, NULL, 0, scratch);
     }
+}
+
+b32 app_dev_results_busy(App *app) {
+    b32 busy = app->grep_dying_count > 0;
+    for (i32 i = 0; i < RESULTS_MAX; i++) busy |= app->results[i].buffer && app->results[i].running;
+    return busy;
+}
+
+// Smoke stage 8: a known tree (one matching file, two that do not match), the real search for "foo" in
+// *search*, shown in another window without selecting it (the title stays *scratch*).
+void app_dev_smoke_results(App *app, String8 tmp_dir) {
+    String8 root = str8_fmt(&app->files_arena, "%S\\smoke_grep", tmp_dir);
+    os_make_dir(root);
+    os_write_file(str8_fmt(&app->files_arena, "%S\\match.c", root), STR8_LIT("int foo = 1;\n"));
+    os_write_file(str8_fmt(&app->files_arena, "%S\\other1.txt", root), STR8_LIT("nothing here\n"));
+    os_write_file(str8_fmt(&app->files_arena, "%S\\other2.txt", root), STR8_LIT("bar\n"));
+    String8 full = os_full_path(&app->files_arena, root);
+    u8 buf[PROJECT_PATH_MAX];
+    i64 n = MIN(full.len, (i64)sizeof(buf));
+    memcpy(buf, full.data, (size_t)n);
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    ctx.cursor = &ctx.view->cursors[0];
+    results_project_search(&ctx, str8(buf, n), STR8_LIT("foo"), 1, 0);
+}
+
+void app_dev_smoke_results_end(App *app) {
+    app_run_command(app, &CMD_DELETE_OTHER_WINDOWS, 0, 0);
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*search*"));
+    if (b) files_kill_buffer(app, b);
 }
 
 // Releases every held search (--grep-hold, tests).
