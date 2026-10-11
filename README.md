@@ -19,7 +19,7 @@ editing, the minibuffer, syntax highlighting, isearch and query-replace, window 
 and fuzzy file open. Still to come: 12 project-wide search, 13 build and jump to error, 14 multiple
 cursors, 15 a performance and size pass.
 
-Windows 10 (version 1903) or later, x64 only.
+Windows 10 or later, x64; developed and tested on Windows 11 only.
 
 ## Features
 
@@ -223,7 +223,8 @@ widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]` and `[keys 
   and saved as raw bytes. Files over 1 GB are refused.
 - At most 8 windows. While the minibuffer is active, C-x o cannot leave it.
 - `.gitignore` support is a subset: no character classes (`[a-z]`), no backslash escapes, no
-  `.git/info/exclude` or global excludes file.
+  `.git/info/exclude` or global excludes file. In `.teal-project` a pattern cannot start with `[`
+  (that line is a section header).
 - Listing a directory on a slow network share in C-x C-f blocks the window until it is done.
 
 The full list is the "Later" section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later).
