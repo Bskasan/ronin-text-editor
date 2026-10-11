@@ -101,9 +101,10 @@ static void it_post(InputTest *t, u32 vk_msg, u32 scan, b32 ext, b32 down, b32 w
 static void it_check_state(InputTest *t) {
     if (!t->shield.running) return;
     static const u32 vks[] = { VK_SHIFT, VK_CONTROL, VK_MENU };
+    static const char *const names[] = { "Shift", "Ctrl", "Alt" };
     for (i32 i = 0; i < ARRAY_COUNT(vks); i++) {
         if (((GetKeyState((int)vks[i]) & 0x8000) != 0) != ((t->state[vks[i]] & 0x80) != 0)) {
-            win32_shield_state_lost(&t->shield);
+            win32_shield_state_lost(&t->shield, names[i]);
             return;
         }
     }

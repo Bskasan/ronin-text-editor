@@ -1029,9 +1029,12 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
   previous survivors (also those of a pass cut short), then at what it never reached; entries that arrive
   during a pass extend it. Spans are computed only for the rows drawn.
 - The input tests' shield (Phase 10): the earlier retry (1b48e43) is gone. Each case waits (at most
-  2 s) until no physical modifier is down and records GetLastInputInfo; a case that fails while real input
-  arrived, or whose own key state did not hold with real input in the last 2 s, is inconclusive (logged,
-  repeated, at most 5 attempts); any other failure counts. Measured: Windows replaces a thread's key state
+  2 s) until no physical modifier is down and records GetLastInputInfo. Since Phase 12: a case whose
+  injected key state did not hold (or that started with a modifier still down) tested nothing and is
+  inconclusive whether it passed or failed, and whether or not real input was seen (the log says which key
+  and whether real input came); it is repeated, at most 5 attempts, then fails as "key state unstable". A
+  case whose key state held and whose result is wrong is a failure at once, never repeated (Phase 11 also
+  called a failure with real input during the case inconclusive). Measured: Windows replaces a thread's key state
   with the keyboard's some time after real input, also input from before the case (16-625 ms in the
   failures seen). One failure without real input in the 2 s before was seen once afterwards (not explained yet).
 - The benches never take the focus: their window is shown cloaked without activation, as the smoke's and
