@@ -51,10 +51,13 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   (arena_push, r_push_rect, os_write_file); macros and enum constants UPPER_SNAKE.
 - Scope discipline: build only what the current phase asks for. No speculative
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
-- Verify every change: build all three configurations (debug, release, bench) before every
-  commit, then debug build + `--smoke`, and bench build + `--test` (the optimized build runs
-  the fuzz tests quickly). Run the full `--test` on the debug build once per phase, before
-  its final commit. Take a screenshot after a visual change and look at it.
+- Verify every change with `verify.bat`, the only gate before a commit: it builds all three
+  configurations (each with the macro check), runs `--smoke` on the debug build and `--test` on
+  the bench build (the optimized build runs the fuzz tests quickly), checks every exit code and
+  prints one last line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts:
+  never run the steps by hand and judge them by eye. `verify.bat phase` also runs the full
+  `--test` on the debug build: once per phase, before its final commit. Each run's log is kept
+  as build\verify\<step>.log. Take a screenshot after a visual change and look at it.
 - Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
   run without asking the user first, and then only once per request: they may be typing in another
   window. Everything else that is run must keep not taking the focus.
@@ -70,8 +73,8 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 
 ## Commit policy (every phase)
 
-- Commit as you go: one logical change per commit, each one building in all three
-  configurations with zero warnings and passing the tests and smoke. No single giant commit at the end of a phase.
+- Commit as you go: one logical change per commit, each one with `verify.bat` printing
+  `verify: PASS` right before it. No single giant commit at the end of a phase.
 - Categorized messages: `<type>(<scope>): <summary>`, type one of feat, fix, perf, refactor,
   test, docs, build, chore. Example: `feat(buffer): gap buffer with incremental line index`.
 - Never push. Never amend or rewrite existing commits. The user pushes.
@@ -90,6 +93,9 @@ the explicit `.\`):
     cmd //c ".\build.bat"            # build\teal_debug.exe  (/Od /Zi /MTd, TEAL_DEV=1)
     cmd //c ".\build.bat release"    # build\teal.exe        (/O2 /GL ..., TEAL_DEV=0)
     cmd //c ".\build.bat bench"      # build\teal_bench.exe  (/O2 /MT, TEAL_DEV=1, no D3D debug layer)
+
+    cmd //c ".\verify.bat"           # the gate: three builds, smoke (debug), test (bench), one PASS / FAIL line
+    cmd //c ".\verify.bat phase"     # ... plus the full --test on the debug build (once per phase)
 
 Report benchmark numbers from teal_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
