@@ -3847,7 +3847,7 @@ static b32 test_config(Test *t, u64 seed) {
         "font = x\n");                        // 25: a key sequence "font =", command "x"
     config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
     static const char *expected[] = {
-        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer] or [keys isearch])",
+        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch] or [keys search-results])",
         "t.conf:3: font_size: 'big' is not a number",
         "t.conf:4: unknown setting 'nosuch'",
         "t.conf:5: expected name = value",
@@ -3857,7 +3857,7 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:11: unknown command 'no-such-command'",
         "t.conf:12: expected a key sequence and a command",
         "t.conf:13: unknown section [bogus]",
-        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer] or [keys isearch])",
+        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch] or [keys search-results])",
         "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
         "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
         "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",
@@ -4329,6 +4329,43 @@ static i32 test_app_pump(Test *t, App *app) {
         frames++;
     }
     return frames;
+}
+
+// A buffer's own keymap comes before the global one, only while that buffer is selected and no
+// minibuffer or isearch is active.
+static b32 test_buffer_keymap(Test *t) {
+    String8 conf = str8_fmt(&t->arena, "%S\\p12keymap.conf", t->tmp_dir);
+    TEST_CHECK(t, os_write_file(conf, STR8_LIT("[keys search-results]\nn  forward-char\nC-c z  end-of-buffer\n")), "buffer keymap: cannot write");
+    App *app = test_search_app(t, STR8_LIT("abc"), 0);
+    TEST_CHECK(t, app, "buffer keymap: app_create failed");
+    app_dev_use_config(app, conf);
+    TEST_CHECK(t, app->config->diags.errors == 0 && app->config->search_results.count == 2, "buffer keymap: [keys search-results] not read");
+    Buffer *buf = app_selected_view(app)->buffer;
+    app_dev_feed(app, "n", &t->arena);
+    TEST_CHECK(t, str8_equal(test_app_text(t, app), STR8_LIT("nabc")), "buffer keymap: without the keymap n types n");
+    buf->keymap = BUFFER_KEYMAP_SEARCH_RESULTS;
+    app_dev_feed(app, "n", &t->arena);
+    TEST_CHECK(t, str8_equal(test_app_text(t, app), STR8_LIT("nabc")) && test_app_point(app) == 2, "buffer keymap: n runs forward-char (point %D)",
+               test_app_point(app));
+    app_dev_feed(app, "C-c z", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 4, "buffer keymap: a prefix key of the buffer's map (C-c z)");
+    app_dev_feed(app, "C-h k n", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "n runs the command forward-char"), "buffer keymap: describe-key says '%S'",
+               str8(app->echo.text, app->echo.len));
+    // The minibuffer reads: its keymap and the global one, not the buffer's.
+    app_dev_feed(app, "M-x n", &t->arena);
+    String8 input = minibuffer_input(&app->mini, &t->arena);
+    TEST_CHECK(t, app->mini.active && str8_equal(input, STR8_LIT("n")), "buffer keymap: in the minibuffer n types n ('%S')", input);
+    app_dev_feed(app, "C-g", &t->arena);
+    // An isearch in that buffer: n extends the search string.
+    app_dev_feed(app, "C-s n", &t->arena);
+    TEST_CHECK(t, app->isearch.active && str8_equal(isearch_top(&app->isearch)->string, STR8_LIT("n")), "buffer keymap: in isearch n searches");
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    buf->keymap = BUFFER_KEYMAP_NONE;
+    if (!test_app_destroy(t, app, "buffer keymap")) return 0;
+    LOG("test: ok: buffer keymap ([keys search-results] read; n types n without it, runs forward-char with it; a prefix of the buffer's "
+        "map; describe-key; not in the minibuffer, not in isearch)");
+    return 1;
 }
 
 static b32 test_isearch_state(Test *t, App *app, const char *what, b32 active, i64 point, const char *prompt, const char *string, i64 fail) {
@@ -8534,6 +8571,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_hot_reload(&t);
     arena_reset(&t.arena);
     test_headless_app(&t);
+    arena_reset(&t.arena);
+    test_buffer_keymap(&t);
     arena_reset(&t.arena);
     test_isearch(&t);
     arena_reset(&t.arena);

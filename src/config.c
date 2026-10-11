@@ -11,6 +11,7 @@ void config_init(Config *c) {
     c->global.name = "global";
     c->minibuffer.name = "minibuffer";
     c->isearch.name = "isearch";
+    c->search_results.name = "search-results";
 }
 
 // ---------------------------------------------------------------------------
@@ -332,19 +333,21 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         i32 header = config_header(line, &head);
         if (header) {
             if (header < 0) {
-                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer] or [keys isearch])");
+                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch] or [keys search-results])");
                 section = CONFIG_SECTION_UNKNOWN;
                 continue;
             }
             section = str8_equal(head, STR8_LIT("settings")) ? CONFIG_SECTION_SETTINGS
                     : str8_equal(head, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
                     : CONFIG_SECTION_UNKNOWN;
-            // [keys] and [keys global] bind in the global map, [keys minibuffer] and [keys isearch] in theirs.
+            // [keys] and [keys global] bind in the global map, [keys minibuffer], [keys isearch] and
+            // [keys search-results] in theirs.
             if (str8_starts_with(head, STR8_LIT("keys")) && (head.len == 4 || config_is_blank(head.data[4]))) {
                 String8 map = config_trim(str8(head.data + 4, head.len - 4));
                 p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
                        : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer
-                       : str8_equal(map, STR8_LIT("isearch"))          ? &c->isearch : NULL;
+                       : str8_equal(map, STR8_LIT("isearch"))          ? &c->isearch
+                       : str8_equal(map, STR8_LIT("search-results"))   ? &c->search_results : NULL;
                 if (p.keys) section = CONFIG_SECTION_KEYS;
             }
             if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(head));
@@ -352,7 +355,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         }
         switch (section) {
         case CONFIG_SECTION_NONE:
-            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer] or [keys isearch])");
+            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch] or [keys search-results])");
             break;
         case CONFIG_SECTION_UNKNOWN:
             break;

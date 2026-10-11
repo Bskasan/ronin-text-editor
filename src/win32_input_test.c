@@ -577,7 +577,7 @@ static void it_cases(InputTest *t) {
 static void it_bindings(InputTest *t) {
     Arena *a = &t->arena;
     i32 total = 0, unreachable = 0, elsewhere = 0, wrong = 0;
-    for (i32 map = 0; map < 3; map++) {
+    for (i32 map = 0; map < 4; map++) {
         for (i32 i = 0;; i++) {
             u64 mark = arena_pos(a);
             const char *command;
