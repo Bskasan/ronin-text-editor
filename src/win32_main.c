@@ -99,6 +99,7 @@ typedef struct Platform {
     i32 scan_hold; // --scan-hold N: every project scan stands still after N batches (the finder while scanning)
     i32 grep_hold; // --grep-hold N: every search's workers stand still after N files each (a search still running)
     String8 keys; // --keys: injected after startup
+    String8 keys_after; // --keys-after: a screenshot run's keys once the workers' results of --keys are in
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
     u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
@@ -2493,11 +2494,17 @@ static i32 win32_write_outputs(Platform *p) {
     }
     if (p->quit) return EXIT_OK;
     // The workers' results (a project scan, a search), taken until none came for 300 ms (a held scan or
-    // search stops there), with the frames that work on them.
-    for (;;) {
-        for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p);
-        if (!os_dev_wake_wait(300)) break;
-        if (app_wake(p->app)) win32_frame(p);
+    // search stops there), with the frames that work on them; then --keys-after, and their results.
+    for (i32 pass = 0; pass < 2; pass++) {
+        for (;;) {
+            for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p);
+            if (!os_dev_wake_wait(300)) break;
+            if (app_wake(p->app)) win32_frame(p);
+        }
+        if (pass || !p->keys_after.len || p->quit) break;
+        p->keys = p->keys_after;
+        win32_inject_keys(p);
+        if (p->event_count) win32_frame(p);
     }
     for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p); // the colors of what is shown, a ranking
     r_request_capture(p->renderer);
@@ -3896,6 +3903,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--grep-hold")) && has_value) { p->grep_hold = win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--bench-grep"))) { p->bench_grep = 1; continue; }
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--keys-after")) && has_value) { p->keys_after = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
