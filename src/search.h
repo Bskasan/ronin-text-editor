@@ -1,11 +1,13 @@
-// search.h — literal text search over a buffer, forward and backward, exact or case-folded. One
-// engine for isearch, query-replace and (Phase 12) project-wide search. Plain C, headless.
+// search.h — literal text search, forward and backward, exact or case-folded. One engine for isearch,
+// query-replace, occur and the project-wide search (grep.c). Plain C, headless.
 //
-// It reads the gap buffer's two segments in place: nothing is copied except a candidate that
-// straddles the gap, which is copied into a window of at most the needle's length (in the Search).
-// It is resumable: search_run examines at most `budget` candidate start positions and returns, so a
-// caller can spread a search over many frames; how much a slice is, is the caller's (the app slices
-// by time). No allocation.
+// Two layers. The core works on plain byte ranges: a SearchPattern (the needle, folded when folding) and
+// the functions that find it in one contiguous range (search_bytes_forward / _backward); grep.c runs it
+// over a file's chunks. On top of it, a Search runs the pattern over a gap buffer's two segments in
+// place: nothing is copied except a candidate that straddles the gap, which is compared through a window
+// of at most the needle's length. A Search is resumable: search_run examines at most `budget` candidate
+// start positions and returns, so a caller can spread a search over many frames; how much a slice is, is
+// the caller's (the app slices by time). No allocation.
 //
 // Case folding is the matcher's (minibuffer.h): a character is replaced by its lowercase form only
 // when that has the same UTF-8 length, so folding keeps byte lengths and a match is always exactly
@@ -18,6 +20,38 @@
 #define SEARCH_NEEDLE_MAX 4096     // bytes of a search string
 #define SEARCH_SLICE_BYTES KB(256) // candidate positions a caller examines per slice
 
+// ---------------------------------------------------------------------------
+// The core: a pattern and plain byte ranges.
+
+typedef struct SearchPattern {
+    u8 needle[SEARCH_NEEDLE_MAX]; // folded when `fold`
+    i64 len;                      // 0: no pattern (empty or too long a needle)
+    b32 fold;
+    b32 ascii_fold;     // fast path: the first byte is an ASCII letter, matched as (b | 0x20) == first[0]
+    u8 first[2];        // fast path: the bytes a match can start with
+    i32 first_count;
+    b32 check_boundary; // the needle starts with a continuation byte: a match must start on a character boundary
+} SearchPattern;
+
+// The pattern of `needle` (folded first when `fold`). False, with len 0, for an empty needle or one
+// longer than SEARCH_NEEDLE_MAX.
+b32 search_pattern_init(SearchPattern *pat, String8 needle, b32 fold);
+// The first i in [i, end) where p[i] can start a match, or -1 (the first byte's filter only; bytes of p
+// are read below `valid`, end <= valid).
+i64 search_candidate_forward(const SearchPattern *pat, const u8 *p, i64 i, i64 end, i64 valid);
+// The last i in [low, high] where p[i] can start a match, or -1 (bytes of p read below `valid`).
+i64 search_candidate_backward(const SearchPattern *pat, const u8 *p, i64 low, i64 high, i64 valid);
+// The `len` bytes at h equal the pattern (folded the same way when folding).
+b32 search_pattern_equal(const SearchPattern *pat, const u8 *h);
+// The bytes p[lo, hi) are valid. Forward: the smallest start c in [from, to - len] with a match at c;
+// backward: the largest one. -1 when none. With check_boundary, c must start a character as far as the
+// bytes in [lo, hi) tell (a sequence reaching past hi is treated as cut there).
+i64 search_bytes_forward(const SearchPattern *pat, const u8 *p, i64 lo, i64 hi, i64 from, i64 to);
+i64 search_bytes_backward(const SearchPattern *pat, const u8 *p, i64 lo, i64 hi, i64 from, i64 to);
+
+// ---------------------------------------------------------------------------
+// A search over a gap buffer.
+
 typedef enum SearchStatus {
     SEARCH_RUNNING,   // more positions to examine
     SEARCH_FOUND,     // match_start / match_end
@@ -25,14 +59,9 @@ typedef enum SearchStatus {
 } SearchStatus;
 
 typedef struct Search {
-    u8 needle[SEARCH_NEEDLE_MAX]; // folded when `fold`
-    i64 len;
-    b32 fold, forward;
-    b32 ascii_fold;     // fast path: the first byte is an ASCII letter, matched as (b | 0x20) == first[0]
-    u8 first[2];        // fast path: the bytes a match can start with
-    i32 first_count;
-    b32 check_boundary; // the needle starts with a continuation byte: a match must start on a character boundary
+    SearchPattern pat;
     u8 window[SEARCH_NEEDLE_MAX]; // a candidate straddling the gap, copied for the comparison
+    b32 forward;
     i64 lo, hi;         // matches lie inside [lo, hi)
     i64 from;           // forward: the smallest start allowed; backward: the largest end allowed
     i64 next;           // the next start to examine (ascending forward, descending backward)

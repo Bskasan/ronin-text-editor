@@ -454,8 +454,8 @@ static void app_draw_lazy(App *app, Renderer *r, AppLayout *l, View *v, i32 draw
         i64 line = top + row, ls = buffer_line_start(buf, line), le = buffer_line_end(buf, line);
         i64 col = 0;
         i64 shown = view_walk(buf, ls, le, &col, v->left_col); // the first byte on screen
-        i64 row_lo = MAX(MAX(ls, shown - s->len + 1), lo);
-        i64 row_hi = MIN(MIN(size, MIN(le, shown + ((i64)v->cols + 1) * 4) + s->len - 1), hi);
+        i64 row_lo = MAX(MAX(ls, shown - s->pat.len + 1), lo);
+        i64 row_hi = MIN(MIN(size, MIN(le, shown + ((i64)v->cols + 1) * 4) + s->pat.len - 1), hi);
         for (i64 from = row_lo; from < row_hi;) {
             search_restart(s, buf, 1, from, row_lo, row_hi);
             if (search_run(s, buf, I64_MAX / 4) != SEARCH_FOUND) break;
