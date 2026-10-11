@@ -7889,6 +7889,566 @@ static b32 test_finder(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 12: the search over files (grep.c)
+
+// A file in memory, handed out in reads of at most `max_read` bytes (a random size each time when 0).
+typedef struct TestGrepReader {
+    Test *t;
+    const u8 *data;
+    i64 len, at, max_read;
+} TestGrepReader;
+
+static OsFileStatus test_grep_read(void *data, u8 *dst, i64 cap, i64 *got) {
+    TestGrepReader *r = data;
+    i64 most = r->max_read ? r->max_read : 1 + test_below(r->t, 700);
+    *got = MIN(MIN(cap, most), r->len - r->at);
+    memcpy(dst, r->data + r->at, (size_t)*got);
+    r->at += *got;
+    return OS_FILE_OK;
+}
+
+typedef struct TestGrepList {
+    Test *t;
+    GrepMatch *m;
+    i32 count, cap;
+} TestGrepList;
+
+static b32 test_grep_keep(void *data, const GrepMatch *m) {
+    TestGrepList *l = data;
+    if (l->count == l->cap) return 0;
+    GrepMatch *k = &l->m[l->count++];
+    *k = *m;
+    k->text = str8_copy(&l->t->arena, m->text);
+    return 1;
+}
+
+// The rule of grep.h on a whole text: every match in order, its line, column and shown text.
+static i32 test_grep_ref(Test *t, const SearchPattern *pat, String8 text, GrepMatch *out, i32 cap) {
+    static const u8 ellipsis[3] = { 0xE2, 0x80, 0xA6 };
+    i32 n = 0;
+    i64 from = 0, line = 1, counted = 0, ls = 0;
+    for (;;) {
+        i64 c = search_bytes_forward(pat, text.data, 0, text.len, from, text.len);
+        if (c < 0 || n == cap) break;
+        for (; counted < c; counted++) {
+            if (text.data[counted] != '\n') continue;
+            line++;
+            ls = counted + 1;
+        }
+        i64 le = c;
+        while (le < text.len && text.data[le] != '\n') le++;
+        i64 s0, s1;
+        b32 pre = 0, post = 0;
+        if (le - ls <= GREP_LINE_SHOW) {
+            s0 = ls;
+            s1 = le;
+        } else {
+            s0 = MAX(ls, c - GREP_CONTEXT);
+            while (s0 < c && (text.data[s0] & 0xC0) == 0x80) s0++;
+            s1 = MIN(le, s0 + GREP_LINE_SHOW);
+            while (s1 > c && s1 < le && (text.data[s1] & 0xC0) == 0x80) s1--;
+            pre = s0 > ls;
+            post = s1 < le;
+        }
+        if (s1 > s0 && text.data[s1 - 1] == '\r' && !post) s1--;
+        u8 *show = PUSH_ARRAY(&t->arena, u8, s1 - s0 + 6);
+        i64 k = 0;
+        if (pre) {
+            memcpy(show, ellipsis, 3);
+            k = 3;
+        }
+        memcpy(show + k, text.data + s0, (size_t)(s1 - s0));
+        i64 off = k + c - s0;
+        k += s1 - s0;
+        if (post) {
+            memcpy(show + k, ellipsis, 3);
+            k += 3;
+        }
+        out[n++] = (GrepMatch){ .line = line, .col = c - ls, .len = pat->len, .text = str8(show, k), .match_off = off,
+                                .match_shown = CLAMP(MIN(c + pat->len, s1) - c, 0, pat->len) };
+        from = c + pat->len;
+    }
+    return n;
+}
+
+// grep_file on `file` (as stored) against the reference on `text` (its UTF-8 content); "" when equal,
+// else what differs.
+static String8 test_grep_compare(Test *t, GrepScan *sc, const SearchPattern *pat, String8 file, String8 text, i64 max_read,
+                                 GrepFileResult *res) {
+    GrepMatch *want = PUSH_ARRAY(&t->arena, GrepMatch, 4096), *got = PUSH_ARRAY(&t->arena, GrepMatch, 4096);
+    i32 wn = test_grep_ref(t, pat, text, want, 4096);
+    TestGrepReader r = { t, file.data, file.len, 0, max_read };
+    TestGrepList l = { t, got, 0, 4096 };
+    *res = grep_file(pat, sc, file.len, test_grep_read, &r, 4096, NULL, test_grep_keep, &l);
+    if (l.count != wn) return str8_fmt(&t->arena, "%d matches, expected %d", l.count, wn);
+    for (i32 i = 0; i < wn; i++) {
+        GrepMatch *a = &got[i], *b = &want[i];
+        if (a->line != b->line || a->col != b->col || a->len != b->len || !str8_equal(a->text, b->text) || a->match_off != b->match_off ||
+            a->match_shown != b->match_shown) {
+            return str8_fmt(&t->arena, "match %d: line %D col %D off %D shown %D '%S', expected line %D col %D off %D shown %D '%S'", i,
+                            a->line, a->col, a->match_off, a->match_shown, a->text, b->line, b->col, b->match_off, b->match_shown, b->text);
+        }
+    }
+    return str8(NULL, 0);
+}
+
+// UTF-8 (valid) to UTF-16 with a BOM.
+static String8 test_grep_utf16(Test *t, String8 s, b32 big) {
+    u8 *out = PUSH_ARRAY(&t->arena, u8, s.len * 4 + 2);
+    i64 n = 0;
+    out[n++] = big ? 0xFE : 0xFF;
+    out[n++] = big ? 0xFF : 0xFE;
+    for (i64 i = 0; i < s.len;) {
+        i64 adv;
+        u32 c = utf8_decode(s.data + i, s.len - i, &adv);
+        i += adv;
+        u32 units[2];
+        i32 k = 0;
+        if (c >= 0x10000) {
+            units[k++] = 0xD800 + ((c - 0x10000) >> 10);
+            units[k++] = 0xDC00 + ((c - 0x10000) & 0x3FF);
+        } else {
+            units[k++] = c;
+        }
+        for (i32 j = 0; j < k; j++) {
+            out[n++] = (u8)(big ? units[j] >> 8 : units[j]);
+            out[n++] = (u8)(big ? units[j] : units[j] >> 8);
+        }
+    }
+    return str8(out, n);
+}
+
+static b32 test_grep_file(Test *t, u64 seed) {
+    t->rng = seed ^ 0x6E3B;
+    static const char *pieces[] = { "a", "b", "foo", "Foo", "FOO", "o", " ", "\t", "\n", "\n", "\r\n", "\xc4\x9f", "\xc4\x9e", "\xe2\x82\xac",
+                                    "\xf0\x9f\x98\x80", "\x80", "\xc3", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" };
+    Arena *a = &t->arena;
+    SearchPattern *pat = PUSH_STRUCT(a, SearchPattern);
+    i64 rounds = 0, matches = 0, small_chunks = 0;
+    u8 *text = PUSH_ARRAY(a, u8, KB(16));
+    for (i32 round = 0; round < 2000; round++) {
+        u64 mark = arena_pos(a);
+        i64 n = 0, want_len = test_below(t, 4) ? test_below(t, 1500) : test_below(t, 9000);
+        while (n < want_len) {
+            String8 p = str8_cstr(pieces[test_below(t, ARRAY_COUNT(pieces))]);
+            memcpy(text + n, p.data, (size_t)p.len);
+            n += p.len;
+        }
+        String8 tx = str8(text, n);
+        u8 nbuf[16];
+        String8 needle;
+        if (n && test_below(t, 2)) {
+            i64 at = test_below(t, n), len = 1 + test_below(t, MIN(6, n - at));
+            memcpy(nbuf, text + at, (size_t)len);
+            needle = str8(nbuf, len);
+        } else {
+            needle = str8_cstr(test_below(t, 3) ? "foo" : test_below(t, 2) ? "o\no" : "a\r\n");
+        }
+        search_pattern_init(pat, needle, (b32)test_below(t, 2));
+        i64 chunk = test_below(t, 3) ? 16 + test_below(t, 200) : 16 + test_below(t, 5000);
+        small_chunks += chunk < 64;
+        GrepScan *sc = PUSH_STRUCT(a, GrepScan);
+        grep_scan_init(sc, a, chunk);
+        GrepFileResult res;
+        String8 diff = test_grep_compare(t, sc, pat, tx, tx, 0, &res);
+        TEST_CHECK(t, !diff.len, "grep: round %d (seed 0x%X), needle '%S' fold %d, %D bytes, chunk %D: %S", round, seed, needle, pat->fold, n, chunk,
+                   diff);
+        matches += res.matches;
+        rounds++;
+        arena_pop_to(a, mark);
+    }
+    // Fixed cases, with chunks of 16 bytes (the minimum) unless said otherwise.
+    struct { const char *text, *needle; i64 chunk; } fixed[] = {
+        { "0123456789abcdefoo end", "foo", 16 },               // a match straddling the first two chunks
+        { "0123456789abcde\nfoo\n", "foo", 16 },               // a newline exactly on a chunk boundary
+        { "0123456789abcdef\nfoo\nfoo", "foo", 16 },           // ... one byte later
+        { "fo", "foo", 16 },                                    // a file smaller than the needle
+        { "", "foo", 16 },                                      // empty
+        { "one o\nod line\nfoo\n", "o\no", 16 },               // a needle with a newline
+        { "x\r\nfoo\r\nbar foo\r\n", "foo", 16 },              // CRLF: the CR is not shown
+        { "foo\xc4\x9f\xc4\x9f\xc4\x9f", "\x9f", 16 },          // a needle starting inside a character: no match
+    };
+    GrepScan *sc = PUSH_STRUCT(a, GrepScan);
+    grep_scan_init(sc, a, 16);
+    for (i32 i = 0; i < ARRAY_COUNT(fixed); i++) {
+        search_pattern_init(pat, str8_cstr(fixed[i].needle), 0);
+        GrepFileResult res;
+        String8 tx = str8_cstr(fixed[i].text);
+        for (i64 rd = 1; rd <= 17; rd += 4) {
+            String8 diff = test_grep_compare(t, sc, pat, tx, tx, rd, &res);
+            TEST_CHECK(t, !diff.len, "grep: fixed case %d, reads of %D: %S", i, rd, diff);
+        }
+    }
+    search_pattern_init(pat, STR8_LIT("foo"), 0);
+    GrepFileResult res;
+    // Exact expectations: the straddling match and the boundary newline.
+    {
+        GrepMatch m[4];
+        TestGrepList l = { t, m, 0, 4 };
+        TestGrepReader r = { t, (const u8 *)"0123456789abcdefoo end", 22, 0, 5 };
+        res = grep_file(pat, sc, 22, test_grep_read, &r, 10, NULL, test_grep_keep, &l);
+        TEST_CHECK(t, l.count == 1 && m[0].line == 1 && m[0].col == 15 && str8_equal(m[0].text, STR8_LIT("0123456789abcdefoo end")),
+                   "grep: the match across the chunk boundary");
+        l.count = 0;
+        TestGrepReader r2 = { t, (const u8 *)"0123456789abcde\nfoo\n", 20, 0, 3 };
+        res = grep_file(pat, sc, 20, test_grep_read, &r2, 10, NULL, test_grep_keep, &l);
+        TEST_CHECK(t, l.count == 1 && m[0].line == 2 && m[0].col == 0 && str8_equal(m[0].text, STR8_LIT("foo")),
+                   "grep: the newline on the chunk boundary counted once (line %D col %D)", l.count ? m[0].line : 0, l.count ? m[0].col : 0);
+    }
+    // A long line cut around the match, an invalid byte at the cut, a character cut in the middle.
+    {
+        u8 *long_line = PUSH_ARRAY(a, u8, 1200);
+        i64 k = 0;
+        for (i32 i = 0; i < 300; i++) long_line[k++] = "\xc4\x9f"[i & 1]; // 150 x ğ
+        long_line[k++] = 0x80;
+        memcpy(long_line + k, "foo", 3);
+        k += 3;
+        for (i32 i = 0; i < 400; i++) long_line[k++] = "\xe2\x82\xac"[i % 3];
+        String8 tx = str8(long_line, k);
+        for (i64 chunk = 16; chunk < 2000; chunk = chunk * 3 + 1) {
+            GrepScan *s2 = PUSH_STRUCT(a, GrepScan);
+            grep_scan_init(s2, a, chunk);
+            String8 diff = test_grep_compare(t, s2, pat, tx, tx, 0, &res);
+            TEST_CHECK(t, !diff.len, "grep: the long line, chunk %D: %S", chunk, diff);
+        }
+        GrepMatch m[2];
+        TestGrepList l = { t, m, 0, 2 };
+        TestGrepReader r = { t, long_line, k, 0, 0 };
+        res = grep_file(pat, sc, k, test_grep_read, &r, 10, NULL, test_grep_keep, &l);
+        TEST_CHECK(t, l.count == 1 && m[0].col == 301 && m[0].text.len <= GREP_SHOW_CAP && mem_equal(m[0].text.data, "\xe2\x80\xa6", 3) &&
+                      mem_equal(m[0].text.data + m[0].text.len - 3, "\xe2\x80\xa6", 3) && mem_equal(m[0].text.data + m[0].match_off, "foo", 3),
+                   "grep: the long line is cut around the match with an ellipsis at each end");
+    }
+    // Encodings and binary files.
+    {
+        String8 utf8 = STR8_LIT("x foo \xc4\x9f\n\xf0\x9f\x98\x80 FOO foo\nend");
+        SearchPattern *fold = PUSH_STRUCT(a, SearchPattern);
+        search_pattern_init(fold, STR8_LIT("foo"), 1);
+        for (i32 big = 0; big < 2; big++) {
+            String8 u16 = test_grep_utf16(t, utf8, big);
+            for (i64 rd = 1; rd < 9; rd++) {
+                String8 diff = test_grep_compare(t, sc, fold, u16, utf8, rd, &res);
+                TEST_CHECK(t, !diff.len && res.kind == GREP_FILE_TEXT && res.matches == 3, "grep: UTF-16 %s, reads of %D: %S",
+                           big ? "BE" : "LE", rd, diff);
+            }
+        }
+        String8 bom = str8_fmt(a, "\xef\xbb\xbf%S", utf8);
+        String8 diff = test_grep_compare(t, sc, fold, bom, utf8, 0, &res);
+        TEST_CHECK(t, !diff.len && res.matches == 3, "grep: a UTF-8 BOM is skipped: %S", diff);
+        u8 *bin = PUSH_ARRAY(a, u8, GREP_PROBE + 64);
+        memset(bin, 'x', GREP_PROBE + 64);
+        memcpy(bin + 100, "foo", 3);
+        bin[GREP_PROBE - 1] = 0;
+        TestGrepReader r = { t, bin, GREP_PROBE + 64, 0, 0 };
+        TestGrepList l = { t, PUSH_ARRAY(a, GrepMatch, 4), 0, 4 };
+        res = grep_file(pat, sc, GREP_PROBE + 64, test_grep_read, &r, 10, NULL, test_grep_keep, &l);
+        TEST_CHECK(t, res.kind == GREP_FILE_BINARY && l.count == 0, "grep: a NUL in the first %d bytes: binary", (i32)GREP_PROBE);
+        bin[GREP_PROBE - 1] = 'x';
+        bin[GREP_PROBE] = 0;
+        r.at = 0;
+        res = grep_file(pat, sc, GREP_PROBE + 64, test_grep_read, &r, 10, NULL, test_grep_keep, &l);
+        TEST_CHECK(t, res.kind == GREP_FILE_TEXT && l.count == 1, "grep: a NUL after the first %d bytes: searched", (i32)GREP_PROBE);
+        // At most max_matches.
+        l.count = 0;
+        TestGrepReader r3 = { t, (const u8 *)"foo foo foo foo", 15, 0, 0 };
+        res = grep_file(pat, sc, 15, test_grep_read, &r3, 2, NULL, test_grep_keep, &l);
+        TEST_CHECK(t, l.count == 2 && res.stopped, "grep: max_matches 2 gave %d", l.count);
+    }
+    LOG("test: ok: grep file: %D random files against the reference (%D matches; %D with chunks under 64 bytes, reads of 1-700 bytes), "
+        "%d fixed cases (a match across chunks, a newline on a boundary, a file smaller than the needle, a needle with a newline, CRLF, "
+        "a needle inside a character), a long line cut with an invalid byte, UTF-16 LE / BE, a UTF-8 BOM, binary, max_matches",
+        rounds, matches, small_chunks, (i32)ARRAY_COUNT(fixed));
+    return 1;
+}
+
+// A generated tree's search through the workers.
+typedef struct TestGrepRun {
+    Test *t;
+    i32 files;              // list size
+    i32 *done;              // DONE records per file
+    GrepFileKind *kind;
+    String8 *lines;
+    i32 line_count, line_cap;
+    i64 records;
+} TestGrepRun;
+
+static void test_grep_record(void *data, const GrepRecord *r) {
+    TestGrepRun *run = data;
+    if (r->kind == GREP_REC_DONE) {
+        if (r->file < (u32)run->files) {
+            run->done[r->file]++;
+            run->kind[r->file] = r->status;
+        }
+    } else if (run->line_count < run->line_cap) {
+        run->lines[run->line_count++] = str8_fmt(&run->t->arena, "%u:%D:%D:%S", r->file, r->match.line, r->match.col, r->match.text);
+    }
+}
+
+// Drains until every worker ended; false after the timeout.
+static b32 test_grep_finish(GrepSearch *s, TestGrepRun *run, u32 timeout_ms) {
+    u64 start = os_time_us();
+    while (!s->ended) {
+        os_dev_wake_wait(20);
+        grep_drain(s, test_grep_record, run);
+        if (!s->ended && os_time_us() - start > (u64)timeout_ms * 1000) return 0;
+    }
+    return 1;
+}
+
+static void test_grep_run_init(Test *t, TestGrepRun *run, i32 files) {
+    memset(run, 0, sizeof(*run));
+    run->t = t;
+    run->files = files;
+    run->done = PUSH_ARRAY(&t->arena, i32, files);
+    run->kind = PUSH_ARRAY(&t->arena, GrepFileKind, files);
+    run->line_cap = 4096;
+    run->lines = PUSH_ARRAY(&t->arena, String8, run->line_cap);
+}
+
+// The collected match lines, sorted and joined by '|'.
+static String8 test_grep_lines(Test *t, TestGrepRun *run) {
+    for (i32 i = 1; i < run->line_count; i++) {
+        String8 v = run->lines[i];
+        i32 j = i;
+        for (; j > 0 && grep_path_compare(run->lines[j - 1], v) > 0; j--) run->lines[j] = run->lines[j - 1];
+        run->lines[j] = v;
+    }
+    String8 out = str8(NULL, 0);
+    for (i32 i = 0; i < run->line_count; i++) out = out.len ? str8_fmt(&t->arena, "%S|%S", out, run->lines[i]) : run->lines[i];
+    return out;
+}
+
+static b32 test_grep_search(Test *t, u64 seed) {
+    i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    while (os_dev_wake_wait(0)) {}
+    String8 root = str8_fmt(&t->arena, "%S\\p12grep", t->tmp_dir);
+    os_make_dir(root);
+    os_make_dir(str8_fmt(&t->arena, "%S\\b", root));
+    static const struct { const char *rel; const char *text; i64 len; } files[] = {
+        { "a.c", "int foo;\nfoo(); foo\n", 20 },
+        { "b/c.txt", "nothing here\n", 13 },
+        { "b/d.h", "x\r\nFOO bar\r\n", 12 },
+        { "bin.dat", "foo\0bar", 7 },
+        { "mod.c", "foo on disk\n", 12 },
+        { "u16.txt", "\xff\xfe" "f\0o\0o\0 \0\xe9\0\n\0", 14 },
+        { "empty.txt", "", 0 },
+        { "missing.txt", NULL, 0 }, // listed, not on disk: unreadable
+    };
+    i32 nf = (i32)ARRAY_COUNT(files);
+    for (i32 i = 0; i < nf; i++) {
+        String8 path = str8_fmt(&t->arena, "%S\\%s", root, files[i].rel);
+        for (i64 k = root.len; k < path.len; k++) if (path.data[k] == '/') path.data[k] = '\\';
+        if (files[i].text) TEST_CHECK(t, os_write_file(path, str8((u8 *)files[i].text, files[i].len)), "grep search: cannot write %S", path);
+        else os_file_delete(path);
+    }
+    const char *want = "0:1:4:int foo;|0:2:0:foo(); foo|0:2:7:foo(); foo|2:2:0:FOO bar|5:1:0:foo \xc3\xa9";
+    static const GrepFileKind want_kind[] = { GREP_FILE_TEXT, GREP_FILE_TEXT, GREP_FILE_TEXT, GREP_FILE_BINARY, GREP_FILE_MEMORY,
+                                              GREP_FILE_TEXT, GREP_FILE_TEXT, GREP_FILE_UNREADABLE };
+    String8 skip = STR8_LIT("MOD.c"); // case-insensitive
+    static const i32 worker_counts[] = { 1, 2, 4, 8 };
+    for (i32 w = 0; w < ARRAY_COUNT(worker_counts); w++) {
+        for (i32 rep = 0; rep < 3; rep++) {
+            GrepSearch *s = grep_create(root, STR8_LIT("foo"), 1, 100, worker_counts[w]);
+            grep_skip(s, &skip, 1);
+            // The list arrives in two pieces, as from a running scan: some before the start, the rest after.
+            i32 first = rep == 0 ? nf : rep == 1 ? 0 : 3;
+            for (i32 i = 0; i < first; i++) grep_list_add(s, str8_cstr(files[i].rel));
+            grep_list_publish(s, first == nf);
+            TEST_CHECK(t, grep_start(s), "grep search: no workers");
+            for (i32 i = first; i < nf; i++) grep_list_add(s, str8_cstr(files[i].rel));
+            if (first < nf) grep_list_publish(s, 1);
+            TestGrepRun run;
+            test_grep_run_init(t, &run, nf);
+            TEST_CHECK(t, test_grep_finish(s, &run, 10000), "grep search: did not end (%d workers)", worker_counts[w]);
+            grep_free(s);
+            String8 got = test_grep_lines(t, &run);
+            TEST_CHECK(t, str8_equal(got, str8_cstr(want)), "grep search, %d workers, list %d before the start: '%S', expected '%s'",
+                       worker_counts[w], first, got, want);
+            for (i32 i = 0; i < nf; i++) {
+                TEST_CHECK(t, run.done[i] == 1 && run.kind[i] == want_kind[i], "grep search, %d workers: %s done %d time(s) as %d, expected once as %d",
+                           worker_counts[w], files[i].rel, run.done[i], (i32)run.kind[i], (i32)want_kind[i]);
+            }
+        }
+    }
+    // At most max_matches per file.
+    {
+        GrepSearch *s = grep_create(root, STR8_LIT("foo"), 1, 1, 2);
+        grep_skip(s, &skip, 1);
+        for (i32 i = 0; i < nf; i++) grep_list_add(s, str8_cstr(files[i].rel));
+        grep_list_publish(s, 1);
+        TEST_CHECK(t, grep_start(s), "grep search: no workers");
+        TestGrepRun run;
+        test_grep_run_init(t, &run, nf);
+        TEST_CHECK(t, test_grep_finish(s, &run, 10000), "grep search: max 1 did not end");
+        grep_free(s);
+        String8 got = test_grep_lines(t, &run);
+        TEST_CHECK(t, str8_equal(got, STR8_LIT("0:1:4:int foo;|2:2:0:FOO bar|5:1:0:foo \xc3\xa9")),
+                   "grep search: max_matches 1 per file: '%S'", got);
+    }
+    // The claim limit: nothing at or past it is claimed until it is raised.
+    {
+        GrepSearch *s = grep_create(root, STR8_LIT("foo"), 1, 100, 4);
+        for (i32 i = 0; i < nf; i++) grep_list_add(s, str8_cstr(files[i].rel));
+        grep_set_claim_limit(s, 2);
+        grep_list_publish(s, 1);
+        TEST_CHECK(t, grep_start(s), "grep search: no workers");
+        TestGrepRun run;
+        test_grep_run_init(t, &run, nf);
+        u64 start = os_time_us();
+        while (run.done[0] + run.done[1] < 2 && os_time_us() - start < 5000000) {
+            os_dev_wake_wait(20);
+            grep_drain(s, test_grep_record, &run);
+        }
+        os_dev_wake_wait(50);
+        grep_drain(s, test_grep_record, &run);
+        i32 beyond = 0;
+        for (i32 i = 2; i < nf; i++) beyond += run.done[i];
+        TEST_CHECK(t, run.done[0] == 1 && run.done[1] == 1 && beyond == 0 && os_atomic_get(&s->claimed) == 2,
+                   "grep search: the claim limit 2 let %d file(s) past it (claimed %d)", beyond, os_atomic_get(&s->claimed));
+        grep_set_claim_limit(s, nf);
+        TEST_CHECK(t, test_grep_finish(s, &run, 10000), "grep search: did not end after the limit was raised");
+        grep_free(s);
+        for (i32 i = 0; i < nf; i++) TEST_CHECK(t, run.done[i] == 1, "grep search: after the limit, %s done %d time(s)", files[i].rel, run.done[i]);
+    }
+    // A cancel while every worker stands still after its first file: all end within 250 ms.
+    u64 worst_us = 0;
+    {
+        GrepSearch *s = grep_create(root, STR8_LIT("foo"), 1, 100, 4);
+        s->dev_hold = 1;
+        s->dev_hold_after = 1;
+        for (i32 i = 0; i < nf; i++) grep_list_add(s, str8_cstr(files[i].rel));
+        grep_list_publish(s, 1);
+        TEST_CHECK(t, grep_start(s), "grep search: no workers");
+        TestGrepRun run;
+        test_grep_run_init(t, &run, nf);
+        os_dev_wake_wait(100);
+        grep_drain(s, test_grep_record, &run);
+        u64 t0 = os_time_us();
+        grep_cancel(s);
+        TEST_CHECK(t, test_grep_finish(s, &run, 250), "grep search: workers still running 250 ms after a cancel");
+        worst_us = os_time_us() - t0;
+        grep_free(s);
+    }
+    // 300 rounds of start and cancel on the 10,000-file tree, at random moments.
+    t->rng = seed ^ 0x12C0;
+    {
+        String8 big = test_big_tree(t);
+        u64 mark = arena_pos(&t->arena);
+        OsEvent pause;
+        TEST_CHECK(t, os_event_create(&pause), "grep stress: no event");
+        for (i32 round = 0; round < 300; round++) {
+            GrepSearch *s = grep_create(big, STR8_LIT("x"), 0, 100, 1 + (i32)test_below(t, 8));
+            for (i32 d = 0; d < 100; d++) {
+                for (i32 f = 0; f < 100; f++) grep_list_add(s, str8_fmt(&t->arena, "d%02d/file_%04d.c", d, d * 100 + f));
+                arena_pop_to(&t->arena, mark);
+            }
+            if (round % 3 == 0) {
+                s->dev_hold = 1;
+                s->dev_hold_after = 1 + (i32)test_below(t, 200);
+            }
+            grep_list_publish(s, 1);
+            TEST_CHECK(t, grep_start(s), "grep stress: no workers");
+            if (round % 3 != 2) os_event_wait(pause, (u32)test_below(t, 4));
+            u64 t0 = os_time_us();
+            grep_cancel(s);
+            TestGrepRun run;
+            test_grep_run_init(t, &run, 10000);
+            b32 ended = test_grep_finish(s, &run, 250);
+            u64 took = os_time_us() - t0;
+            worst_us = MAX(worst_us, took);
+            if (!ended) {
+                grep_join(s, os_time_us() + 10000000);
+                grep_free(s);
+                TEST_CHECK(t, 0, "grep stress: round %d: workers still running %U us after the cancel", round, took);
+            }
+            grep_free(s);
+            arena_pop_to(&t->arena, mark);
+        }
+        os_event_destroy(pause);
+    }
+    // A worker stuck in the file system: the join gives up at its deadline; released, it ends.
+    {
+        GrepSearch *s = grep_create(root, STR8_LIT("foo"), 1, 100, 2);
+        s->dev_stuck = 1;
+        grep_list_add(s, STR8_LIT("a.c"));
+        grep_list_publish(s, 1);
+        TEST_CHECK(t, grep_start(s), "grep search: no workers");
+        grep_cancel(s);
+        u64 t0 = os_time_us();
+        b32 joined = grep_join(s, t0 + 200 * 1000);
+        u64 took = os_time_us() - t0;
+        TEST_CHECK(t, !joined && took >= 190000 && took < 1000000, "grep search: a stuck worker's join returned %d after %U us", joined, took);
+        grep_dev_release(s);
+        TEST_CHECK(t, grep_join(s, os_time_us() + 10000000), "grep search: the stuck workers did not end once released");
+        TestGrepRun run;
+        test_grep_run_init(t, &run, 1);
+        grep_free(s);
+    }
+    TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "grep search: %d threads, %d events left",
+               os_dev_live_threads() - threads0, os_dev_live_events() - events0);
+    LOG("test: ok: grep search (the exact matches with 1, 2, 4 and 8 workers, 3 runs each, the list complete before the start, "
+        "after it, and in two pieces; binary, UTF-16, a skipped (modified) file, an empty one, a missing one: each file done once; "
+        "max_matches; the claim limit; a cancel while held; 300 start / cancel rounds on 10,000 files, the slowest end %U us after "
+        "its cancel; a stuck worker's bounded join)", worst_us);
+    return 1;
+}
+
+// A search never makes a save, a rename or a delete fail: two files held open by the workers.
+static b32 test_grep_sharing(Test *t) {
+    String8 root = str8_fmt(&t->arena, "%S\\p12share", t->tmp_dir);
+    os_make_dir(root);
+    String8 p1 = str8_fmt(&t->arena, "%S\\held1.txt", root), p2 = str8_fmt(&t->arena, "%S\\held2.txt", root);
+    String8 p2b = str8_fmt(&t->arena, "%S\\held2_renamed.txt", root);
+    os_file_delete(p2b);
+    TEST_CHECK(t, os_write_file(p1, STR8_LIT("foo one\n")) && os_write_file(p2, STR8_LIT("foo two\n")), "grep sharing: cannot write");
+    GrepSearch *s = grep_create(root, STR8_LIT("foo"), 1, 100, 2);
+    s->dev_hold = 1;
+    s->dev_hold_open = 1;
+    grep_list_add(s, STR8_LIT("held1.txt"));
+    grep_list_add(s, STR8_LIT("held2.txt"));
+    grep_list_publish(s, 1);
+    TEST_CHECK(t, grep_start(s), "grep sharing: no workers");
+    // Both files claimed, and each worker inside its first read (it holds the file open there).
+    OsEvent pause;
+    os_event_create(&pause);
+    for (i32 i = 0; i < 200 && os_atomic_get(&s->claimed) < 2; i++) os_event_wait(pause, 5);
+    os_event_wait(pause, 100);
+    b32 claimed = os_atomic_get(&s->claimed) == 2;
+    // Save held1.txt from a buffer: the temp file and ReplaceFileW.
+    Buffer *buf = buffer_create(STR8_LIT("held1.txt"));
+    OsFileStatus load = buffer_load_file(buf, p1);
+    buffer_replace(buf, 0, 0, STR8_LIT("saved "));
+    OsFileStatus save = buffer_save(buf);
+    b32 swapped = buf->dev_saved_by_swap;
+    buffer_destroy(buf);
+    // Rename held2.txt, then delete it.
+    OsFileStatus moved = os_file_replace(p2b, p2);
+    OsFileInfo info;
+    b32 renamed = os_file_info(p2, &info) == OS_FILE_NOT_FOUND && os_file_info(p2b, &info) == OS_FILE_OK;
+    os_file_delete(p2b);
+    OsFileStatus after = os_file_info(p2b, &info);
+    grep_dev_release(s);
+    TestGrepRun run;
+    test_grep_run_init(t, &run, 2);
+    b32 ended = test_grep_finish(s, &run, 10000);
+    grep_free(s);
+    os_event_destroy(pause);
+    String8 content = { 0 };
+    test_read_file(t, p1, &content);
+    TEST_CHECK(t, claimed, "grep sharing: the workers did not claim both files");
+    TEST_CHECK(t, load == OS_FILE_OK && save == OS_FILE_OK && swapped, "grep sharing: saving a file a worker holds open: load %d, save %d, "
+               "through the swap %d", (i32)load, (i32)save, swapped);
+    TEST_CHECK(t, str8_equal(content, STR8_LIT("saved foo one\n")), "grep sharing: the saved file holds '%S'", content);
+    TEST_CHECK(t, moved == OS_FILE_OK && renamed, "grep sharing: renaming a file a worker holds open: %d", (i32)moved);
+    TEST_CHECK(t, after == OS_FILE_NOT_FOUND, "grep sharing: deleting a file a worker holds open left it there (%d)", (i32)after);
+    TEST_CHECK(t, ended && run.done[0] == 1 && run.done[1] == 1, "grep sharing: the search did not end normally after the release");
+    LOG("test: ok: grep sharing (two files held open by the workers: one saved through the temp file and ReplaceFileW, one renamed "
+        "and deleted; the search then ends normally)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -8012,6 +8572,12 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_scanner(&t, seed);
     arena_reset(&t.arena);
     test_fuzzy(&t, seed);
+    arena_reset(&t.arena);
+    test_grep_file(&t, seed);
+    arena_reset(&t.arena);
+    test_grep_search(&t, seed);
+    arena_reset(&t.arena);
+    test_grep_sharing(&t);
     arena_reset(&t.arena);
     test_finder(&t);
     arena_reset(&t.arena);

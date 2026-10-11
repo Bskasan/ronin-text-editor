@@ -171,6 +171,9 @@ typedef struct Buffer {
     b32 indent_tabs;     // indentation with tabs (indent-tabs-mode): from the config, or detected
     b32 indent_detected; // indent_tabs was decided from the file's contents
     BufferUndo undo;
+#if TEAL_DEV
+    b32 dev_saved_by_swap; // the last save went through the temp file and ReplaceFileW / MoveFileExW (not in place)
+#endif
 } Buffer;
 
 Buffer *buffer_create(String8 name); // NULL if the address space cannot be reserved

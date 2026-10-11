@@ -1120,6 +1120,9 @@ OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
         }
     }
     arena_pop_to(&buf->meta, mark_full);
+#if TEAL_DEV
+    buf->dev_saved_by_swap = done;
+#endif
     if (status != OS_FILE_OK) {
         arena_pop_to(&buf->meta, mark);
         return status;
