@@ -2490,8 +2490,13 @@ static i32 win32_write_outputs(Platform *p) {
         win32_frame(p);
     }
     if (p->quit) return EXIT_OK;
-    // The workers' results (a project scan), taken until none came for 300 ms (a held scan stops there).
-    while (os_dev_wake_wait(300)) if (app_wake(p->app)) win32_frame(p);
+    // The workers' results (a project scan, a search), taken until none came for 300 ms (a held scan or
+    // search stops there), with the frames that work on them.
+    for (;;) {
+        for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p);
+        if (!os_dev_wake_wait(300)) break;
+        if (app_wake(p->app)) win32_frame(p);
+    }
     for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p); // the colors of what is shown, a ranking
     r_request_capture(p->renderer);
     win32_frame(p);

@@ -145,6 +145,8 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "split_width_threshold", offsetof(Settings, split_width_threshold), 1, 10000 },
     { "startup_windows", offsetof(Settings, startup_windows), 1, 2 },
     { "project_max_files", offsetof(Settings, project_max_files), 1000, 10000000 },
+    { "search_workers", offsetof(Settings, search_workers), 0, GREP_WORKERS_MAX },
+    { "search_max_results", offsetof(Settings, search_max_results), 1, 1000000 },
 };
 
 // Text settings: the bytes and their length, at most cap - 1 bytes.
@@ -229,6 +231,8 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "window_divider", offsetof(Theme, window_divider) },
     { "mode_line_inactive_background", offsetof(Theme, mode_line_inactive_background) },
     { "mode_line_inactive_text", offsetof(Theme, mode_line_inactive_text) },
+    { "search_file", offsetof(Theme, search_file) },
+    { "search_line_number", offsetof(Theme, search_line_number) },
 };
 
 // The colors whose default is another color: set by no file so far, they follow it.
@@ -236,6 +240,8 @@ static void config_derived_colors(Config *c) {
     static const struct { u32 offset, from; } derived[] = {
         { offsetof(Theme, mode_line_inactive_background), offsetof(Theme, background) },
         { offsetof(Theme, mode_line_inactive_text), offsetof(Theme, text) },
+        { offsetof(Theme, search_file), offsetof(Theme, keyword) },
+        { offsetof(Theme, search_line_number), offsetof(Theme, number) },
     };
     for (i32 d = 0; d < ARRAY_COUNT(derived); d++) {
         for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {

@@ -70,6 +70,12 @@ typedef struct GrepScan {
 typedef OsFileStatus GrepReadFn(void *data, u8 *dst, i64 cap, i64 *got); // like os_file_read_some
 typedef b32 GrepEmitFn(void *data, const GrepMatch *m);                  // false: stop this file
 
+// The shown text of a match at w[c] (len bytes) into `out` (GREP_SHOW_CAP bytes): the whole line when it
+// fits in GREP_LINE_SHOW bytes, otherwise up to GREP_CONTEXT bytes before the match and GREP_LINE_SHOW in
+// all, cut on character boundaries with "…" at each cut, without its CR. ls: the line's start in w (-1:
+// before w). w holds GREP_LINE_SHOW + 1 bytes from c on, or the rest of the text (at_end). Sets m->text,
+// match_off and match_shown. (Files here; buffers searched on the main thread in results.c.)
+void grep_show_text(u8 *out, const u8 *w, i64 wn, i64 ls, i64 c, i64 len, b32 at_end, GrepMatch *m);
 // The buffers for chunks of `chunk` text bytes (tests use tiny ones), in `arena`.
 void grep_scan_init(GrepScan *sc, Arena *arena, i64 chunk);
 // Searches one file of `size` bytes read through `read`. A UTF-8 BOM is skipped; UTF-16 with a BOM (and an

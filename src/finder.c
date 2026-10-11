@@ -38,6 +38,7 @@ static void finder_drop_scan(App *app, ProjectScan *s) {
 }
 
 static void finder_close_project(App *app, Project *p) {
+    for (i32 k = 0; k < 2; k++) results_index_changing(app, &p->index[k], p->scan && &p->index[p->scan_shadow ? !p->live : p->live] == &p->index[k]);
     if (p->scan) finder_drop_scan(app, p->scan);
     if (p->watch) os_unwatch(p->watch);
     project_index_destroy(&p->index[0]);
@@ -85,14 +86,19 @@ static void finder_scan(App *app, Project *p) {
     OsFileStatus status = project_file_read(&app->files_arena, p->root, &file);
     if (status == OS_FILE_OK) finder_report(app, &file);
     else if (status != OS_FILE_NOT_FOUND) files_echo(&app->echo, "Cannot read %S\\%s: %s", p->root, PROJECT_FILE_NAME, buffer_status_text(status));
+    ProjectIndex *was_filling = p->scan ? &p->index[p->scan_shadow ? !p->live : p->live] : NULL;
     if (p->scan) {
         finder_drop_scan(app, p->scan);
         p->scan = NULL;
     }
     p->scan_shadow = p->scanned;
     ProjectIndex *x = &p->index[p->scan_shadow ? !p->live : p->live];
-    if (!x->files.base) project_index_init(x);
-    else project_index_reset(x);
+    if (!x->files.base) {
+        project_index_init(x);
+    } else {
+        results_index_changing(app, x, was_filling == x); // a search following it takes the rest first
+        project_index_reset(x);
+    }
     // The watch is re-armed first: a change during the walk makes the new index stale again.
     if (!p->watch) p->watch = os_watch_tree(p->root);
     else os_watch_rearm(p->watch, p->root);
@@ -126,11 +132,15 @@ static void finder_scan_ended(App *app, Project *p) {
     project_scan_free(p->scan);
     p->scan = NULL;
     if (r.cancelled) {
-        if (p->scan_shadow) project_index_destroy(&p->index[!p->live]);
+        if (p->scan_shadow) {
+            results_index_changing(app, &p->index[!p->live], 1);
+            project_index_destroy(&p->index[!p->live]);
+        }
         return;
     }
     if (p->scan_shadow) { // the complete new list replaces the old one
         p->live = !p->live;
+        results_index_changing(app, &p->index[!p->live], 0);
         project_index_destroy(&p->index[!p->live]);
         if (finder_is_open(app) && app->finder.open == p) finder_rows_restart(app);
     }
@@ -169,7 +179,7 @@ b32 app_wake(App *app) {
             i++;
         }
     }
-    return frame;
+    return results_wake(app) || frame; // the searches' records (and the files a search follows)
 }
 
 // EVENT_DIR_CHANGED: true when it is a project's tree watch (the index is then stale; nothing else
@@ -185,16 +195,16 @@ static b32 finder_watch_event(App *app, OsWatch watch) {
     return 0;
 }
 
-// Exit: every worker is cancelled, then joined within PROJECT_SHUTDOWN_MS in all. A worker still inside a
-// file-system call then (a dead network path) is left to the process exit, its memory untouched.
-static void finder_shutdown(App *app) {
+// Exit: every worker is cancelled, then joined by `deadline` (PROJECT_SHUTDOWN_MS after the shutdown
+// began, shared with the searches). A worker still inside a file-system call then (a dead network path) is
+// left to the process exit, its memory untouched.
+static void finder_shutdown(App *app, u64 deadline) {
     Finder *f = &app->finder;
     ProjectScan *all[PROJECT_KEPT + PROJECT_DYING_MAX];
     i32 n = 0;
     for (i32 i = 0; i < PROJECT_KEPT; i++) if (f->projects[i].scan) all[n++] = f->projects[i].scan;
     for (i32 i = 0; i < f->dying_count; i++) all[n++] = f->dying[i];
     for (i32 i = 0; i < n; i++) project_scan_cancel(all[i]);
-    u64 deadline = os_time_us() + (u64)PROJECT_SHUTDOWN_MS * 1000;
     for (i32 i = 0; i < n; i++) {
         u64 now = os_time_us();
         u32 left = now >= deadline ? 0 : (u32)((deadline - now) / 1000);

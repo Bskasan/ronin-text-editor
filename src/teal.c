@@ -21,6 +21,7 @@
 #include "search.h"
 #include "grep.h"
 #include "isearch.h"
+#include "results.h"
 
 #include "base.c"
 #include "png.c"
@@ -45,6 +46,7 @@
 #include "app.c"
 #include "files.c"
 #include "finder.c"
+#include "results.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only
 

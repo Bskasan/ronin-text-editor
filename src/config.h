@@ -37,6 +37,8 @@ struct Settings {
     u8 project_ignore[CONFIG_LIST_CAP];  // blank-separated .gitignore patterns never listed in a project
     i32 project_ignore_len;
     i32 project_max_files;    // a project scan stops there
+    i32 search_workers;       // the project-wide search's threads; 0 = from the processor count
+    i32 search_max_results;   // the matches it lists before it stops
 };
 
 typedef struct Theme { // 0xRRGGBB
@@ -50,6 +52,7 @@ typedef struct Theme { // 0xRRGGBB
     u32 window_divider;                // the line between windows side by side
     u32 mode_line_inactive_background; // the mode lines of the windows that are not selected; unless a file
     u32 mode_line_inactive_text;       // sets them, they are background and text
+    u32 search_file, search_line_number; // a results line's file name and line:column (keyword and number unless set)
 } Theme;
 
 typedef struct ConfigDiag {

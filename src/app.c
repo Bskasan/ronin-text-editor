@@ -76,6 +76,19 @@ struct App {
     i32 laid_w, laid_h, laid_cell_w, laid_line_h; // the layout the views were last fitted to
     b32 syntax_pending;          // some view's visible lines still need lexer states: another frame
     Finder finder;               // finder.c: the projects kept, their scans, the project finder
+    Results results[RESULTS_MAX]; // results.c: *search*, *occur* and their locations
+    Results *results_last;       // the one next-error walks (the most recently started or used)
+    GrepSearch *grep_dying[RESULTS_DYING_MAX]; // cancelled or finished searches whose workers are still ending
+    i32 grep_dying_count;
+    b32 results_pending;         // results work can go on at once: another frame
+#if TEAL_DEV
+    i32 dev_grep_hold_after;     // --grep-hold N: every search's workers stand still after N files until released
+    b32 dev_grep_stuck_next;     // the next search's workers are stuck in the "file system" (shutdown tests)
+    GrepSearch *dev_last_grep;
+    i32 dev_grep_abandoned;      // search workers left to the process exit by the shutdown
+    i32 dev_claim_ahead;         // tests: the claim window instead of RESULTS_CLAIM_AHEAD (0 = it)
+    u64 dev_held_max;            // tests: the held records' limit instead of RESULTS_HELD_MAX (0 = it)
+#endif
 #if TEAL_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
@@ -104,6 +117,15 @@ static i32 app_views(App *app, View **out) {
     for (i32 i = 0; i < n; i++) out[i] = app->windows.nodes[leaves[i]].view;
     return n;
 }
+
+// results.c: results buffers, the project search.
+static b32  results_work(App *app, u64 deadline, i64 budget);
+static void results_buffer_killed(App *app, Buffer *buf);
+static void results_cancel_all(App *app);
+static void results_shutdown(App *app, u64 deadline);
+static void results_index_changing(App *app, ProjectIndex *x, b32 incomplete);
+static Results *results_of(App *app, Buffer *buf);
+static b32  results_wake(App *app);
 
 // Shows `buf` in `v`: where `v` last showed it, else where the most recently used other window showing
 // it is, else where it was last shown (view_switch_buffer).
@@ -254,10 +276,10 @@ static u32 app_kind_color(Theme *th, u32 kind) {
 }
 
 // One line of the buffer, only its columns [left, left + cols), in its token colors. x0 is the x
-// of column `left`. `over`: the text of [over->start, over->end) is drawn in over->rgb instead (the
-// current search match); NULL = none.
+// of column `left`. `over`: `over_count` ranges whose text is drawn in their own color instead (the
+// current search match; a results line's file name and line number), the later one winning.
 static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i32 x0, i32 y, i64 left, i64 cols, AppSpan *over,
-                                 Arena *scratch) {
+                                 i32 over_count, Arena *scratch) {
     Theme *th = &app->config->theme;
     i32 cell_w = app->font->cell_w;
     i64 right = left + cols;
@@ -289,7 +311,7 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
             while (k + 1 < toks.count && (i64)toks.tokens[k + 1].start <= at) k++;
             if (toks.count && (i64)toks.tokens[k].start <= at) rgb = app_kind_color(th, toks.tokens[k].kind);
         }
-        if (over && pos + i >= over->start && pos + i < over->end) rgb = over->rgb;
+        for (i32 o = 0; o < over_count; o++) if (pos + i >= over[o].start && pos + i < over[o].end) rgb = over[o].rgb;
         if (rgb != run_rgb) {
             if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(run_rgb));
             run = i;
@@ -528,9 +550,28 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
         }
     }
     AppSpan current = app_draw_search(app, r, l, v, draw_rows);
+    // A results buffer: each location's line has its file name and line:column in their colors and the
+    // match on the lazy_highlight background.
+    Results *res = results_of(app, buf);
+    for (i32 row = 0; res && row < draw_rows && top + row < count; row++) {
+        i64 idx = top + row - res->first_line;
+        if (idx < 0 || idx >= res->count) continue;
+        Location *loc = &res->locs[idx];
+        i64 ls = buffer_line_start(buf, top + row);
+        i64 text_at = ls + (loc->path_len ? loc->path_len + 1 : 0) + loc->num_len + 2;
+        app_draw_span(r, l, v, text_at + loc->match_off, text_at + loc->match_off + loc->match_shown, draw_rows, th->lazy_highlight);
+    }
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
-        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, current.start >= 0 ? &current : NULL,
-                             in->scratch);
+        AppSpan spans[3];
+        i32 n = 0;
+        if (res && top + row - res->first_line >= 0 && top + row - res->first_line < res->count) {
+            Location *loc = &res->locs[top + row - res->first_line];
+            i64 ls = buffer_line_start(buf, top + row), num_at = ls + (loc->path_len ? loc->path_len + 1 : 0);
+            spans[n++] = (AppSpan){ ls, ls + loc->path_len, th->search_file };
+            spans[n++] = (AppSpan){ num_at, num_at + loc->num_len, th->search_line_number };
+        }
+        if (current.start >= 0) spans[n++] = current;
+        app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, spans, n, in->scratch);
     }
     b32 filled = active && app_has_focus(app);
     for (i32 k = 0; k < v->cursor_count; k++) {
@@ -652,7 +693,7 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     app_draw_region(app, r, l, v, &v->cursors[0], 1);
     i64 line = view_top_line(v);
     i32 text_x = v->x + l->pad;
-    app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, NULL, in->scratch);
+    app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, NULL, 0, in->scratch);
     app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), 1, app_has_focus(app), in->dpi_scale, in->scratch);
     if (mb->kind == MINI_CHOICE) { // "3/41" at the right end, then a matcher's status
         String8 count = str8_fmt(in->scratch, "%D/%D", mb->match_count ? mb->selected + 1 : 0, mb->match_total);
@@ -920,7 +961,7 @@ static Buffer *app_other_buffer(App *app, Buffer *buf) {
 
 // finder.c: projects and the project finder.
 static void finder_init(App *app);
-static void finder_shutdown(App *app);
+static void finder_shutdown(App *app, u64 deadline);
 static b32  finder_watch_event(App *app, OsWatch watch);
 
 // files.c: files changed outside the editor.
@@ -1073,7 +1114,11 @@ App *app_create(Arena *perm, AppArgs *args) {
 }
 
 i32 app_shutdown(App *app) {
-    finder_shutdown(app); // first: the workers get their bounded time to end
+    // First: every worker (scans, searches) is cancelled, then all are joined within one shared bound.
+    u64 deadline = os_time_us() + (u64)PROJECT_SHUTDOWN_MS * 1000;
+    results_cancel_all(app);
+    finder_shutdown(app, deadline);
+    results_shutdown(app, deadline);
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
     View *views[WINDOW_MAX];
     for (i32 i = 0, n = app_views(app, views); i < n; i++) view_destroy(views[i]);
@@ -1857,7 +1902,7 @@ static void app_catch_up(App *app, Arena *scratch, u64 end) {
 }
 
 b32 app_wants_frame(App *app) {
-    return app->syntax_pending || app->search_pending || app->rank_pending;
+    return app->syntax_pending || app->search_pending || app->rank_pending || app->results_pending;
 }
 
 u32 app_wait_ms(App *app) {
@@ -1934,6 +1979,7 @@ static b32 app_update(App *app, FrameInput *in) {
     rank_budget = app->dev_work_budget;
 #endif
     app->rank_pending = app->mini.matcher_pending && minibuffer_work(&app->mini, rank_budget ? 0 : deadline, rank_budget);
+    app->results_pending = results_work(app, deadline, rank_budget); // the search's lists and results, in order
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
