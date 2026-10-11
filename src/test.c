@@ -8787,6 +8787,69 @@ static b32 test_results(Test *t) {
     return 1;
 }
 
+// occur: *occur* for one buffer (unsaved text too), searched on the main thread in slices; its keys and
+// next-error; g; a large buffer over many frames; the searched buffer killed meanwhile.
+static b32 test_occur(Test *t) {
+    App *app = test_search_app(t, STR8_LIT("foo\nbar Foo\n\tfoo foo\nnone\n"), 0);
+    TEST_CHECK(t, app, "occur: app_create failed");
+    app_dev_feed(app, "M-s o", &t->arena);
+    TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("List lines matching (default foo): ")), "occur: the prompt '%S'", app_dev_prompt(app));
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "occur: did not end");
+    Buffer *ob = buffer_list_find_name(&app->buffers, STR8_LIT("*occur*"));
+    TEST_CHECK(t, ob && test_current(app) == ob, "occur: *occur* is shown and selected");
+    String8 got = buffer_text(ob, &t->arena, 0, buffer_size(ob));
+    String8 want = STR8_LIT("Lines matching \"foo\" in buffer *scratch* (ignoring case)\n\n1:1: foo\n2:5: bar Foo\n3:2: \tfoo foo\n3:6: \tfoo foo\n4 matches, ");
+    TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "occur: *occur* holds '%S'", got);
+    app_dev_feed(app, "n n", &t->arena);
+    TEST_CHECK(t, buffer_line_of(ob, test_app_point(app)) == 4, "occur: n twice: line %D", buffer_line_of(ob, test_app_point(app)));
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("*scratch*:13")), "occur: RET visits *scratch* at 13 ('%S')",
+               test_results_where(t, app));
+    app_dev_feed(app, "M-g n", &t->arena);
+    TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("*scratch*:17")), "occur: next-error to 17 ('%S')", test_results_where(t, app));
+    app_dev_feed(app, "M-g n", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "No more matches"), "occur: past the end: '%S'", test_echo(app));
+    // The buffer edited, then g in *occur*: the new text.
+    app_dev_feed(app, "M-< f o o SPC C-x o g", &t->arena);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "occur: g did not end");
+    got = buffer_text(ob, &t->arena, 0, buffer_size(ob));
+    TEST_CHECK(t, test_contains(got, "\n\n1:1: foo foo\n1:5: foo foo\n2:5: bar Foo\n") && test_contains(got, "5 matches, "), "occur: after g: '%S'", got);
+    app_dev_feed(app, "M-s o", &t->arena);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, test_contains(test_echo(app), "occur cannot search *occur*"), "occur: on *occur*: '%S'", test_echo(app));
+    // A large buffer, a few positions a frame: many frames, the same answer as at once.
+    app_dev_feed(app, "C-x o", &t->arena);
+    u8 *big = PUSH_ARRAY(&t->arena, u8, 200 * 1000);
+    i64 n = 0;
+    for (i32 i = 0; i < 10000; i++) n += fmt_buf(big + n, 32, i % 100 == 0 ? "needle %05d\n" : "line %05d xxxxx\n", i);
+    app_dev_show_scratch(app, str8(big, n));
+    app->dev_work_budget = 4096;
+    app_dev_feed(app, "M-s o n e e d l e RET", &t->arena);
+    i32 frames = 0;
+    Results *r = results_of(app, ob);
+    while (r->running && frames < 10000) {
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+        frames++;
+    }
+    app->dev_work_budget = 0;
+    TEST_CHECK(t, r->count == 100 && frames > 20 && r->locs[99].line == 9901, "occur: a large buffer in %d frames: %D matches", frames, r->count);
+    // The searched buffer killed while occur runs: it ends, nothing more is written.
+    app_dev_visit(app, str8_fmt(&t->arena, "%S\\p12occur.txt", t->tmp_dir));
+    app_dev_feed(app, "C-x h C-w", &t->arena);
+    app_dev_append(app, str8(big, n));
+    app->dev_work_budget = 1000;
+    app_dev_feed(app, "M-s o n e e d l e RET", &t->arena);
+    TEST_CHECK(t, r->running, "occur: a sliced occur runs");
+    app_dev_feed(app, "C-x o C-x k RET y e s RET", &t->arena);
+    app->dev_work_budget = 0;
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000) && !r->running, "occur: the killed buffer's occur did not end");
+    if (!test_app_destroy(t, app, "occur")) return 0;
+    LOG("test: ok: occur (the exact *occur* text of an unsaved buffer, the default, n, RET, next-error past the end, g after an edit, "
+        "not on *occur* itself, 10,000 lines at 4096 positions a frame in %d frames, the searched buffer killed meanwhile)", frames);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -8920,6 +8983,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_grep_sharing(&t);
     arena_reset(&t.arena);
     test_results(&t);
+    arena_reset(&t.arena);
+    test_occur(&t);
     arena_reset(&t.arena);
     test_finder(&t);
     arena_reset(&t.arena);

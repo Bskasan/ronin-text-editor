@@ -222,7 +222,7 @@ static b32 results_add(App *app, Results *r, String8 path, i64 line, i64 col, i6
     n += tl;
     buf[n++] = '\n';
     Location *loc = PUSH_STRUCT(&r->loc_arena, Location);
-    *loc = (Location){ .file = results_file(r, path), .col = (i32)MIN(col, (i64)0x7FFFFFFF), .line = line, .len = len, .path_len = (u16)pl,
+    *loc = (Location){ .file = results_file(r, r->kind == RESULTS_OCCUR ? r->root : path), .col = (i32)MIN(col, (i64)0x7FFFFFFF), .line = line, .len = len, .path_len = (u16)pl,
                        .num_len = (u16)num_len, .match_off = (u16)MIN(match_off, tl), .match_shown = (u16)CLAMP(match_shown, 0, tl - MIN(match_off, tl)) };
     results_replace(r, r->tail, r->tail, str8(buf, n));
     r->tail += n;
@@ -868,11 +868,75 @@ static void results_step(CommandContext *ctx, i32 dir) {
 static void cmd_next_error(CommandContext *ctx) { results_step(ctx, 1); }
 static void cmd_previous_error(CommandContext *ctx) { results_step(ctx, -1); }
 
+// ---------------------------------------------------------------------------
+// occur: the same results for one buffer, searched on the main thread inside the frame budget
+
+static void results_occur(CommandContext *ctx, Buffer *target, String8 query, b32 fold) {
+    App *app = ctx->app;
+    if (target->name.len == 7 && str8_equal(target->name, STR8_LIT("*occur*"))) {
+        echo_message(ctx->echo, "occur cannot search *occur* itself");
+        return;
+    }
+    Results *r = results_open(app, STR8_LIT("*occur*"), RESULTS_OCCUR);
+    if (!r) {
+        echo_message(ctx->echo, "Too many results buffers");
+        return;
+    }
+    r->query = str8_copy(&r->arena, query);
+    r->root = str8_copy(&r->arena, target->name); // occur's "root": the buffer, by name
+    r->fold = fold;
+    results_begin_text(app, r, str8_fmt(&app->files_arena, "Lines matching \"%S\" in buffer %S (%s)", query, target->name,
+                                        fold ? "ignoring case" : "case-sensitive"));
+    r->running = 1;
+    r->start_us = os_time_us();
+    r->mem_path = str8(NULL, 0);
+    r->mem_found_before = 0;
+    results_mem_start(r, target);
+    results_progress(app, r);
+    app->results_last = r;
+    app_pop_to_buffer(ctx, r->buffer);
+    view_set_point(ctx->view, ctx->cursor, 0);
+}
+
+static void results_occur_done(CommandContext *ctx, MiniResult *res) {
+    String8 query = res->text.len ? res->text : ctx->mini->state.text;
+    if (!query.len) {
+        echo_message(ctx->echo, "Nothing to search for");
+        return;
+    }
+    if (query.len > SEARCH_NEEDLE_MAX) {
+        echo_message(ctx->echo, "Search string longer than %d bytes", SEARCH_NEEDLE_MAX);
+        return;
+    }
+    if (!res->text.len) minibuffer_history_add(ctx->mini, MINI_HISTORY_SEARCH, query);
+    results_occur(ctx, ctx->view->buffer, query, !search_has_upper(query));
+}
+
+static void cmd_occur(CommandContext *ctx) {
+    if (ctx->mini->active) {
+        echo_message(ctx->echo, "Command attempted to use minibuffer while in minibuffer");
+        return;
+    }
+    String8 def = results_default(ctx);
+    String8 prompt = def.len ? str8_fmt(ctx->scratch, "List lines matching (default %S): ", def) : STR8_LIT("List lines matching: ");
+    MiniRequest req = { .kind = MINI_TEXT, .prompt = prompt, .history = MINI_HISTORY_SEARCH, .done = results_occur_done };
+    if (minibuffer_read(ctx, &req)) ctx->mini->state.text = str8_copy(&ctx->mini->arena, def);
+}
+
 static void cmd_recompile(CommandContext *ctx) {
     Results *r = results_here(ctx);
     if (!r) return;
     String8 root = str8_copy(ctx->scratch, r->root), query = str8_copy(ctx->scratch, r->query);
-    results_project_search(ctx, root, query, r->fold);
+    if (r->kind == RESULTS_PROJECT) {
+        results_project_search(ctx, root, query, r->fold);
+        return;
+    }
+    Buffer *target = buffer_list_find_name(&ctx->app->buffers, root);
+    if (!target) {
+        echo_message(ctx->echo, "No buffer named %S", root);
+        return;
+    }
+    results_occur(ctx, target, query, r->fold);
 }
 
 // q: the results window goes (when there are others), else the window shows another buffer.
@@ -935,3 +999,4 @@ const Command CMD_NEXT_ERROR_NO_SELECT = { "next-error-no-select", cmd_next_erro
 const Command CMD_PREVIOUS_ERROR_NO_SELECT = { "previous-error-no-select", cmd_previous_error_no_select, COMMAND_ONCE };
 const Command CMD_RECOMPILE = { "recompile", cmd_recompile, COMMAND_ONCE };
 const Command CMD_QUIT_WINDOW = { "quit-window", cmd_quit_window, COMMAND_ONCE };
+const Command CMD_OCCUR = { "occur", cmd_occur, COMMAND_ONCE };
