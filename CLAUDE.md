@@ -118,6 +118,10 @@ code 10, before a window exists.
 ms since process creation. Git Bash `$?` truncates exit codes to 8 bits, so read it from
 PowerShell: `(Start-Process build\teal.exe -ArgumentList --startup-ms -PassThru -Wait).ExitCode`.
 
+`--no-activate` works in both builds: the window is shown (cloaked for the first frame, as the benches
+show it) without taking the foreground. The memory table is measured with it: release build, private
+bytes (`Get-Process`) after the window settled, closed with CloseMainWindow; it may run without asking.
+
 Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
 
     build/teal_debug.exe --test [--seed N]                # headless buffer/file/view tests, exit 0 = pass
@@ -187,9 +191,23 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # 1,000,000 with and without a scan running
     build/teal_debug.exe <dir> --scan-hold N --keys "C-x p f ..." --screenshot ..   # project scans stand
                                                           # still after N batches (the finder while scanning)
+    build/teal_bench.exe --bench-grep                     # build\tmp\p12bench (~100 MB, 3,000 files, made
+                                                          # once): a common and a missing word with 1, 2, 4
+                                                          # and 8 workers (first result, total, MB/s, the
+                                                          # longest frame and its results work, memory);
+                                                          # the default cap; typing at line 1,000,000 of the
+                                                          # 100 MB file while 8 workers search (the key's
+                                                          # frames and the frames between keys) against a
+                                                          # finished *search* shown; the workers' priority
+                                                          # below normal against normal, alternated
+    build/teal_debug.exe <dir> --keys "C-x p g ..." --keys-after "n RET" --screenshot ..   # keys once the
+                                                          # workers' results of --keys are in
+    build/teal_debug.exe <dir> --grep-hold N --keys "C-x p g ..." --screenshot ..   # a search's workers stand
+                                                          # still after N files each (a search still running)
 
 The benches never take the focus (shown cloaked without activation, as the smoke and --idle-check);
-screenshot runs take the project scans' results (until none came for 300 ms) before their frame.
+screenshot runs take the workers' results (project scans, searches; until none came for 300 ms) before
+their frame.
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
@@ -233,8 +251,12 @@ and the hollow one on the right, the right window's active region not drawn (onl
 shows its region); then back to one window. The project finder over a known in-memory list with "ap"
 typed (stage 7): the prompt color, the selected row's empty part in completion_selection, the matched
 characters of the selected and of another row in completion_match, the unmatched part in the text
-color, an unselected row's empty part in the background. Every syntax
-frame also has a number pixel in its color. The window
+color, an unselected row's empty part in the background. A results buffer (stage 8): the real project
+search for "foo" over build\tmp\smoke_grep (one matching file, two that do not match) in *search*, shown in
+the other window without selecting it, its workers done before the frame: the file name in search_file,
+"line:col" in search_line_number, the match on lazy_highlight with its text over it, the other text in the
+text color on the background, the window's inactive mode line; then the window and the buffer go. Every
+syntax frame also has a number pixel in its color. The window
 title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
@@ -335,7 +357,20 @@ cancel, 300 start / cancel rounds each ending within 250 ms, a stuck worker's bo
 ranking (goldens, spans, sliced and narrowed equal to full scoring on 20,000 paths); the project finder
 through the headless app (build\tmp\p11find: query and RET, the empty query, RET with one candidate a
 frame, a stale index, the other window, project-refresh, teal <directory>, a held scan, the file limit,
-not in a project, shutdown with a scan running and with a stuck worker); the region in windows. A failed
+not in a project, shutdown with a scan running and with a stuck worker); the region in windows. Phase 12:
+the search core on plain bytes and the second-byte filter against the reference (in the search fuzz);
+atomics and a file read on a worker, a background worker's priority; grep_file against a whole-text
+reference (2,000 random files, chunks from 16 bytes, short reads) and fixed chunk cases (a match across
+chunks, a newline on a boundary, a file smaller than the needle, a needle with a newline, CRLF, a long line
+cut, UTF-16 LE / BE, a UTF-8 BOM, binary, max_matches); the workers on build\tmp\p12grep (the exact
+matches with 1, 2, 4 and 8 workers, the list published in pieces, skipped and unreadable files, the claim
+limit, a cancel, 300 start / cancel rounds, a stuck worker); sharing (a save through ReplaceFileW, a rename
+and a delete of files the workers hold open); a buffer's keymap; through the headless app (build\tmp\p12res)
+*search*'s exact text with 1, 2, 4 and 8 workers and reruns, the next-error order, RET, n, p, g, q, the
+keymap only there, the prompt's default, unsaved buffers in their place and after the list, the cap, the
+claim window, killing *search* while it runs, shutdown with a search running and with a stuck worker, a
+search over a held scan seeing each of 10,000 files once; occur (its text, its keys, g, a large buffer over
+many frames, the buffer killed meanwhile). A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);

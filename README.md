@@ -14,9 +14,9 @@ changed.
 
 Early and experimental: teal is a learning project (see [How this project is
 made](#how-this-project-is-made)). It is built in 15 phases (the roadmap is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)).
-Phases 1 to 11 are done: window and renderer, font, text buffer, views, commands and the config file,
+Phases 1 to 12 are done: window and renderer, font, text buffer, views, commands and the config file,
 editing, the minibuffer, syntax highlighting, isearch and query-replace, window splitting, projects
-and fuzzy file open. Still to come: 12 project-wide search, 13 build and jump to error, 14 multiple
+and fuzzy file open, project-wide search. Still to come: 13 build and jump to error, 14 multiple
 cursors, 15 a performance and size pass.
 
 Windows 10 or later, x64; developed and tested on Windows 11 only.
@@ -51,6 +51,17 @@ Only what exists today.
 - query-replace (M-%) and replace-string, with Emacs' case conversion; one undo takes back a whole
   session. Searches run in slices of at most 2 ms per frame, so typing is never blocked by a search
   in a large file.
+- C-x p g searches every file of the project for literal text (smart case) on background threads and
+  lists the matches in `*search*` as `path:line:column: text`, file names and line numbers in their
+  own colors, the matched text highlighted. The list fills in while the search runs, always in the
+  same order (the project's file order), whatever the number of threads; buffers with unsaved changes
+  are searched as they are in teal; binary files are skipped; it stops at 10,000 matches and says so.
+  A search opens each file only while it reads it, and shares it meanwhile, so saving, building or git
+  are never blocked by it.
+- M-s o (occur) lists the matches of the current buffer in `*occur*` the same way.
+- In a results buffer RET visits a match in another window, n and p show the next and previous one
+  there, g searches again and q closes the window; M-g n and M-g p (next-error, previous-error) walk
+  the matches from any window.
 
 ![isearch with the current match and the other matches](docs/images/isearch.png)
 
@@ -84,12 +95,13 @@ figure was taken with a 1920x1080 display at 75 Hz), a 1280x800 window.
 
 | what | value | where |
 |---|---|---|
-| executable size (release) | 378,368 bytes; imports only kernel32, user32, gdi32, d3d11, dwmapi and dwrite | Phase 11 |
+| executable size (release) | 416,768 bytes; imports only kernel32, user32, gdi32, d3d11, dwmapi and dwrite | Phase 12 |
 | startup to the first frame on screen | ~170 ms median, of which 125-150 ms is waiting for `D3D11CreateDevice` (the driver) | Phases 9 and 10 |
 | typing: one keystroke's command plus building its frame | 9-20 us average, at line 1,000,000 of a 100 MB file | Phase 11 |
 | idle | 0 frames and one 15.6 ms scheduler tick of CPU time in 5 s | Phase 11 |
-| memory (private bytes, idle) | 76-78 MB with an empty buffer, ~67 MB of it Direct3D and the driver; 192-193 MB with a 100 MB file open | Phases 6 and 11 |
-| loading a 100 MB file | 35-40 ms | Phase 3 |
+| memory (private bytes, idle) | 76-77 MB with an empty buffer, ~67 MB of it Direct3D and the driver; 192-194 MB with a 100 MB file open | Phases 6 and 12 |
+| loading a 100 MB file | 35-40 ms | Phase 3 |
+| searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without | Phase 12 |
 
 The typing figure is CPU time inside teal; the time from a key press to the screen (input to
 photon) has not been measured.
@@ -168,6 +180,9 @@ One deliberate difference from Emacs: `ESC` is keyboard-quit, not a Meta prefix.
 | `C-x 2` `C-x 3` | split the window below / to the right |
 | `C-x o` `C-x 0` `C-x 1` | other window / delete this window / delete the others |
 | `C-x p f` | find a file in the project |
+| `C-x p g` | search the project's files |
+| `M-s o` | occur: the matches in this buffer |
+| `M-g n` `M-g p` | next-error / previous-error: the next / previous match of the latest results |
 | `M-x` | run a command by name |
 | `C-g` | keyboard-quit (also cancels a prompt) |
 | `C-h k` | describe the next key |
@@ -202,7 +217,8 @@ C-c g       goto-line
 ```
 
 The sections are `[settings]` (font, size, line height, ClearType mode, tab and indentation
-widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]` and `[keys isearch]`). In
+widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]`, `[keys isearch]` and
+`[keys search-results]`). In
 `[keys]` the last word of a line is the command; `none` removes a binding.
 
 ## Known limits
@@ -214,9 +230,11 @@ widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]` and `[keys 
   scrolling.
 - No language server, no parser: highlighting and indentation come from hand-written lexers and
   simple rules, for six languages only. comment-line uses `//` in every language.
-- Search is for literal text only; no regular expressions. Case folding does not pair the Turkish
+- Search is for literal text only: no regular expressions, no whole-word search, no project-wide
+  replace. Results show 1-based byte columns (as grep does), and a location is the line and column
+  where the match was found: editing the file above it moves the target. Case folding does not pair the Turkish
   dotted and dotless i.
-- Not yet: project-wide search, building and jumping to errors, multiple cursors (phases 12-14).
+- Not yet: building and jumping to errors, multiple cursors (phases 13-14).
 - Emacs features that are missing: prefix arguments (`C-u`), the mark ring, rectangles, overwrite
   mode, auto-save and crash recovery, `ESC` as Meta.
 - Encodings: UTF-8 and UTF-16 with a BOM; anything else (Windows-1252, Windows-1254 ...) is shown
@@ -241,13 +259,16 @@ only the `win32_*` files and the Direct3D renderer use Windows types.
 Testing is built into the dev builds:
 - `--test` runs without a window: differential fuzzing of the buffer, markers, the undo log and the
   search engine against simple reference implementations; a headless app driven by key sequences
-  through the real keymap (commands, prompts, windows, isearch, the project finder); file round trips;
-  and a harness that posts real key messages through the window procedure on US, UK, Turkish Q and
-  Finnish keyboard layouts.
+  through the real keymap (commands, prompts, windows, isearch, the project finder, project-wide search
+  and occur); the search over files against a whole-text reference and on generated trees with 1 to 8
+  threads; file round trips; and a harness that posts real key messages through the window procedure on
+  US, UK, Turkish Q and Finnish keyboard layouts.
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
-  the minibuffer, isearch, windows, the finder), the D3D11 debug layer and leaks.
-- Benchmarks (`--bench-*`) measure frames, typing, search, highlighting and project scans on a 100 MB
-  file.
+  the minibuffer, isearch, windows, the finder, a results buffer), the D3D11 debug layer and leaks.
+- Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans and the
+  project-wide search on a 100 MB file or tree.
+- `verify.bat` builds the three configurations, runs the smoke and the tests and prints one PASS or
+  FAIL line; it is the gate before every commit.
 
 The design, the decisions and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
 every manual test step and what covers it is in [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).
