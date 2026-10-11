@@ -44,6 +44,17 @@ static void results_stop(App *app, Results *r) {
     r->running = 0;
 }
 
+// A slot's arenas (each a 1 GB reservation, committed as used), in one list.
+#define RESULTS_ARENAS 6
+static void results_arenas(Results *r, Arena **list) {
+    list[0] = &r->arena;
+    list[1] = &r->loc_arena;
+    list[2] = &r->state_arena;
+    list[3] = &r->held[0];
+    list[4] = &r->held[1];
+    list[5] = &r->pend;
+}
+
 // The slot for a results buffer named `name` (made, or reused with its search stopped), its text and
 // state cleared. NULL when every slot is taken.
 static Results *results_open(App *app, String8 name, ResultsKind kind) {
@@ -60,22 +71,20 @@ static Results *results_open(App *app, String8 name, ResultsKind kind) {
         buffer_undo_enable(buf, 0); // a program buffer: no undo
         buf->keymap = BUFFER_KEYMAP_SEARCH_RESULTS;
         r->buffer = buf;
-        r->arena = arena_create(GB(1));
-        r->loc_arena = arena_create(GB(1));
-        r->state_arena = arena_create(GB(1));
-        r->held[0] = arena_create(GB(1));
-        r->held[1] = arena_create(GB(1));
+        Arena *arenas[RESULTS_ARENAS];
+        results_arenas(r, arenas);
+        for (i32 i = 0; i < RESULTS_ARENAS; i++) *arenas[i] = arena_create(GB(1));
     }
     Buffer *buf = r->buffer;
-    Arena keep[5] = { r->arena, r->loc_arena, r->state_arena, r->held[0], r->held[1] };
+    Arena keep[RESULTS_ARENAS], *arenas[RESULTS_ARENAS];
+    results_arenas(r, arenas);
+    for (i32 i = 0; i < RESULTS_ARENAS; i++) keep[i] = *arenas[i];
     memset((u8 *)r + offsetof(Results, kind), 0, sizeof(*r) - offsetof(Results, kind));
     r->buffer = buf;
-    r->arena = keep[0];
-    r->loc_arena = keep[1];
-    r->state_arena = keep[2];
-    r->held[0] = keep[3];
-    r->held[1] = keep[4];
-    for (i32 i = 0; i < 5; i++) arena_reset(i < 1 ? &r->arena : i < 2 ? &r->loc_arena : i < 3 ? &r->state_arena : &r->held[i - 3]);
+    for (i32 i = 0; i < RESULTS_ARENAS; i++) {
+        *arenas[i] = keep[i];
+        arena_reset(arenas[i]);
+    }
     r->kind = kind;
     r->current = -1;
     r->first_line = 2;
@@ -86,11 +95,9 @@ static Results *results_open(App *app, String8 name, ResultsKind kind) {
 }
 
 static void results_free(Results *r) {
-    os_release(r->arena.base);
-    os_release(r->loc_arena.base);
-    os_release(r->state_arena.base);
-    os_release(r->held[0].base);
-    os_release(r->held[1].base);
+    Arena *arenas[RESULTS_ARENAS];
+    results_arenas(r, arenas);
+    for (i32 i = 0; i < RESULTS_ARENAS; i++) os_release(arenas[i]->base);
     memset(r, 0, sizeof(*r));
 }
 
@@ -149,7 +156,10 @@ static i64 results_seconds(u8 *out, i64 cap, u64 us) {
     return fmt_buf(out, cap, "%U.%02U s", cs / 100, cs % 100);
 }
 
+static void results_flush(App *app, Results *r);
+
 static void results_finish(App *app, Results *r) {
+    results_flush(app, r);
     r->running = 0;
     r->end_us = os_time_us();
     if (r->grep) results_drop_search(app, r->grep, r->limited); // ending on its own (or cancelled at the limit)
@@ -224,10 +234,20 @@ static b32 results_add(App *app, Results *r, String8 path, i64 line, i64 col, i6
     Location *loc = PUSH_STRUCT(&r->loc_arena, Location);
     *loc = (Location){ .file = results_file(r, r->kind == RESULTS_OCCUR ? r->root : path), .col = (i32)MIN(col, (i64)0x7FFFFFFF), .line = line, .len = len, .path_len = (u16)pl,
                        .num_len = (u16)num_len, .match_off = (u16)MIN(match_off, tl), .match_shown = (u16)CLAMP(match_shown, 0, tl - MIN(match_off, tl)) };
-    results_replace(r, r->tail, r->tail, str8(buf, n));
-    r->tail += n;
+    memcpy(PUSH_ARRAY(&r->pend, u8, n), buf, (size_t)n); // written with the frame's other lines (results_flush)
     r->count++;
     r->found++;
+    if (arena_pos(&r->pend) >= RESULTS_FLUSH_BYTES) results_flush(app, r);
+    return 1;
+}
+
+// The lines added since the last flush go into the buffer with one insert, before the progress line.
+static void results_flush(App *app, Results *r) {
+    u64 n = arena_pos(&r->pend);
+    if (!n) return;
+    results_replace(r, r->tail, r->tail, str8(r->pend.base, (i64)n));
+    r->tail += (i64)n;
+    arena_reset(&r->pend);
     if (!r->point_set) { // the first location: point there in the windows that have not moved it (RET works at once)
         r->point_set = 1;
         i64 at = buffer_line_start(r->buffer, r->first_line);
@@ -238,7 +258,6 @@ static b32 results_add(App *app, Results *r, String8 path, i64 line, i64 col, i6
             }
         }
     }
-    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,10 +507,7 @@ static b32 results_emit(App *app, Results *r, u64 deadline, i64 budget) {
             }
             if (!r->held_live) arena_reset(h);
             else if (arena_pos(h) > 2 * r->held_live + MB(4)) results_compact(r);
-            if (r->grep && r->held_live <= results_held_max(app)) grep_set_claim_limit(r->grep, r->emit_next + results_ahead(app));
-#if TEAL_DEV
-            else if (r->grep) r->dev_held_back++;
-#endif
+            lines++; // a file without matches counts too
             if (lines >= RESULTS_LINES_PER_CHECK) {
                 lines = 0;
                 if (budget ? 0 : os_time_us() >= deadline) return 1;
@@ -516,25 +532,33 @@ static b32 results_emit(App *app, Results *r, u64 deadline, i64 budget) {
     }
 }
 
+// Some results buffer is being filled.
+static b32 results_running(App *app) {
+    for (i32 i = 0; i < RESULTS_MAX; i++) if (app->results[i].buffer && app->results[i].running) return 1;
+    return 0;
+}
+
 // The frame's results work within its deadline: the lists fed, the files written in order, buffers
 // searched. True while some of it can go on at once (another frame).
 static b32 results_work(App *app, u64 deadline, i64 budget) {
     b32 pending = 0;
-#if TEAL_DEV
-    u64 t0 = os_time_us();
-#endif
     for (i32 i = 0; i < RESULTS_MAX; i++) {
         Results *r = &app->results[i];
         if (!r->buffer || !r->running) continue;
         results_feed(r, budget ? 0 : deadline);
         pending |= results_emit(app, r, deadline, budget);
+        // The claim window moves once a frame (it wakes every worker): emit_next + the window, unless the
+        // held records are over their limit.
+        if (r->grep && r->running) {
+            if (r->held_live <= results_held_max(app)) grep_set_claim_limit(r->grep, r->emit_next + results_ahead(app));
+#if TEAL_DEV
+            else r->dev_held_back++;
+#endif
+        }
+        results_flush(app, r);
         results_progress(app, r);
         if (r->follow && r->source && r->source->files.base && r->fed < r->source->file_count) pending = 1;
     }
-#if TEAL_DEV
-    u64 took = os_time_us() - t0;
-    for (i32 i = 0; i < RESULTS_MAX; i++) app->results[i].dev_max_us = MAX(app->results[i].dev_max_us, took);
-#endif
     return pending;
 }
 
@@ -959,6 +983,27 @@ static void cmd_quit_window(CommandContext *ctx) {
 }
 
 #if TEAL_DEV
+// The state of every search (a test or a bench that waited too long).
+void app_dev_results_log(App *app, const char *why) {
+    for (i32 i = 0; i < RESULTS_MAX; i++) {
+        Results *r = &app->results[i];
+        if (!r->buffer || !r->running) continue;
+        LOG("results: %s: list %d%s, fed %D, follows %s, emit_next %d (state %d), files seen %D, found %D, held %U bytes, mem %d, grep %s "
+            "(claimed %d, limit %d, published %d, done %d, ended %d of %d workers), wants a frame %d", why, r->list_count,
+            r->list_done ? " (done)" : "", r->fed, r->follow ? (r->follow->scan ? "a running scan" : "an index") : "nothing", r->emit_next,
+            r->emit_next < r->list_count ? (i32)r->state[r->emit_next].state : -1, r->files_seen, r->found, r->held_live, r->mem_active,
+            r->grep ? "yes" : "no", r->grep ? os_atomic_get(&r->grep->claimed) : 0, r->grep ? os_atomic_get(&r->grep->claim_limit) : 0,
+            r->grep ? os_atomic_get(&r->grep->published) : 0, r->grep ? os_atomic_get(&r->grep->list_done) : 0,
+            r->grep ? r->grep->workers_ended : 0, r->grep ? r->grep->worker_count : 0, app_wants_frame(app));
+    }
+    for (i32 i = 0; i < app->grep_dying_count; i++) {
+        GrepSearch *s = app->grep_dying[i];
+        LOG("results: %s: a search ending: claimed %d, published %d, done %d, cancel %d, ended %d of %d workers", why,
+            os_atomic_get(&s->claimed), os_atomic_get(&s->published), os_atomic_get(&s->list_done), os_atomic_get(&s->cancel),
+            s->workers_ended, s->worker_count);
+    }
+}
+
 // Tests: frames, and the workers' records as they come, until no search runs and none is ending (or the
 // timeout); false on the timeout.
 static b32 results_dev_wait(App *app, Arena *scratch, u32 timeout_ms) {
@@ -968,20 +1013,7 @@ static b32 results_dev_wait(App *app, Arena *scratch, u32 timeout_ms) {
         for (i32 i = 0; i < RESULTS_MAX; i++) busy |= app->results[i].buffer && app->results[i].running;
         if (!busy) return 1;
         if (os_time_us() - start > (u64)timeout_ms * 1000) {
-            for (i32 i = 0; i < RESULTS_MAX; i++) {
-                Results *r = &app->results[i];
-                if (!r->buffer || !r->running) continue;
-                LOG("results: still running after %u ms: list %d%s, fed %D, emit_next %d, files seen %D, found %D, mem %d, grep %s "
-                    "(claimed %d, published %d, ended %d of %d workers)", timeout_ms, r->list_count, r->list_done ? " (done)" : "", r->fed,
-                    r->emit_next, r->files_seen, r->found, r->mem_active, r->grep ? "yes" : "no", r->grep ? os_atomic_get(&r->grep->claimed) : 0,
-                    r->grep ? os_atomic_get(&r->grep->published) : 0, r->grep ? r->grep->workers_ended : 0, r->grep ? r->grep->worker_count : 0);
-            }
-            for (i32 i = 0; i < app->grep_dying_count; i++) {
-                GrepSearch *s = app->grep_dying[i];
-                LOG("results: a search still ending after %u ms: claimed %d, published %d, done %d, cancel %d, ended %d of %d workers",
-                    timeout_ms, os_atomic_get(&s->claimed), os_atomic_get(&s->published), os_atomic_get(&s->list_done),
-                    os_atomic_get(&s->cancel), s->workers_ended, s->worker_count);
-            }
+            app_dev_results_log(app, "still running");
             return 0;
         }
         if (os_dev_wake_wait(app_wants_frame(app) ? 0 : 5)) app_wake(app);

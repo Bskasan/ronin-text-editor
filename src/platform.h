@@ -330,6 +330,7 @@ void app_dev_smoke_finder_end(App *app);  // ... and closed
 void app_dev_smoke_results(App *app, String8 tmp_dir); // stage 8: *search* for "foo" over tmp_dir\smoke_grep (not selected)
 void app_dev_smoke_results_end(App *app);              // ... and gone, one window again
 b32  app_dev_results_busy(App *app);                    // a search runs or is still ending
+void app_dev_results_log(App *app, const char *why);   // every search's state to the log
 // --bench-project: the finder on `count` synthetic paths (returns the index's memory), a whole ranking at
 // once (its time), the matches; a scan owned by the app (its batches through app_wake) and its state.
 u64  app_dev_bench_finder_open(App *app, i64 count);
