@@ -416,7 +416,12 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   CPU in 5 s.
 - Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`, which never takes the
   foreground): *scratch* 75.6-77.2 MB; src\keymap.c 75.8-76.2 MB; the 100 MB .txt 191.9-193.5 MB; the 100 MB
-  .c 216.0-216.8 MB (Phase 11, activated: 76.1-77.6, 76.3-77.5, 192.3-193.3, 216.3-217.7).
+  .c 216.0-216.8 MB (Phase 11, activated: 76.1-77.6, 76.3-77.5, 192.3-193.3, 216.3-217.7). Measured once the
+  old way too, activated, in the same session: 76.2-76.5, 76.1-78.0, 192.2-193.3, 217.0-217.9 MB, so
+  --no-activate reads 0-1 MB lower (the focus sets up the IME and text services); the tables before
+  Phase 12 compare with the activated figures.
+- Startup (`--startup-ms`, release, 15 runs each, the order rotating with the Phase 11 build from 38afcb5):
+  174 ms median (172-194) against 175 ms (172-181).
 - Release exe 416,768 bytes (378,368 after Phase 11); the same six DLLs; kernel32 adds SetThreadPriority and
   GetActiveProcessorCount.
 
