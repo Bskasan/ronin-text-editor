@@ -2631,6 +2631,40 @@ i64 app_dev_line_count(App *app) {
     return buffer_line_count(app_selected_view(app)->buffer);
 }
 
+void app_dev_cursors(App *app, i64 first_line, i64 step, i32 count) {
+    View *v = app_selected_view(app);
+    Buffer *buf = v->buffer;
+    view_collapse_cursors(v);
+    view_deactivate_mark(v);
+    view_set_point(v, view_primary(v), buffer_line_start(buf, first_line));
+    for (i32 k = 1; k < count; k++) {
+        i64 line = first_line + k * step;
+        if (line >= buffer_line_count(buf)) break;
+        view_add_cursor(v, buffer_line_start(buf, line));
+    }
+    view_ensure_visible(v);
+}
+
+void app_dev_cursors_spread(App *app, i32 count) {
+    View *v = app_selected_view(app);
+    Buffer *buf = v->buffer;
+    i64 size = buffer_size(buf), last = -1;
+    view_collapse_cursors(v);
+    view_deactivate_mark(v);
+    for (i32 k = 0; k < count; k++) {
+        i64 pos = buffer_snap_char(buf, size * k / MAX(count, 1));
+        if (pos <= last) continue;
+        if (last < 0) view_set_point(v, view_primary(v), pos);
+        else view_add_cursor(v, pos);
+        last = pos;
+    }
+    view_ensure_visible(v);
+}
+
+i32 app_dev_cursor_count(App *app) {
+    return app_selected_view(app)->cursor_count;
+}
+
 u64 app_dev_build_us(App *app) {
     return app->dev_build_us;
 }

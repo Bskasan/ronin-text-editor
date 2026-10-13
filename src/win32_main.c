@@ -95,6 +95,7 @@ typedef struct Platform {
     b32 bench_project;
     b32 bench_grep;
     b32 bench_compile;
+    b32 bench_cursors;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -1355,7 +1356,7 @@ void os_fatal(String8 message) {
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
                        g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
-                       g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile)) interactive = 0;
+                       g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile || g_platform->bench_cursors)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -3144,6 +3145,48 @@ static void win32_bench_windows(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-cursors: one layout at 1, 10, 100, 1,000 and 10,000 cursors: self-insert, DEL and RET, each command and its
+// frame (build = command + frame build); 100 commands each (10 at 10,000 cursors). mode 0: consecutive lines from
+// line 1,000,000; 1: spread over the whole buffer.
+static void win32_bench_cursors_layout(Platform *p, const char *layout, i32 mode) {
+    static const i32 counts[] = { 1, 10, 100, 1000, 10000 };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event del = { .kind = EVENT_KEY_DOWN, .key = KEY_BACKSPACE };
+    Event ret = { .kind = EVENT_KEY_DOWN, .key = KEY_ENTER };
+    for (i32 k = 0; k < ARRAY_COUNT(counts); k++) {
+        i32 n = counts[k], commands = n >= 10000 ? 10 : 100;
+        BenchStat skip = { 0 };
+        Event events[3] = { type, del, ret };
+        const char *names[3] = { "self-insert", "delete-backward-char (DEL)", "newline (RET)" };
+        for (i32 c = 0; c < 3; c++) {
+            if (mode == 0) app_dev_cursors(p->app, 1000000, 1, n);
+            else app_dev_cursors_spread(p->app, n);
+            i32 have = app_dev_cursor_count(p->app);
+            if (c == 0) win32_bench_view_step(p, plain, &skip); // ends dropping text after a jump
+            BenchStat st = { 0 };
+            for (i32 i = 0; i < commands; i++) win32_bench_view_step(p, events[c], &st);
+            u8 what[160];
+            i64 wn = fmt_buf(what, sizeof(what) - 1, "%s, %d cursors, %s", layout, have, names[c]);
+            what[wn] = 0;
+            win32_bench_log(p, "bench-cursors", (const char *)what, &st);
+        }
+    }
+}
+
+static void win32_bench_cursors(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    LOG("bench-cursors: %D lines; build = command + frame build", app_dev_line_count(p->app));
+    r_dev_take_frame_stats(p->renderer);
+    win32_bench_cursors_layout(p, "(a) 100 MB, consecutive lines from 1,000,000", 0);
+    win32_bench_cursors_layout(p, "(b) 100 MB, spread over the file", 1);
+    String8 src = os_full_path(&p->perm, str8_fmt(&p->perm, "%S\\..\\src\\app.c", p->exe_dir));
+    if (app_dev_visit(p->app, src)) win32_bench_cursors_layout(p, "(c) src/app.c, spread over the file", 1);
+    else LOG("bench-cursors: cannot visit %S", src);
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 u64 os_dev_private_bytes(void) {
     PROCESS_MEMORY_COUNTERS_EX pmc = { .cb = sizeof(pmc) };
     if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) return 0;
@@ -4149,7 +4192,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile ||
+           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -4340,6 +4383,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-search"))) { p->bench_search = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-windows"))) { p->bench_windows = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-cursors"))) { p->bench_cursors = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-project"))) { p->bench_project = 1; continue; }
         if (str8_equal(a, STR8_LIT("--screenshot")) && has_value) { p->screenshot_path = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--dump-atlas")) && has_value) { p->atlas_path = args[++i]; continue; }
@@ -4396,6 +4440,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
+                                   : p->bench_cursors ? "bench-cursors"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -4415,7 +4460,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         return failures ? EXIT_TEST : EXIT_OK;
     }
     if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
-        p->bench_compile) { // generated before the app opens it; measured after startup
+        p->bench_compile || p->bench_cursors) { // generated before the app opens it; measured after startup
         p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
         p->file_count = 1;
     }
@@ -4488,7 +4533,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     app_args.grep_hold = p->grep_hold;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
                              p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
-                             p->bench_compile || p->type_ahead_check); // defaults
+                             p->bench_compile || p->bench_cursors || p->type_ahead_check); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -4526,7 +4571,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     b32 show_early = !p->no_activate;
 #if TEAL_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile;
+                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
     show_early = show_early && !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early) {
@@ -4656,6 +4701,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_windows && !p->quit) {
         win32_bench_windows(p);
+        p->quit = 1;
+    }
+    if (p->bench_cursors && !p->quit) {
+        win32_bench_cursors(p);
         p->quit = 1;
     }
     if (p->bench_complete && !p->quit) {
