@@ -78,6 +78,9 @@ struct App {
     Finder finder;               // finder.c: the projects kept, their scans, the project finder
     Results results[RESULTS_MAX]; // results.c: *search*, *occur* and their locations
     Results *results_last;       // the one next-error walks (the most recently started or used)
+    // Where RET, n, p, next-error or previous-error landed: drawn on lazy_highlight until the next key.
+    Buffer *landing_buffer;
+    i64 landing_start, landing_end;
     GrepSearch *grep_dying[RESULTS_DYING_MAX]; // cancelled or finished searches whose workers are still ending
     i32 grep_dying_count;
     b32 results_pending;         // results work can go on at once: another frame
@@ -551,6 +554,10 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
                 r_push_rect(r, (Rect){ (f32)x0, (f32)y0, (f32)x1, (f32)y1 }, COLOR_HEX(app->config->theme.paren_match));
             }
         }
+    }
+    if (app->landing_buffer == buf) {
+        i64 size = buffer_size(buf);
+        app_draw_span(r, l, v, MIN(app->landing_start, size), MIN(app->landing_end, size), draw_rows, th->lazy_highlight);
     }
     AppSpan current = app_draw_search(app, r, l, v, draw_rows);
     // A results buffer: each location's line has its file name and line:column in their colors and the
@@ -1811,6 +1818,7 @@ static void app_key_event(App *app, Event *e) {
     stack[count++] = &app->config->global;
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);
+    if (k.kind != KEY_RESULT_IGNORED && k.kind != KEY_RESULT_DROPPED) app->landing_buffer = NULL; // the landing highlight: until this key
 #if TEAL_DEV
     if (app->dev_log_keys) app_dev_log_key(app, e, &k, isearch, replacing);
 #endif

@@ -8868,6 +8868,40 @@ static b32 test_occur(Test *t) {
     return 1;
 }
 
+// The landing highlight: where RET, n, p, next-error and previous-error went, until the next key.
+static b32 test_landing(Test *t) {
+    App *app = test_search_app(t, STR8_LIT("a foo\nb\nfoo c\n"), 0);
+    TEST_CHECK(t, app, "landing: app_create failed");
+    Buffer *scratch = buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*"));
+    app_dev_feed(app, "M-s o f o o RET", &t->arena);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "landing: occur did not end");
+    TEST_CHECK(t, !app->landing_buffer, "landing: set before any visit");
+    app_dev_feed(app, "RET", &t->arena); // the first match (point is on its line), *scratch* selected
+    TEST_CHECK(t, app->landing_buffer == scratch && app->landing_start == 2 && app->landing_end == 5 && test_current(app) == scratch,
+               "landing: RET: %D-%D", app->landing_start, app->landing_end);
+    app_dev_feed(app, "C-x", &t->arena); // a prefix key is a key too
+    TEST_CHECK(t, !app->landing_buffer, "landing: still set after a prefix key");
+    app_dev_feed(app, "o n", &t->arena); // back in *occur*; n shows the next match in the other window
+    TEST_CHECK(t, app->landing_buffer == scratch && app->landing_start == 8 && app->landing_end == 11, "landing: n: %D-%D",
+               app->landing_start, app->landing_end);
+    app_dev_feed(app, "C-n", &t->arena); // any other key ends it
+    TEST_CHECK(t, !app->landing_buffer, "landing: still set after another key");
+    app_dev_feed(app, "p", &t->arena);
+    TEST_CHECK(t, app->landing_buffer == scratch && app->landing_start == 8, "landing: p: %D", app->landing_start);
+    app_dev_feed(app, "C-x o M-g p", &t->arena); // previous-error from *scratch*
+    TEST_CHECK(t, app->landing_buffer == scratch && app->landing_start == 2 && app->landing_end == 5 && test_current(app) == scratch,
+               "landing: previous-error: %D-%D", app->landing_start, app->landing_end);
+    // A frame keeps it (no timer); killing its buffer ends it.
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, app->landing_buffer == scratch, "landing: a frame without a key ended it");
+    files_kill_buffer(app, scratch);
+    TEST_CHECK(t, !app->landing_buffer, "landing: still set on a killed buffer");
+    if (!test_app_destroy(t, app, "landing")) return 0;
+    LOG("test: ok: the landing highlight (RET, a prefix key, n, another key, p, previous-error from the target window, a frame without "
+        "a key, the buffer killed)");
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Phase 13: processes and builds
 
@@ -9614,6 +9648,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_results(&t);
     arena_reset(&t.arena);
     test_occur(&t);
+    arena_reset(&t.arena);
+    test_landing(&t);
     arena_reset(&t.arena);
     test_process_platform(&t);
     arena_reset(&t.arena);

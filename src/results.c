@@ -598,6 +598,7 @@ static b32 results_wake(App *app) {
 
 // files.c, before a buffer is killed: a results buffer stops and goes; a buffer being searched is dropped.
 static void results_buffer_killed(App *app, Buffer *buf) {
+    if (app->landing_buffer == buf) app->landing_buffer = NULL;
     for (i32 i = 0; i < RESULTS_MAX; i++) {
         Results *r = &app->results[i];
         if (!r->buffer) continue;
@@ -848,7 +849,12 @@ static b32 results_visit(CommandContext *ctx, Results *r, i64 idx, ResultsVisit 
     }
     i64 line = CLAMP(loc->line - 1, 0, buffer_line_count(buf) - 1);
     i64 ls = buffer_line_start(buf, line), le = buffer_line_end(buf, line);
-    view_set_point(v, &v->cursors[0], buffer_snap_char(buf, MIN(ls + loc->col, le)));
+    i64 at = buffer_snap_char(buf, MIN(ls + loc->col, le));
+    view_set_point(v, &v->cursors[0], at);
+    // Highlighted until the next key: the match, or a build location's whole line.
+    app->landing_buffer = buf;
+    app->landing_start = loc->kind == LOCATION_MATCH ? at : ls;
+    app->landing_end = loc->kind == LOCATION_MATCH ? MIN(at + loc->len, buffer_size(buf)) : le;
     view_ensure_visible(v);
     if (ctx->view == v) ctx->cursor = &v->cursors[0];
     buffer_list_touch(&app->buffers, buf);
