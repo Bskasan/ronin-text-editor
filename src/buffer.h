@@ -203,6 +203,8 @@ typedef struct Buffer {
     i64 batch_count, batch_committed; // entries
 #if TEAL_DEV
     u64 dev_batch_flushes; // runs applied before their batch ended (an edit out of order, or a full list)
+    BufferBatchEdit *dev_edits; // tests: every successful edit appended here (NULL: off), dev_edit_cap at most
+    i64 dev_edit_count, dev_edit_cap;
 #endif
 
     String8 path; // full, normalized; empty when not visiting a file
