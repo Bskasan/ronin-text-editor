@@ -204,10 +204,21 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # workers' results of --keys are in
     build/teal_debug.exe <dir> --grep-hold N --keys "C-x p g ..." --screenshot ..   # a search's workers stand
                                                           # still after N files each (a search still running)
+    build/teal_debug.exe --child <script>                 # the tests' scripted program (no window, no log):
+                                                          # out / err TEXT, raw / rawerr TEXT (escapes \r \n
+                                                          # \t \e \xHH), sleep MS, exit N, hang (120 s at
+                                                          # most), spawn FILE (a grandchild), flood BYTES,
+                                                          # cwd, write PATH TEXT
+    build/teal_bench.exe --bench-compile                  # a --child program printing 100 MB into *compilation*
+                                                          # (cap 128 MB and the default 16 MB): time, frames,
+                                                          # the longest frame, memory; typing at line
+                                                          # 1,000,000 while builds print, against none
+    build/teal_debug.exe <dir> --keys "C-x p c RET" --compile-wait MS --screenshot ..   # waits up to MS for
+                                                          # running builds to end (also before --keys-after)
 
 The benches never take the focus (shown cloaked without activation, as the smoke and --idle-check);
-screenshot runs take the workers' results (project scans, searches; until none came for 300 ms) before
-their frame.
+screenshot runs take the workers' results (project scans, searches, builds' output; until none came for
+300 ms, or with --compile-wait until the builds ended) before their frame.
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
 given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
@@ -255,7 +266,10 @@ color, an unselected row's empty part in the background. A results buffer (stage
 search for "foo" over build\tmp\smoke_grep (one matching file, two that do not match) in *search*, shown in
 the other window without selecting it, its workers done before the frame: the file name in search_file,
 "line:col" in search_line_number, the match on lazy_highlight with its text over it, the other text in the
-text color on the background, the window's inactive mode line; then the window and the buffer go. Every
+text color on the background, the window's inactive mode line; then the window and the buffer go. A build (stage 9): the --child program
+in build\tmp\smoke_compile (an error and a warning on a.c, exit 2) into *compilation*, not selected: the file
+name in search_file, "(1,5)" in search_line_number, "error" in compilation_error, "warning" in
+compilation_warning, the mode line's "exit [2]" in its cells; then the window and the buffer go. Every
 syntax frame also has a number pixel in its color. The window
 title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
@@ -271,7 +285,7 @@ saved (allowed). It also requires a non-empty atlas,
 the D3D11 debug layer active with zero WARNING+ messages, and no leaks (device refcount 0, empty
 DXGI live-object report, DirectWrite references 0, no directory watch left open).
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer
-messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches), 7 output file, 8 font /
+messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches, threads, events, build processes), 7 output file, 8 font /
 ClearType (also: the font set up more than once), 9 test failure (--test; in the smoke: the
 --keys edit saved the wrong bytes, or the end-of-session check), 10 unknown argument (every build).
 
@@ -370,7 +384,19 @@ and a delete of files the workers hold open); a buffer's keymap; through the hea
 keymap only there, the prompt's default, unsaved buffers in their place and after the list, the cap, the
 claim window, killing *search* while it runs, shutdown with a search running and with a stuck worker, a
 search over a held scan seeing each of 10,000 files once; occur (its text, its keys, g, a large buffer over
-many frames, the buffer killed meanwhile). A failed
+many frames, the buffer killed meanwhile). Phase 13: the landing highlight (RET, n, p, next-error until the next
+key); processes through the platform layer (stdout and stderr in order through one pipe, the exit code, the
+working directory, a missing directory leaving nothing open, a kill ending a grandchild, a normal end with a
+grandchild holding the pipe let go, no handle growth); the error matchers' goldens (MSVC, csc, tsc, MSBuild,
+GCC / Clang, includes, Jai, tsc's pretty form; times, URLs, versions and linker lines as traps; kinds without
+a location and what does not count); path resolution (each step, the order, the cache); the build settings
+and colors; cleaning (CR, ANSI, OEM) and lines across reads (random slicing, the cut); builds of --child
+programs (order, exit codes, the cap, a missing command or directory, locations from a .bat that changes
+directory); kills (the tree gone, during a flood, 100 start / kill rounds, handles); builds through the
+headless app (the prompt, the exact *compilation* text, the mode line's state, the summary, next-error over
+errors and a note, RET, n, p, q, g, recompile, every compilation_scroll_output and compilation_save_buffers
+value, a second build, C-c C-k, killing the buffer, quitting, a link-only failure, files rewritten by a build,
+[build] directory and diagnostics, a build that cannot start, the shutdown with a build running). A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);

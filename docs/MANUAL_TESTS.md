@@ -34,6 +34,9 @@ dev builds; they are not part of the repository.
 | `--bench-project` | Fuzzy ranking on 10,000 / 100,000 / 1,000,000 synthetic paths (frames, the longest frame, RET's whole ranking), scans of the generated tree and of `C:\Windows`, typing with and without a scan running. Never takes the focus. |
 | `--bench-grep` | The project search on ~100 MB in 3,000 generated files with 1, 2, 4 and 8 workers (first result, total, MB/s, the longest frame and its results work, memory), typing while 8 workers search, the workers' priority. Never takes the focus. |
 | search tests | The `--test` groups logged as "test: ok: grep file", "grep search", "grep sharing", "results" and "occur" (Phase 12). |
+| `--child <script>` | Dev builds: the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten). |
+| `--bench-compile` | A `--child` program printing 100 MB into *compilation* (with the cap raised and at the default 16 MB: time, frames, the longest frame, memory), typing at line 1,000,000 of the 100 MB file while builds print. Never takes the focus. |
+| build tests | The `--test` groups logged as "test: ok: processes", "compile matchers", "compile path resolution", "build settings and colors", "compile cleaning", "builds", "build kills", "builds in the app" and "the landing highlight" (Phase 13). |
 | project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".teal-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
@@ -328,6 +331,37 @@ named as in the evidence table.
 | N20 | A very long line shows a part around the match with "…" at each cut | AUTOMATED-NEW | grep tests (a long line cut on character boundaries with an ellipsis at each end, an invalid byte at the cut). |
 | N21 | `teal --no-activate` shows the window without taking the focus | HUMAN | Real focus. Checked during this phase with a PowerShell script around the memory measurements: GetForegroundWindow before and after each of 12 starts, unchanged; the command-line test covers the flag in every build. Typing elsewhere meanwhile: HUMAN step 20. |
 
+## O. Build and jump to error (Phase 13)
+
+"build tests" are the `--test` groups listed above ("builds in the app" is the headless app driven through
+the real keymap; the builds there are `--child` programs run through cmd.exe). Screenshots are in build/shots.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| O1 | C-x p c in a project asks "Compile command: " with .teal-project's [build] command filled in, ready to edit; nothing runs before RET | AUTOMATED-NEW | builds in the app (the prompt and its input; no *compilation* and no process before RET; an empty command: "No compile command"). harness: C-x p c among the default bindings on every layout. |
+| O2 | The command offered next time is the one last used in that project | AUTOMATED-NEW | builds in the app (an edited command is offered over .teal-project's on the next C-x p c). |
+| O3 | RET: *compilation* opens in another window without being selected: "Command:", "Directory:", a blank line, the output as it arrives, then a blank line and how it ended | AUTOMATED-NEW | builds in the app (the exact text, a.c still selected, two windows); screenshots p13_jai.png, p13_selfbuild.png, p13_running.png. |
+| O4 | The last line says "Compilation finished in 1.24 s", "Compilation exited abnormally with code N in ...", or "Compilation killed"; the echo area sums up errors and warnings | AUTOMATED-NEW | builds in the app ("Compilation exited abnormally with code 2: 2 errors, 1 warning", "Compilation killed", the link case with code 1120); screenshot p13_selfbuild.png ("Compilation finished in 2.39 s", "0 errors, 0 warnings"). |
+| O5 | The mode line shows running, then exit [0] or exit [N] (killed when killed) | AUTOMATED-NEW | builds in the app (Compilation:running, :exit [2], :killed, and :failed when it cannot start); smoke stage 9 (the state's cells drawn); screenshots p13_running.png and p13_jai.png. |
+| O6 | Error lines show the file and line in the colors of *search*, "error" red, "warning" orange, notes green | AUTOMATED-NEW | smoke stage 9 (the file name exactly search_file, "(1,5)" search_line_number, "error" compilation_error, "warning" compilation_warning); screenshots p13_jai.png (Jai), p13_selfbuild_error.png (cl) inspected. |
+| O7 | M-g n / M-g p from any window go to the next / previous error (notes skipped), and the place stays highlighted until the next key | AUTOMATED-NEW | builds in the app (next-error to a.c 2:5, the note skipped, b.h, a.c 4, "No more matches", previous-error; the whole line highlighted, gone after C-f); the landing highlight test (search results too); screenshots p13_landing.png, p13_selfbuild_next_error.png. |
+| O8 | In *compilation*: RET visits the error on its line, n / p show the next / previous one in the other window, q closes the window; RET on another line says so | AUTOMATED-NEW | builds in the app (RET on "Building...": "No error on this line"; n, n skipping the note, p; RET on the note visits note.h; q closes the window; [keys compilation]'s defaults and describe-key). |
+| O9 | g in *compilation* and M-x recompile run the last command again without asking | AUTOMATED-NEW | builds in the app (g, M-x recompile from a.c, "No previous compilation" before any build); recompile in *search* still searches again (results tests). |
+| O10 | C-c C-k (M-x kill-compilation) stops the build and every process it started | AUTOMATED-NEW | build kills (a child and its grandchild gone within 1 s; a kill during a 50 MB flood; 100 start / kill rounds); builds in the app (C-c C-k: "Compilation killed", the grandchild gone; "No compilation process" with none). |
+| O11 | C-x p c while a build runs asks "A compilation process is running; kill it? (yes or no)": no keeps it, yes starts the new one | AUTOMATED-NEW | builds in the app (no: the same build runs on; yes: a new build, the old tree gone). |
+| O12 | Unsaved files before a build: asked one by one (y, n, q) by default, or all saved, or left, by compilation_save_buffers | AUTOMATED-NEW | builds in the app (ask with y / n / q, all, none: asked or not, saved or not, the build started each time). |
+| O13 | The *compilation* window follows the output until the first error (or always, or never, by compilation_scroll_output) | AUTOMATED-NEW | builds in the app (first-error: point on the first error's line; true: at the end; false: at the start); screenshot p13_running.png (point following the output). |
+| O14 | Exiting teal while a build runs asks "A compilation is running; kill it and exit? (yes or no)"; yes ends the whole tree | AUTOMATED-NEW | builds in the app (C-x C-c: the question; no stays; yes quits; the grandchild gone after the shutdown); app_shutdown with a build running and no question (the path of WM_ENDSESSION): the tree gone. |
+| O15 | Paths with drive letters, spaces and parentheses parse; times, URLs and version numbers never become errors | AUTOMATED-NEW | compile matchers (34 lines: cl with /FC, "Program Files (x86)", a path with spaces, csc, tsc, MSBuild's "1>", GCC / Clang, includes, Jai; "12:30:45", "Build started 12:30:45.", URLs, "version 1.2.3", the compiler banner). |
+| O16 | Linker errors without a file position are still errors: colored and counted, never "0 errors" | AUTOMATED-NEW | compile matchers (LNK1104, LNK2019, D9025, "error:", "ld: error:", MSB4019; "0 errors", "0 Error(s)", "-Werror", "errors: 3" not counted); builds in the app (a link-only failure: "2 errors, 0 warnings", both words marked, next-error and RET skip them). |
+| O17 | A relative path in an error line opens the right file (the build directory, beside MSBuild's project, the project root) | AUTOMATED-NEW | compile path resolution (each step, the order, the cache); builds (a .bat that changes directory: here.c in the build directory, sub/x.c under the root, x.c beside the bracketed project, one found nowhere counted without a location). |
+| O18 | Files the build rewrote show their new text at once (or are flagged when they have unsaved changes) | AUTOMATED-NEW | builds in the app (gen.h rewritten by the build: reverted with no activation; mod.h modified: "changed on disk"; after a kill too). |
+| O19 | Output with colors (ANSI) and in the console's code page shows as text | AUTOMATED-NEW | compile cleaning (CSI, OSC, a lone ESC; 0x81 0x82 from the OEM code page as ü é; valid UTF-8 kept; random read slicing); builds (the same bytes from a real child process). |
+| O20 | A build that prints a lot: *compilation* keeps 16 MB and says "[output truncated]"; the build is never blocked, typing stays fast | AUTOMATED-NEW + HUMAN | builds (a 100,000-byte cap: one mark, all 2,000,000 bytes read, exit 0); `--bench-compile` (100 MB in 0.33 s, no frame over 0.3 ms; a key's frame at line 1,000,000 14-18 us avg, worst 217-237 us while builds print, 13-21 us avg, worst 243 us without, after one 5.8 ms first insert); a real build: HUMAN step 22. |
+| O21 | A command that does not exist, a directory that does not exist | AUTOMATED-NEW | builds (cmd's own message and exit 1; the directory: no start, nothing left open); builds in the app (a [build] directory that does not exist: "Compilation could not start: ...", mode Compilation:failed); processes (the same through the platform layer). |
+| O22 | .teal-project's [build] directory and its mistakes | AUTOMATED-NEW | .teal-project tests ([build] command and directory, unknown names, a backslash in a command); builds in the app (the build runs in root\sub; the diagnostic in *Messages*). |
+| O23 | Building teal itself from teal: a clean build, then one with an error | AUTOMATED-NEW + HUMAN | screenshots p13_selfbuild.png (teal_bench.exe on the repository, C-x p c RET: .\build.bat, 2.39 s, exit [0]) and p13_selfbuild_error.png / p13_selfbuild_next_error.png (a copy with an error and a warning in edit.c: both listed and colored, M-g n on edit.c line 866). Looking at a real failing build: HUMAN step 21. |
+
 ## HUMAN steps
 
 In this order, with `build\teal.exe` (or teal_debug.exe):
@@ -375,6 +409,18 @@ Phase 12, project-wide search:
     fills in from the top, the last line counts up, and the typing is never held up.
 20. **N21**: While typing in Notepad, start `build\teal.exe --no-activate` from a terminal. Notepad keeps
     the focus and every key; teal's window appears behind it.
+
+Phase 13, builds:
+
+21. **O23**: In teal's repository put an error in a source file (say `int x = y;` in src/edit.c), C-x p c RET
+    (`.\build.bat`). Look at *compilation*: the error in red with its file and line, M-g n opens the file at
+    that line with the line highlighted. Undo the error and C-x p c RET again: "Compilation finished".
+22. **O20**: Start `build.bat release` with C-x p c and type in another window at once. The typing is never
+    held up while the output arrives.
+23. **N13**: While a C-x p g search runs on a big repository, run a build (C-x p c) and `git status` /
+    `git checkout -- <file>` in a terminal. Both succeed; nothing complains that a file is in use.
+24. **O10**: M-x compile with `ping -t localhost`, wait a few lines, C-c C-k. *compilation* says
+    "Compilation killed"; Task Manager shows no ping.exe and no cmd.exe started by teal.
 
 Dev helpers that take most of the work out of the others: `teal_debug.exe --idle-check` (A4, Z1),
 `teal_debug.exe --dpi-check build\shots\dpi` (A9), and `teal_debug.exe --clipboard-check` (E14,

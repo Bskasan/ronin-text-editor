@@ -7,7 +7,7 @@
 | `src/teal.c` | the unity translation unit; includes everything below except the .cpp, in order |
 | `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header teal uses, then `teal.c`, so a teal identifier that a system header defines as a macro fails the build |
 | `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
-| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call) |
+| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call); processes (a command through cmd.exe in a job object, one overlapped pipe) |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
@@ -28,22 +28,24 @@
 | `src/finder.h/.c` | part of the app (included after files.c): the projects kept (4), their scans and tree watches, `app_wake` (the workers' results), staleness and rescans, the project finder's matcher and its commands (project-find-file, -other-window, project-refresh); dev: smoke and bench helpers |
 | `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded; its core (a pattern, the SSE2 candidate scan on the first and second byte, the comparison) on plain byte ranges, and on top of it the search over the gap buffer's two segments in place, resumable with a budget of positions |
 | `src/grep.h/.c` | the project-wide search's worker side: one file in fixed chunks that overlap (encodings, binary files, lines counted, long lines cut), the workers claiming files of an append-only list in order, their batches through one locked queue, cancel, bounded join |
-| `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*), the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; dev: smoke and bench helpers |
+| `src/compile.h/.c` | builds, the worker side: the reader worker owning the process (start, read, kill, close), the lines (split across reads, CR, ANSI, OEM, the cut, the output cap), the error matchers (MSVC, GCC / Clang, includes, Jai, tsc, MSBuild; kinds without a location), the path resolution and its cache, batches through one locked queue |
+| `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*, *compilation*: each location's row and line offsets, a build's marks without a location), the landing highlight, the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; *compilation* (its lines inside the frame budget, the scroll rule, the end and its check of rewritten files), project-compile, compile, recompile, kill-compilation, the save, kill and exit questions' chain, the commands remembered per directory; dev: smoke and bench helpers |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--scan-hold`, junctions, the input tests' shield) |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield) |
+| `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
 Core (`app.c`, `files.c`, `finder.c`, `results.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
-`fuzzy.c`, `search.c`, `grep.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
-additionally calls `font_backend.h`. The scanner's worker (project.c) and the search's workers (grep.c) call only the os_* functions
-platform.h marks "any thread".
+`fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
+additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c) and the build's reader
+(compile.c) call only the os_* functions platform.h marks "any thread".
 
 ## Startup and frame loop
 
@@ -424,6 +426,35 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   174 ms median (172-194) against 175 ms (172-181).
 - Release exe 416,768 bytes (378,368 after Phase 11); the same six DLLs; kernel32 adds SetThreadPriority and
   GetActiveProcessorCount.
+
+## Measurements (Phase 13)
+
+Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe`.
+
+- `--bench-compile`: a `--child` program writes 100 MB of numbered lines (every 64th an MSVC warning on a
+  file that exists: 21,808 locations) as fast as it can, best of three. With compilation_max_output_mb =
+  128: all of it in *compilation* (98 MB, 1,395,760 lines) 0.33 s after the start (318 MB/s), 1,492
+  frames, the longest 278 us (its results work at most 260 us), none over 2,100 us; private bytes +110 MB
+  at the peak (the buffer's text and line index, the locations). At the default 16 MB: 16 MB kept
+  (228,462 lines), the rest read and dropped, 0.14 s in all (770 MB/s), the longest frame 291 us. After
+  the builds, with *compilation* killed: +3 MB.
+- Typing at line 1,000,000 of the 100 MB file (left window), 3,000 keys, while 100 MB builds run one after
+  another (2-3 ended meanwhile), alternated with a finished *compilation* shown in the same two windows:
+  a key's frame 14-18 us avg, worst 217-237 us, against 13-21 us avg, worst 243 us without (and one 5.8 ms
+  first insert moving the gap). The frames between keys (the output written): 78-97 us avg, worst 403-422
+  us, results work at most 380-400 us.
+- teal built from inside teal (teal_bench.exe on the repository, C-x p c RET with .\build.bat, debug): 2.39 s,
+  exit [0]; a copy with an error and a warning in src/edit.c: 1.62 s, both listed with their locations.
+- `--test` takes ~21 s on teal_bench.exe (~20 s before): the build tests start a few hundred processes (cmd.exe
+  and the `--child` program each time).
+- Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`): *scratch* 76.7-77.0 MB;
+  src\keymap.c 76.4-77.3 MB; the 100 MB .txt 191.8-193.0 MB; the 100 MB .c 216.7-217.5 MB (Phase 12:
+  75.6-77.2, 75.8-76.2, 191.9-193.5, 216.0-216.8).
+- Release exe 453,632 bytes (416,768 after Phase 12, rebuilt from 6d57cee to compare); the same six DLLs;
+  kernel32 adds 18 functions: CreateProcessW, ResumeThread, GetExitCodeProcess, CreateJobObjectW,
+  AssignProcessToJobObject, SetInformationJobObject, TerminateJobObject, CreateNamedPipeW, PeekNamedPipe,
+  GetOverlappedResult, CancelIoEx, ResetEvent, WaitForMultipleObjects, InitializeProcThreadAttributeList,
+  UpdateProcThreadAttribute, DeleteProcThreadAttributeList, GetSystemDirectoryW and GetTickCount64.
 
 ## Roadmap
 
@@ -1160,6 +1191,79 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Colors: search_file (the keyword color unless set: white file names read best next to the line numbers)
   and search_line_number (the number color); the match on lazy_highlight.
 
+### Builds (Phase 13)
+
+- A build is a child process started through `<system directory>\cmd.exe /s /c "<command>"` (no search of the
+  PATH or the current directory for cmd itself), with CREATE_NO_WINDOW, stdin from the NUL device (a read
+  ends at once, as with a closed stdin, but no program fails on an invalid handle), stdout and stderr in one
+  pipe. AutoRun commands of cmd still run, as in a console.
+- The pipe is an overlapped named pipe (a unique name, one instance, remote clients refused): an anonymous
+  pipe has no overlapped reads, and the reader must wait on the read, the process and its cancel event at
+  once. Only the pipe's write end and NUL are inherited (PROC_THREAD_ATTRIBUTE_HANDLE_LIST): no other handle
+  of teal reaches the child, so one build never holds another's pipe open.
+- The child is created suspended, put into a job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, then
+  resumed, so nothing it starts escapes the job. Killing the build terminates the job: the whole tree. teal's
+  exit (a crash too) closes the job handle, which ends the tree.
+- The build ends when cmd.exe exits, not when the pipe reaches its end: a process the build leaves running
+  (mspdbsrv.exe started by cl /Zi, a build server) can hold the pipe open forever. What is already in the
+  pipe is still read (PeekNamedPipe). Then such leftovers are let go (the kill-on-close limit is cleared
+  before the job is closed), as in Emacs; a kill, or an exit while the build runs, still ends them.
+- The build's reader worker owns the process from its start to its close (start, read, kill, close), under
+  the threading rules: the main thread never waits for CreateProcess or for the process; kill-compilation
+  sets the cancel flag and the cancel event. The worker hands batches of lines to the main thread through
+  one locked queue; app_wake only takes the list, the frame's results work writes the lines inside the
+  frame budget, so typing never waits for build output (--bench-compile). A killed build ends on its own
+  (app_wake frees it); at exit it shares the 1,000 ms bound with the scans and searches.
+- Lines are cleaned on the worker: CR dropped, ANSI escape sequences stripped (CSI, OSC, two-byte), kept when
+  valid UTF-8, otherwise converted from the OEM code page, decided per line. A line over 60,000 bytes is cut
+  on a character boundary. A line shows when its newline arrives (and the last one at the end).
+- The output cap (compilation_max_output_mb, 16) counts what goes into *compilation*; past it one
+  "[output truncated]" line, and the rest is read and dropped so the child never blocks on a full pipe.
+- Error lines are recognized by hand-written matchers, one per format, on the worker (no regular
+  expressions): MSVC's form (cl, link with a location, csc, tsc: "path(L)" / "path(L,C)" and up to four
+  numbers, then a kind word), GCC and Clang (with and without a column, and the bare "path:L:" as an error,
+  as Emacs), "In file included from" (info), Jai ("path:L,C: Error|Warning|Info:"), tsc's pretty form, after
+  MSBuild's "N>" prefix. A path may hold spaces, parentheses and a drive letter; a ':' elsewhere, the
+  characters Windows forbids and "://" reject it. A candidate counts only when its file exists: as given
+  when absolute; else under the build directory, beside the MSBuild project file the line names in
+  brackets, under the project root, in that order; the answers are cached on the worker. There is no
+  "Entering directory" tracking.
+- Lines with a kind word but no file position ("LINK : fatal error LNK1104", "x.obj : error LNK2019",
+  "error: ...", "ld: error: ...", "error MSB4019: ...") are still errors or warnings: their kind word is
+  colored and they are counted in the summary, but they are not locations, so next-error never stops on
+  them. A location whose file is nowhere falls back to that, when it had a kind word. A build whose output
+  has an error line never reports "0 errors".
+- *compilation* is a results buffer: the Phase 12 locations mechanism with next-error, previous-error,
+  RET, n and p. A Location now knows its row and where its file name, line:column and marked part are in
+  its line (for a search the match, for a build the kind word), so a results buffer's lines need not be
+  consecutive locations (this replaces Phase 12's "location i is on line first_line + i"); 16 bytes more a
+  location. next-error, n and p skip notes (Emacs' compilation-skip-threshold 1); RET on a note's line
+  visits it.
+- Where RET, n, p, next-error and previous-error land stays highlighted (lazy_highlight) until the next key
+  event (a prefix key too) or until its buffer is killed: the match in *search* and *occur*, the whole line
+  for a build's location. No timer.
+- teal never runs a command it has not shown: C-x p c fills the prompt with the command last used for the
+  project in this session, else .teal-project's [build] command, and waits for RET; compile does the same
+  keyed by the buffer's directory. recompile reruns *search* and *occur* in those buffers (as g did since
+  Phase 12) and the last build anywhere else, without the prompt.
+- The order before a start follows Emacs: the prompt, then the unsaved file buffers by
+  compilation_save_buffers (ask: the save-some-buffers walk, where q stops asking and the build goes on;
+  all; none), then "A compilation process is running; kill it?" when one runs. Exiting asks "A compilation
+  is running; kill it and exit?" after the modified-buffers question. A running build does not block the end
+  of the Windows session (only unsaved files do); WM_ENDSESSION's shutdown kills it. Killing *compilation*
+  kills its build without asking, as killing *search* does.
+- *compilation* is shown through the pop-up rule and not selected, as in Emacs (the selected window keeps it
+  when it shows it already, so g does not split). compilation_scroll_output: first-error (windows whose
+  point is at the end follow the output until the first error with a location is written, then go to it
+  and stop), true (always follow), false (point stays at the start). Its mode line shows
+  Compilation:running, :exit [N] (a code of 0xC0000000 and above in hex), :killed or :failed.
+- When a build ends (finished, exited abnormally or killed; not when it could not start), every file buffer
+  is checked against its file at once, as on an activation: what the build rewrote is reverted when
+  unmodified (auto_revert) and flagged otherwise.
+- `--child <script>` (dev builds) is the program the tests run: it runs before the log is opened and before
+  any window, so the run that started it keeps its log. The tests prove they can fail: a matcher without
+  its column, and a kill that ends only cmd.exe (the grandchild survived and three tests said so).
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -1222,3 +1326,7 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Locations that follow later edits (markers in the visited buffers; now a location is its line and
   byte column as found, so an edit above it moves the target).
 - Columns in characters instead of bytes in results lines (now 1-based byte columns, as grep and ripgrep).
+- Builds: run and debug commands; several named build commands per project; input to the process;
+  "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
+  line); a save question limited to the project's buffers; a unique-suffix lookup in the project index for
+  error paths that still do not resolve.
