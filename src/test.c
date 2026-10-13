@@ -2002,6 +2002,7 @@ static b32 test_mc_commands(Test *t) {
         { "Foo foo", 7, 4, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*7:4", "No more matches" },                // case sensitive
         { "abcdef\nab\nabcdef", 4, -1, { &CMD_MARK_NEXT_LIKE_THIS }, "4 *9", "" },                      // a short line: its end
         { "abcdef\nab\nabcdef", 4, -1, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_MARK_NEXT_LIKE_THIS }, "4 9 *14", "" }, // the column kept
+        { "abcdef\nabcdef\nabcdef", 0, -1, { &CMD_NEXT_LINE, &CMD_MOVE_END_OF_LINE, &CMD_MARK_NEXT_LIKE_THIS }, "13 *20", "" }, // a stale goal column
         { "abcdef\nab\nabcdef", 14, -1, { &CMD_MARK_NEXT_LIKE_THIS }, "*14", "No more matches" },       // the last line
         { "abcdef\nab\nabcdef", 14, -1, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*9 14", "" },
         { "abcdef\nab\nabcdef", 4, -1, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*4", "No more matches" },     // the first line
@@ -2230,8 +2231,11 @@ static i64 test_mc_find(Buffer *buf, Arena *arena, String8 needle, b32 forward, 
 }
 
 // The reference of the COMMAND_ONCE commands in the fuzz (keyboard-quit and the new ones).
-static void test_mc_ref_once(Test *t, TestMcRef *r, const Command *cmd, i32 max) {
+static void test_mc_ref_once(Test *t, TestMcRef *r, const Command *cmd, i32 max, const Command *last_command) {
     Buffer *buf = r->buf;
+    const Command *lc = last_command;
+    b32 vertical = lc == &CMD_NEXT_LINE || lc == &CMD_PREVIOUS_LINE || lc == &CMD_MARK_NEXT_LIKE_THIS || lc == &CMD_MARK_PREVIOUS_LIKE_THIS ||
+                   lc == &CMD_SKIP_TO_NEXT_LIKE_THIS;
     TestMcCursor *p = &r->c[r->primary];
     i64 rs, re;
     test_mc_span(p, &rs, &re);
@@ -2254,7 +2258,7 @@ static void test_mc_ref_once(Test *t, TestMcRef *r, const Command *cmd, i32 max)
         } else {
             i64 line = test_mc_line(buf, edge->point) + (fwd ? 1 : -1);
             if (line < 0 || line >= buffer_line_count(buf)) return;
-            i64 col = edge->goal >= 0 ? edge->goal : view_column_of(buf, edge->point);
+            i64 col = vertical && edge->goal >= 0 ? edge->goal : view_column_of(buf, edge->point);
             test_mc_add(r, view_offset_at_column(buf, line, col), 0, 0, col);
         }
     } else if (cmd == &CMD_SKIP_TO_NEXT_LIKE_THIS) {
@@ -2272,7 +2276,7 @@ static void test_mc_ref_once(Test *t, TestMcRef *r, const Command *cmd, i32 max)
         } else {
             i64 line = test_mc_line(buf, n->point) + 1;
             if (line >= buffer_line_count(buf)) return;
-            i64 col = n->goal >= 0 ? n->goal : view_column_of(buf, n->point);
+            i64 col = vertical && n->goal >= 0 ? n->goal : view_column_of(buf, n->point);
             n->point = view_offset_at_column(buf, line, col);
             n->goal = col;
         }
@@ -2404,7 +2408,7 @@ static b32 test_mc_fuzz(Test *t, u64 seed) {
             String8 added[TEST_MC_REF_MAX];
             i32 added_count = 0;
             if (cmd->flags & COMMAND_ONCE) {
-                test_mc_ref_once(t, r, cmd, test_settings.max_cursors);
+                test_mc_ref_once(t, r, cmd, test_settings.max_cursors, last);
             } else {
                 i64 lines0[TEST_MC_REF_MAX];
                 for (i32 i = 0; i < r->count; i++) lines0[i] = test_mc_line(r->buf, r->c[i].point);

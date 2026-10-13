@@ -1,5 +1,13 @@
 // cursors.c — see cursors.h.
 
+// A cursor's goal column holds only across vertical motions (next-line, previous-line, and the line forms of the
+// commands here, which go on from the last cursor's): after any other command its column is taken afresh.
+static b32 cursors_vertical(CommandContext *ctx) {
+    const Command *last = ctx->last_command;
+    return last == &CMD_NEXT_LINE || last == &CMD_PREVIOUS_LINE || last == &CMD_MARK_NEXT_LIKE_THIS || last == &CMD_MARK_PREVIOUS_LIKE_THIS ||
+           last == &CMD_SKIP_TO_NEXT_LIKE_THIS;
+}
+
 // The cursor-adding commands keep the minibuffer at one cursor.
 static b32 cursors_refused(CommandContext *ctx) {
     if (ctx->mini && ctx->mini->active && ctx->view == ctx->mini->view) {
@@ -177,7 +185,7 @@ static void cursors_mark_like_this(CommandContext *ctx, b32 forward) {
         echo_message(ctx->echo, "No more matches");
         return;
     }
-    i64 col = edge->goal_col >= 0 ? edge->goal_col : view_column_of(buf, p);
+    i64 col = cursors_vertical(ctx) && edge->goal_col >= 0 ? edge->goal_col : view_column_of(buf, p);
     Cursor *c = view_add_cursor(v, view_offset_at_column(buf, line, col));
     c->goal_col = col;
     v->primary = (i32)(c - v->cursors);
@@ -224,7 +232,7 @@ static void cmd_skip_to_next_like_this(CommandContext *ctx) {
         echo_message(ctx->echo, "No more matches");
         return;
     }
-    i64 col = n->goal_col >= 0 ? n->goal_col : view_column_of(buf, p);
+    i64 col = cursors_vertical(ctx) && n->goal_col >= 0 ? n->goal_col : view_column_of(buf, p);
     view_set_point(v, n, view_offset_at_column(buf, line, col));
     n->goal_col = col;
     v->primary = k;
