@@ -9728,6 +9728,24 @@ static b32 test_compile_app(Test *t) {
                    test_mini_input(t, app));
         app_dev_feed(app, "C-a C-k RET", &t->arena);
         TEST_CHECK(t, test_app_echo_is(app, "No compile command"), "compile app: an empty command: '%S'", test_echo(app));
+        // [keys compilation]: the defaults, describe-key and q in *compilation*.
+        static const char *const keys_want[] = { "RET compile-goto-error", "C-m compile-goto-error", "n next-error-no-select",
+                                                 "p previous-error-no-select", "g recompile", "q quit-window", "C-c C-k kill-compilation" };
+        i32 nb = 0;
+        for (;; nb++) {
+            const char *command = NULL;
+            String8 seq = app_dev_binding(app, &t->arena, 4, nb, &command);
+            if (!seq.len) break;
+            TEST_CHECK(t, nb < ARRAY_COUNT(keys_want) && str8_equal(str8_fmt(&t->arena, "%S %s", seq, command), str8_cstr(keys_want[nb])),
+                       "compile app: [keys compilation] binding %d is '%S %s'", nb, seq, command);
+        }
+        TEST_CHECK(t, nb == ARRAY_COUNT(keys_want), "compile app: [keys compilation] has %d bindings", nb);
+        app_dev_feed(app, "C-x b * c o m p i l a t i o n * RET C-h k q", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "q runs the command quit-window"), "compile app: describe-key q: '%S'", test_echo(app));
+        i32 windows = app_dev_window_count(app);
+        app_dev_feed(app, "q", &t->arena);
+        TEST_CHECK(t, windows == 2 && app_dev_window_count(app) == 1, "compile app: q in *compilation*: %d windows, then %d", windows,
+                   app_dev_window_count(app));
         app_dev_feed(app, "M-x k i l l - c o m p i l a t i o n RET", &t->arena);
         TEST_CHECK(t, test_app_echo_is(app, "No compilation process"), "compile app: kill with none: '%S'", test_echo(app));
         if (!test_app_destroy(t, app, "compile app")) return 0;
@@ -9923,6 +9941,14 @@ static b32 test_compile_app(Test *t) {
         b32 found = 0;
         for (i64 i = 0; i + want_dir.len <= text.len && !found; i++) found = mem_equal(text.data + i, want_dir.data, want_dir.len);
         TEST_CHECK(t, found, "compile app: [build] directory: '%S'", text);
+        // A [build] directory that does not exist: the build cannot start, and says so.
+        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\ndirectory = no_such_dir\n", cwd));
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the failed start did not end");
+        TEST_CHECK(t, test_contains(test_compile_text(t, app), "\n\nCompilation could not start: ") &&
+                          str8_equal(test_compile_mode(t, app), STR8_LIT("Compilation:failed")) && test_contains(test_echo(app), "Compilation could not start"),
+                   "compile app: a missing [build] directory: mode '%S', echo '%S'", test_compile_mode(t, app), test_echo(app));
+        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
         results_compile_remember(app, root, tree);
         app_dev_feed(app, "C-x p c RET", &t->arena);
         TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the last tree did not start");
@@ -9939,7 +9965,8 @@ static b32 test_compile_app(Test *t) {
         "p, g, M-x recompile, the command last used here offered, an empty command, kill with none, recompile with none, compile's "
         "prompt; compilation_scroll_output first-error / true / false; compilation_save_buffers ask (y, n, q) / all / none; a second "
         "build while one runs (no, yes), C-c C-k, killing the buffer, quitting (no, yes), every tree gone; a link-only failure; "
-        "outside changes after a build and after a kill; [build] directory and diagnostics; the shutdown with a build running)");
+        "outside changes after a build and after a kill; [build] directory and diagnostics, a [build] directory that does not exist (failed); "
+        "[keys compilation]'s defaults, describe-key and q; the shutdown with a build running)");
     return 1;
 }
 
