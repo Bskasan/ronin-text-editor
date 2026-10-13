@@ -1952,6 +1952,81 @@ static b32 test_mc_kill(Test *t) {
     return 1;
 }
 
+// The multiple-cursor commands on tricky input (headless view: their searches end at once).
+static b32 test_mc_commands(Test *t) {
+    TestView tv;
+    struct {
+        const char *text;
+        i64 point, mark; // the primary's region (mark -1: none)
+        const Command *cmds[4];
+        const char *after, *echo;
+    } cases[] = {
+        { "aaaa", 2, 0, { &CMD_MARK_NEXT_LIKE_THIS }, "2:0 *4:2", "" },                                  // not overlapping
+        { "aaaa", 2, 0, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_MARK_NEXT_LIKE_THIS }, "2:0 *4:2", "No more matches" },
+        { "ab xx ab", 2, 0, { &CMD_MARK_NEXT_LIKE_THIS }, "2:0 *8:6", "" },                              // at the end
+        { "ab xx ab", 2, 0, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*2:0", "No more matches" },
+        { "ab xx ab", 8, 6, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*2:0 8:6", "" },                          // at the start
+        { "ab xx ab", 6, 8, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*0:2 6:8", "" },                          // point at the start
+        { "foo\nbar\nx foo\nbar", 7, 0, { &CMD_MARK_NEXT_LIKE_THIS }, "7:0 *17:10", "" },               // multi-line
+        { "Foo foo", 7, 4, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*7:4", "No more matches" },                // case sensitive
+        { "abcdef\nab\nabcdef", 4, -1, { &CMD_MARK_NEXT_LIKE_THIS }, "4 *9", "" },                      // a short line: its end
+        { "abcdef\nab\nabcdef", 4, -1, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_MARK_NEXT_LIKE_THIS }, "4 9 *14", "" }, // the column kept
+        { "abcdef\nab\nabcdef", 14, -1, { &CMD_MARK_NEXT_LIKE_THIS }, "*14", "No more matches" },       // the last line
+        { "abcdef\nab\nabcdef", 14, -1, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*9 14", "" },
+        { "abcdef\nab\nabcdef", 4, -1, { &CMD_MARK_PREVIOUS_LIKE_THIS }, "*4", "No more matches" },     // the first line
+        { "x a x b x c", 1, 0, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_SKIP_TO_NEXT_LIKE_THIS }, "1:0 *9:8", "" },
+        { "x a x b x c", 1, 0, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_SKIP_TO_NEXT_LIKE_THIS, &CMD_SKIP_TO_NEXT_LIKE_THIS }, "1:0 *9:8",
+          "No more matches" },
+        { "x a x b x c", 1, 0, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_MARK_NEXT_LIKE_THIS, &CMD_UNMARK_NEXT_LIKE_THIS }, "1:0 *5:4", "" },
+        { "x a x", 1, 0, { &CMD_UNMARK_NEXT_LIKE_THIS }, "*1:0", "Only one cursor" },
+        { "ab\nab\nab", 1, -1, { &CMD_MARK_NEXT_LIKE_THIS, &CMD_SKIP_TO_NEXT_LIKE_THIS }, "1 *7", "" },  // skip by lines
+        { "foo bar foo baz foo", 11, 8, { &CMD_MARK_ALL_LIKE_THIS }, "3:0 *11:8 19:16", "Marked 3 occurrences" },
+        { "aaaaa", 2, 0, { &CMD_MARK_ALL_LIKE_THIS }, "*2:0 4:2", "Marked 2 occurrences" },             // overlapping: from the start
+        { "foo", 1, -1, { &CMD_MARK_ALL_LIKE_THIS }, "*1", "No region" },
+        { "abcdef\nab\nabcdef\nxyz", 14, 2, { &CMD_EDIT_LINES }, "4 9 *14", "" },                        // short lines: their end
+        { "abcdef\nab\nabcdef\nxyz", 14, 2, { &CMD_EDIT_ENDS_OF_LINES }, "6 9 *16", "" },
+        { "abcdef\nab\nabcdef\nxyz", 14, 2, { &CMD_EDIT_BEGINNINGS_OF_LINES }, "0 7 *10", "" },
+        { "abcdef\nab\nabcdef\nxyz", 2, 14, { &CMD_EDIT_LINES }, "*2 9 12", "" },                       // point on the first line
+        { "abc", 1, -1, { &CMD_EDIT_LINES }, "*1", "No region" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        if (!test_view_open(t, &tv, cases[i].text, 10, 40)) return 0;
+        i64 points[] = { cases[i].point }, marks[] = { cases[i].mark };
+        test_mc_set(tv.view, points, marks, 1, 0);
+        for (i32 k = 0; k < ARRAY_COUNT(cases[i].cmds) && cases[i].cmds[k]; k++) test_view_run(&tv, cases[i].cmds[k]);
+        char *got = test_mc_state(t, tv.view);
+        TEST_CHECK(t, test_cstr_equal(got, cases[i].after) && test_echo_is(&tv, cases[i].echo), "cursors command %d (%s): got \"%s\" echo '%S', "
+                   "expected \"%s\" '%s'", i, cases[i].cmds[0]->name, got, str8(tv.echo.text, tv.echo.len), cases[i].after, cases[i].echo);
+        if (!test_view_close(t, &tv)) return 0;
+    }
+    // The cap, max_cursors = 5: each adding command stops there and says so.
+    Settings five = test_settings;
+    five.max_cursors = 5;
+    if (!test_view_open(t, &tv, "x x x x x x x x x x\n1\n2\n3\n4\n5\n6\n7", 10, 40)) return 0;
+    tv.ctx.settings = &five;
+    i64 p1[] = { 1 }, m1[] = { 0 };
+    test_mc_set(tv.view, p1, m1, 1, 0);
+    test_view_run(&tv, &CMD_MARK_ALL_LIKE_THIS);
+    TEST_CHECK(t, tv.view->cursor_count == 5 && test_echo_is(&tv, "Cursor limit reached (max_cursors = 5): 5 occurrences marked"),
+               "cursors cap: mark-all left %d cursors, '%S'", tv.view->cursor_count, str8(tv.echo.text, tv.echo.len));
+    test_view_run(&tv, &CMD_MARK_NEXT_LIKE_THIS);
+    TEST_CHECK(t, tv.view->cursor_count == 5 && test_echo_is(&tv, "Cursor limit reached (max_cursors = 5)"), "cursors cap: mark-next");
+    test_view_run(&tv, &CMD_MARK_PREVIOUS_LIKE_THIS);
+    TEST_CHECK(t, tv.view->cursor_count == 5 && test_echo_is(&tv, "Cursor limit reached (max_cursors = 5)"), "cursors cap: mark-previous");
+    i64 p2[] = { buffer_size(tv.buf) }, m2[] = { 0 };
+    test_mc_set(tv.view, p2, m2, 1, 0);
+    test_view_run(&tv, &CMD_EDIT_LINES);
+    TEST_CHECK(t, tv.view->cursor_count == 5 && test_echo_is(&tv, "Cursor limit reached (max_cursors = 5)"), "cursors cap: edit-lines %d",
+               tv.view->cursor_count);
+    i64 live = tv.buf->marker_live;
+    TEST_CHECK(t, live == 2 * 5 + 1, "cursors cap: %D markers live", live);
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: multiple-cursor commands (%d cases: overlapping occurrences, at the buffer's ends, mark-previous, a multi-line "
+        "region, case, lines with a short one and the column kept, the first and last lines, skip and unmark by text and by lines, "
+        "mark-all, the edit-lines family; the cap at 5 for mark-all, mark-next, mark-previous and edit-lines)", (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
 // Read-only buffers refuse every edit with a message; save-buffer messages.
 static b32 test_view_edit_limits(Test *t) {
     TestView tv;
@@ -4812,6 +4887,87 @@ static b32 test_app_echo_is(App *app, const char *expected) {
 }
 
 static b32 test_current_is(App *app, const char *name);
+
+static String8 test_echo(App *app);
+static String8 test_results_conf(Test *t, const char *name, const char *text);
+
+// The multiple-cursor commands through the app: the default keys; mark-all over frames on a large buffer (keys
+// typed meanwhile wait, C-g stops it and adds nothing); refused in the minibuffer by key and by M-x.
+static b32 test_mc_app(Test *t) {
+    // ~1.2 MB: "needle" on every 1000th line, the rest without it.
+    Arena *a = &t->arena;
+    i64 lines = 20000, n = 0;
+    u8 *text = PUSH_ARRAY(a, u8, lines * 64);
+    for (i64 i = 0; i < lines; i++) {
+        String8 l = i % 1000 == 999 ? STR8_LIT("a line with the needle in it, and more text after it to fill..\n")
+                                    : STR8_LIT("an ordinary line of text that has nothing to find in it at all\n");
+        memcpy(text + n, l.data, (size_t)l.len);
+        n += l.len;
+    }
+    App *app = test_search_app(t, str8(text, n), 0);
+    TEST_CHECK(t, app, "cursors app: no app");
+    View *v = app_selected_view(app);
+    // The keys: C-> and C-< on a region, C-S-c C-S-c on lines, C-c C-< over frames.
+    i64 first = 999 * 63 + 16; // "needle" on line 999
+    view_set_mark(v, view_primary(v), first, 1);
+    view_set_point(v, view_primary(v), first + 6);
+    app_dev_feed(app, "C->", &t->arena);
+    TEST_CHECK(t, v->cursor_count == 2 && view_point(v, view_primary(v)) == 1999 * 63 + 22, "cursors app: C-> gave %d cursors", v->cursor_count);
+    app_dev_feed(app, "C-<", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "No more matches") && v->cursor_count == 2, "cursors app: C-< at the first");
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    TEST_CHECK(t, v->cursor_count == 1, "cursors app: C-g C-g left %d cursors", v->cursor_count);
+    view_set_mark(v, view_primary(v), first, 1);
+    view_set_point(v, view_primary(v), first + 6);
+    app->dev_work_budget = KB(64);
+    app_dev_feed(app, "C-c C-<", &t->arena);
+    TEST_CHECK(t, cursor_job_pending(&app->cursor_job) && v->cursor_count == 1, "cursors app: mark-all ended in its first slice");
+    app_dev_feed(app, "x C-n", &t->arena); // waits: nothing typed, no motion
+    i32 frames = 1;
+    while (cursor_job_pending(&app->cursor_job) && frames < 1000) {
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+        frames++;
+    }
+    String8 now = test_app_text(t, app);
+    TEST_CHECK(t, v->cursor_count == 20 && test_app_echo_is(app, "Marked 20 occurrences") && frames > 5 && str8_equal(now, str8(text, n)),
+               "cursors app: mark-all gave %d cursors in %d frames, echo '%S'", v->cursor_count, frames, test_echo(app));
+    // C-g while it runs: nothing added.
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    view_set_mark(v, view_primary(v), first, 1);
+    view_set_point(v, view_primary(v), first + 6);
+    app_dev_feed(app, "C-c C-<", &t->arena);
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !cursor_job_pending(&app->cursor_job) && v->cursor_count == 1 && test_app_echo_is(app, "Quit"), "cursors app: C-g during mark-all");
+    app->dev_work_budget = 0;
+    // edit-lines by its key.
+    view_set_mark(v, view_primary(v), 0, 1);
+    view_set_point(v, view_primary(v), 3 * 63 + 5);
+    app_dev_feed(app, "C-S-c C-S-c", &t->arena);
+    TEST_CHECK(t, v->cursor_count == 4 && view_point(v, view_primary(v)) == 3 * 63 + 5, "cursors app: C-S-c C-S-c gave %d", v->cursor_count);
+    app_dev_feed(app, "C-g", &t->arena);
+    // In the minibuffer: refused by their keys (M-x does not run inside a prompt: the commands without keys are bound
+    // here), one cursor, the input unchanged.
+    String8 conf = test_results_conf(t, "p14keys.conf", "[keys]\nC-c 1 skip-to-next-like-this\nC-c 2 unmark-next-like-this\n"
+                                                        "C-c 3 edit-ends-of-lines\nC-c 4 edit-beginnings-of-lines\n");
+    app_dev_use_config(app, conf);
+    static const char *keys[] = { "C->", "C-<", "C-c C-<", "C-S-c C-S-c", "C-c 1", "C-c 2", "C-c 3", "C-c 4" };
+    for (i32 i = 0; i < ARRAY_COUNT(keys); i++) {
+        app_dev_feed(app, "C-g C-g M-g g 1 2", &t->arena); // a prompt with "12" in it
+        View *mv = app->mini.view;
+        view_set_mark(mv, view_primary(mv), 0, 1); // a region in the input
+        app_dev_feed(app, keys[i], &t->arena);
+        String8 input = buffer_text(mv->buffer, &t->arena, 0, buffer_size(mv->buffer));
+        TEST_CHECK(t, app->mini.active && mv->cursor_count == 1 && str8_equal(input, STR8_LIT("12")) &&
+                          test_app_echo_is(app, "Multiple cursors are not available in the minibuffer"),
+                   "cursors app: '%s' in the minibuffer: %d cursors, input '%S', echo '%S'", keys[i], mv->cursor_count, input, test_echo(app));
+    }
+    app_dev_feed(app, "C-g C-g C-g", &t->arena);
+    if (!test_app_destroy(t, app, "cursors app")) return 0;
+    LOG("test: ok: multiple-cursor commands in the app (C->, C-<, C-g C-g, C-S-c C-S-c; C-c C-< over %d frames at 64 KB a frame with "
+        "keys waiting, C-g during it; %d refusals in the minibuffer, by the default keys and by keys bound in a config)", frames,
+        (i32)ARRAY_COUNT(keys));
+    return 1;
+}
 
 // The commands that make sense with one cursor collapse to the primary first (through the keys); switching buffers
 // leaves one cursor; a prompt aborted afterwards does not bring the others back.
@@ -10667,6 +10823,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_mc_undo(&t, seed);
     arena_reset(&t.arena);
     test_mc_kill(&t);
+    arena_reset(&t.arena);
+    test_mc_commands(&t);
+    arena_reset(&t.arena);
+    test_mc_app(&t);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);

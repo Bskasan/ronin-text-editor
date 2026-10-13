@@ -13,6 +13,7 @@ typedef struct Minibuffer Minibuffer;
 typedef struct Isearch Isearch;
 typedef struct Replace Replace;
 typedef struct Keymap Keymap;
+typedef struct CursorJob CursorJob;
 typedef struct CommandContext CommandContext;
 typedef void CommandFn(CommandContext *ctx);
 
@@ -52,6 +53,7 @@ struct CommandContext {
     Minibuffer *mini;         // prompts (minibuffer.h); NULL in the headless view tests
     Isearch *isearch;         // the isearch (isearch.h); NULL in the headless view tests
     Replace *replace;         // query-replace and replace-string (isearch.h); same
+    CursorJob *cursor_job;    // the multiple-cursor commands' search over frames (cursors.h); NULL: they finish at once
     const Keymap *global;     // the global keymap (M-x shows the bindings)
     Arena *scratch;           // per-frame scratch (lexing for indentation); everything pushed is popped again
     b32 kill_append;          // set by the driver: this command's kills append to the newest entry

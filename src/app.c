@@ -42,6 +42,7 @@ struct App {
     Minibuffer mini;             // prompts; while active its keymap comes before the global one
     Isearch isearch;             // while active its keymap comes before the global one
     Replace replace;             // query-replace and replace-string: while active, keys go to it first
+    CursorJob cursor_job;        // a multiple-cursor command's search over frames: while it runs, keys wait (C-g stops it)
     Search lazy;                 // the lazy highlight: the other matches on the drawn rows
     b32 search_pending;          // a search step is still being searched: another frame
     b32 rank_pending;            // a prompt's matcher is still ranking: another frame
@@ -1140,6 +1141,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->ctx.isearch = &app->isearch;
     replace_init(&app->replace);
     app->ctx.replace = &app->replace;
+    app->ctx.cursor_job = &app->cursor_job;
     APP_STAGE("app: minibuffer");
     app->files_arena = arena_create(GB(1));
     app->watch_arena = arena_create(MB(16));
@@ -1175,6 +1177,7 @@ i32 app_shutdown(App *app) {
     leaks += minibuffer_destroy(&app->mini);
     isearch_destroy(&app->isearch);
     replace_destroy(&app->replace); // before the buffers: its marker
+    cursor_job_destroy(&app->cursor_job);
     os_release(app->files_arena.base);
     files_unwatch_all(app);
     os_release(app->watch_arena.base);
@@ -1862,6 +1865,12 @@ static void app_key_event(App *app, Event *e) {
     if (app->dev_log_keys) app_dev_log_key(app, e, &k, isearch, replacing);
 #endif
     b32 ended = 0; // the key ended a search session: its message ("Mark saved ...") stays while the key runs
+    if (cursor_job_pending(&app->cursor_job)) { // a multiple-cursor search runs: C-g stops it, other keys wait
+        if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED || k.kind == KEY_RESULT_PREFIX) return;
+        app->keys.pending.len = 0;
+        if (k.command && (k.command->flags & COMMAND_QUIT)) cursor_job_stop(&app->cursor_job);
+        return;
+    }
     if (replacing) {
         if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED) return;
         echo_clear(&app->echo);
@@ -1925,7 +1934,7 @@ static void app_key_event(App *app, Event *e) {
 // slice). It comes first: the user is waiting for the match.
 static void app_search_work(App *app, Arena *scratch, u64 deadline) {
     i64 used = 0;
-    while (isearch_pending(&app->isearch) || replace_pending(&app->replace)) {
+    while (isearch_pending(&app->isearch) || replace_pending(&app->replace) || cursor_job_pending(&app->cursor_job)) {
         i64 slice = SEARCH_SLICE_BYTES;
 #if TEAL_DEV
         if (app->dev_work_budget) { // tests: a fixed number of positions per frame instead of the clock
@@ -1934,9 +1943,11 @@ static void app_search_work(App *app, Arena *scratch, u64 deadline) {
         } else
 #endif
         if (used && os_time_us() >= deadline) break;
-        used += isearch_pending(&app->isearch) ? isearch_work(&app->isearch, slice) : replace_work(&app->replace, scratch, slice);
+        used += isearch_pending(&app->isearch) ? isearch_work(&app->isearch, slice)
+              : replace_pending(&app->replace) ? replace_work(&app->replace, scratch, slice)
+              : cursor_job_work(&app->cursor_job, app->ctx.settings, scratch, slice);
     }
-    app->search_pending = isearch_pending(&app->isearch) || replace_pending(&app->replace);
+    app->search_pending = isearch_pending(&app->isearch) || replace_pending(&app->replace) || cursor_job_pending(&app->cursor_job);
 }
 
 // Lexer states for the visible lines of every view, with what is left of the frame's deadline. While

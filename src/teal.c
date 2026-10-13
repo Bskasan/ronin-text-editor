@@ -23,6 +23,7 @@
 #include "compile.h"
 #include "isearch.h"
 #include "results.h"
+#include "cursors.h"
 
 #include "base.c"
 #include "png.c"
@@ -49,6 +50,7 @@
 #include "files.c"
 #include "finder.c"
 #include "results.c"
+#include "cursors.c"
 #include "command.c"
 #include "test.c" // TEAL_DEV only
 
