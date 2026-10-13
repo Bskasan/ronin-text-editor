@@ -65,9 +65,14 @@ static KillEntry *kill_at(KillRing *k, i32 back) {
     return &k->entries[(k->head - back + KILL_RING_CAP) % KILL_RING_CAP];
 }
 
+// The bytes an entry takes: its text, and a multiple-cursor kill's offsets after it.
+static i64 kill_size(KillEntry *e) {
+    return e->pieces > 1 ? e->table_off + 8 * (i64)(e->pieces + 1) : e->len;
+}
+
 static void kill_free(KillRing *k, KillEntry *e) {
     if (e->large) os_release(e->data);
-    else k->small_dead += (u64)e->len;
+    else k->small_dead += (u64)kill_size(e);
     memset(e, 0, sizeof(*e));
 }
 
@@ -75,6 +80,8 @@ void kill_destroy(KillRing *k) {
     for (i32 i = 0; i < k->count; i++) kill_free(k, kill_at(k, i));
     if (k->small_base) os_release(k->small_base);
     if (k->scratch.base) os_release(k->scratch.base);
+    if (k->collect_text.base) os_release(k->collect_text.base);
+    if (k->collect_off) os_release(k->collect_off);
     k->count = 0;
 }
 
@@ -87,6 +94,26 @@ String8 kill_entry(KillRing *k, i32 back) {
     if (back < 0 || back >= k->count) return str8(NULL, 0);
     KillEntry *e = kill_at(k, back);
     return str8(e->data, e->len);
+}
+
+static String8 kill_entry_piece(KillEntry *e, i32 index) {
+    if (e->pieces <= 1) return str8(e->data, e->len);
+    i64 from, to;
+    memcpy(&from, e->data + e->table_off + 8 * (i64)index, 8);
+    memcpy(&to, e->data + e->table_off + 8 * (i64)(index + 1), 8);
+    return str8(e->data + from, to - 1 - from);
+}
+
+i32 kill_pieces(KillRing *k, i32 back) {
+    if (back < 0 || back >= k->count) return 1;
+    return MAX(kill_at(k, back)->pieces, 1);
+}
+
+String8 kill_piece(KillRing *k, i32 back, i32 index) {
+    if (back < 0 || back >= k->count) return str8(NULL, 0);
+    KillEntry *e = kill_at(k, back);
+    if (index < 0 || index >= MAX(e->pieces, 1)) return str8(NULL, 0);
+    return kill_entry_piece(e, index);
 }
 
 // Live small entries packed to the front of the arena, in address order.
@@ -102,9 +129,10 @@ static void kill_compact(KillRing *k) {
     }
     u64 used = 0;
     for (i32 i = 0; i < n; i++) {
-        memmove(k->small_base + used, live[i]->data, (size_t)live[i]->len);
+        i64 size = kill_size(live[i]);
+        memmove(k->small_base + used, live[i]->data, (size_t)size);
         live[i]->data = k->small_base + used;
-        used += (u64)live[i]->len;
+        used += (u64)size;
     }
     k->small_used = used;
     k->small_dead = 0;
@@ -159,12 +187,98 @@ u8 *kill_push(KillRing *k, i64 len) {
         if (!e.data) return NULL;
     }
     e.len = len;
+    e.pieces = 1;
     k->head = (k->head + 1) % KILL_RING_CAP;
     k->count++;
     *kill_at(k, 0) = e;
     k->yank_index = 0;
     k->clip_dirty = 1;
     return e.data;
+}
+
+void kill_collect_begin(KillRing *k) {
+    if (!k->collect_text.base) {
+        k->collect_text = arena_create(KILL_COLLECT_RESERVE);
+        k->collect_off = (i64 *)os_reserve(KILL_COLLECT_PIECES * sizeof(i64));
+        if (!k->collect_off) os_fatal(STR8_LIT("Out of address space (kill pieces)."));
+    }
+    arena_reset(&k->collect_text);
+    k->collect_count = 0;
+    k->collecting = 1;
+}
+
+// Commits the offsets array up to `n` entries (64 KB at a time).
+static b32 kill_collect_offsets(KillRing *k, i64 n) {
+    u64 need = (u64)n * sizeof(i64);
+    if (need <= k->collect_off_committed) return 1;
+    u64 to = ALIGN_UP_POW2(need, KB(64));
+    if (to > KILL_COLLECT_PIECES * sizeof(i64) || !os_commit((u8 *)k->collect_off + k->collect_off_committed, to - k->collect_off_committed)) return 0;
+    k->collect_off_committed = to;
+    return 1;
+}
+
+void kill_collect_next(KillRing *k) {
+    if (!kill_collect_offsets(k, k->collect_count + 2)) return;
+    k->collect_off[k->collect_count++] = (i64)arena_pos(&k->collect_text);
+}
+
+u8 *kill_collect_space(KillRing *k, i64 len) {
+    if (!k->collect_count) kill_collect_next(k);
+    if ((u64)len > k->collect_text.reserved - arena_pos(&k->collect_text)) return NULL;
+    return (u8 *)arena_push(&k->collect_text, (u64)len, 1);
+}
+
+void kill_collect_end(KillRing *k, b32 append, b32 prepend) {
+    k->collecting = 0;
+    i32 n = k->collect_count;
+    i64 total = (i64)arena_pos(&k->collect_text);
+    if (!n || !total) return; // nothing killed: no entry
+    i64 *off = k->collect_off;
+    off[n] = total;
+    b32 merge = append && k->count && kill_at(k, 0)->pieces == n;
+    i64 len = merge ? kill_at(k, 0)->len + total : total + (n - 1);
+    i64 bytes = len + (n > 1 ? 8 * (i64)(n + 1) : 0);
+    KillEntry e = { 0 };
+    if (bytes > (i64)KILL_SMALL_MAX) {
+        if (!kill_large_reserve(&e, (u64)bytes)) {
+            if (e.data) os_release(e.data);
+            return;
+        }
+    } else {
+        e.data = kill_small_alloc(k, bytes); // may move the old entries: read them after it
+        if (!e.data) return;
+    }
+    KillEntry *old = merge ? kill_at(k, 0) : NULL;
+    i64 at = 0;
+    for (i32 i = 0; i < n; i++) {
+        if (i) e.data[at++] = '\n';
+        if (n > 1) memcpy(e.data + len + 8 * (i64)i, &at, 8);
+        String8 o = old ? kill_entry_piece(old, i) : str8(NULL, 0), add = str8(k->collect_text.base + off[i], off[i + 1] - off[i]);
+        String8 first = prepend ? add : o, second = prepend ? o : add;
+        memcpy(e.data + at, first.data, (size_t)first.len);
+        at += first.len;
+        memcpy(e.data + at, second.data, (size_t)second.len);
+        at += second.len;
+    }
+    if (n > 1) {
+        i64 end = len + 1;
+        memcpy(e.data + len + 8 * (i64)n, &end, 8);
+    }
+    e.len = len;
+    e.pieces = n;
+    e.table_off = n > 1 ? len : 0;
+    if (merge) {
+        kill_free(k, old);
+        *kill_at(k, 0) = e;
+    } else {
+        if (k->count == k->max) kill_free(k, kill_at(k, --k->count));
+        k->head = (k->head + 1) % KILL_RING_CAP;
+        k->count++;
+        *kill_at(k, 0) = e;
+    }
+    arena_reset(&k->collect_text);
+    k->yank_index = 0;
+    k->clip_dirty = 1;
 }
 
 u8 *kill_extend(KillRing *k, i64 len, b32 prepend) {
@@ -226,21 +340,23 @@ void kill_from_clipboard(KillRing *k) {
 }
 
 // ---------------------------------------------------------------------------
-// Kill commands. The driver sets ctx->kill_append when the previous command killed too; the
-// first cursor's kill then appends (or prepends for backward kills), later cursors of the same
-// command append to the same entry.
+// Kill commands. The driver sets ctx->kill_append when the previous command killed too; the kill
+// then appends to the newest entry (or prepends for backward kills). With several cursors the
+// driver collects one piece per cursor and makes them one entry (kill_collect_*).
 
 static void edit_kill(CommandContext *ctx, i64 start, i64 end, b32 remove) {
     View *v = ctx->view;
     Buffer *buf = v->buffer;
+    KillRing *k = ctx->kills;
     if (end <= start) return;
     b32 prepend = (ctx->this_command->flags & COMMAND_KILL_BACKWARD) != 0;
-    u8 *dst = ctx->kill_append ? kill_extend(ctx->kills, end - start, prepend) : kill_push(ctx->kills, end - start);
+    u8 *dst = k->collecting ? kill_collect_space(k, end - start)
+            : ctx->kill_append && kill_pieces(k, 0) == 1 ? kill_extend(k, end - start, prepend) : kill_push(k, end - start);
     if (!dst) {
         echo_message(ctx->echo, "Kill ring: out of memory");
         return;
     }
-    ctx->kill_append = 1;
+    if (!k->collecting) ctx->kill_append = 1; // a second kill of the same command appends
     buffer_copy(buf, start, end, dst);
     if (!remove) return;
     if (buf->read_only && !buf->inhibit_read_only) {
@@ -315,16 +431,26 @@ static void edit_insert_yank(CommandContext *ctx, String8 text) {
     if (!buffer_replace(buf, p, p, text)) echo_message(ctx->echo, "Buffer is full: %S", buf->name);
 }
 
-// The newest kill (or what another program put on the clipboard since), mark at its start.
+// What a cursor yanks from an entry: its own piece when the entry has one per cursor, else the whole text.
+static String8 edit_yank_text(CommandContext *ctx, i32 back) {
+    View *v = ctx->view;
+    KillRing *k = ctx->kills;
+    i32 n = kill_pieces(k, back);
+    if (n > 1 && n == v->cursor_count) return kill_piece(k, back, (i32)(ctx->cursor - v->cursors));
+    return kill_entry(k, back);
+}
+
+// The newest kill (or what another program put on the clipboard since), mark at its start. The first
+// cursor looks at the clipboard; with several, each one gets its piece of a kill made with as many.
 static void cmd_yank(CommandContext *ctx) {
     KillRing *k = ctx->kills;
-    if (ctx->cursor == view_primary(ctx->view)) kill_from_clipboard(k);
+    if (ctx->cursor == &ctx->view->cursors[0]) kill_from_clipboard(k);
     if (!k->count) {
         echo_message(ctx->echo, "Kill ring is empty");
         return;
     }
     k->yank_index = 0;
-    edit_insert_yank(ctx, kill_entry(k, 0));
+    edit_insert_yank(ctx, edit_yank_text(ctx, 0));
 }
 
 // Right after a yank: replaces the yanked text by the next older kill.
@@ -336,11 +462,12 @@ static void cmd_yank_pop(CommandContext *ctx) {
         return;
     }
     if (!k->count) return;
-    if (ctx->cursor == view_primary(v)) k->yank_index = (k->yank_index + 1) % k->count;
+    if (ctx->cursor == &v->cursors[0]) k->yank_index = (k->yank_index + 1) % k->count;
     i64 start, end;
     if (!view_region(v, ctx->cursor, &start, &end)) return;
-    if (!buffer_replace(v->buffer, start, end, kill_entry(k, k->yank_index))) return;
-    view_set_point(v, ctx->cursor, start + kill_entry(k, k->yank_index).len);
+    String8 text = edit_yank_text(ctx, k->yank_index);
+    if (!buffer_replace(v->buffer, start, end, text)) return;
+    view_set_point(v, ctx->cursor, start + text.len);
     view_set_mark(v, ctx->cursor, start, 0);
 }
 

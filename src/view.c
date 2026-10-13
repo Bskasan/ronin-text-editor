@@ -665,6 +665,9 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
             lines = PUSH_ARRAY(ctx->scratch, i64, n);
             for (i32 i = 0; i < n; i++) lines[i] = buffer_line_of(buf, view_point(v, &v->cursors[i]));
         }
+        // A kill keeps one piece per cursor that runs it, in order, in one kill ring entry.
+        b32 collect = (cmd->flags & COMMAND_KILL) && ctx->kills;
+        if (collect) kill_collect_begin(ctx->kills);
         buffer_batch_begin(buf);
         i64 last_line = -1;
         for (i32 i = 0; i < n && i < v->cursor_count; i++) {
@@ -674,9 +677,11 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
                 if (lines[i] == last_line) continue;
                 last_line = lines[i];
             }
+            if (collect) kill_collect_next(ctx->kills);
             view_run_for_cursor(ctx, cmd, c);
         }
         buffer_batch_end(buf);
+        if (collect) kill_collect_end(ctx->kills, ctx->kill_append, (cmd->flags & COMMAND_KILL_BACKWARD) != 0);
         if (ctx->scratch) arena_pop_to(ctx->scratch, mark);
     }
     ctx->cursor = NULL;
