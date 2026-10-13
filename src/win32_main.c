@@ -38,6 +38,7 @@ typedef struct Platform {
 #if TEAL_DEV
     volatile LONG live_threads;        // os_thread_start minus joined
     volatile LONG live_events;         // os_event_create minus destroyed
+    volatile LONG live_processes;      // os_process_start minus os_process_close
     b32 background_normal;             // --bench-grep: background workers at normal priority (the comparison)
     b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
     u16 *clip_text;          // in its own reservation
@@ -101,6 +102,7 @@ typedef struct Platform {
     String8 keys; // --keys: injected after startup
     String8 keys_after; // --keys-after: a screenshot run's keys once the workers' results of --keys are in
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
+    String8 child_script; // --child: run this script (win32_child.c) and exit: the tests' scripted program
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
     u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
     Event last_key_event; // the last of them
@@ -809,6 +811,272 @@ void os_wake_main(void) {
     SetEvent(g_platform->wake);
 }
 
+OsFileStatus os_file_info_arena(Arena *arena, String8 path, OsFileInfo *info) {
+    memset(info, 0, sizeof(*info));
+    u64 mark = arena_pos(arena);
+    WCHAR *path16 = (WCHAR *)str16_from_str8(arena, path).data;
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    OsFileStatus status = OS_FILE_OK;
+    if (!GetFileAttributesExW(path16, GetFileExInfoStandard, &data)) {
+        status = win32_last_file_status();
+    } else {
+        info->exists = 1;
+        info->is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        info->read_only = (data.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+        info->size = (i64)(((u64)data.nFileSizeHigh << 32) | data.nFileSizeLow);
+        info->write_time = (u64)win32_filetime_u64(data.ftLastWriteTime);
+    }
+    arena_pop_to(arena, mark);
+    return status;
+}
+
+String8 os_oem_to_utf8(Arena *arena, String8 text) {
+    i32 n = (i32)MIN(text.len, (i64)0x3FFFFFFF);
+    if (n <= 0) return str8(NULL, 0);
+    i32 wn = MultiByteToWideChar(CP_OEMCP, 0, (const char *)text.data, n, NULL, 0);
+    if (wn <= 0) return str8_copy(arena, text);
+    u16 *w = PUSH_ARRAY(arena, u16, wn);
+    u64 w_pos = arena_pos(arena) - (u64)wn * sizeof(u16);
+    MultiByteToWideChar(CP_OEMCP, 0, (const char *)text.data, n, (WCHAR *)w, wn);
+    String8 s = str8_from_str16(arena, w, wn);
+    memmove(w, s.data, (size_t)s.len); // the UTF-8 text where the UTF-16 one was
+    arena_pop_to(arena, w_pos + (u64)s.len);
+    return str8((u8 *)w, s.len);
+}
+
+// ---------------------------------------------------------------------------
+// Processes: any thread (platform.h). Every path closes what it opened.
+
+static void win32_close(HANDLE *h) {
+    if (*h && *h != INVALID_HANDLE_VALUE) CloseHandle(*h);
+    *h = NULL;
+}
+
+OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p) {
+    memset(p, 0, sizeof(*p));
+    static volatile LONG pipe_counter;
+    u64 mark = arena_pos(arena);
+    HANDLE job = NULL, server = NULL, client = NULL, nul = NULL, io_event = NULL;
+    LPPROC_THREAD_ATTRIBUTE_LIST list = NULL;
+    OsFileStatus status = OS_FILE_OK;
+    PROCESS_INFORMATION pi = { 0 };
+    // The command line: "<system>\cmd.exe" /s /c "<command>" (no search of PATH or the current
+    // directory for cmd itself).
+    WCHAR sys[MAX_PATH];
+    UINT sys_len = GetSystemDirectoryW(sys, MAX_PATH);
+    String16 cmd16 = str16_from_str8(arena, command);
+    String16 dir16 = str16_from_str8(arena, dir);
+    i64 line_cap = (i64)sys_len + cmd16.len + 32;
+    if (!sys_len || sys_len >= MAX_PATH - 16 || line_cap > 32000) {
+        status = sys_len ? OS_FILE_TOO_LARGE : OS_FILE_IO_ERROR;
+        goto done;
+    }
+    WCHAR *app = PUSH_ARRAY(arena, WCHAR, sys_len + 16);
+    memcpy(app, sys, sizeof(WCHAR) * sys_len);
+    memcpy(app + sys_len, L"\\cmd.exe", sizeof(L"\\cmd.exe"));
+    WCHAR *line = PUSH_ARRAY(arena, WCHAR, line_cap);
+    i64 n = 0;
+    line[n++] = '"';
+    for (WCHAR *c = app; *c; c++) line[n++] = *c;
+    static const WCHAR mid[] = L"\" /s /c \"";
+    for (i32 i = 0; mid[i]; i++) line[n++] = mid[i];
+    memcpy(line + n, cmd16.data, sizeof(WCHAR) * (size_t)cmd16.len);
+    n += cmd16.len;
+    line[n++] = '"';
+    line[n] = 0;
+    // One pipe for stdout and stderr: a named pipe, so the reader can wait on it together with the process and
+    // a cancel (anonymous pipes have no overlapped reads). Local only, one instance, a unique name.
+    WCHAR name[96];
+    {
+        u8 name8[96];
+        i64 nn = fmt_buf(name8, sizeof(name8), "\\\\.\\pipe\\teal-%u-%u-%U", (u32)GetCurrentProcessId(),
+                         (u32)InterlockedIncrement(&pipe_counter), (u64)GetTickCount64());
+        win32_utf8_to_wide_fixed(str8(name8, nn), (u16 *)name, ARRAY_COUNT(name));
+    }
+    server = CreateNamedPipeW(name, PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                              PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 0, 65536, 0, NULL);
+    if (server == INVALID_HANDLE_VALUE) {
+        server = NULL;
+        status = win32_last_file_status();
+        goto done;
+    }
+    SECURITY_ATTRIBUTES inherit = { sizeof(inherit), NULL, TRUE };
+    client = CreateFileW(name, GENERIC_WRITE, 0, &inherit, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    io_event = CreateEventW(NULL, TRUE, FALSE, NULL); // manual reset, as OVERLAPPED wants
+    job = CreateJobObjectW(NULL, NULL);
+    if (client == INVALID_HANDLE_VALUE || nul == INVALID_HANDLE_VALUE || !io_event || !job) {
+        if (client == INVALID_HANDLE_VALUE) client = NULL;
+        if (nul == INVALID_HANDLE_VALUE) nul = NULL;
+        status = win32_last_file_status();
+        goto done;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = { 0 };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; // teal's exit (a crash too) ends the tree
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        status = win32_last_file_status();
+        goto done;
+    }
+    // Only the pipe's write end and NUL are inherited: no other handle of teal (another build's pipe
+    // included) reaches the child.
+    SIZE_T list_size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &list_size);
+    list = (LPPROC_THREAD_ATTRIBUTE_LIST)arena_push(arena, list_size, 16);
+    HANDLE inherited[2] = { client, nul };
+    if (!InitializeProcThreadAttributeList(list, 1, 0, &list_size)) {
+        list = NULL;
+        status = win32_last_file_status();
+        goto done;
+    }
+    if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), NULL, NULL)) {
+        status = win32_last_file_status();
+        goto done;
+    }
+    STARTUPINFOEXW si = { 0 };
+    si.StartupInfo.cb = sizeof(si);
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = nul;
+    si.StartupInfo.hStdOutput = client;
+    si.StartupInfo.hStdError = client;
+    si.lpAttributeList = list;
+    // Suspended until it is in the job, so nothing it starts can escape the job.
+    DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+    if (!CreateProcessW(app, line, NULL, NULL, TRUE, flags, NULL, dir.len ? (WCHAR *)dir16.data : NULL, &si.StartupInfo, &pi)) {
+        DWORD error = GetLastError();
+        status = error == ERROR_DIRECTORY ? OS_FILE_NOT_FOUND : win32_file_status(error);
+        goto done;
+    }
+    if (!AssignProcessToJobObject(job, pi.hProcess)) {
+        status = win32_last_file_status();
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 1000);
+        win32_close(&pi.hProcess);
+        win32_close(&pi.hThread);
+        goto done;
+    }
+    ResumeThread(pi.hThread);
+    win32_close(&pi.hThread);
+    p->process = pi.hProcess;
+    p->pid = pi.dwProcessId;
+    p->job = job;
+    p->pipe = server;
+    p->io_event = io_event;
+    job = server = io_event = NULL; // the process's now
+#if TEAL_DEV
+    InterlockedIncrement(&g_platform->live_processes);
+#endif
+done:
+    if (list) DeleteProcThreadAttributeList(list);
+    win32_close(&client); // the child holds its own copies
+    win32_close(&nul);
+    win32_close(&server);
+    win32_close(&io_event);
+    win32_close(&job);
+    arena_pop_to(arena, mark);
+    return status;
+}
+
+// One overlapped read of the pipe, waiting also on `others` (the process, the cancel event). Returns the
+// index of what ended the wait: 0 the read (*got bytes, 0 = the pipe is broken), 1 + i others[i]; -1 error.
+// Whatever ended it, no read is left in flight.
+static i32 win32_process_read_wait(OsProcess *p, HANDLE *others, i32 other_count, void *dst, DWORD cap, i64 *got) {
+    *got = 0;
+    OVERLAPPED ov = { 0 };
+    ov.hEvent = p->io_event;
+    ResetEvent(p->io_event);
+    DWORD n = 0;
+    if (ReadFile(p->pipe, dst, cap, &n, &ov)) {
+        GetOverlappedResult(p->pipe, &ov, &n, TRUE);
+        *got = n;
+        return 0;
+    }
+    DWORD error = GetLastError();
+    if (error == ERROR_BROKEN_PIPE) return 0;
+    if (error != ERROR_IO_PENDING) return -1;
+    HANDLE handles[4] = { p->io_event };
+    for (i32 i = 0; i < other_count; i++) handles[1 + i] = others[i];
+    DWORD w = WaitForMultipleObjects((DWORD)(1 + other_count), handles, FALSE, INFINITE);
+    i32 which = w >= WAIT_OBJECT_0 && w < WAIT_OBJECT_0 + 1 + (DWORD)other_count ? (i32)(w - WAIT_OBJECT_0) : -1;
+    if (which != 0) CancelIoEx(p->pipe, &ov);
+    // The read is complete, or cancelled (it may still have taken bytes before the cancel: they count).
+    if (GetOverlappedResult(p->pipe, &ov, &n, TRUE)) *got = n;
+    else if (GetLastError() != ERROR_BROKEN_PIPE && GetLastError() != ERROR_OPERATION_ABORTED && which == 0) return -1;
+    return which;
+}
+
+OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, void *dst, i64 cap, i64 *got) {
+    *got = 0;
+    DWORD c = (DWORD)MIN(cap, (i64)MB(64));
+    if (WaitForSingleObject(cancel.handle, 0) == WAIT_OBJECT_0) {
+        SetEvent(cancel.handle); // auto-reset: left set for the caller's next look
+        return OS_PROCESS_CANCELLED;
+    }
+    while (!p->exited) {
+        HANDLE others[2] = { p->process, cancel.handle };
+        i32 which = win32_process_read_wait(p, others, 2, dst, c, got);
+        if (which == 0) {
+            if (*got) return OS_PROCESS_DATA;
+            // Every writer closed the pipe: cmd.exe is ending (or closed its output); its end is the build's.
+            HANDLE ends[2] = { p->process, cancel.handle };
+            DWORD w = WaitForMultipleObjects(2, ends, FALSE, INFINITE);
+            if (w == WAIT_OBJECT_0 + 1) {
+                SetEvent(cancel.handle);
+                return OS_PROCESS_CANCELLED;
+            }
+            p->exited = 1;
+            return OS_PROCESS_EXITED;
+        }
+        if (which == 2) {
+            SetEvent(cancel.handle);
+            return OS_PROCESS_CANCELLED;
+        }
+        if (which < 0) return OS_PROCESS_ERROR;
+        p->exited = 1; // cmd.exe ended: what is in the pipe is the rest
+        if (*got) return OS_PROCESS_DATA;
+    }
+    // After the end: only what is already in the pipe (a process the build left running may hold it open).
+    DWORD avail = 0;
+    if (!PeekNamedPipe(p->pipe, NULL, 0, NULL, &avail, NULL) || !avail) return OS_PROCESS_EXITED;
+    HANDLE others[1] = { cancel.handle };
+    i32 which = win32_process_read_wait(p, others, 1, dst, MIN(c, avail), got);
+    if (which == 1) {
+        SetEvent(cancel.handle);
+        return OS_PROCESS_CANCELLED;
+    }
+    return which == 0 && *got ? OS_PROCESS_DATA : OS_PROCESS_EXITED;
+}
+
+b32 os_process_wait(OsProcess *p, u32 timeout_ms) {
+    return p->process && WaitForSingleObject(p->process, timeout_ms) == WAIT_OBJECT_0;
+}
+
+u32 os_process_exit_code(OsProcess *p) {
+    DWORD code = 0;
+    if (!p->process || !GetExitCodeProcess(p->process, &code)) return 0xFFFFFFFFu;
+    return code;
+}
+
+void os_process_kill(OsProcess *p) {
+    if (p->job) TerminateJobObject(p->job, 1);
+}
+
+void os_process_close(OsProcess *p, b32 kill_rest) {
+    if (!p->process) return;
+    if (!kill_rest && p->job) { // processes the build left running are let go
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = { 0 };
+        SetInformationJobObject(p->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    }
+    HANDLE job = p->job, process = p->process, pipe = p->pipe, io_event = p->io_event;
+    win32_close(&job); // with kill_rest: KILL_ON_JOB_CLOSE ends what is left
+    win32_close(&process);
+    win32_close(&pipe);
+    win32_close(&io_event);
+    memset(p, 0, sizeof(*p));
+#if TEAL_DEV
+    InterlockedDecrement(&g_platform->live_processes);
+#endif
+}
+
 #if TEAL_DEV
 b32 os_dev_wake_wait(u32 timeout_ms) {
     return WaitForSingleObject(g_platform->wake, timeout_ms) == WAIT_OBJECT_0;
@@ -828,6 +1096,38 @@ void os_dev_thread_reclaimed(void) {
 
 i32 os_dev_live_events(void) {
     return (i32)InterlockedOr(&g_platform->live_events, 0);
+}
+
+i32 os_dev_live_processes(void) {
+    return (i32)InterlockedOr(&g_platform->live_processes, 0);
+}
+
+b32 os_dev_process_alive(u32 pid) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!h) return 0; // gone (its id may be reused later, not within a test)
+    b32 alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+    CloseHandle(h);
+    return alive;
+}
+
+void os_dev_kill_pid(u32 pid) {
+    HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (!h) return;
+    TerminateProcess(h, 1);
+    WaitForSingleObject(h, 2000);
+    CloseHandle(h);
+}
+
+i32 os_dev_handle_count(void) {
+    DWORD n = 0;
+    GetProcessHandleCount(GetCurrentProcess(), &n);
+    return (i32)n;
+}
+
+String8 os_dev_exe_path(Arena *arena) {
+    WCHAR path[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameW(NULL, path, ARRAY_COUNT(path));
+    return n && n < ARRAY_COUNT(path) ? str8_from_str16(arena, (u16 *)path, n) : str8(NULL, 0);
 }
 
 // A directory junction (a mount point reparse point), as mklink /J makes it: no admin rights needed.
@@ -880,6 +1180,7 @@ b32 os_dev_remove_dir(String8 path) {
 static void win32_push_event(Platform *p, Event e);
 #if TEAL_DEV
 static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
+static i32 win32_dev_child(Platform *p, String8 script); // win32_child.c
 static u64 win32_dev_hash(String8 s);
 static void win32_dev_idle_check_mark(Platform *p, b32 end);
 #endif
@@ -3905,6 +4206,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--keys-after")) && has_value) { p->keys_after = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--child")) && has_value) { p->child_script = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--type-ahead-check"))) { p->type_ahead_check = 1; continue; }
@@ -3924,6 +4226,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     win32_files_done(p, goto_line, goto_col);
 #if !TEAL_DEV
     if (bad_arg.len) return EXIT_USAGE;
+#else
+    // The tests' scripted program: before the log is opened (the run that started it writes that log), no
+    // window.
+    if (p->child_script.len) return bad_arg.len ? EXIT_USAGE : win32_dev_child(p, p->child_script);
 #endif
 
 #if TEAL_DEV
@@ -4337,6 +4643,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (os_dev_live_threads() || os_dev_live_events()) {
         LOG("app: %d worker thread(s) not joined, %d event(s) not destroyed after close", os_dev_live_threads(), os_dev_live_events());
         font_refs += os_dev_live_threads() + os_dev_live_events();
+    }
+    if (os_dev_live_processes()) {
+        LOG("app: %d build process(es) not closed after close", os_dev_live_processes());
+        font_refs += os_dev_live_processes();
     }
 #endif
 

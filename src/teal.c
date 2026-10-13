@@ -53,3 +53,4 @@
 #include "render_d3d11.c"
 #include "win32_main.c"
 #include "win32_input_test.c" // TEAL_DEV only
+#include "win32_child.c"      // TEAL_DEV only
