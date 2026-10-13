@@ -10,7 +10,8 @@
 // Each line, on the worker: CR dropped, ANSI escape sequences stripped, kept when it is valid UTF-8, else
 // converted from the OEM code page; cut at COMPILE_LINE_MAX. A line that names a location (compile_match)
 // counts only when its file exists (compile_resolve, cached); a line with a kind word and no location
-// (compile_match_kind) is still an error or a warning, without a location.
+// (compile_match_kind) is still an error or a warning, without a location; a tool's summary
+// (compile_match_summary: "2 errors generated.") is marked as one, colored and not counted.
 
 #ifndef COMPILE_H
 #define COMPILE_H
@@ -38,6 +39,7 @@ typedef struct CompileMatch {
     i32 num_off, num_len; // "(12,5)", "12:5", "12,5"
     i32 kind_off, kind_len; // the kind word ("error", "fatal error", "Warning"); 0 length: none (bare "path:line:")
     i32 proj_off, proj_len; // MSBuild's project file in brackets at the end of the line (inside them)
+    b32 summary;          // a tool's summary (compile_match_summary): colored, not counted
 } CompileMatch;
 
 // A location: MSVC "path(L)" / "path(L,C)" then ": error|warning|note|fatal error"; GCC / Clang
@@ -47,6 +49,12 @@ b32 compile_match(String8 line, CompileMatch *m);
 // No location, but a kind: "LINK : fatal error LNK1104: ...", "x.obj : error LNK2019: ...", "error: ...",
 // "ld: error: ...", "error MSB4019: ...".
 b32 compile_match_kind(String8 line, CompileMatch *m);
+// A tool's summary, no location: a count right before an error or warning word ("1 error generated.",
+// "3 warnings and 1 error generated.", "0 Error(s)", "Found 2 errors.", "Compilation failed (1 error)").
+// m gets the first count word. A number after the word ("errors: 3", make's "Error 1") does not count.
+b32 compile_match_summary(String8 line, CompileMatch *m);
+// The next count word of a summary at or after `from`: its offset (-1: none), its kind and length.
+i64 compile_count_word(String8 line, i64 from, CompileKind *kind, i64 *len);
 
 // File existence, cached (the worker's arena). Tests give a fake `exists`.
 typedef b32 CompileExistsFn(void *data, Arena *arena, String8 path);
@@ -96,6 +104,7 @@ typedef struct CompileLine {
     String8 text;
     CompileKind kind;
     b32 located;
+    b32 summary;           // a tool's summary: its count words colored, not counted
     String8 file;          // located: the resolved path
     i64 line, col;
     u16 path_off, path_len, num_off, num_len, kind_off, kind_len;

@@ -600,7 +600,7 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
         mark = lo;
     }
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
-        AppSpan spans[4];
+        AppSpan spans[8];
         i32 n = 0;
         while (res && next < res->count && res->locs[next].row < top + row) next++;
         while (res && mark < res->mark_count && res->marks[mark].row < top + row) mark++;
@@ -610,10 +610,14 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
             spans[n++] = (AppSpan){ ls + loc->path_off, ls + loc->path_off + loc->path_len, th->search_file };
             spans[n++] = (AppSpan){ ls + loc->num_off, ls + loc->num_off + loc->num_len, th->search_line_number };
             if (loc->kind != LOCATION_MATCH) spans[n++] = (AppSpan){ ls + loc->mark_off, ls + loc->mark_off + loc->mark_len, kind_rgb[loc->kind & 3] };
-        } else if (res && mark < res->mark_count && res->marks[mark].row == top + row) {
-            ResultsMark *m = &res->marks[mark];
-            i64 ls = buffer_line_start(buf, top + row);
-            spans[n++] = (AppSpan){ ls + m->off, ls + m->off + m->len, kind_rgb[m->kind & 3] };
+        } else {
+            // A line without a location: its kind word, or a summary's count words (the first few).
+            i64 ls = -1;
+            for (i64 k = mark; res && k < res->mark_count && res->marks[k].row == top + row && n < 6; k++) {
+                ResultsMark *m = &res->marks[k];
+                if (ls < 0) ls = buffer_line_start(buf, top + row);
+                spans[n++] = (AppSpan){ ls + m->off, ls + m->off + m->len, kind_rgb[m->kind & 3] };
+            }
         }
         if (current.start >= 0) spans[n++] = current;
         app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, spans, n, in->scratch);
