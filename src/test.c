@@ -6189,8 +6189,8 @@ static b32 test_project_file(Test *t) {
     TEST_CHECK(t, str8_equal(f.ignore, STR8_LIT("build/\n*.log\nsrc/[ab].c\n")) && str8_equal(f.allow, STR8_LIT("build/keep/\n")),
                "project file: patterns '%S' / '%S'", f.ignore, f.allow);
     static const char *const want[] = {
-        ".teal-project:8: unknown section [bogus] (expected [ignore] or [allow])",
-        ".teal-project:10: bad section header (expected [ignore] or [allow])",
+        ".teal-project:8: unknown section [bogus] (expected [ignore], [allow] or [build])",
+        ".teal-project:10: bad section header (expected [ignore], [allow] or [build])",
         ".teal-project:13: warning: 'src/[ab].c': character classes and backslash escapes are not supported (matched literally)",
     };
     i32 k = 0;
@@ -6199,9 +6199,28 @@ static b32 test_project_file(Test *t) {
     }
     TEST_CHECK(t, k == ARRAY_COUNT(want) && f.diags.errors == 2 && f.diags.warnings == 1, "project file: %d diagnostics", k);
     project_file_parse(&t->arena, STR8_LIT("stray\n"), STR8_LIT(".teal-project"), &f);
-    TEST_CHECK(t, f.diags.errors == 1 && str8_equal(f.diags.first->text, STR8_LIT(".teal-project:1: line outside a section ([ignore] or [allow])")),
+    TEST_CHECK(t, f.diags.errors == 1 && str8_equal(f.diags.first->text, STR8_LIT(".teal-project:1: line outside a section ([ignore], [allow] or [build])")),
                "project file: a line before any section");
-    LOG("test: ok: .teal-project ([ignore], [allow], unknown and bad sections, a line outside a section, unsupported syntax)");
+    // [build]: command and directory (blanks around '=' trimmed, the value kept whole), and its diagnostics.
+    project_file_parse(&t->arena, STR8_LIT("[build]\ncommand =  build.bat release  \ndirectory=src/sub\nrun = x\njust words\ncommand =\n[ignore]\n*.o\n"),
+                       STR8_LIT(".teal-project"), &f);
+    TEST_CHECK(t, str8_equal(f.build_command, STR8_LIT("build.bat release")) && str8_equal(f.build_directory, STR8_LIT("src/sub")) &&
+                      str8_equal(f.ignore, STR8_LIT("*.o\n")), "project file: [build] '%S' in '%S', ignore '%S'", f.build_command, f.build_directory, f.ignore);
+    static const char *const want_build[] = {
+        ".teal-project:4: unknown name 'run' in [build] (expected command or directory)",
+        ".teal-project:5: expected name = value",
+        ".teal-project:6: expected name = value",
+    };
+    k = 0;
+    for (ConfigDiag *d = f.diags.first; d; d = d->next, k++) {
+        TEST_CHECK(t, k < ARRAY_COUNT(want_build) && str8_equal(d->text, str8_cstr(want_build[k])), "project file: [build] diagnostic %d '%S'", k, d->text);
+    }
+    TEST_CHECK(t, k == ARRAY_COUNT(want_build), "project file: [build] gave %d diagnostics", k);
+    project_file_parse(&t->arena, STR8_LIT("[build]\ncommand = cl /W4 a.c && .\\a.exe\n"), STR8_LIT(".teal-project"), &f);
+    TEST_CHECK(t, str8_equal(f.build_command, STR8_LIT("cl /W4 a.c && .\\a.exe")) && !f.diags.errors && !f.diags.warnings,
+               "project file: a command with a backslash '%S' (%d warnings)", f.build_command, f.diags.warnings);
+    LOG("test: ok: .teal-project ([ignore], [allow], [build] with command and directory, unknown and bad sections and names, a line "
+        "outside a section, unsupported syntax, a backslash in a command)");
     return 1;
 }
 
@@ -9296,6 +9315,55 @@ static b32 test_compile_clean(Test *t) {
     return 1;
 }
 
+// The build settings and colors: defaults, every value, the diagnostics.
+static b32 test_compile_config(Test *t) {
+    Config c;
+    config_init(&c);
+    config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    Settings *s = &c.settings;
+    TEST_CHECK(t, s->compilation_save_buffers == COMPILATION_SAVE_ASK && s->compilation_scroll_output == COMPILATION_SCROLL_FIRST_ERROR &&
+                      s->compilation_max_output_mb == 16, "compile config: defaults %d %d %d", s->compilation_save_buffers,
+               s->compilation_scroll_output, s->compilation_max_output_mb);
+    TEST_CHECK(t, c.theme.compilation_error == 0xff0000 && c.theme.compilation_warning == 0xffaa00 && c.theme.compilation_info == 0x8cde94,
+               "compile config: default colors %x %x %x", c.theme.compilation_error, c.theme.compilation_warning, c.theme.compilation_info);
+    static const struct { const char *line; i32 save, scroll, mb; } values[] = {
+        { "compilation_save_buffers = all", COMPILATION_SAVE_ALL, -1, -1 },
+        { "compilation_save_buffers = none", COMPILATION_SAVE_NONE, -1, -1 },
+        { "compilation_save_buffers = ask", COMPILATION_SAVE_ASK, -1, -1 },
+        { "compilation_scroll_output = true", -1, COMPILATION_SCROLL_ALWAYS, -1 },
+        { "compilation_scroll_output = false", -1, COMPILATION_SCROLL_NEVER, -1 },
+        { "compilation_scroll_output = first-error", -1, COMPILATION_SCROLL_FIRST_ERROR, -1 },
+        { "compilation_max_output_mb = 1024", -1, -1, 1024 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(values); i++) {
+        config_parse(&c, &t->arena, str8_fmt(&t->arena, "[settings]\n%s\n", values[i].line), STR8_LIT("t.conf"));
+        TEST_CHECK(t, c.diags.errors == 0 && (values[i].save < 0 || s->compilation_save_buffers == values[i].save) &&
+                          (values[i].scroll < 0 || s->compilation_scroll_output == values[i].scroll) &&
+                          (values[i].mb < 0 || s->compilation_max_output_mb == values[i].mb), "compile config: '%s'", values[i].line);
+    }
+    Config bad;
+    config_init(&bad);
+    config_parse(&bad, &t->arena,
+                 STR8_LIT("[settings]\ncompilation_save_buffers = some\ncompilation_scroll_output = yes\ncompilation_max_output_mb = 0\n"
+                          "[colors]\ncompilation_error = red\ncompilation_info = #010203\n"),
+                 STR8_LIT("t.conf"));
+    static const char *const want[] = {
+        "t.conf:2: compilation_save_buffers: 'some' is not ask, all or none",
+        "t.conf:3: compilation_scroll_output: 'yes' is not first-error, true or false",
+        "t.conf:4: warning: compilation_max_output_mb 0 is out of range (1 to 1024), using 1",
+        "t.conf:6: compilation_error: 'red' is not a color (#rrggbb)",
+    };
+    i32 k = 0;
+    for (ConfigDiag *d = bad.diags.first; d; d = d->next, k++) {
+        TEST_CHECK(t, k < ARRAY_COUNT(want) && str8_equal(d->text, str8_cstr(want[k])), "compile config: diagnostic %d '%S'", k, d->text);
+    }
+    TEST_CHECK(t, k == ARRAY_COUNT(want) && bad.settings.compilation_max_output_mb == 1 && bad.theme.compilation_info == 0x010203,
+               "compile config: %d diagnostics", k);
+    LOG("test: ok: build settings and colors (defaults, every value of compilation_save_buffers and compilation_scroll_output, "
+        "compilation_max_output_mb clamped, the colors, each diagnostic)");
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Builds through the reader worker
 
@@ -9656,6 +9724,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_compile_match(&t);
     arena_reset(&t.arena);
     test_compile_resolve(&t);
+    arena_reset(&t.arena);
+    test_compile_config(&t);
     arena_reset(&t.arena);
     test_compile_clean(&t);
     arena_reset(&t.arena);

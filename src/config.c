@@ -147,6 +147,7 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "project_max_files", offsetof(Settings, project_max_files), 1000, 10000000 },
     { "search_workers", offsetof(Settings, search_workers), 0, GREP_WORKERS_MAX },
     { "search_max_results", offsetof(Settings, search_max_results), 1, 1000000 },
+    { "compilation_max_output_mb", offsetof(Settings, compilation_max_output_mb), 1, 1024 },
 };
 
 // Text settings: the bytes and their length, at most cap - 1 bytes.
@@ -210,6 +211,16 @@ static void config_setting(ConfigParser *p, String8 name, String8 value) {
         else if (str8_equal(value, STR8_LIT("natural"))) s->render_mode = FB_RENDER_NATURAL;
         else if (str8_equal(value, STR8_LIT("classic"))) s->render_mode = FB_RENDER_GDI_CLASSIC;
         else config_diag(p, 0, "render_mode: '%S' is not symmetric, natural or classic", config_quote(value));
+    } else if (str8_equal(name, STR8_LIT("compilation_save_buffers"))) {
+        if (str8_equal(value, STR8_LIT("ask"))) s->compilation_save_buffers = COMPILATION_SAVE_ASK;
+        else if (str8_equal(value, STR8_LIT("all"))) s->compilation_save_buffers = COMPILATION_SAVE_ALL;
+        else if (str8_equal(value, STR8_LIT("none"))) s->compilation_save_buffers = COMPILATION_SAVE_NONE;
+        else config_diag(p, 0, "compilation_save_buffers: '%S' is not ask, all or none", config_quote(value));
+    } else if (str8_equal(name, STR8_LIT("compilation_scroll_output"))) {
+        if (str8_equal(value, STR8_LIT("first-error"))) s->compilation_scroll_output = COMPILATION_SCROLL_FIRST_ERROR;
+        else if (str8_equal(value, STR8_LIT("true"))) s->compilation_scroll_output = COMPILATION_SCROLL_ALWAYS;
+        else if (str8_equal(value, STR8_LIT("false"))) s->compilation_scroll_output = COMPILATION_SCROLL_NEVER;
+        else config_diag(p, 0, "compilation_scroll_output: '%S' is not first-error, true or false", config_quote(value));
     } else {
         config_diag(p, 0, "unknown setting '%S'", config_quote(name));
     }
@@ -233,7 +244,11 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "mode_line_inactive_text", offsetof(Theme, mode_line_inactive_text) },
     { "search_file", offsetof(Theme, search_file) },
     { "search_line_number", offsetof(Theme, search_line_number) },
+    { "compilation_error", offsetof(Theme, compilation_error) },
+    { "compilation_warning", offsetof(Theme, compilation_warning) },
+    { "compilation_info", offsetof(Theme, compilation_info) },
 };
+_Static_assert(ARRAY_COUNT(config_colors) <= 32, "Config.colors_set has a bit per color");
 
 // The colors whose default is another color: set by no file so far, they follow it.
 static void config_derived_colors(Config *c) {

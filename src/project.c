@@ -236,6 +236,7 @@ typedef enum ProjectSection {
     PROJECT_SECTION_UNKNOWN,
     PROJECT_SECTION_IGNORE,
     PROJECT_SECTION_ALLOW,
+    PROJECT_SECTION_BUILD,
 } ProjectSection;
 
 // The patterns of a section joined with '\n'.
@@ -267,16 +268,28 @@ void project_file_parse(Arena *arena, String8 text, String8 file_name, ProjectFi
         if (header) {
             section = header < 0 ? PROJECT_SECTION_UNKNOWN
                     : str8_equal(head, STR8_LIT("ignore")) ? PROJECT_SECTION_IGNORE
-                    : str8_equal(head, STR8_LIT("allow"))  ? PROJECT_SECTION_ALLOW : PROJECT_SECTION_UNKNOWN;
-            if (header < 0) config_diag(&p, 0, "bad section header (expected [ignore] or [allow])");
-            else if (section == PROJECT_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S] (expected [ignore] or [allow])", config_quote(head));
+                    : str8_equal(head, STR8_LIT("allow"))  ? PROJECT_SECTION_ALLOW
+                    : str8_equal(head, STR8_LIT("build"))  ? PROJECT_SECTION_BUILD : PROJECT_SECTION_UNKNOWN;
+            if (header < 0) config_diag(&p, 0, "bad section header (expected [ignore], [allow] or [build])");
+            else if (section == PROJECT_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S] (expected [ignore], [allow] or [build])", config_quote(head));
             continue;
         }
         if (section == PROJECT_SECTION_NONE) {
-            config_diag(&p, 0, "line outside a section ([ignore] or [allow])");
+            config_diag(&p, 0, "line outside a section ([ignore], [allow] or [build])");
             continue;
         }
         if (section == PROJECT_SECTION_UNKNOWN) continue;
+        if (section == PROJECT_SECTION_BUILD) { // name = value
+            i64 eq = 0;
+            while (eq < line.len && line.data[eq] != '=') eq++;
+            String8 name = config_trim(str8(line.data, eq));
+            String8 value = eq < line.len ? config_trim(str8(line.data + eq + 1, line.len - eq - 1)) : str8(NULL, 0);
+            if (eq == line.len || !name.len || !value.len) config_diag(&p, 0, "expected name = value");
+            else if (str8_equal(name, STR8_LIT("command"))) out->build_command = str8_copy(arena, value);
+            else if (str8_equal(name, STR8_LIT("directory"))) out->build_directory = str8_copy(arena, value);
+            else config_diag(&p, 0, "unknown name '%S' in [build] (expected command or directory)", config_quote(name));
+            continue;
+        }
         for (i64 i = 0; i < line.len; i++) {
             if (line.data[i] == '[' || line.data[i] == '\\') {
                 config_diag(&p, 1, "'%S': character classes and backslash escapes are not supported (matched literally)", config_quote(line));

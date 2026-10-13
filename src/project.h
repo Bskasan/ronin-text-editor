@@ -85,13 +85,16 @@ String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_
                          void *data);
 
 // ---------------------------------------------------------------------------
-// .teal-project at a root: the config format with [ignore] and [allow] sections, one pattern per line.
-// A pattern cannot start with '[': such a line is a section header.
+// .teal-project at a root: the config format with [ignore] and [allow] sections, one pattern per line
+// (a pattern cannot start with '[': such a line is a section header), and a [build] section of
+// "name = value" lines: command (what C-x p c offers; never run without being shown) and directory
+// (where it runs, relative to the root).
 
 #define PROJECT_FILE_NAME ".teal-project"
 
 typedef struct ProjectFile {
     String8 ignore, allow; // the patterns, one per line
+    String8 build_command, build_directory; // [build]; empty when not given
     ConfigDiags diags;
 } ProjectFile;
 

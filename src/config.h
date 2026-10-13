@@ -39,7 +39,13 @@ struct Settings {
     i32 project_max_files;    // a project scan stops there
     i32 search_workers;       // the project-wide search's threads; 0 = from the processor count
     i32 search_max_results;   // the matches it lists before it stops
+    i32 compilation_save_buffers;  // COMPILATION_SAVE_*: the unsaved file buffers before a build
+    i32 compilation_scroll_output; // COMPILATION_SCROLL_*: windows on *compilation* follow its output
+    i32 compilation_max_output_mb; // a build's output kept in *compilation*
 };
+
+enum { COMPILATION_SAVE_ASK, COMPILATION_SAVE_ALL, COMPILATION_SAVE_NONE };            // asked one by one, all saved, left
+enum { COMPILATION_SCROLL_FIRST_ERROR, COMPILATION_SCROLL_ALWAYS, COMPILATION_SCROLL_NEVER }; // until the first error, always, never
 
 typedef struct Theme { // 0xRRGGBB
     u32 background, text, cursor, selection, comment, string, keyword, number, type, variable;
@@ -53,6 +59,7 @@ typedef struct Theme { // 0xRRGGBB
     u32 mode_line_inactive_background; // the mode lines of the windows that are not selected; unless a file
     u32 mode_line_inactive_text;       // sets them, they are background and text
     u32 search_file, search_line_number; // a results line's file name and line:column (keyword and number unless set)
+    u32 compilation_error, compilation_warning, compilation_info; // a build's kind words in *compilation*
 } Theme;
 
 typedef struct ConfigDiag {
