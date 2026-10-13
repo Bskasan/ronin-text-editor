@@ -94,6 +94,7 @@ typedef struct Platform {
     b32 bench_windows;
     b32 bench_project;
     b32 bench_grep;
+    b32 bench_compile;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -1354,7 +1355,7 @@ void os_fatal(String8 message) {
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
                        g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
-                       g_platform->bench_project || g_platform->bench_grep)) interactive = 0;
+                       g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -3715,6 +3716,142 @@ static void win32_bench_grep_typing(Platform *p, String8 root, i32 workers, i64 
     if (!workers) app_dev_bench_grep_close(p->app);
 }
 
+// ---------------------------------------------------------------------------
+// --bench-compile: a --child program printing 100 MB as fast as it can into *compilation* (every 64th line an
+// MSVC warning on a file that exists): the whole time, the frames, memory; typing at line 1,000,000 of the
+// 100 MB file while it runs.
+
+typedef struct BenchCompileRun {
+    i64 bytes, lines, locations;
+    u64 total_us, longest_us, frames, over, work_max_us, peak_private;
+} BenchCompileRun;
+
+static BenchCompileRun win32_bench_compile_run(Platform *p, String8 command, String8 dir, i32 cap_mb) {
+    BenchCompileRun run = { 0 };
+    app_dev_results_work_max(p->app);
+    app_dev_bench_compile_start(p->app, command, dir, cap_mb);
+    win32_bench_keys(p, "");
+    u64 start = os_time_us();
+    for (;;) {
+        if (os_time_us() - start > 120 * 1000000ull) {
+            LOG("bench-compile: a build over 120 s");
+            break;
+        }
+        b32 woke = os_dev_wake_wait(app_wants_frame(p->app) ? 0 : 50);
+        b32 frame = app_wants_frame(p->app);
+        if (woke) frame |= app_wake(p->app);
+        if (frame) {
+            u64 b = win32_bench_keys(p, "");
+            run.longest_us = MAX(run.longest_us, b);
+            run.over += b > SYNTAX_FRAME_BUDGET_US + 100;
+            run.frames++;
+            if ((run.frames & 15) == 0) run.peak_private = MAX(run.peak_private, os_dev_private_bytes());
+        }
+        if (!app_dev_bench_compile_state(p->app, &run.bytes, &run.lines, &run.locations, &run.total_us)) break;
+    }
+    run.peak_private = MAX(run.peak_private, os_dev_private_bytes());
+    run.work_max_us = app_dev_results_work_max(p->app);
+    return run;
+}
+
+// Typing at `line` of the 100 MB file while builds run one after another (or with a finished one shown);
+// the key frames in st, the frames between the keys (at most 8) in bg.
+static void win32_bench_compile_typing(Platform *p, String8 command, String8 brief, String8 dir, b32 building, i64 line, i32 keys, BenchStat *st,
+                                       BenchStat *bg, i32 *builds) {
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    BenchStat skip = { 0 };
+    app_dev_goto_line(p->app, line);
+    win32_bench_view_step(p, plain, &skip);
+    *builds = 0;
+    b32 running = 0;
+    if (!building) win32_bench_compile_run(p, brief, dir, 128); // the same two windows, nothing running
+    app_dev_results_work_max(p->app);
+    for (i32 i = 0; i < keys; i++) {
+        if (building) {
+            i64 bytes, lines, locations;
+            u64 total;
+            if (!running) {
+                app_dev_bench_compile_start(p->app, command, dir, 128);
+                win32_bench_keys(p, "");
+                running = 1;
+            }
+            if (os_dev_wake_wait(0)) app_wake(p->app);
+            if (!app_dev_bench_compile_state(p->app, &bytes, &lines, &locations, &total)) {
+                (*builds)++;
+                running = 0;
+                continue;
+            }
+        }
+        win32_bench_view_step(p, type, st);
+        for (i32 k = 0; k < 8; k++) {
+            b32 woke = os_dev_wake_wait(0);
+            b32 frame = app_wants_frame(p->app);
+            if (woke) frame |= app_wake(p->app);
+            if (!frame) break;
+            win32_bench_keys(p, "");
+            win32_bench_record(p, bg);
+        }
+    }
+    if (running) app_dev_bench_compile_close(p->app); // killed: the next round starts clean
+    for (i32 k = 0; k < 2000 && app_dev_compile_busy(p->app); k++) {
+        if (os_dev_wake_wait(5)) app_wake(p->app);
+        win32_bench_keys(p, "");
+    }
+    app_dev_bench_compile_close(p->app);
+}
+
+static void win32_bench_compile(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    String8 dir = str8_fmt(&p->perm, "%S\\tmp\\p13bench", p->exe_dir);
+    os_make_dir(dir);
+    os_write_file(str8_fmt(&p->perm, "%S\\flood.c", dir), STR8_LIT("int x;\n"));
+    String8 script = str8_fmt(&p->perm, "%S\\flood.txt", dir), brief_script = str8_fmt(&p->perm, "%S\\small.txt", dir);
+    os_write_file(script, STR8_LIT("flood 104857600\nexit 0\n"));
+    os_write_file(brief_script, STR8_LIT("flood 1048576\nexit 0\n"));
+    String8 exe = os_dev_exe_path(&p->perm);
+    String8 command = str8_fmt(&p->perm, "\"%S\" --child \"%S\"", exe, script);
+    String8 brief = str8_fmt(&p->perm, "\"%S\" --child \"%S\"", exe, brief_script);
+    u64 private0 = os_dev_private_bytes();
+    win32_bench_compile_run(p, brief, dir, 128); // warm: the process start, the file cache
+    app_dev_bench_compile_close(p->app);
+    for (i32 k = 0; k < 2; k++) {
+        i32 cap = k ? 16 : 128;
+        BenchCompileRun best = { 0 };
+        for (i32 rep = 0; rep < 3; rep++) {
+            BenchCompileRun run = win32_bench_compile_run(p, command, dir, cap);
+            if (!rep || run.total_us < best.total_us) best = run;
+            app_dev_bench_compile_close(p->app);
+        }
+        LOG("bench-compile: 100 MB of output, compilation_max_output_mb = %d: *compilation* %D MB, %D lines, %D locations in %U us "
+            "(%U MB/s of output); %U frames, the longest %U us (its results work at most %U us), %U over %d us; private bytes +%U KB at "
+            "the peak (best of 3)", cap, best.bytes >> 20, best.lines, best.locations, best.total_us,
+            best.total_us ? (u64)104857600 / best.total_us : 0, best.frames, best.longest_us, best.work_max_us, best.over,
+            SYNTAX_FRAME_BUDGET_US + 100, best.peak_private > private0 ? (best.peak_private - private0) / 1024 : 0);
+    }
+    LOG("bench-compile: private bytes after the builds: %U KB (%D KB more than before the first)", os_dev_private_bytes() / 1024,
+        ((i64)os_dev_private_bytes() - (i64)private0) / 1024);
+    i64 line = 1000000;
+    for (i32 round = 0; round < 2; round++) {
+        for (i32 with = 0; with < 2; with++) {
+            b32 building = (round == 0) == (with == 1);
+            BenchStat st = { 0 }, bg = { 0 };
+            i32 builds;
+            win32_bench_compile_typing(p, command, brief, dir, building, line, 3000, &st, &bg, &builds);
+            line += 2;
+            win32_bench_log(p, "bench-compile", building ? "self-insert at line 1,000,000 while a build prints 100 MB (the key's frames)"
+                                                          : "self-insert at line 1,000,000, no build (a finished *compilation* shown)", &st);
+            if (building) {
+                win32_bench_log(p, "bench-compile", "... the frames between the keys (the build's output)", &bg);
+                LOG("bench-compile: ... the longest results work in one of those frames: %U us; %d builds ended meanwhile",
+                    app_dev_results_work_max(p->app), builds);
+            }
+        }
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 static void win32_bench_grep(Platform *p) {
     r_dev_set_present_interval(p->renderer, 0);
     win32_bench_log_display(p);
@@ -4012,7 +4149,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
+           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -4211,6 +4348,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--scan-hold")) && has_value) { p->scan_hold = win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--grep-hold")) && has_value) { p->grep_hold = win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--bench-grep"))) { p->bench_grep = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-compile"))) { p->bench_compile = 1; continue; }
         if (str8_equal(a, STR8_LIT("--keys")) && has_value) { p->keys = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--keys-after")) && has_value) { p->keys_after = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
@@ -4257,7 +4395,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
-                                   : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep"
+                                   : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -4276,7 +4414,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }
-    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep) { // generated before the app opens it; measured after startup
+    if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
+        p->bench_compile) { // generated before the app opens it; measured after startup
         p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
         p->file_count = 1;
     }
@@ -4349,7 +4488,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     app_args.grep_hold = p->grep_hold;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
                              p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
-                             p->type_ahead_check); // defaults
+                             p->bench_compile || p->type_ahead_check); // defaults
 #endif
 #if TEAL_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -4387,7 +4526,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     b32 show_early = !p->no_activate;
 #if TEAL_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
-                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep;
+                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile;
     show_early = show_early && !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early) {
@@ -4509,6 +4648,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_grep && !p->quit) {
         win32_bench_grep(p);
+        p->quit = 1;
+    }
+    if (p->bench_compile && !p->quit) {
+        win32_bench_compile(p);
         p->quit = 1;
     }
     if (p->bench_windows && !p->quit) {

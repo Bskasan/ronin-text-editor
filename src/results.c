@@ -1589,6 +1589,30 @@ b32 app_dev_bench_grep_state(App *app, i64 *found, i64 *bytes, i64 *files, u64 *
     return r->running || app->grep_dying_count > 0;
 }
 
+void app_dev_bench_compile_start(App *app, String8 command, String8 dir, i32 max_output_mb) {
+    app->config->settings.compilation_max_output_mb = max_output_mb;
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    ctx.cursor = &ctx.view->cursors[0];
+    results_compile_start(&ctx, command, dir, str8(NULL, 0));
+}
+
+b32 app_dev_bench_compile_state(App *app, i64 *bytes, i64 *lines, i64 *locations, u64 *total_us) {
+    Results *r = results_compilation(app);
+    if (!r) return app->compile_dying_count > 0;
+    *bytes = buffer_size(r->buffer);
+    *lines = r->rows;
+    *locations = r->count;
+    *total_us = (r->running ? os_time_us() : r->end_us) - r->start_us;
+    return r->running || app->compile_dying_count > 0;
+}
+
+void app_dev_bench_compile_close(App *app) {
+    app_run_command(app, &CMD_DELETE_OTHER_WINDOWS, 0, 0);
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+    if (b) files_kill_buffer(app, b);
+}
+
 void app_dev_bench_grep_close(App *app) {
     app_run_command(app, &CMD_DELETE_OTHER_WINDOWS, 0, 0);
     Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*search*"));

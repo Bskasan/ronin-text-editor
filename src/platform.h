@@ -380,6 +380,11 @@ b32  app_dev_compile_busy(App *app);                    // a build runs or is st
 void app_dev_bench_grep_start(App *app, String8 root, String8 needle, i32 workers, i32 max_results);
 b32  app_dev_bench_grep_state(App *app, i64 *found, i64 *bytes, i64 *files, u64 *first_us, u64 *total_us, b32 *limited);
 void app_dev_bench_grep_close(App *app);
+// --bench-compile: a build of `command` in `dir` with this output cap (*compilation* in the other window, not
+// selected), its state (true while it runs or ends: its buffer's size, lines and locations, the time), and gone.
+void app_dev_bench_compile_start(App *app, String8 command, String8 dir, i32 max_output_mb);
+b32  app_dev_bench_compile_state(App *app, i64 *bytes, i64 *lines, i64 *locations, u64 *total_us);
+void app_dev_bench_compile_close(App *app);
 void app_dev_results_log(App *app, const char *why); // every search's state to the log
 u64  app_dev_results_work_max(App *app); // the longest results work of a frame since the last call
 // --bench-project: the finder on `count` synthetic paths (returns the index's memory), a whole ranking at
