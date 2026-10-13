@@ -547,7 +547,7 @@ over several runs.
 - [x] 11. Project + fuzzy file open
 - [x] 12. Project-wide search
 - [x] 13. Build + jump to error
-- [ ] 14. Multiple cursors
+- [x] 14. Multiple cursors
 - [ ] 15. Performance and size pass (including an optional CRT-free build)
 
 ## Decisions
