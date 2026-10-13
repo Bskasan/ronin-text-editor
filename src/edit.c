@@ -3,12 +3,21 @@
 // ---------------------------------------------------------------------------
 // Undo
 
-// Puts the primary point where the undone change was (the point before that command).
+// Puts the cursors back as they were before the undone command: every one of them when it ran with several, else
+// one cursor at the point it started from.
 static void edit_undo_report(CommandContext *ctx, BufferUndoResult r, i64 point, const char *done, const char *nothing) {
     View *v = ctx->view;
+    i64 n;
+    const BufferUndoCursor *cursors;
     switch (r) {
     case BUFFER_UNDO_DONE:
-        view_set_point(v, view_primary(v), point);
+        cursors = buffer_undo_restored(v->buffer, &n);
+        if (n) {
+            view_restore_cursors(v, cursors, n);
+        } else {
+            view_collapse_cursors(v);
+            view_set_point(v, view_primary(v), point);
+        }
         echo_message(ctx->echo, "%s", done);
         break;
     case BUFFER_UNDO_NOTHING:

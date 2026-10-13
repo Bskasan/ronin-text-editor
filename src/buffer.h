@@ -116,9 +116,20 @@ typedef struct BufferUndoRecord { // in the log, followed by `removed` bytes (pa
     u64 prev; // bytes back to the previous record of its group, 0 for the first
 } BufferUndoRecord;
 
+// A cursor as a multiple-cursor command found it (Phase 14): kept with the command's group, put back by undo.
+typedef struct BufferUndoCursor {
+    i64 point, mark;
+    u32 flags; // BUFFER_UNDO_CURSOR_*
+    u32 unused;
+} BufferUndoCursor;
+
+enum { BUFFER_UNDO_CURSOR_MARK_SET = 1 << 0, BUFFER_UNDO_CURSOR_PRIMARY = 1 << 1 };
+
 typedef struct BufferUndoGroup {
-    u64 offset, size;             // its records in the log
+    u64 offset, size;             // its records in the log (after its cursors, if it has them)
     u64 last;                     // offset of its last record
+    u64 cursors_off;              // its cursors in the log (cursor_count of them, before its first record)
+    i64 cursor_count;             // 0: made with one cursor (point_before says where it was)
     i64 point_before;             // the primary point before the command; where undo puts point
     u64 state_before, state_after;
     i64 target;                   // an undo group: the id of the group it reverts; -1 otherwise
@@ -138,6 +149,10 @@ typedef struct BufferUndo {
     b32 open;                         // the last group still takes records (merging, or the running command)
     BufferUndoMerge want_merge;       // the next group, set by buffer_undo_boundary
     i64 want_point;
+    const BufferUndoCursor *want_cursors; // the next group's cursors (buffer_undo_cursors; the caller's memory)
+    i64 want_cursor_count;
+    u64 restored_off;                 // the cursors the last undo or redo put back (buffer_undo_restored)
+    i64 restored_count;
     b32 applying;                     // inside buffer_undo / buffer_redo: no merging, no trimming
     u64 state, next_state, saved_state;
     i64 pending;                      // the undo chain: the next group to undo, -1 = none
@@ -263,6 +278,13 @@ void buffer_undo_set_limit(Buffer *buf, u64 bytes); // the oldest groups are dro
 // `merge` is the open group's class, `consecutive` (the same command again) and the group has
 // fewer than BUFFER_UNDO_MERGE_MAX commands. `point` is restored when the group is undone.
 void buffer_undo_boundary(Buffer *buf, BufferUndoMerge merge, b32 consecutive, i64 point);
+// The cursors of the command about to run when there are several (the driver, after the boundary; NULL, 0 once
+// it ran): a group the command starts keeps a copy, and undoing that group puts them back. The memory must stay
+// valid while the command runs.
+void buffer_undo_cursors(Buffer *buf, const BufferUndoCursor *cursors, i64 count);
+// After an undo or redo that returned BUFFER_UNDO_DONE: the cursors of the group it reverted (count 0: that group
+// was made with one cursor; *point_out says where). Valid until the buffer's next edit.
+const BufferUndoCursor *buffer_undo_restored(Buffer *buf, i64 *count);
 // Undoes one group: the most recent one, or with `chain` (the previous command was an undo) the
 // one before the group undone last (Emacs' pending undo list). *point_out gets the
 // point to restore.

@@ -1749,6 +1749,136 @@ static b32 test_mc_driver(Test *t) {
     return 1;
 }
 
+// Every cursor for undo comparisons: "*" before the primary, the point, ",mark" when the mark is set.
+static char *test_mc_full(Test *t, View *v) {
+    String8 s = STR8_LIT("");
+    for (i32 i = 0; i < v->cursor_count; i++) {
+        Cursor *c = &v->cursors[i];
+        String8 one = str8_fmt(&t->arena, "%s%D", i == v->primary ? "*" : "", view_point(v, c));
+        if (c->mark_set) one = str8_fmt(&t->arena, "%S,%D", one, buffer_marker_get(v->buffer, c->mark));
+        s = i ? str8_fmt(&t->arena, "%S %S", s, one) : one;
+    }
+    char *out = PUSH_ARRAY(&t->arena, char, s.len + 1);
+    memcpy(out, s.data, (size_t)s.len);
+    out[s.len] = 0;
+    return out;
+}
+
+#define TEST_MC_UNDO_ROUNDS 1500
+
+// Undo with several cursors: the text and every cursor (points, marks, the primary) come back as they were before
+// the undone command; undo-redo brings back the cursors of the moment undo ran; through the Emacs chain (two undos
+// in a row) and over merged typing; a group made with one cursor undone with three; the log's memory per cursor.
+static b32 test_mc_undo(Test *t, u64 seed) {
+    t->rng = seed ^ 0x6d63756eull;
+    TestView tv;
+    // Fixed: three cursors, typing merged into one group, undo, undo-redo.
+    if (!test_view_open(t, &tv, "a|b\nc|d\ne|f", 10, 40)) return 0;
+    char *before = test_mc_full(t, tv.view);
+    for (i32 k = 0; k < 3; k++) {
+        tv.ctx.codepoint = 'x';
+        test_view_run(&tv, &CMD_SELF_INSERT);
+    }
+    char *typed = test_view_marked(t, &tv), *typed_full = test_mc_full(t, tv.view);
+    TEST_CHECK(t, test_cstr_equal(typed, "axxx|b\ncxxx|d\nexxx|f"), "cursors undo: typed \"%s\"", typed);
+    test_view_run(&tv, &CMD_UNDO);
+    char *got = test_mc_full(t, tv.view);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "a|b\nc|d\ne|f") && test_cstr_equal(got, before) && !tv.buf->modified,
+               "cursors undo: merged typing undone to \"%s\" (\"%s\" before)", got, before);
+    test_view_run(&tv, &CMD_UNDO_REDO);
+    got = test_mc_full(t, tv.view);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), typed) && test_cstr_equal(got, typed_full), "cursors undo: undo-redo gave \"%s\"", got);
+    // A group made with one cursor, undone with three: one cursor, where that command started.
+    view_collapse_cursors(tv.view);
+    view_set_point(tv.view, view_primary(tv.view), 0);
+    tv.ctx.codepoint = 'y';
+    test_view_run(&tv, &CMD_SELF_INSERT);
+    i64 points[] = { 1, 6, 12 };
+    test_mc_set(tv.view, points, NULL, 3, 2);
+    test_view_run(&tv, &CMD_UNDO);
+    got = test_mc_full(t, tv.view);
+    TEST_CHECK(t, tv.view->cursor_count == 1 && view_point(tv.view, view_primary(tv.view)) == 0, "cursors undo: one-cursor group with three: \"%s\"", got);
+    // The log keeps 24 bytes per cursor for a multiple-cursor command.
+    test_mc_set(tv.view, points, NULL, 3, 0);
+    u64 used = tv.buf->undo.log_used;
+    test_view_run(&tv, &CMD_NEWLINE);
+    u64 grew = tv.buf->undo.log_used - used;
+    TEST_CHECK(t, grew >= 3 * sizeof(BufferUndoCursor) && tv.buf->undo.groups[tv.buf->undo.group_count - 1].cursor_count == 3,
+               "cursors undo: the group's cursors (%U bytes)", grew);
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Random: a command on random cursors (regions too), then undo (sometimes after a second command, through the
+    // chain), then undo-redo.
+    static const Command *cmds[] = { &CMD_SELF_INSERT, &CMD_DELETE_BACKWARD_CHAR, &CMD_DELETE_CHAR, &CMD_NEWLINE, &CMD_KILL_LINE,
+                                     &CMD_KILL_WORD, &CMD_BACKWARD_KILL_WORD, &CMD_INDENT_FOR_TAB_COMMAND, &CMD_COMMENT_LINE,
+                                     &CMD_KILL_REGION, &CMD_TRANSPOSE_CHARS, &CMD_OPEN_LINE, &CMD_JUST_ONE_SPACE, &CMD_UPCASE_WORD };
+    i64 undos = 0, chains = 0;
+    u8 *text = PUSH_ARRAY(&t->arena, u8, 512);
+    for (i32 round = 0; round < TEST_MC_UNDO_ROUNDS; round++) {
+        static const char alphabet[] = "ab c\n{};x\t";
+        i64 len = 10 + test_below(t, 200);
+        for (i64 i = 0; i < len; i++) text[i] = (u8)alphabet[test_below(t, sizeof(alphabet) - 1)];
+        text[len] = 0;
+        if (!test_view_open(t, &tv, (const char *)text, 10, 40)) return 0;
+        i32 n = 2 + (i32)test_below(t, 7);
+        i64 pts[8], mks[8];
+        for (i32 i = 0; i < n; i++) {
+            pts[i] = test_below(t, len + 1);
+            mks[i] = test_below(t, 3) ? -1 : (i64)test_below(t, len + 1);
+        }
+        test_mc_set(tv.view, pts, mks, n, (i32)test_below(t, n));
+        view_normalize_cursors(tv.view, &test_settings, &t->arena);
+        String8 text0 = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        char *cur0 = test_mc_full(t, tv.view);
+        // A command that starts with one cursor keeps Phase 6's undo: the point comes back, the mark is not logged.
+        b32 one = tv.view->cursor_count == 1;
+        i64 p0 = view_point(tv.view, view_primary(tv.view));
+        const Command *cmd = cmds[test_below(t, ARRAY_COUNT(cmds))];
+        tv.ctx.codepoint = "x}("[test_below(t, 3)];
+        test_view_run(&tv, cmd);
+        String8 text1 = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        char *cur1 = test_mc_full(t, tv.view);
+        if (str8_equal(text0, text1)) {
+            if (!test_view_close(t, &tv)) return 0;
+            continue;
+        }
+        b32 chain = test_below(t, 3) == 0;
+        if (chain) { // a second command (one that never merges with the first), undone first by the chain
+            test_view_run(&tv, &CMD_OPEN_LINE);
+            test_view_run(&tv, &CMD_UNDO);
+            String8 t2 = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+            char *c2 = test_mc_full(t, tv.view);
+            TEST_CHECK(t, str8_equal(t2, text1) && test_cstr_equal(c2, cur1), "cursors undo round %d (%s): the chain's first undo: \"%s\", "
+                       "expected \"%s\", text equal %d, cur0 \"%s\" (seed 0x%X)", round, cmd->name, c2, cur1, str8_equal(t2, text1), cur0, seed);
+            chains++;
+        }
+        test_view_run(&tv, &CMD_UNDO);
+        String8 text2 = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        char *cur2 = test_mc_full(t, tv.view);
+        b32 back = one ? tv.view->cursor_count == 1 && view_point(tv.view, view_primary(tv.view)) == p0 : test_cstr_equal(cur2, cur0);
+        TEST_CHECK(t, str8_equal(text2, text0) && back && !tv.buf->modified,
+                   "cursors undo round %d (%s): text '%S', cursors \"%s\", expected '%S' \"%s\" (seed 0x%X)", round, cmd->name, text2, cur2,
+                   text0, cur0, seed);
+        // undo-redo puts back the cursors of the moment the undo it reverts ran (cur1, as the command left them);
+        // undoing that returns to the state before the command with the cursors of the moment undo-redo ran (cur0).
+        test_view_run(&tv, &CMD_UNDO_REDO);
+        String8 text3 = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        char *cur3 = test_mc_full(t, tv.view);
+        TEST_CHECK(t, str8_equal(text3, text1) && test_cstr_equal(cur3, cur1), "cursors undo round %d (%s): undo-redo gave '%S' \"%s\", "
+                   "expected '%S' \"%s\" (seed 0x%X)", round, cmd->name, text3, cur3, text1, cur1, seed);
+        test_view_run(&tv, &CMD_UNDO);
+        String8 text4 = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+        char *cur4 = test_mc_full(t, tv.view);
+        TEST_CHECK(t, str8_equal(text4, text0) && (one || test_cstr_equal(cur4, cur0)), "cursors undo round %d: undo after undo-redo gave '%S' \"%s\" "
+                   "(seed 0x%X)", round, text4, cur4, seed);
+        undos++;
+        if (!test_view_close(t, &tv)) return 0;
+    }
+    LOG("test: ok: multiple-cursor undo (merged typing, undo-redo, a one-cursor group undone with three, 24 bytes per cursor in the "
+        "log; %D random commands undone and redone with every cursor back, %D through the chain; seed 0x%X)", undos, chains, seed);
+    return 1;
+}
+
 // Read-only buffers refuse every edit with a message; save-buffer messages.
 static b32 test_view_edit_limits(Test *t) {
     TestView tv;
@@ -10460,6 +10590,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_mc_driver(&t);
     arena_reset(&t.arena);
     test_mc_collapse(&t);
+    arena_reset(&t.arena);
+    test_mc_undo(&t, seed);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);

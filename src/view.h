@@ -88,6 +88,8 @@ void    view_destroy(View *view);               // releases its markers, the cur
 Cursor *view_add_cursor(View *view, i64 pos);
 Cursor *view_primary(View *view);
 void    view_collapse_cursors(View *view); // only the primary is left (the others' markers released)
+// The cursors an undo put back (buffer_undo_restored): points, marks (set, not active), the primary.
+void    view_restore_cursors(View *view, const BufferUndoCursor *cursors, i64 count);
 // After every command (the driver) and every mouse action: sorted by position, merged where points are equal or
 // spans overlap (view.c has the rule). Uses scratch, gives it back.
 void    view_normalize_cursors(View *view, const Settings *settings, Arena *scratch);

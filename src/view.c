@@ -173,6 +173,19 @@ Cursor *view_primary(View *v) {
     return &v->cursors[v->primary];
 }
 
+void view_restore_cursors(View *v, const BufferUndoCursor *cs, i64 n) {
+    view_collapse_cursors(v);
+    for (i64 i = 0; i < n; i++) {
+        Cursor *c = i ? view_add_cursor(v, cs[i].point) : &v->cursors[0];
+        if (!i) view_set_point(v, c, cs[0].point);
+        buffer_marker_set(v->buffer, c->mark, cs[i].mark);
+        c->mark_set = (cs[i].flags & BUFFER_UNDO_CURSOR_MARK_SET) != 0;
+        c->mark_active = c->mark_shift = 0;
+        c->goal_col = -1;
+        if (cs[i].flags & BUFFER_UNDO_CURSOR_PRIMARY) v->primary = (i32)i;
+    }
+}
+
 void view_collapse_cursors(View *v) {
     if (v->cursor_count <= 1) return;
     for (i32 i = 0; i < v->cursor_count; i++) {
@@ -617,7 +630,24 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     BufferUndoMerge merge = (cmd->flags & COMMAND_MERGE_INSERT) ? BUFFER_UNDO_MERGE_INSERT
                           : (cmd->flags & COMMAND_MERGE_DELETE) ? BUFFER_UNDO_MERGE_DELETE : BUFFER_UNDO_MERGE_NONE;
     // A query-replace answer continues the session's group.
-    if (!(cmd->flags & COMMAND_UNDO_CONTINUE)) buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, view_primary(v)));
+    Buffer *ubuf = v->buffer;
+    b32 cursors_given = 0;
+    u64 cursors_mark = ctx->scratch ? arena_pos(ctx->scratch) : 0;
+    if (!(cmd->flags & COMMAND_UNDO_CONTINUE)) {
+        buffer_undo_boundary(ubuf, merge, ctx->last_command == cmd, view_point(v, view_primary(v)));
+        // With several cursors, a group the command starts keeps them all, so undo puts every one back. Only for
+        // commands that run per cursor or edit (undo itself), none of which kills the buffer.
+        if (v->cursor_count > 1 && ctx->scratch && (!(cmd->flags & COMMAND_ONCE) || (cmd->flags & COMMAND_EDIT))) {
+            BufferUndoCursor *uc = PUSH_ARRAY(ctx->scratch, BufferUndoCursor, v->cursor_count);
+            for (i32 i = 0; i < v->cursor_count; i++) {
+                Cursor *c = &v->cursors[i];
+                uc[i] = (BufferUndoCursor){ view_point(v, c), buffer_marker_get(ubuf, c->mark),
+                                            (c->mark_set ? BUFFER_UNDO_CURSOR_MARK_SET : 0) | (i == v->primary ? BUFFER_UNDO_CURSOR_PRIMARY : 0), 0 };
+            }
+            buffer_undo_cursors(ubuf, uc, v->cursor_count);
+            cursors_given = 1;
+        }
+    }
     // A kill right after a kill appends to the same kill ring entry.
     ctx->kill_append = (cmd->flags & COMMAND_KILL) && ctx->last_command && (ctx->last_command->flags & COMMAND_KILL);
     if ((cmd->flags & COMMAND_ONCE) || v->cursor_count == 1) {
@@ -650,6 +680,8 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
         if (ctx->scratch) arena_pop_to(ctx->scratch, mark);
     }
     ctx->cursor = NULL;
+    if (cursors_given) buffer_undo_cursors(ubuf, NULL, 0);
+    if (ctx->scratch) arena_pop_to(ctx->scratch, cursors_mark);
     if (cmd->flags & (COMMAND_EDIT | COMMAND_KILL)) view_deactivate_mark(ctx->view); // the view may have changed buffers
     if (ctx->kills) kill_to_clipboard(ctx->kills); // once per command, when it killed
     if (ctx->scratch) view_normalize_cursors(ctx->view, ctx->settings, ctx->scratch);
