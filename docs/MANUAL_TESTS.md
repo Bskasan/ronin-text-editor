@@ -361,6 +361,7 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 | O21 | A command that does not exist, a directory that does not exist | AUTOMATED-NEW | builds (cmd's own message and exit 1; the directory: no start, nothing left open); builds in the app (a [build] directory that does not exist: "Compilation could not start: ...", mode Compilation:failed); processes (the same through the platform layer). |
 | O22 | .teal-project's [build] directory and its mistakes | AUTOMATED-NEW | .teal-project tests ([build] command and directory, unknown names, a backslash in a command); builds in the app (the build runs in root\sub; the diagnostic in *Messages*). |
 | O23 | Building teal itself from teal: a clean build, then one with an error | AUTOMATED-NEW + HUMAN | screenshots p13_selfbuild.png (teal_bench.exe on the repository, C-x p c RET: .\build.bat, 2.39 s, exit [0]) and p13_selfbuild_error.png / p13_selfbuild_next_error.png (a copy with an error and a warning in edit.c: both listed and colored, M-g n on edit.c line 866). Looking at a real failing build: HUMAN step 21. |
+| O24 | After a build teal is idle again: 0% CPU | AUTOMATED-NEW | `teal_debug.exe build\tmp\demo_build\particles.jai --keys "C-x p c RET" --compile-wait 10000 --idle-check`: 0 frames, 0 us of CPU in 5 s (and the same with no build). The build's worker waits in the kernel; nothing polls. |
 
 ## HUMAN steps
 

@@ -118,9 +118,9 @@ window.
 | what | value | where |
 |---|---|---|
 | executable size (release) | 453,632 bytes; imports only kernel32, user32, gdi32, d3d11, dwmapi and dwrite | Phase 13 |
-| startup to the first frame on screen | ~174 ms median, of which 125-150 ms is waiting for `D3D11CreateDevice` (the driver) | Phases 9, 10 and 12 |
+| startup to the first frame on screen | ~177 ms median, of which 125-150 ms is waiting for `D3D11CreateDevice` (the driver) | Phases 9, 10 and 13 |
 | typing: one keystroke's command plus building its frame | 9-20 us average, at line 1,000,000 of a 100 MB file | Phase 11 |
-| idle | 0 frames and one 15.6 ms scheduler tick of CPU time in 5 s | Phase 11 |
+| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build | Phase 13 |
 | memory (private bytes, idle) | 76-77 MB with an empty buffer, ~67 MB of it Direct3D and the driver; 192-194 MB with a 100 MB file open | Phases 6 and 12 |
 | loading a 100 MB file | 35-40 ms | Phase 3 |
 | searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without | Phase 12 |
