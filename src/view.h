@@ -54,6 +54,7 @@ struct Cursor {
     b32 mark_set;       // the mark has been set in this buffer (the region exists)
     b32 mark_active;    // transient mark mode: the region is active (highlighted)
     b32 mark_shift;     // activated by shift-select: an unshifted motion deactivates it
+    u64 serial;         // creation order in its view: the newest cursor has the largest
 };
 
 // Where a view (an Emacs window) last showed a buffer it switched away from.
@@ -66,8 +67,10 @@ typedef struct ViewBufferPos {
 struct View {
     Buffer *buffer;
     Arena cursor_arena; // holds only `cursors`, so the array stays contiguous
-    Cursor *cursors;    // [0] is the primary cursor; visibility follows it
+    Cursor *cursors;    // sorted by position (Phase 14); cursors[primary] is the primary: visibility follows it
     i32 cursor_count;
+    i32 primary;
+    u64 cursor_serial;  // the last serial given
     BufferMarker top;   // start of the first visible line; does not advance
     i64 left_col;       // first visible visual column
     i32 x, y, w, h;     // pixel rect, from the layout
@@ -83,6 +86,7 @@ View   *view_create(Arena *arena, Buffer *buf); // one cursor at 0, scrolled to 
 void    view_init(View *view, Buffer *buf);     // the same in a View struct the caller owns (destroyed or new)
 void    view_destroy(View *view);               // releases its markers, the cursor array and its remembered positions
 Cursor *view_add_cursor(View *view, i64 pos);
+Cursor *view_primary(View *view);
 i64     view_point(View *view, Cursor *cursor);
 void    view_set_point(View *view, Cursor *cursor, i64 pos);
 i64     view_top_line(View *view);

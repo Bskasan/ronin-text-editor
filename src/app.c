@@ -405,7 +405,7 @@ static String8 app_mode_line_format(View *v, Arena *arena, String8 mode) {
     b32 bottom = top + v->rows >= buffer_line_count(buf);
     String8 where = top == 0 && bottom ? STR8_LIT("All") : top == 0 ? STR8_LIT("Top") : bottom ? STR8_LIT("Bot")
                   : str8_fmt(arena, "%D%%", top_pos * 100 / MAX(buffer_size(buf), 1));
-    i64 p = view_point(v, &v->cursors[0]);
+    i64 p = view_point(v, view_primary(v));
     return str8_fmt(arena, " -:%s-  %S%s%S    %S   L%D C%D    (%S)    %s %s", flags, buf->name, disk, pad, where,
                     buffer_line_of(buf, p) + 1, view_column_of(buf, p), mode,
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol));
@@ -460,7 +460,7 @@ static b32 app_paren(App *app, i32 index, Arena *scratch, i64 *a, i64 *b) {
     View *v = app->windows.nodes[index].view;
     Buffer *buf = v->buffer;
     AppParen *c = &app->parens[index];
-    i64 p = view_point(v, &v->cursors[0]);
+    i64 p = view_point(v, view_primary(v));
     if (c->buffer != buf || c->edit_count != buf->edit_count || c->point != p || c->valid != buf->state_valid) {
         *c = (AppParen){ buf, buf->edit_count, p, buf->state_valid, -1, -1 };
         i64 size = buffer_size(buf);
@@ -739,11 +739,11 @@ static void app_draw_minibuffer(App *app, Renderer *r, AppLayout *l, FrameInput 
     Theme *th = &app->config->theme;
     View *v = mb->view;
     font_draw_text(app->font, r, l->pad, l->minibuffer_y, app_clip_cells(mb->prompt, l->cols), COLOR_HEX(th->prompt));
-    app_draw_region(app, r, l, v, &v->cursors[0], 1);
+    app_draw_region(app, r, l, v, view_primary(v), 1);
     i64 line = view_top_line(v);
     i32 text_x = v->x + l->pad;
     app_draw_buffer_line(app, r, v->buffer, line, text_x, v->y, v->left_col, v->cols, NULL, 0, in->scratch);
-    app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[0]), 1, app_has_focus(app), in->dpi_scale, in->scratch);
+    app_draw_cursor(app, r, l, v, view_point(v, view_primary(v)), 1, app_has_focus(app), in->dpi_scale, in->scratch);
     if (mb->kind == MINI_CHOICE) { // "3/41" at the right end, then a matcher's status
         String8 count = str8_fmt(in->scratch, "%D/%D", mb->match_count ? mb->selected + 1 : 0, mb->match_total);
         String8 status = mb->matcher && mb->matcher->status ? mb->matcher->status(mb->candidates_data, in->scratch) : str8(NULL, 0);
@@ -1044,7 +1044,7 @@ static void app_goto_arg(App *app, Buffer *buf, AppFileArg *f) {
 // A window just made for its buffer starts at the buffer's point in the buffer list.
 static void app_view_at_entry(App *app, View *v) {
     i32 i = buffer_list_index(&app->buffers, v->buffer);
-    if (i >= 0) view_set_point(v, &v->cursors[0], buffer_marker_get(v->buffer, app->buffers.entries[i].point));
+    if (i >= 0) view_set_point(v, view_primary(v), buffer_marker_get(v->buffer, app->buffers.entries[i].point));
 }
 
 static View *app_view_new(App *app, Buffer *buf);
@@ -1246,7 +1246,7 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         if (y >= v->y + v->h - l->line_h) return; // a mode line with nothing below it: only selects
     }
     Buffer *buf = v->buffer;
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     i64 pos = app_mouse_pos(l, v, x, y);
     view_deactivate_mark(v);
     if (clicks == 2) {
@@ -1271,7 +1271,7 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
 static void app_drag(App *app, AppLayout *l, i32 x, i32 y) {
     View *v = app->drag_view;
     if (v == app->mini.view && !app->mini.active) return; // the prompt ended during the drag
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     i64 pos = app_mouse_pos(l, v, x, y);
     if (pos != view_point(v, c) || c->mark_active) {
         if (!c->mark_active && pos != app->drag_anchor) view_set_mark(v, c, app->drag_anchor, 1);
@@ -1352,7 +1352,7 @@ static void app_cycle_buffer(CommandContext *ctx, i32 dir) {
     i32 i = buffer_list_index(&app->buffers, ctx->view->buffer);
     if (n < 2 || i < 0) return;
     app_switch_buffer(app, ctx->view, app->buffers.entries[((i + dir) % n + n) % n].buffer);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 static void cmd_next_buffer(CommandContext *ctx) { app_cycle_buffer(ctx, 1); }
@@ -1381,7 +1381,7 @@ static void cmd_open_config(CommandContext *ctx) {
     Buffer *buf = app_find_file(app, path);
     if (!buf) return;
     app_switch_buffer(app, ctx->view, buf);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
     if (created) echo_message(ctx->echo, "Created %S from the built-in defaults", path);
 }
 
@@ -1489,11 +1489,11 @@ static void app_view_free(App *app, View *v) {
 static View *app_view_copy(App *app, View *from) {
     Buffer *buf = from->buffer;
     View *v = app_view_new(app, buf);
-    view_set_point(v, &v->cursors[0], view_point(from, &from->cursors[0]));
+    view_set_point(v, view_primary(v), view_point(from, view_primary(from)));
     buffer_marker_set(buf, v->top, buffer_marker_get(buf, from->top));
     v->left_col = from->left_col;
-    Cursor *c = &from->cursors[0];
-    if (c->mark_set) view_set_mark(v, &v->cursors[0], buffer_marker_get(buf, c->mark), 0);
+    Cursor *c = view_primary(from);
+    if (c->mark_set) view_set_mark(v, view_primary(v), buffer_marker_get(buf, c->mark), 0);
     return v;
 }
 
@@ -1551,7 +1551,7 @@ static void app_delete_window(CommandContext *ctx, i32 leaf) {
     app_fit_views(app);
     if (ctx->view == v) {
         ctx->view = app_selected_view(app);
-        ctx->cursor = &ctx->view->cursors[0];
+        ctx->cursor = view_primary(ctx->view);
     }
 }
 
@@ -1652,13 +1652,13 @@ static View *app_display_buffer(App *app, Buffer *buf, b32 select) {
 // point visible) is for that window.
 static void app_pop_to_buffer(CommandContext *ctx, Buffer *buf) {
     ctx->view = app_display_buffer(ctx->app, buf, 1);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 static void cmd_view_echo_area_messages(CommandContext *ctx) {
     App *app = ctx->app;
     View *v = app_display_buffer(app, app->messages, 0);
-    view_set_point(v, &v->cursors[0], buffer_size(app->messages));
+    view_set_point(v, view_primary(v), buffer_size(app->messages));
     view_ensure_visible(v);
 }
 
@@ -2117,7 +2117,7 @@ void app_dev_smoke_syntax(App *app, i32 language) {
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("// a comment line\nreturn \"some string text\";\nf(a, (b), c);\n"
                                                       "    x_y = a | b;\n    z = 0;\n    w = 1;\n"));
     buf->language = (BufferLanguage)language;
-    view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2) + 1);
+    view_set_point(v, view_primary(v), buffer_line_start(buf, 2) + 1);
     buffer_marker_set(buf, v->top, 0);
     app->force_focus = 1;
 }
@@ -2172,7 +2172,7 @@ void app_dev_smoke_buffer_view(App *app) {
     buf->language = BUFFER_LANG_FUNDAMENTAL;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("int x = 1;\n\t|\n\na\x01" "b\n"));
     View *v = app_selected_view(app);
-    view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
+    view_set_point(v, view_primary(v), buffer_line_start(buf, 2));
     buffer_marker_set(buf, v->top, 0);
     app->force_focus = 0;
 }
@@ -2248,8 +2248,8 @@ i32 app_dev_font_setups(App *app) {
 void app_dev_smoke_region(App *app) {
     View *v = app_selected_view(app);
     Buffer *buf = v->buffer;
-    view_set_mark(v, &v->cursors[0], 5, 1);
-    view_set_point(v, &v->cursors[0], buffer_line_start(buf, 2));
+    view_set_mark(v, view_primary(v), 5, 1);
+    view_set_point(v, view_primary(v), buffer_line_start(buf, 2));
 }
 
 // Smoke stage 4: "foo bar foo" from column 0, point 0, focus on; the smoke then types C-s f o o C-s, so
@@ -2259,7 +2259,7 @@ void app_dev_smoke_isearch(App *app) {
     Buffer *buf = v->buffer;
     buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("foo bar foo\n"));
     view_deactivate_mark(v);
-    view_set_point(v, &v->cursors[0], 0);
+    view_set_point(v, view_primary(v), 0);
     buffer_marker_set(buf, v->top, 0);
     app->force_focus = 1;
 }
@@ -2280,7 +2280,7 @@ void app_dev_show_scratch(App *app, String8 text) {
     buffer_undo_enable(buf, 0);
     buffer_replace(buf, 0, buffer_size(buf), text);
     buffer_undo_enable(buf, 1);
-    view_set_point(v, &v->cursors[0], 0);
+    view_set_point(v, view_primary(v), 0);
     view_ensure_visible(v);
 }
 
@@ -2291,7 +2291,7 @@ b32 app_dev_isearch_failing(App *app) {
 
 i64 app_dev_point(App *app) {
     View *v = app_selected_view(app);
-    return view_point(v, &v->cursors[0]);
+    return view_point(v, view_primary(v));
 }
 
 i64 app_dev_size(App *app) {
@@ -2337,8 +2337,8 @@ void app_dev_smoke_windows(App *app) {
     app_switch_buffer(app, v, buf);
     // An active region from point (line 1) to the end, line 1's newline included: not drawn, since the
     // window is not selected.
-    view_set_mark(v, &v->cursors[0], buffer_size(buf), 1);
-    view_set_point(v, &v->cursors[0], 1);
+    view_set_mark(v, view_primary(v), buffer_size(buf), 1);
+    view_set_point(v, view_primary(v), 1);
     app->force_focus = 1;
 }
 

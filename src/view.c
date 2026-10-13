@@ -164,8 +164,13 @@ Cursor *view_add_cursor(View *v, i64 pos) {
     c->point = buffer_marker_create(v->buffer, pos, 1);
     c->mark = buffer_marker_create(v->buffer, pos, 0);
     c->goal_col = -1;
+    c->serial = ++v->cursor_serial;
     v->cursor_count++;
     return c;
+}
+
+Cursor *view_primary(View *v) {
+    return &v->cursors[v->primary];
 }
 
 i64 view_point(View *v, Cursor *c) {
@@ -193,7 +198,7 @@ void view_ensure_visible(View *v) {
     Buffer *buf = v->buffer;
     i64 rows = MAX(v->rows, 1), cols = MAX(v->cols, 1);
     i64 top = view_top_line(v);
-    i64 p = view_point(v, &v->cursors[0]);
+    i64 p = view_point(v, view_primary(v));
     i64 line = buffer_line_of(buf, p);
     if (line < top || line >= top + rows) {
         i64 row = v->recenter_row >= 0 ? MIN((i64)v->recenter_row, rows - 1) : rows / 2;
@@ -212,7 +217,7 @@ void view_ensure_visible(View *v) {
 // nearest visible line (Emacs).
 static void view_drag_point(View *v) {
     Buffer *buf = v->buffer;
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     i64 top = view_top_line(v);
     i64 bottom = MIN(top + MAX(v->rows, 1) - 1, buffer_line_count(buf) - 1);
     i64 line = buffer_line_of(buf, view_point(v, c));
@@ -229,12 +234,12 @@ void view_scroll_lines(View *v, i64 lines) {
 void view_set_point_at(View *v, i64 row, i64 col) {
     i64 last = buffer_line_count(v->buffer) - 1;
     i64 line = MIN(view_top_line(v) + MAX(row, 0), last);
-    view_set_point(v, &v->cursors[0], view_offset_at_column(v->buffer, line, MAX(col, 0)));
+    view_set_point(v, view_primary(v), view_offset_at_column(v->buffer, line, MAX(col, 0)));
 }
 
 void view_goto_line_column(View *v, i64 line, i64 col) {
     line = CLAMP(line, 0, buffer_line_count(v->buffer) - 1);
-    view_set_point(v, &v->cursors[0], view_offset_at_column(v->buffer, line, MAX(col, 0)));
+    view_set_point(v, view_primary(v), view_offset_at_column(v->buffer, line, MAX(col, 0)));
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +324,7 @@ void view_save_position(View *v, BufferList *list) {
     i32 i = buffer_list_index(list, v->buffer);
     if (i < 0) return;
     BufferEntry *e = &list->entries[i];
-    buffer_marker_set(v->buffer, e->point, view_point(v, &v->cursors[0]));
+    buffer_marker_set(v->buffer, e->point, view_point(v, view_primary(v)));
     buffer_marker_set(v->buffer, e->top, buffer_marker_get(v->buffer, v->top));
     e->left_col = v->left_col;
 }
@@ -345,7 +350,7 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf, View *showing) {
         mine->point = buffer_marker_create(v->buffer, 0, 1);
         mine->top = buffer_marker_create(v->buffer, 0, 0);
     }
-    buffer_marker_set(v->buffer, mine->point, view_point(v, &v->cursors[0]));
+    buffer_marker_set(v->buffer, mine->point, view_point(v, view_primary(v)));
     buffer_marker_set(v->buffer, mine->top, buffer_marker_get(v->buffer, v->top));
     mine->left_col = v->left_col;
     for (i32 i = 0; i < v->cursor_count; i++) {
@@ -355,6 +360,7 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf, View *showing) {
     buffer_marker_destroy(v->buffer, v->top);
     arena_reset(&v->cursor_arena);
     v->cursor_count = 0;
+    v->primary = 0;
 
     i32 now = buffer_list_index(list, buf);
     BufferEntry *e = now >= 0 ? &list->entries[now] : NULL;
@@ -365,7 +371,7 @@ void view_switch_buffer(View *v, BufferList *list, Buffer *buf, View *showing) {
         top = buffer_marker_get(buf, back->top);
         left = back->left_col;
     } else if (showing && showing->buffer == buf) {
-        point = view_point(showing, &showing->cursors[0]);
+        point = view_point(showing, view_primary(showing));
         top = buffer_marker_get(buf, showing->top);
         left = showing->left_col;
     } else if (e) {
@@ -486,11 +492,11 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     BufferUndoMerge merge = (cmd->flags & COMMAND_MERGE_INSERT) ? BUFFER_UNDO_MERGE_INSERT
                           : (cmd->flags & COMMAND_MERGE_DELETE) ? BUFFER_UNDO_MERGE_DELETE : BUFFER_UNDO_MERGE_NONE;
     // A query-replace answer continues the session's group.
-    if (!(cmd->flags & COMMAND_UNDO_CONTINUE)) buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, &v->cursors[0]));
+    if (!(cmd->flags & COMMAND_UNDO_CONTINUE)) buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, view_primary(v)));
     // A kill right after a kill appends to the same kill ring entry.
     ctx->kill_append = (cmd->flags & COMMAND_KILL) && ctx->last_command && (ctx->last_command->flags & COMMAND_KILL);
     if (cmd->flags & COMMAND_ONCE) {
-        view_run_for_cursor(ctx, cmd, &v->cursors[0]);
+        view_run_for_cursor(ctx, cmd, view_primary(v));
     } else {
         for (i32 i = 0; i < v->cursor_count; i++) view_run_for_cursor(ctx, cmd, &v->cursors[i]);
     }
@@ -635,7 +641,7 @@ static void cmd_beginning_of_buffer(CommandContext *ctx) {
 static void cmd_end_of_buffer(CommandContext *ctx) {
     cmd_goto(ctx, buffer_size(ctx->view->buffer));
     // Emacs' (recenter -3) when the end is not visible, honored by view_ensure_visible.
-    if (ctx->cursor == &ctx->view->cursors[0]) ctx->view->recenter_row = MAX(ctx->view->rows - 3, 0);
+    if (ctx->cursor == view_primary(ctx->view)) ctx->view->recenter_row = MAX(ctx->view->rows - 3, 0);
 }
 
 // ---------------------------------------------------------------------------

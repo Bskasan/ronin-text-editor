@@ -91,7 +91,7 @@ static void files_find_done(CommandContext *ctx, MiniResult *r) {
     Buffer *buf = app_find_file(app, path);
     if (!buf) return;
     app_switch_buffer(app, ctx->view, buf);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 static void files_find_other_done(CommandContext *ctx, MiniResult *r) {
@@ -241,7 +241,7 @@ static void cmd_save_buffer(CommandContext *ctx) {
 // Rereads the buffer's file through buffer_replace (buffer_revert): markers, and so every point,
 // follow the edit; it can be undone.
 static void files_revert(CommandContext *ctx, Buffer *buf) {
-    i64 point = ctx->view->buffer == buf ? view_point(ctx->view, &ctx->view->cursors[0]) : 0;
+    i64 point = ctx->view->buffer == buf ? view_point(ctx->view, view_primary(ctx->view)) : 0;
     OsFileStatus status = buffer_revert(buf, point);
     if (status == OS_FILE_OK) echo_message(ctx->echo, "Reverted %S", buf->name);
     else files_echo(ctx->echo, "Cannot revert %S: %s", buf->path, buffer_status_text(status));
@@ -324,7 +324,7 @@ static void files_save_some_answer(CommandContext *ctx, MiniResult *r);
 static i64 files_point_of(App *app, Buffer *buf) {
     View *views[WINDOW_MAX];
     for (i32 i = 0, n = app_views(app, views); i < n; i++) {
-        if (views[i]->buffer == buf) return view_point(views[i], &views[i]->cursors[0]);
+        if (views[i]->buffer == buf) return view_point(views[i], view_primary(views[i]));
     }
     i32 e = buffer_list_index(&app->buffers, buf);
     return e >= 0 ? buffer_marker_get(buf, app->buffers.entries[e].point) : 0;
@@ -561,7 +561,7 @@ static void files_switch_done(CommandContext *ctx, MiniResult *r) {
     if (!buf && !r->text.len) return;
     if (!buf) buf = app_new_buffer(app, r->text);
     app_switch_buffer(app, ctx->view, buf);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 static void files_switch_other_done(CommandContext *ctx, MiniResult *r) {
@@ -623,7 +623,7 @@ static void files_kill_buffer(App *app, Buffer *buf) {
 static void files_kill_confirmed(CommandContext *ctx, MiniResult *r) {
     if (!r->yes) return;
     files_kill_buffer(ctx->app, ctx->mini->state.buffer);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 static void files_kill_done(CommandContext *ctx, MiniResult *r) {
@@ -642,7 +642,7 @@ static void files_kill_done(CommandContext *ctx, MiniResult *r) {
         return;
     }
     files_kill_buffer(app, buf);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 static void cmd_kill_buffer(CommandContext *ctx) {
@@ -659,7 +659,7 @@ static void files_kill_and_delete(CommandContext *ctx, Buffer *buf) {
     App *app = ctx->app;
     View *v = ctx->view;
     files_kill_buffer(app, buf);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
     i32 leaf = window_of_view(&app->windows, v);
     if (leaf < 0 || window_count(&app->windows) == 1) {
         echo_message(ctx->echo, "Attempt to delete minibuffer or sole ordinary window");

@@ -392,7 +392,7 @@ static void finder_visit(CommandContext *ctx, MiniResult *r, b32 other) {
         app_pop_to_buffer(ctx, buf);
     } else {
         app_switch_buffer(app, ctx->view, buf);
-        ctx->cursor = &ctx->view->cursors[0];
+        ctx->cursor = view_primary(ctx->view);
     }
 }
 
@@ -480,7 +480,7 @@ void app_dev_smoke_finder(App *app) {
     f->open = p;
     CommandContext ctx = app->ctx;
     ctx.view = app_selected_view(app);
-    ctx.cursor = &ctx.view->cursors[0];
+    ctx.cursor = view_primary(ctx.view);
     MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file in C:/smoke/: "), .history = MINI_HISTORY_PROJECT,
                         .done = finder_done, .matcher = &FINDER_MATCHER, .data = app };
     if (minibuffer_read(&ctx, &req)) app->mini.state.text = str8_copy(&app->mini.arena, p->root);
@@ -529,7 +529,7 @@ u64 app_dev_bench_finder_open(App *app, i64 count) {
     f->open = p;
     CommandContext ctx = app->ctx;
     ctx.view = app_selected_view(app);
-    ctx.cursor = &ctx.view->cursors[0];
+    ctx.cursor = view_primary(ctx.view);
     MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Find file in C:/bench/: "), .history = MINI_HISTORY_PROJECT,
                         .done = finder_done, .matcher = &FINDER_MATCHER, .data = app };
     if (minibuffer_read(&ctx, &req)) app->mini.state.text = str8_copy(&app->mini.arena, p->root);

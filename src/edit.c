@@ -8,7 +8,7 @@ static void edit_undo_report(CommandContext *ctx, BufferUndoResult r, i64 point,
     View *v = ctx->view;
     switch (r) {
     case BUFFER_UNDO_DONE:
-        view_set_point(v, &v->cursors[0], point);
+        view_set_point(v, view_primary(v), point);
         echo_message(ctx->echo, "%s", done);
         break;
     case BUFFER_UNDO_NOTHING:
@@ -26,14 +26,14 @@ static void edit_undo_report(CommandContext *ctx, BufferUndoResult r, i64 point,
 static void cmd_undo(CommandContext *ctx) {
     View *v = ctx->view;
     i64 point;
-    BufferUndoResult r = buffer_undo(v->buffer, ctx->last_command == &CMD_UNDO, view_point(v, &v->cursors[0]), &point);
+    BufferUndoResult r = buffer_undo(v->buffer, ctx->last_command == &CMD_UNDO, view_point(v, view_primary(v)), &point);
     edit_undo_report(ctx, r, point, "Undo", "No further undo information");
 }
 
 static void cmd_undo_redo(CommandContext *ctx) {
     View *v = ctx->view;
     i64 point;
-    BufferUndoResult r = buffer_redo(v->buffer, view_point(v, &v->cursors[0]), &point);
+    BufferUndoResult r = buffer_redo(v->buffer, view_point(v, view_primary(v)), &point);
     edit_undo_report(ctx, r, point, "Redo", "No further redo information");
 }
 
@@ -309,7 +309,7 @@ static void edit_insert_yank(CommandContext *ctx, String8 text) {
 // The newest kill (or what another program put on the clipboard since), mark at its start.
 static void cmd_yank(CommandContext *ctx) {
     KillRing *k = ctx->kills;
-    if (ctx->cursor == &ctx->view->cursors[0]) kill_from_clipboard(k);
+    if (ctx->cursor == view_primary(ctx->view)) kill_from_clipboard(k);
     if (!k->count) {
         echo_message(ctx->echo, "Kill ring is empty");
         return;
@@ -327,7 +327,7 @@ static void cmd_yank_pop(CommandContext *ctx) {
         return;
     }
     if (!k->count) return;
-    if (ctx->cursor == &v->cursors[0]) k->yank_index = (k->yank_index + 1) % k->count;
+    if (ctx->cursor == view_primary(v)) k->yank_index = (k->yank_index + 1) % k->count;
     i64 start, end;
     if (!view_region(v, ctx->cursor, &start, &end)) return;
     if (!buffer_replace(v->buffer, start, end, kill_entry(k, k->yank_index))) return;
