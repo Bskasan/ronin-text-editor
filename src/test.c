@@ -1879,6 +1879,79 @@ static b32 test_mc_undo(Test *t, u64 seed) {
     return 1;
 }
 
+// The newest kill's pieces as text: "a|b|c".
+static String8 test_mc_pieces(Test *t, KillRing *k, i32 back) {
+    String8 s = STR8_LIT("");
+    for (i32 i = 0; i < kill_pieces(k, back); i++) s = i ? str8_fmt(&t->arena, "%S|%S", s, kill_piece(k, back, i)) : kill_piece(k, back, i);
+    return str8_copy(&t->arena, s);
+}
+
+// Kill and yank with several cursors: one piece per cursor in one entry, the clipboard text (pieces joined by
+// newlines), appending and prepending per piece, yank with the same count (each its piece) and another count (the
+// whole text), yank-pop, a clipboard changed elsewhere, kill-ring-save.
+static b32 test_mc_kill(Test *t) {
+    TestView tv;
+    if (!test_view_open(t, &tv, "a|bc\nd|ef\ng|hi", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_KILL_LINE);
+    String8 got = test_mc_pieces(t, tv.kills, 0);
+    String8 clip = { 0 };
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "a|\nd|\ng|") && str8_equal(got, STR8_LIT("bc|ef|hi")) && tv.kills->count == 1,
+               "cursors kill: pieces '%S'", got);
+    TEST_CHECK(t, str8_equal(kill_entry(tv.kills, 0), STR8_LIT("bc\nef\nhi")) && os_clipboard_get(&t->arena, &clip) &&
+                      str8_equal(clip, STR8_LIT("bc\nef\nhi")), "cursors kill: the entry and the clipboard '%S'", clip);
+    test_view_run(&tv, &CMD_YANK); // the same count: each its piece
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "abc|\ndef|\nghi|"), "cursors yank: same count \"%s\"", test_view_marked(t, &tv));
+    // yank-pop with several cursors: an older multiple-cursor kill, piece by piece.
+    test_view_run(&tv, &CMD_BACKWARD_KILL_WORD); // kills "abc", "def", "ghi"
+    got = test_mc_pieces(t, tv.kills, 0);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("abc|def|ghi")), "cursors kill: backward pieces '%S', text \"%s\"", got, test_view_marked(t, &tv));
+    test_view_run(&tv, &CMD_YANK);
+    test_view_run(&tv, &CMD_YANK_POP);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "bc|\nef|\nhi|"), "cursors yank-pop: \"%s\"", test_view_marked(t, &tv));
+    // Another count: every cursor gets the whole text.
+    view_collapse_cursors(tv.view);
+    view_add_cursor(tv.view, buffer_size(tv.buf));
+    test_view_run(&tv, &CMD_YANK);
+    String8 text = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+    TEST_CHECK(t, str8_equal(text, STR8_LIT("bcabc\ndef\nghi\nef\nhiabc\ndef\nghi")), "cursors yank: another count gave '%S'", text);
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Appending and prepending per piece; a kill with another count makes a new entry.
+    if (!test_view_open(t, &tv, "|foo bar\n|baz qux", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_KILL_WORD);
+    test_view_run(&tv, &CMD_KILL_WORD);
+    got = test_mc_pieces(t, tv.kills, 0);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("foo bar|baz qux")) && tv.kills->count == 1, "cursors kill: appended '%S'", got);
+    if (!test_view_close(t, &tv)) return 0;
+    if (!test_view_open(t, &tv, "foo bar|\nbaz qux|", 10, 40)) return 0;
+    test_view_run(&tv, &CMD_BACKWARD_KILL_WORD);
+    test_view_run(&tv, &CMD_BACKWARD_KILL_WORD);
+    got = test_mc_pieces(t, tv.kills, 0);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("foo bar|baz qux")) && tv.kills->count == 1, "cursors kill: prepended '%S'", got);
+    // A clipboard changed elsewhere: one piece, the whole text at every cursor.
+    os_clipboard_set(STR8_LIT("X"));
+    test_view_run(&tv, &CMD_YANK);
+    TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "X|\nX|") && kill_pieces(tv.kills, 0) == 1, "cursors yank: the clipboard \"%s\"",
+               test_view_marked(t, &tv));
+    if (!test_view_close(t, &tv)) return 0;
+
+    // kill-ring-save with regions: pieces, the text unchanged; a single-cursor kill after it makes a new entry.
+    if (!test_view_open(t, &tv, "one two\nthree four", 10, 40)) return 0;
+    i64 points[] = { 3, 13 }, marks[] = { 0, 8 };
+    test_mc_set(tv.view, points, marks, 2, 0);
+    test_view_run(&tv, &CMD_KILL_RING_SAVE);
+    got = test_mc_pieces(t, tv.kills, 0);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("one|three")), "cursors kill-ring-save: '%S'", got);
+    view_collapse_cursors(tv.view);
+    test_view_run(&tv, &CMD_KILL_WORD);
+    TEST_CHECK(t, tv.kills->count == 2 && kill_pieces(tv.kills, 0) == 1 && str8_equal(kill_entry(tv.kills, 0), STR8_LIT(" two")),
+               "cursors kill: one cursor after pieces '%S'", kill_entry(tv.kills, 0));
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: multiple-cursor kills and yanks (one piece per cursor, the clipboard text, the same count and another, yank-pop, "
+        "appending and prepending per piece, a clipboard changed elsewhere, kill-ring-save, a one-cursor kill after pieces)");
+    return 1;
+}
+
 // Read-only buffers refuse every edit with a message; save-buffer messages.
 static b32 test_view_edit_limits(Test *t) {
     TestView tv;
@@ -2479,7 +2552,7 @@ static b32 test_kill(Test *t) {
 
     // The clipboard link: kills go to the (fake) clipboard; a copy by another program is yanked
     // and becomes the newest kill, once.
-    String8 clip;
+    String8 clip = { 0 };
     TEST_CHECK(t, os_clipboard_get(&t->arena, &clip) && str8_equal(clip, STR8_LIT("alphaalpha")), "clipboard: holds the last kill ('%S')", clip);
     os_dev_clipboard_external(STR8_LIT("from\nelsewhere")); // stored with CRLF, as another program would
     i32 count = tv.kills->count;
@@ -10592,6 +10665,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_mc_collapse(&t);
     arena_reset(&t.arena);
     test_mc_undo(&t, seed);
+    arena_reset(&t.arena);
+    test_mc_kill(&t);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);

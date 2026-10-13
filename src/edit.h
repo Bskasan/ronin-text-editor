@@ -23,12 +23,20 @@
 #define KILL_LARGE_RESERVE GB(2)   // one large entry (as large as a buffer can be)
 #define KILL_SCRATCH_RESERVE GB(8) // clipboard text being converted
 
+// A kill with several cursors (Phase 14) is one entry with one piece per cursor: its text is the pieces joined by
+// '\n' (what the clipboard gets), followed in the same allocation by pieces + 1 offsets (unaligned i64): piece i is
+// [off[i], off[i + 1] - 1) of the text. Such an entry is built whole once per command (never extended in place).
 typedef struct KillEntry {
     u8 *data;      // in the shared arena, or the base of its own reservation
-    i64 len;
+    i64 len;       // the text
     b32 large;
     u64 committed; // large: committed bytes
+    i32 pieces;    // > 1: a multiple-cursor kill's pieces; else 1 (0 in an unused slot)
+    i64 table_off; // pieces > 1: where the offsets start, from data
 } KillEntry;
+
+#define KILL_COLLECT_RESERVE GB(2)  // a multiple-cursor kill's pieces while the command runs
+#define KILL_COLLECT_PIECES MB(8)   // their offsets (one i64 each)
 
 typedef struct KillRing {
     KillEntry entries[KILL_RING_CAP]; // a ring: the newest at `head`
@@ -39,6 +47,12 @@ typedef struct KillRing {
     Arena scratch;                    // clipboard conversions; reset after use
     u32 clip_seq;                     // the clipboard's sequence number after our last set or read
     b32 clip_dirty;                   // the newest entry changed: the driver sets the clipboard
+    // A multiple-cursor kill being collected (kill_collect_*): each processed cursor's text, in order.
+    b32 collecting;
+    Arena collect_text;               // reserved at the first such kill
+    i64 *collect_off;                 // collect_count + 1 offsets into collect_text (in their own reservation)
+    i32 collect_count;
+    u64 collect_off_committed;        // bytes
 } KillRing;
 
 b32     kill_init(KillRing *k, i32 max);
@@ -49,6 +63,15 @@ String8 kill_entry(KillRing *k, i32 back); // 0 = the newest
 // its text). The caller copies the text there. NULL when out of memory.
 u8     *kill_push(KillRing *k, i64 len);
 u8     *kill_extend(KillRing *k, i64 len, b32 prepend);
+i32     kill_pieces(KillRing *k, i32 back);          // 1, or a multiple-cursor kill's pieces
+String8 kill_piece(KillRing *k, i32 back, i32 index); // one of them (the whole text for a one-piece entry)
+// A multiple-cursor kill (the driver): begin, then for each cursor it runs next (a new, empty piece) and the kill
+// commands add to that piece (kill_collect_space); end makes one entry of the pieces, or, with `append` and a newest
+// entry of as many pieces, adds each piece to its own (`prepend`: before it). Nothing collected: no entry.
+void    kill_collect_begin(KillRing *k);
+void    kill_collect_next(KillRing *k);
+u8     *kill_collect_space(KillRing *k, i64 len); // the current piece grows by len bytes (NULL: out of memory)
+void    kill_collect_end(KillRing *k, b32 append, b32 prepend);
 void    kill_to_clipboard(KillRing *k); // after a command that killed: the clipboard gets the newest entry
 void    kill_from_clipboard(KillRing *k); // before yank: a clipboard changed elsewhere becomes the newest entry
 
