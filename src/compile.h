@@ -74,6 +74,10 @@ b32  compile_exists_fs(void *data, Arena *arena, String8 path); // the file syst
 // beside the line's MSBuild project file (`proj`, relative to dir when not absolute), under the project
 // root (empty: none). The first that exists, '\' separators, in the cache's arena; empty: none.
 String8 compile_resolve(CompileCache *c, String8 path, String8 dir, String8 proj, String8 root);
+// The path *compilation* shows for a located line printed as `printed` and resolved to `file`: `file` relative
+// to `root` (a part of `file`) when `printed` is absolute and the file is under the root (compared as
+// Windows does: ASCII case and both separators); empty: the line is shown as printed.
+String8 compile_shown_path(String8 printed, String8 file, String8 root);
 
 // The cleaning of one line (CR, ANSI, OEM) into `arena`.
 String8 compile_clean(Arena *arena, String8 raw);

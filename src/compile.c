@@ -434,6 +434,15 @@ String8 compile_resolve(CompileCache *c, String8 path, String8 dir, String8 proj
     return str8(NULL, 0);
 }
 
+String8 compile_shown_path(String8 printed, String8 file, String8 root) {
+    String8 none = { 0 };
+    while (root.len && (root.data[root.len - 1] == '\\' || root.data[root.len - 1] == '/')) root.len--;
+    if (!root.len || !compile_absolute(printed) || file.len <= root.len + 1) return none;
+    u8 sep = file.data[root.len];
+    if ((sep != '\\' && sep != '/') || !compile_path_equal(str8(file.data, root.len), root)) return none;
+    return str8(file.data + root.len + 1, file.len - root.len - 1);
+}
+
 // ---------------------------------------------------------------------------
 // Cleaning and lines
 

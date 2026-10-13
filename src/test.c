@@ -9266,8 +9266,27 @@ static b32 test_compile_resolve(Test *t) {
     String8 again = compile_resolve(&c, STR8_LIT("x.c"), STR8_LIT("C:\\b"), str8(NULL, 0), str8(NULL, 0));
     TEST_CHECK(t, str8_equal(again, STR8_LIT("C:\\b\\x.c")) && c.count <= COMPILE_CACHE_CAP, "compile resolve: after a full cache '%S'", again);
     os_release(arena.base);
+    // The path *compilation* shows (compilation_relative_paths): relative to the root only for an absolute printed path under it.
+    static const struct { const char *printed, *file, *root, *want; } shown[] = {
+        { "C:\\r\\src\\a.c", "C:\\r\\src\\a.c", "C:\\r", "src\\a.c" },
+        { "C:/r/src/a.c", "C:\\r\\src\\a.c", "C:\\r", "src\\a.c" },          // printed with '/'
+        { "c:\\R\\a.c", "c:\\R\\a.c", "C:\\r\\", "a.c" },                     // case, a root with a separator
+        { "C:\\r\\src\\a.c", "C:\\r\\src\\a.c", "C:/r", "src\\a.c" },         // a root with '/'
+        { "C:\\other\\a.c", "C:\\other\\a.c", "C:\\r", "" },                  // outside the root: as it is
+        { "C:\\rr\\a.c", "C:\\rr\\a.c", "C:\\r", "" },                        // a sibling with the root as a prefix
+        { "src\\a.c", "C:\\r\\src\\a.c", "C:\\r", "" },                       // printed relative: as printed
+        { "C:\\r\\a.c", "C:\\r\\a.c", "", "" },                               // no root
+        { "C:\\r", "C:\\r", "C:\\r", "" },                                    // the root itself
+        { "\\\\srv\\share\\p\\a.c", "\\\\srv\\share\\p\\a.c", "\\\\srv\\share\\p", "a.c" }, // UNC
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(shown); i++) {
+        String8 got = compile_shown_path(str8_cstr(shown[i].printed), str8_cstr(shown[i].file), str8_cstr(shown[i].root));
+        TEST_CHECK(t, str8_equal(got, str8_cstr(shown[i].want)), "compile shown path %d: '%s' under '%s' gave '%S', expected '%s'", i,
+                   shown[i].printed, shown[i].root, got, shown[i].want);
+    }
     LOG("test: ok: compile path resolution (absolute as given, the build directory, beside MSBuild's project file absolute or relative, "
-        "the project root, the earlier step first, nowhere, the cache asked once per path, no root, a full cache)");
+        "the project root, the earlier step first, nowhere, the cache asked once per path, no root, a full cache); the shown path (%d "
+        "cases: under the root, '/', case, outside, a sibling prefix, printed relative, no root, UNC)", (i32)ARRAY_COUNT(shown));
     return 1;
 }
 
@@ -9367,8 +9386,10 @@ static b32 test_compile_config(Test *t) {
     config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
     Settings *s = &c.settings;
     TEST_CHECK(t, s->compilation_save_buffers == COMPILATION_SAVE_ASK && s->compilation_scroll_output == COMPILATION_SCROLL_FIRST_ERROR &&
-                      s->compilation_max_output_mb == 16, "compile config: defaults %d %d %d", s->compilation_save_buffers,
-               s->compilation_scroll_output, s->compilation_max_output_mb);
+                      s->compilation_max_output_mb == 16 && s->compilation_relative_paths, "compile config: defaults %d %d %d %d",
+               s->compilation_save_buffers, s->compilation_scroll_output, s->compilation_max_output_mb, s->compilation_relative_paths);
+    config_parse(&c, &t->arena, STR8_LIT("[settings]\ncompilation_relative_paths = false\n"), STR8_LIT("t.conf"));
+    TEST_CHECK(t, c.diags.errors == 0 && !s->compilation_relative_paths, "compile config: compilation_relative_paths = false");
     TEST_CHECK(t, c.theme.compilation_error == 0xff0000 && c.theme.compilation_warning == 0xffaa00 && c.theme.compilation_info == 0x8cde94,
                "compile config: default colors %x %x %x", c.theme.compilation_error, c.theme.compilation_warning, c.theme.compilation_info);
     static const struct { const char *line; i32 save, scroll, mb; } values[] = {
@@ -9390,13 +9411,14 @@ static b32 test_compile_config(Test *t) {
     config_init(&bad);
     config_parse(&bad, &t->arena,
                  STR8_LIT("[settings]\ncompilation_save_buffers = some\ncompilation_scroll_output = yes\ncompilation_max_output_mb = 0\n"
-                          "[colors]\ncompilation_error = red\ncompilation_info = #010203\n"),
+                          "compilation_relative_paths = maybe\n[colors]\ncompilation_error = red\ncompilation_info = #010203\n"),
                  STR8_LIT("t.conf"));
     static const char *const want[] = {
         "t.conf:2: compilation_save_buffers: 'some' is not ask, all or none",
         "t.conf:3: compilation_scroll_output: 'yes' is not first-error, true or false",
         "t.conf:4: warning: compilation_max_output_mb 0 is out of range (1 to 1024), using 1",
-        "t.conf:6: compilation_error: 'red' is not a color (#rrggbb)",
+        "t.conf:5: compilation_relative_paths: 'maybe' is not true or false",
+        "t.conf:7: compilation_error: 'red' is not a color (#rrggbb)",
     };
     i32 k = 0;
     for (ConfigDiag *d = bad.diags.first; d; d = d->next, k++) {
@@ -9405,7 +9427,7 @@ static b32 test_compile_config(Test *t) {
     TEST_CHECK(t, k == ARRAY_COUNT(want) && bad.settings.compilation_max_output_mb == 1 && bad.theme.compilation_info == 0x010203,
                "compile config: %d diagnostics", k);
     LOG("test: ok: build settings and colors (defaults, every value of compilation_save_buffers and compilation_scroll_output, "
-        "compilation_max_output_mb clamped, the colors, each diagnostic)");
+        "compilation_max_output_mb clamped, compilation_relative_paths, the colors, each diagnostic)");
     return 1;
 }
 
@@ -9949,6 +9971,46 @@ static b32 test_compile_app(Test *t) {
         if (!test_app_destroy(t, app, "compile app")) return 0;
     }
 
+    // compilation_relative_paths: an absolute path under the root is shown relative to it (the location keeps the
+    // full path, the offsets follow); one outside the root and a relative one stay as printed; false shows all as printed.
+    {
+        String8 outside = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13out.c", t->tmp_dir));
+        os_write_file(outside, STR8_LIT("one\ntwo\n"));
+        String8 root_fwd = str8_copy(&t->arena, root), out_fwd = str8_copy(&t->arena, outside); // the child unescapes backslashes
+        for (i64 i = 0; i < root_fwd.len; i++) if (root_fwd.data[i] == '\\') root_fwd.data[i] = '/';
+        for (i64 i = 0; i < out_fwd.len; i++) if (out_fwd.data[i] == '\\') out_fwd.data[i] = '/';
+        String8 abs = test_child(t, "app_abs", str8_fmt(&t->arena, "out %S/a.c(2,5): error C1: under the root\n"
+                                                                    "out %S(1): warning C2: outside\n"
+                                                                    "out b.h:3:1: warning: relative\n"
+                                                                    "exit 1\n", root_fwd, out_fwd));
+        String8 rel_conf = test_results_conf(t, "p13rel.conf", "[settings]\ncompilation_save_buffers = none\n");
+        String8 off_conf = test_results_conf(t, "p13reloff.conf", "[settings]\ncompilation_save_buffers = none\ncompilation_relative_paths = false\n");
+        for (i32 on = 1; on >= 0; on--) {
+            App *app = test_manual_app(t, a_c, 0, 0, on ? rel_conf : off_conf);
+            results_compile_remember(app, root, abs);
+            app_dev_feed(app, "C-x p c RET", &t->arena);
+            TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the absolute build did not end");
+            Results *r = results_compilation(app);
+            String8 got = test_compile_text(t, app);
+            String8 first = on ? STR8_LIT("a.c") : str8_fmt(&t->arena, "%S/a.c", root_fwd);
+            String8 want = str8_fmt(&t->arena, "Command: %S\nDirectory: %S\n\n%S(2,5): error C1: under the root\n%S(1): warning C2: outside\n"
+                                               "b.h:3:1: warning: relative\n\n", abs, shown, first, out_fwd);
+            TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "compile app: relative paths %d: '%S'", on, got);
+            TEST_CHECK(t, r && r->count == 3 && r->locs[0].path_off == 0 && r->locs[0].path_len == first.len &&
+                              r->locs[0].num_off == first.len && r->locs[0].mark_off == first.len + 7,
+                       "compile app: relative paths %d: the offsets", on);
+            if (r && r->count == 3) {
+                String8 f0 = r->files[r->locs[0].file], f1 = r->files[r->locs[1].file];
+                TEST_CHECK(t, str8_equal(f0, a_c) && str8_equal(f1, outside), "compile app: relative paths %d: files '%S' '%S'",
+                           on, f0, f1);
+            }
+            app_dev_feed(app, "M-g n", &t->arena);
+            TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("a.c:13")), "compile app: relative paths %d: next-error to '%S'", on,
+                       test_results_where(t, app));
+            if (!test_app_destroy(t, app, "compile app")) return 0;
+        }
+    }
+
     // Outside changes after a build: an unmodified buffer whose file it rewrote is reverted at once, a
     // modified one flagged; a killed build checks too. No activation event.
     {
@@ -10022,7 +10084,8 @@ static b32 test_compile_app(Test *t) {
         "selected, its exact text, the mode line's state, the summary, next-error with the landing highlight and a skipped note, RET, n, "
         "p, g, M-x recompile, the command last used here offered, an empty command, kill with none, recompile with none, compile's "
         "prompt; compilation_scroll_output first-error / true / false; compilation_save_buffers ask (y, n, q) / all / none; a second "
-        "build while one runs (no, yes), C-c C-k, killing the buffer, quitting (no, yes), every tree gone; a link-only failure; "
+        "build while one runs (no, yes), C-c C-k, killing the buffer, quitting (no, yes), every tree gone; a link-only failure with a "
+        "summary colored and not counted; compilation_relative_paths on and off (under the root, outside it, relative); "
         "outside changes after a build and after a kill; [build] directory and diagnostics, a [build] directory that does not exist (failed); "
         "[keys compilation]'s defaults, describe-key and q; the shutdown with a build running)");
     return 1;
