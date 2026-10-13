@@ -42,6 +42,7 @@ struct Settings {
     i32 compilation_save_buffers;  // COMPILATION_SAVE_*: the unsaved file buffers before a build
     i32 compilation_scroll_output; // COMPILATION_SCROLL_*: windows on *compilation* follow its output
     i32 compilation_max_output_mb; // a build's output kept in *compilation*
+    i32 max_cursors;          // multiple cursors: commands that would add more stop there
     b32 compilation_relative_paths; // an absolute path under the project root shown relative to it in *compilation*
 };
 

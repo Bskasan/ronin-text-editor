@@ -149,6 +149,7 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "search_workers", offsetof(Settings, search_workers), 0, GREP_WORKERS_MAX },
     { "search_max_results", offsetof(Settings, search_max_results), 1, 1000000 },
     { "compilation_max_output_mb", offsetof(Settings, compilation_max_output_mb), 1, 1024 },
+    { "max_cursors", offsetof(Settings, max_cursors), 1, 100000 },
 };
 
 // Text settings: the bytes and their length, at most cap - 1 bytes.

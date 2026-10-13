@@ -30,6 +30,8 @@ enum {
     COMMAND_QUIT           = 1 << 9, // keyboard-quit, abort-minibuffers: cancels a pending prefix, aborts any prompt
     COMMAND_ISEARCH        = 1 << 10, // runs inside an isearch without ending it ([keys isearch])
     COMMAND_UNDO_CONTINUE  = 1 << 11, // no undo boundary before it: its edits join the open group (a query-replace session)
+    COMMAND_LINE           = 1 << 12, // acts on point's line: of several cursors on one line only the first runs it
+    COMMAND_SINGLE         = 1 << 13, // makes sense with one cursor only: the others go first (isearch, goto-line, ...)
 };
 
 typedef struct Command {

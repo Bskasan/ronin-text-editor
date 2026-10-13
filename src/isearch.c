@@ -367,8 +367,8 @@ i64 isearch_fail_pos(Isearch *is) {
     return 0;
 }
 
-const Command CMD_ISEARCH_FORWARD          = { "isearch-forward", cmd_isearch_forward, COMMAND_ONCE };
-const Command CMD_ISEARCH_BACKWARD         = { "isearch-backward", cmd_isearch_backward, COMMAND_ONCE };
+const Command CMD_ISEARCH_FORWARD          = { "isearch-forward", cmd_isearch_forward, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_ISEARCH_BACKWARD         = { "isearch-backward", cmd_isearch_backward, COMMAND_ONCE | COMMAND_SINGLE };
 const Command CMD_ISEARCH_REPEAT_FORWARD   = { "isearch-repeat-forward", cmd_isearch_repeat_forward, COMMAND_ONCE | COMMAND_ISEARCH };
 const Command CMD_ISEARCH_REPEAT_BACKWARD  = { "isearch-repeat-backward", cmd_isearch_repeat_backward, COMMAND_ONCE | COMMAND_ISEARCH };
 const Command CMD_ISEARCH_DELETE_CHAR      = { "isearch-delete-char", cmd_isearch_delete_char, COMMAND_ONCE | COMMAND_ISEARCH };
@@ -673,5 +673,5 @@ b32 replace_key(CommandContext *ctx, const Command *command, u32 answer) {
     return 0;
 }
 
-const Command CMD_QUERY_REPLACE  = { "query-replace", cmd_query_replace, COMMAND_ONCE };
-const Command CMD_REPLACE_STRING = { "replace-string", cmd_replace_string, COMMAND_ONCE };
+const Command CMD_QUERY_REPLACE  = { "query-replace", cmd_query_replace, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_REPLACE_STRING = { "replace-string", cmd_replace_string, COMMAND_ONCE | COMMAND_SINGLE };

@@ -341,7 +341,7 @@ const Command CMD_KILL_RING_SAVE     = { "kill-ring-save", cmd_kill_ring_save, C
 const Command CMD_KILL_LINE          = { "kill-line", cmd_kill_line, KILL };
 const Command CMD_KILL_WORD          = { "kill-word", cmd_kill_word, KILL };
 const Command CMD_BACKWARD_KILL_WORD = { "backward-kill-word", cmd_backward_kill_word, KILL | COMMAND_KILL_BACKWARD };
-const Command CMD_KILL_WHOLE_LINE    = { "kill-whole-line", cmd_kill_whole_line, KILL };
+const Command CMD_KILL_WHOLE_LINE    = { "kill-whole-line", cmd_kill_whole_line, KILL | COMMAND_LINE };
 const Command CMD_YANK               = { "yank", cmd_yank, COMMAND_EDIT | COMMAND_REGION_REPLACE };
 const Command CMD_YANK_POP           = { "yank-pop", cmd_yank_pop, COMMAND_EDIT };
 #undef KILL
@@ -691,8 +691,8 @@ static void cmd_tab_to_tab_stop(CommandContext *ctx) {
 }
 
 const Command CMD_NEWLINE                = { "newline", cmd_newline, COMMAND_EDIT | COMMAND_REGION_REPLACE };
-const Command CMD_INDENT_FOR_TAB_COMMAND = { "indent-for-tab-command", cmd_indent_for_tab_command, COMMAND_EDIT };
-const Command CMD_UNINDENT               = { "unindent", cmd_unindent, COMMAND_EDIT };
+const Command CMD_INDENT_FOR_TAB_COMMAND = { "indent-for-tab-command", cmd_indent_for_tab_command, COMMAND_EDIT | COMMAND_LINE };
+const Command CMD_UNINDENT               = { "unindent", cmd_unindent, COMMAND_EDIT | COMMAND_LINE };
 const Command CMD_TAB_TO_TAB_STOP        = { "tab-to-tab-stop", cmd_tab_to_tab_stop, COMMAND_EDIT };
 
 // ---------------------------------------------------------------------------
@@ -852,11 +852,11 @@ static void cmd_comment_line(CommandContext *ctx) {
 }
 
 const Command CMD_OPEN_LINE               = { "open-line", cmd_open_line, COMMAND_EDIT };
-const Command CMD_DELETE_INDENTATION      = { "delete-indentation", cmd_delete_indentation, COMMAND_EDIT };
+const Command CMD_DELETE_INDENTATION      = { "delete-indentation", cmd_delete_indentation, COMMAND_EDIT | COMMAND_LINE };
 const Command CMD_DELETE_HORIZONTAL_SPACE = { "delete-horizontal-space", cmd_delete_horizontal_space, COMMAND_EDIT };
 const Command CMD_JUST_ONE_SPACE          = { "just-one-space", cmd_just_one_space, COMMAND_EDIT };
 const Command CMD_TRANSPOSE_CHARS         = { "transpose-chars", cmd_transpose_chars, COMMAND_EDIT };
 const Command CMD_UPCASE_WORD             = { "upcase-word", cmd_upcase_word, COMMAND_EDIT };
 const Command CMD_DOWNCASE_WORD           = { "downcase-word", cmd_downcase_word, COMMAND_EDIT };
 const Command CMD_CAPITALIZE_WORD         = { "capitalize-word", cmd_capitalize_word, COMMAND_EDIT };
-const Command CMD_COMMENT_LINE            = { "comment-line", cmd_comment_line, COMMAND_EDIT };
+const Command CMD_COMMENT_LINE            = { "comment-line", cmd_comment_line, COMMAND_EDIT | COMMAND_LINE };

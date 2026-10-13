@@ -758,4 +758,4 @@ static void cmd_goto_line(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
-const Command CMD_GOTO_LINE = { "goto-line", cmd_goto_line, COMMAND_ONCE };
+const Command CMD_GOTO_LINE = { "goto-line", cmd_goto_line, COMMAND_ONCE | COMMAND_SINGLE };
