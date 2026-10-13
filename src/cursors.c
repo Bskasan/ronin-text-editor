@@ -239,11 +239,7 @@ static void cmd_unmark_next_like_this(CommandContext *ctx) {
         return;
     }
     i32 k = cursors_newest(v);
-    buffer_marker_destroy(v->buffer, v->cursors[k].point);
-    buffer_marker_destroy(v->buffer, v->cursors[k].mark);
-    memmove(&v->cursors[k], &v->cursors[k + 1], sizeof(Cursor) * (u64)(v->cursor_count - k - 1));
-    v->cursor_count--;
-    arena_pop_to(&v->cursor_arena, sizeof(Cursor) * (u64)v->cursor_count);
+    view_remove_cursor(v, k);
     v->primary = cursors_newest(v);
 }
 

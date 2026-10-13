@@ -88,6 +88,10 @@ void    view_destroy(View *view);               // releases its markers, the cur
 Cursor *view_add_cursor(View *view, i64 pos);
 Cursor *view_primary(View *view);
 void    view_collapse_cursors(View *view); // only the primary is left (the others' markers released)
+// Cursor k goes (its markers released); when it was the primary, the newest one left is. Never the last one.
+void    view_remove_cursor(View *view, i32 k);
+// The cursors whose spans reach [from, to] (the array is normalized: sorted, disjoint): [*first, *end).
+void    view_cursors_between(View *view, i64 from, i64 to, const Settings *settings, i32 *first, i32 *end);
 // The cursors an undo put back (buffer_undo_restored): points, marks (set, not active), the primary.
 void    view_restore_cursors(View *view, const BufferUndoCursor *cursors, i64 count);
 // After every command (the driver) and every mouse action: sorted by position, merged where points are equal or
