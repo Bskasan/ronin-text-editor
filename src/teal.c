@@ -20,6 +20,7 @@
 #include "finder.h"
 #include "search.h"
 #include "grep.h"
+#include "compile.h"
 #include "isearch.h"
 #include "results.h"
 
@@ -42,6 +43,7 @@
 #include "fuzzy.c"
 #include "search.c"
 #include "grep.c"
+#include "compile.c"
 #include "isearch.c"
 #include "app.c"
 #include "files.c"

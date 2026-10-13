@@ -9011,6 +9011,474 @@ static b32 test_process_platform(Test *t) {
     return 1;
 }
 
+// A match as text: "kind line:col [path] (num) {kind word} <project>", "-" for none.
+static String8 test_match_text(Arena *arena, String8 line, b32 ok, const CompileMatch *m) {
+    if (!ok) return STR8_LIT("-");
+    static const char *kinds[] = { "none", "error", "warning", "info" };
+    String8 s = str8_fmt(arena, "%s", kinds[m->kind]);
+    if (m->located) {
+        s = str8_fmt(arena, "%S %D:%D [%S] (%S)", s, m->line, m->col, str8(line.data + m->path_off, m->path_len),
+                     str8(line.data + m->num_off, m->num_len));
+    }
+    s = str8_fmt(arena, "%S {%S}", s, str8(line.data + m->kind_off, m->kind_len));
+    if (m->proj_len) s = str8_fmt(arena, "%S <%S>", s, str8(line.data + m->proj_off, m->proj_len));
+    return s;
+}
+
+static b32 test_compile_match(Test *t) {
+    static const struct { const char *line, *want; } located[] = {
+        // MSVC (build.bat compiles with /FC: full paths), csc, tsc's plain form, MSBuild
+        { "C:\\web-projects\\text-editor\\src\\edit.c(120): error C2065: 'x': undeclared identifier",
+          "error 120:0 [C:\\web-projects\\text-editor\\src\\edit.c] ((120)) {error}" },
+        { "C:\\web-projects\\text-editor\\src\\app.c(55,9): warning C4100: 'y': unreferenced formal parameter",
+          "warning 55:9 [C:\\web-projects\\text-editor\\src\\app.c] ((55,9)) {warning}" },
+        { "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt\\stdio.h(12): note: see declaration of 'printf'",
+          "info 12:0 [C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt\\stdio.h] ((12)) {note}" },
+        { "src\\teal.c(3): fatal error C1083: Cannot open include file: 'nope.h': No such file or directory",
+          "error 3:0 [src\\teal.c] ((3)) {fatal error}" },
+        { "C:\\dir with spaces\\my file.c(7) : warning C4996: 'strcpy': This function or variable may be unsafe.",
+          "warning 7:0 [C:\\dir with spaces\\my file.c] ((7)) {warning}" },
+        { "C:\\x\\Program.cs(10,5): error CS1002: ; expected [C:\\x\\app\\app.csproj]",
+          "error 10:5 [C:\\x\\Program.cs] ((10,5)) {error} <C:\\x\\app\\app.csproj>" },
+        { "src/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.", "error 3:7 [src/a.ts] ((3,7)) {error}" },
+        { "  1>C:\\x\\a.cpp(5,1): error C2143: syntax error: missing ';' before '}'", "error 5:1 [C:\\x\\a.cpp] ((5,1)) {error}" },
+        { "12>C:\\x\\b.cs(1,2,3,4): warning CS0168: The variable 'e' is declared but never used [C:\\x\\b.csproj]",
+          "warning 1:2 [C:\\x\\b.cs] ((1,2,3,4)) {warning} <C:\\x\\b.csproj>" },
+        // GCC and Clang
+        { "src/main.c:12:5: error: 'x' undeclared (first use in this function)", "error 12:5 [src/main.c] (12:5) {error}" },
+        { "C:\\x\\main.c:12:5: warning: unused variable 'y' [-Wunused-variable]", "warning 12:5 [C:\\x\\main.c] (12:5) {warning}" },
+        { "src/main.c:3:10: note: in expansion of macro 'X'", "info 3:10 [src/main.c] (3:10) {note}" },
+        { "a.c:12: undefined reference to `foo'", "error 12:0 [a.c] (12) {}" },
+        { "src/main.c:12: error: expected ';' before '}' token", "error 12:0 [src/main.c] (12) {error}" },
+        { "./x.h:5:1: error: unknown type name 'foo'", "error 5:1 [./x.h] (5:1) {error}" },
+        { "In file included from src/a.c:3:", "info 3:0 [src/a.c] (3) {}" },
+        { "                 from src/b.h:4,", "info 4:0 [src/b.h] (4) {}" },
+        { "In file included from C:/x/a.c:3:10:", "info 3:10 [C:/x/a.c] (3:10) {}" },
+        // Jai
+        { "C:/jai/modules/x/main.jai:12,5: Error: Undeclared identifier 'x'.", "error 12:5 [C:/jai/modules/x/main.jai] (12,5) {Error}" },
+        { "D:\\src\\game\\main.jai:3,1: Warning: This is unused.", "warning 3:1 [D:\\src\\game\\main.jai] (3,1) {Warning}" },
+        { "D:\\src\\game\\main.jai:40,9: Info: This is the declaration.", "info 40:9 [D:\\src\\game\\main.jai] (40,9) {Info}" },
+        // tsc's pretty form (its colors stripped before)
+        { "src/a.ts:3:7 - error TS2322: Type 'string' is not assignable to type 'number'.", "error 3:7 [src/a.ts] (3:7) {error}" },
+        // Traps: the structure alone rejects them (every path exists here)
+        { "12:30:45", "-" },
+        { "Build started 12:30:45.", "-" },
+        { "Time Elapsed 00:00:01.23", "-" },
+        { "http://host:80/x", "-" },
+        { "GET http://localhost:8080/index.html: 200", "-" },
+        { "version 1.2.3", "-" },
+        { "Microsoft (R) C/C++ Optimizing Compiler Version 19.40.33811 for x64", "-" },
+        { "LINK : fatal error LNK1104: cannot open file 'teal.exe'", "-" },
+        { "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main", "-" },
+        { "C:\\Program Files (x86)\\x\\y.h", "-" },
+        { "1 error generated.", "-" },
+        { "", "-" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(located); i++) {
+        String8 line = str8_cstr(located[i].line);
+        CompileMatch m;
+        String8 got = test_match_text(&t->arena, line, compile_match(line, &m), &m);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(located[i].want)), "compile match %d: '%S' gave '%S', expected '%s'", i, line, got,
+                   located[i].want);
+    }
+    static const struct { const char *line, *want; } kinds[] = {
+        { "LINK : fatal error LNK1104: cannot open file 'teal.exe'", "error {fatal error}" },
+        { "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main", "error {error}" },
+        { "cl : command line warning D9025 : overriding '/W3' with '/W4'", "warning {warning}" },
+        { "error: linker command failed with exit code 1 (use -v to see invocation)", "error {error}" },
+        { "ld: error: undefined symbol: foo", "error {error}" },
+        { "clang: error: no such file or directory: 'x.c'", "error {error}" },
+        { "fatal error: no input files", "error {fatal error}" },
+        { "warning: unused variable", "warning {warning}" },
+        { "C:\\x\\proj.csproj : error MSB4019: The imported project was not found.", "error {error}" },
+        { "MSBUILD : error MSB1009: Project file does not exist.", "error {error}" },
+        { "error MSB4019: The imported project was not found.", "error {error}" },
+        { "  3>warning CS8618: Non-nullable property 'Name' must contain a non-null value", "warning {warning}" },
+        { "Error: Could not find the module.", "error {Error}" },
+        // Not errors
+        { "0 errors", "-" },
+        { "Build succeeded, 0 Warning(s), 0 Error(s)", "-" },
+        { "    0 Error(s)", "-" },
+        { "compiling error.c", "-" },
+        { "error.c", "-" },
+        { "cl /W4 -Werror a.c", "-" },
+        { "errors: 3", "-" },
+        { "1 error generated.", "-" },
+        { "Compilation finished with no errors", "-" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(kinds); i++) {
+        String8 line = str8_cstr(kinds[i].line);
+        CompileMatch m;
+        String8 got = test_match_text(&t->arena, line, compile_match_kind(line, &m), &m);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(kinds[i].want)), "compile kind %d: '%S' gave '%S', expected '%s'", i, line, got, kinds[i].want);
+    }
+    LOG("test: ok: compile matchers (%d located lines and traps: MSVC with drive letters, spaces and (x86), cl / csc / tsc / MSBuild "
+        "with its prefix and project, GCC and Clang with and without a column, bare, notes, includes, Jai, tsc's pretty form; times, "
+        "URLs, versions, linker lines; %d lines with a kind and no location, and what does not count)",
+        (i32)ARRAY_COUNT(located), (i32)ARRAY_COUNT(kinds));
+    return 1;
+}
+
+typedef struct TestCompileFs {
+    const char **files;
+    i32 count;
+    i64 asked;
+} TestCompileFs;
+
+static b32 test_compile_exists(void *data, Arena *arena, String8 path) {
+    (void)arena;
+    TestCompileFs *fs = data;
+    fs->asked++;
+    for (i32 i = 0; i < fs->count; i++) if (compile_path_equal(str8_cstr(fs->files[i]), path)) return 1;
+    return 0;
+}
+
+static b32 test_compile_resolve(Test *t) {
+    static const char *files[] = { "C:\\b\\x.c", "C:\\b\\sub\\y.c", "C:\\b\\app\\z.cs", "C:\\r\\lib\\w.c", "C:\\b\\both.c", "C:\\r\\both.c" };
+    TestCompileFs fs = { files, ARRAY_COUNT(files), 0 };
+    Arena arena = arena_create(MB(64));
+    CompileCache c;
+    compile_cache_init(&c, &arena, test_compile_exists, &fs);
+    static const struct { const char *path, *proj, *want; } cases[] = {
+        { "C:\\b\\x.c", "", "C:\\b\\x.c" },               // absolute, as given
+        { "C:/b/x.c", "", "C:\\b\\x.c" },                 // ... with '/'
+        { "C:\\nope\\x.c", "", "" },                      // absolute and missing: nothing else is tried
+        { "x.c", "", "C:\\b\\x.c" },                      // the build directory
+        { "sub/y.c", "", "C:\\b\\sub\\y.c" },
+        { "z.cs", "C:\\b\\app\\app.csproj", "C:\\b\\app\\z.cs" }, // beside MSBuild's project file
+        { "z.cs", "app\\app.csproj", "C:\\b\\app\\z.cs" },        // ... given relative to the build directory
+        { "z.cs", "", "" },                               // ... and not without it
+        { "lib/w.c", "", "C:\\r\\lib\\w.c" },             // the project root
+        { "both.c", "", "C:\\b\\both.c" },                // the earlier step wins
+        { "gone.c", "", "" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        String8 got = compile_resolve(&c, str8_cstr(cases[i].path), STR8_LIT("C:\\b"), str8_cstr(cases[i].proj), STR8_LIT("C:\\r"));
+        TEST_CHECK(t, str8_equal(got, str8_cstr(cases[i].want)), "compile resolve %d: '%s' gave '%S', expected '%s'", i, cases[i].path, got,
+                   cases[i].want);
+    }
+    i64 asked = fs.asked;
+    for (i32 i = 0; i < 100; i++) compile_resolve(&c, STR8_LIT("x.c"), STR8_LIT("C:\\b"), str8(NULL, 0), STR8_LIT("C:\\r"));
+    TEST_CHECK(t, fs.asked == asked && c.asked == asked, "compile resolve: a cached path was asked again (%D, %D)", fs.asked, asked);
+    // No root (compile outside a project): that step is skipped.
+    String8 none = compile_resolve(&c, STR8_LIT("lib/w.c"), STR8_LIT("C:\\b"), str8(NULL, 0), str8(NULL, 0));
+    TEST_CHECK(t, !none.len, "compile resolve: no root, yet '%S'", none);
+    // A full cache forgets everything and still answers.
+    for (i32 i = 0; i < COMPILE_CACHE_CAP + 10; i++) compile_resolve(&c, str8_fmt(&t->arena, "f%d.c", i), STR8_LIT("C:\\b"), str8(NULL, 0), str8(NULL, 0));
+    String8 again = compile_resolve(&c, STR8_LIT("x.c"), STR8_LIT("C:\\b"), str8(NULL, 0), str8(NULL, 0));
+    TEST_CHECK(t, str8_equal(again, STR8_LIT("C:\\b\\x.c")) && c.count <= COMPILE_CACHE_CAP, "compile resolve: after a full cache '%S'", again);
+    os_release(arena.base);
+    LOG("test: ok: compile path resolution (absolute as given, the build directory, beside MSBuild's project file absolute or relative, "
+        "the project root, the earlier step first, nowhere, the cache asked once per path, no root, a full cache)");
+    return 1;
+}
+
+typedef struct TestLines {
+    Arena *arena;
+    String8 *lines;
+    i32 count, cap;
+} TestLines;
+
+static void test_lines_out(void *data, String8 raw) {
+    TestLines *l = data;
+    if (l->count < l->cap) l->lines[l->count++] = str8_copy(l->arena, raw);
+}
+
+static b32 test_compile_clean(Test *t) {
+    static const struct { const char *raw, *want; } cases[] = {
+        { "plain", "plain" },
+        { "ab\r", "ab" },
+        { "a\rb\r", "ab" },
+        { "\x1b[1;31merror\x1b[0m: x", "error: x" },
+        { "\x1b[38;5;196mred\x1b[m and \x1b[Kgone", "red and gone" },
+        { "\x1b]0;title\x07rest", "rest" },
+        { "\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\", "link" },
+        { "\x1b(Bok", "ok" },
+        { "ab\x1b", "ab" },
+        { "\xc4\x9f\xc3\xbc\xc5\x9f", "\xc4\x9f\xc3\xbc\xc5\x9f" }, // valid UTF-8 stays
+        { "tab\there", "tab\there" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(cases); i++) {
+        String8 got = compile_clean(&t->arena, str8_cstr(cases[i].raw));
+        TEST_CHECK(t, str8_equal(got, str8_cstr(cases[i].want)), "compile clean %d: '%S', expected '%s'", i, got, cases[i].want);
+    }
+    // OEM: 0x81 0x82 are u-umlaut and e-acute on the Western and Turkish OEM code pages (437, 850, 852, 857, 858).
+    String8 oem = compile_clean(&t->arena, STR8_LIT("x \x81\x82 y"));
+    b32 oem_known = str8_equal(oem, STR8_LIT("x \xc3\xbc\xc3\xa9 y"));
+    TEST_CHECK(t, compile_utf8_valid(oem) && oem.len > 6, "compile clean: OEM text '%S' is not valid UTF-8", oem);
+    if (!oem_known) LOG("test: skipped: the OEM code page maps 0x81 0x82 to '%S' (not 437 / 850 / 852 / 857 / 858)", oem);
+    TEST_CHECK(t, !compile_utf8_valid(STR8_LIT("\xc3")) && !compile_utf8_valid(STR8_LIT("\xed\xa0\x80")) && compile_utf8_valid(STR8_LIT("\xef\xbf\xbd")),
+               "compile clean: UTF-8 validity");
+    // Lines across reads: random slicing gives the lines of one whole read; a long line is cut on characters.
+    String8 text;
+    {
+        u8 *p = PUSH_ARRAY(&t->arena, u8, MB(1));
+        i64 n = 0;
+        for (i32 i = 0; i < 2000; i++) {
+            i64 len = test_below(t, 4) == 0 ? test_below(t, 300) : test_below(t, 40);
+            for (i64 k = 0; k < len; k++) p[n++] = (u8)(test_below(t, 10) == 0 ? '\r' : 'a' + test_below(t, 26));
+            p[n++] = '\n';
+        }
+        for (i32 k = 0; k < 75000; k++) { // one line of 150,000 bytes of two-byte characters
+            p[n++] = 0xC3;
+            p[n++] = 0xA9;
+        }
+        p[n++] = '\n';
+        memcpy(p + n, "no newline at the end", 21);
+        n += 21;
+        text = str8(p, n);
+    }
+    TestLines whole = { &t->arena, PUSH_ARRAY(&t->arena, String8, 4000), 0, 4000 };
+    CompileSplit s;
+    compile_split_init(&s, &t->arena);
+    compile_split_feed(&s, text.data, text.len, test_lines_out, &whole);
+    compile_split_end(&s, test_lines_out, &whole);
+    TEST_CHECK(t, whole.count == 2000 + 3 + 1, "compile split: %d lines from one read", whole.count);
+    for (i32 i = 2000; i < 2003; i++) {
+        TEST_CHECK(t, whole.lines[i].len <= COMPILE_LINE_MAX && compile_utf8_valid(whole.lines[i]), "compile split: the long line's piece %d", i);
+    }
+    TEST_CHECK(t, whole.lines[2000].len + whole.lines[2001].len + whole.lines[2002].len == 150000, "compile split: the long line's pieces");
+    TEST_CHECK(t, str8_equal(whole.lines[2003], STR8_LIT("no newline at the end")), "compile split: the last line without a newline");
+    for (i32 round = 0; round < 50; round++) {
+        TestLines sliced = { &t->arena, PUSH_ARRAY(&t->arena, String8, 4000), 0, 4000 };
+        compile_split_init(&s, &t->arena);
+        for (i64 at = 0; at < text.len;) {
+            i64 r = 1 + test_below(t, round % 5 == 1 ? 7 : 5000); // not inside MIN: it would be drawn twice
+            i64 n = MIN(text.len - at, r);
+            compile_split_feed(&s, text.data + at, n, test_lines_out, &sliced);
+            at += n;
+        }
+        compile_split_end(&s, test_lines_out, &sliced);
+        TEST_CHECK(t, sliced.count == whole.count, "compile split: round %d gave %d lines, not %d", round, sliced.count, whole.count);
+        for (i32 i = 0; i < whole.count; i++) {
+            TEST_CHECK(t, str8_equal(sliced.lines[i], whole.lines[i]), "compile split: round %d line %d differs (%D bytes, not %D)", round, i, sliced.lines[i].len,
+                       whole.lines[i].len);
+        }
+        arena_pop_to(&t->arena, (u64)((u8 *)sliced.lines - t->arena.base));
+    }
+    LOG("test: ok: compile cleaning (CR, CSI / OSC / charset escapes, a lone ESC, valid UTF-8 kept, OEM %s, validity) and lines across "
+        "reads (50 random slicings of 2,000 lines equal to one read, a 150,000-byte line cut on characters, the last line without a "
+        "newline)", oem_known ? "converted" : "converted (code page not checked)");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Builds through the reader worker
+
+typedef struct TestBuild {
+    CompileRun *c;
+    String8 text;      // every line and LF
+    i32 lines, located, errors, warnings, infos;
+    String8 first_file; // the first located line's file (in first_buf)
+    u8 first_buf[1024];
+    i64 first_line, first_col;
+    b32 ended;
+} TestBuild;
+
+// Takes what arrived; stops (with the worker still running) once `until` appears in the text.
+static void test_build_pump(TestBuild *b, u8 *out, i64 cap, i64 *n) {
+    CompileBatch *batch = compile_take(b->c);
+    while (batch) {
+        CompileBatch *next = batch->next;
+        CompileLine l;
+        for (i64 at = 0; compile_next_line(batch, &at, &l);) {
+            b->lines++;
+            if (l.located) {
+                if (!b->located) {
+                    i64 fl = MIN(l.file.len, (i64)sizeof(b->first_buf));
+                    memcpy(b->first_buf, l.file.data, (size_t)fl);
+                    b->first_file = str8(b->first_buf, fl);
+                    b->first_line = l.line;
+                    b->first_col = l.col;
+                }
+                b->located++;
+            }
+            b->errors += l.kind == COMPILE_ERROR;
+            b->warnings += l.kind == COMPILE_WARNING;
+            b->infos += l.kind == COMPILE_INFO;
+            i64 take = MIN(l.text.len, cap - *n - 1);
+            if (take > 0) {
+                memcpy(out + *n, l.text.data, (size_t)take);
+                *n += take;
+            }
+            if (*n < cap) out[(*n)++] = '\n';
+        }
+        compile_give_back(b->c, batch);
+        batch = next;
+    }
+}
+
+// Runs a build until it ended (or the timeout); with `kill_at` set, kills it once that text was read.
+static b32 test_build(Test *t, String8 command, String8 dir, String8 root, i64 cap, const char *kill_at, u32 timeout_ms, TestBuild *b) {
+    *b = (TestBuild){ 0 };
+    b->c = compile_create(command, dir, root, cap);
+    if (!compile_start(b->c)) return 0;
+    i64 out_cap = MB(8), n = 0;
+    u8 *out = PUSH_ARRAY(&t->arena, u8, out_cap);
+    u64 start = os_time_us();
+    b32 killed = 0;
+    while (!b->c->ended) {
+        if (os_time_us() - start > (u64)timeout_ms * 1000) break;
+        os_dev_wake_wait(5);
+        test_build_pump(b, out, out_cap, &n);
+        if (kill_at && !killed) {
+            String8 key = str8_cstr(kill_at);
+            for (i64 i = 0; i + key.len <= n && !killed; i++) killed = mem_equal(out + i, key.data, key.len);
+            if (killed) compile_cancel(b->c);
+        }
+    }
+    b->text = str8(out, n);
+    b->ended = b->c->ended;
+    return b->ended;
+}
+
+static void test_build_free(TestBuild *b) {
+    if (b->c && (b->c->ended || !b->c->started)) compile_free(b->c);
+    b->c = NULL;
+}
+
+static b32 test_compile_run(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13", t->tmp_dir));
+    os_make_dir(dir);
+    TestBuild b;
+    // Order, stderr in it, the exit code.
+    TEST_CHECK(t, test_build(t, test_child(t, "b_order", STR8_LIT("out one\nerr two\nout three\nexit 3\n")), dir, str8(NULL, 0), MB(16), NULL, 10000, &b),
+               "build: the child did not end");
+    TEST_CHECK(t, str8_equal(b.text, STR8_LIT("one\ntwo\nthree\n")) && b.c->exit_code == 3 && !b.c->killed && b.c->start_status == OS_FILE_OK,
+               "build: '%S', exit %u, killed %d", b.text, b.c->exit_code, b.c->killed);
+    test_build_free(&b);
+    static const struct { const char *script; u32 code; } codes[] = { { "exit 0\n", 0 }, { "exit 255\n", 255 }, { "exit -1\n", 0xFFFFFFFFu } };
+    for (i32 i = 0; i < ARRAY_COUNT(codes); i++) {
+        test_build(t, test_child(t, "b_code", str8_cstr(codes[i].script)), dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
+        TEST_CHECK(t, b.ended && b.c->exit_code == codes[i].code, "build: exit code %u, expected %u", b.c->exit_code, codes[i].code);
+        test_build_free(&b);
+    }
+    // Cleaning on the way: CRLF, ANSI, OEM, a line across reads, the last line without a newline.
+    test_build(t, test_child(t, "b_clean", STR8_LIT("raw \\e[1;31merror\\e[0m: red\\r\\n\nraw abc\nsleep 60\nraw def\\r\\n\nraw x \\x81\\x82 y\\r\\n\nraw tail\n")),
+               dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
+    String8 want_clean = str8_fmt(&t->arena, "error: red\nabcdef\n%S\ntail\n", compile_clean(&t->arena, STR8_LIT("x \x81\x82 y")));
+    TEST_CHECK(t, b.ended && str8_equal(b.text, want_clean) && b.errors == 1, "build: cleaned text '%S' (%d errors)", b.text, b.errors);
+    test_build_free(&b);
+    // The cap: one "[output truncated]", the rest read to the end (the child is never blocked).
+    test_build(t, test_child(t, "b_cap", STR8_LIT("flood 2000000\nexit 0\n")), dir, str8(NULL, 0), 100000, NULL, 20000, &b);
+    i32 marks = 0;
+    for (i64 i = 0; i + 18 <= b.text.len; i++) marks += mem_equal(b.text.data + i, COMPILE_TRUNCATED, 18);
+    TEST_CHECK(t, b.ended && b.c->truncated && marks == 1 && b.c->bytes == 2000000 && b.c->exit_code == 0 && b.text.len <= 100000 + 64,
+               "build: the cap: ended %d, truncated %d, %d marks, %D bytes read, %D kept", b.ended, b.c->truncated, marks, b.c->bytes, b.text.len);
+    test_build_free(&b);
+    // A command that does not exist (cmd says so, exit 1); a directory that does not exist (no start).
+    test_build(t, STR8_LIT("no_such_command_teal_p13"), dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
+    TEST_CHECK(t, b.ended && b.c->exit_code == 1 && b.lines >= 1, "build: a missing command: exit %u, %d lines", b.c->exit_code, b.lines);
+    test_build_free(&b);
+    test_build(t, STR8_LIT("echo x"), str8_fmt(&t->arena, "%S\\no_such_dir", dir), str8(NULL, 0), MB(16), NULL, 10000, &b);
+    TEST_CHECK(t, b.ended && b.c->start_status == OS_FILE_NOT_FOUND && !b.lines, "build: a missing directory: status %d, %d lines",
+               (i32)b.c->start_status, b.lines);
+    test_build_free(&b);
+    test_build(t, test_child(t, "b_cwd", STR8_LIT("cwd\n")), dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
+    TEST_CHECK(t, str8_equal(b.text, str8_fmt(&t->arena, "%S\n", dir)), "build: cwd '%S'", b.text);
+    test_build_free(&b);
+    // Locations through the file system: a .bat that changes directory, MSBuild's project file, the root.
+    String8 root = str8_fmt(&t->arena, "%S\\p13res", dir);
+    String8 bdir = str8_fmt(&t->arena, "%S\\build", root), sub = str8_fmt(&t->arena, "%S\\sub", root);
+    os_make_dir(root);
+    os_make_dir(bdir);
+    os_make_dir(sub);
+    os_write_file(str8_fmt(&t->arena, "%S\\x.c", sub), STR8_LIT("int x;\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\here.c", bdir), STR8_LIT("int h;\n"));
+    String8 sub_fwd = str8_copy(&t->arena, sub); // the child unescapes backslashes
+    for (i64 i = 0; i < sub_fwd.len; i++) if (sub_fwd.data[i] == 92) sub_fwd.data[i] = '/';
+    String8 loc_cmd = test_child(t, "b_loc", str8_fmt(&t->arena,
+        "out here.c(2,3): warning C4100: in the build directory\n"
+        "out sub/x.c(3): error C1: under the root\n"
+        "out x.c(4): error C2: beside the project [%S/s.vcxproj]\n"
+        "out x.c(5): error C3: nowhere\n"
+        "out x.c:6: nowhere and no kind\n"
+        "out LINK : fatal error LNK1104: cannot open file 'a.exe'\n"
+        "exit 2\n", sub_fwd));
+    os_write_file(str8_fmt(&t->arena, "%S\\go.bat", bdir), str8_fmt(&t->arena, "@cd ..\\sub\r\n@%S\r\n", loc_cmd));
+    // ".\": cmd may be told not to look in the current directory (NoDefaultCurrentDirectoryInExePath).
+    test_build(t, STR8_LIT(".\\go.bat"), bdir, root, MB(16), NULL, 10000, &b);
+    TEST_CHECK(t, b.ended && b.lines == 6 && b.located == 3 && b.errors == 4 && b.warnings == 1 && b.c->exit_code == 2,
+               "build: locations: %d lines, %d located, %d errors, %d warnings, exit %u: '%S'", b.lines, b.located, b.errors, b.warnings,
+               b.c->exit_code, b.text);
+    TEST_CHECK(t, str8_equal(b.first_file, str8_fmt(&t->arena, "%S\\here.c", bdir)) && b.first_line == 2 && b.first_col == 3,
+               "build: the first location '%S' %D:%D", b.first_file, b.first_line, b.first_col);
+    test_build_free(&b);
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0,
+               "build: counters back (%d processes, %d threads, %d events)", os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events());
+    LOG("test: ok: builds (order with stderr, exit codes 3 0 255 -1, CRLF / ANSI / OEM / a line across reads / no last newline, the cap "
+        "with one mark and the rest read, a missing command, a missing directory, the working directory, locations from a .bat that "
+        "changes directory: the build directory, the root, MSBuild's project, nowhere as an error without a location, the linker)");
+    return 1;
+}
+
+static b32 test_compile_kill(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13", t->tmp_dir));
+    test_child(t, "hang", STR8_LIT("hang\n"));
+    String8 hang = str8_fmt(&t->arena, "%S\\hang.txt", dir);
+    TestBuild b;
+    // The child and its grandchild end.
+    u64 t0 = os_time_us();
+    test_build(t, test_child(t, "k_tree", str8_fmt(&t->arena, "spawn %S\nout spawned\nhang\n", hang)), dir, str8(NULL, 0), MB(16), "spawned", 10000, &b);
+    u64 took = os_time_us() - t0;
+    u32 gpid = test_grandchild_pid(b.text);
+    b32 gone = gpid && test_pid_gone(gpid, 1000);
+    if (gpid && !gone) os_dev_kill_pid(gpid);
+    TEST_CHECK(t, b.ended && b.c->killed && gone, "kill: ended %d, killed %d, grandchild %u gone %d ('%S')", b.ended, b.c->killed, gpid, gone, b.text);
+    test_build_free(&b);
+    // A kill during heavy output.
+    t0 = os_time_us();
+    test_build(t, test_child(t, "k_flood", STR8_LIT("flood 50000000\nexit 0\n")), dir, str8(NULL, 0), MB(128), "flood line 100:", 10000, &b);
+    u64 flood_took = os_time_us() - t0;
+    TEST_CHECK(t, b.ended && b.c->killed && b.c->bytes < 50000000, "kill: during a flood: ended %d, killed %d, %D bytes", b.ended, b.c->killed,
+               b.c->bytes);
+    test_build_free(&b);
+    // A normal end leaves a lingering grandchild alone.
+    test_build(t, test_child(t, "k_linger", str8_fmt(&t->arena, "spawn %S\nexit 0\n", hang)), dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
+    gpid = test_grandchild_pid(b.text);
+    b32 alive = gpid && os_dev_process_alive(gpid);
+    if (gpid) os_dev_kill_pid(gpid);
+    TEST_CHECK(t, b.ended && !b.c->killed && alive, "kill: a normal end: ended %d, killed %d, grandchild %u alive %d", b.ended, b.c->killed, gpid, alive);
+    test_build_free(&b);
+    // Starts and kills, many times: each ends within 500 ms of its cancel; nothing grows.
+    String8 slow = test_child(t, "k_slow", STR8_LIT("out a\nsleep 10\nout b\nhang\n"));
+    i32 handles_first = 0;
+    u64 worst = 0;
+    for (i32 round = 0; round < 100; round++) {
+        CompileRun *c = compile_create(slow, dir, str8(NULL, 0), MB(16));
+        TEST_CHECK(t, compile_start(c), "kill: round %d did not start", round);
+        if (round % 3 == 1) { // after some output
+            os_dev_wake_wait(2000);
+        } else if (round % 3 == 2) {
+            u64 w0 = os_time_us();
+            while (os_time_us() - w0 < (u64)(round % 7) * 1000) {}
+        }
+        u64 c0 = os_time_us();
+        compile_cancel(c);
+        while (!c->ended && os_time_us() - c0 < 3000000) {
+            os_dev_wake_wait(5);
+            for (CompileBatch *batch = compile_take(c), *next; batch; batch = next) {
+                next = batch->next;
+                compile_give_back(c, batch);
+            }
+        }
+        u64 end_took = os_time_us() - c0;
+        worst = MAX(worst, end_took);
+        TEST_CHECK(t, c->ended && end_took <= 500000, "kill: round %d ended %d after %U ms", round, c->ended, end_took / 1000);
+        compile_free(c);
+        if (!round) handles_first = os_dev_handle_count();
+    }
+    TEST_CHECK(t, os_dev_handle_count() <= handles_first + 2, "kill: handles grew from %d to %d over 100 rounds", handles_first, os_dev_handle_count());
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0,
+               "kill: counters back (%d processes, %d threads, %d events)", os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events());
+    LOG("test: ok: build kills (the child and its grandchild gone, %U ms; during a 50 MB flood, %U ms; a normal end lets a grandchild go; "
+        "100 start / kill rounds, the worst %U ms from the cancel to the end; handles %d -> %d)", took / 1000, flood_took / 1000, worst / 1000,
+        handles_first, os_dev_handle_count());
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -9148,6 +9616,16 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_occur(&t);
     arena_reset(&t.arena);
     test_process_platform(&t);
+    arena_reset(&t.arena);
+    test_compile_match(&t);
+    arena_reset(&t.arena);
+    test_compile_resolve(&t);
+    arena_reset(&t.arena);
+    test_compile_clean(&t);
+    arena_reset(&t.arena);
+    test_compile_run(&t);
+    arena_reset(&t.arena);
+    test_compile_kill(&t);
     arena_reset(&t.arena);
     test_finder(&t);
     arena_reset(&t.arena);
