@@ -2027,6 +2027,480 @@ static b32 test_mc_commands(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// The multiple-cursor differential fuzz: the driver against the single-cursor behavior applied cursor by cursor
+// to a flat text, then normalized naively.
+
+#define TEST_MC_FUZZ_STEPS 20000
+#define TEST_MC_FUZZ_MAX 16      // cursors at the start of an epoch (the new commands add more)
+#define TEST_MC_REF_MAX 256
+#define TEST_MC_EDIT_LOG 4096
+
+typedef struct TestMcCursor {
+    i64 point, mark, goal;
+    b32 mark_set, mark_active, mark_shift;
+    u64 serial;
+    b32 swallowed;
+} TestMcCursor;
+
+typedef struct TestMcRef {
+    TestMcCursor c[TEST_MC_REF_MAX];
+    i32 count, primary;
+    u64 serial;     // the last serial given
+    Buffer *buf;    // the flat text (one cursor's view runs each command on it)
+    TestView one;
+} TestMcRef;
+
+static void test_mc_read(View *v, TestMcRef *r) {
+    r->count = v->cursor_count;
+    r->primary = v->primary;
+    r->serial = v->cursor_serial;
+    for (i32 i = 0; i < v->cursor_count; i++) {
+        Cursor *c = &v->cursors[i];
+        r->c[i] = (TestMcCursor){ view_point(v, c), buffer_marker_get(v->buffer, c->mark), c->goal_col, c->mark_set, c->mark_active,
+                                  c->mark_shift, c->serial, 0 };
+    }
+}
+
+// The marker rule of buffer.h (no snapping: the fuzz texts are valid UTF-8 and edits keep to boundaries).
+static i64 test_mc_rule(i64 pos, i64 start, i64 end, i64 len, b32 advance, b32 *swallowed) {
+    if (pos < start) return pos;
+    if (pos > end) return pos + len - (end - start);
+    if (pos == end && end > start) return start + len;
+    if (pos > start && swallowed) *swallowed = 1;
+    return advance ? start + len : start;
+}
+
+static void test_mc_span(const TestMcCursor *c, i64 *s, i64 *e) {
+    *s = *e = c->point;
+    if (c->mark_set && c->mark_active) {
+        *s = MIN(c->point, c->mark);
+        *e = MAX(c->point, c->mark);
+    }
+}
+
+// The pairwise merge rule, order-independent.
+static b32 test_mc_overlap(const TestMcCursor *a, const TestMcCursor *b) {
+    if (a->point == b->point) return 1;
+    i64 as, ae, bs, be;
+    test_mc_span(a, &as, &ae);
+    test_mc_span(b, &bs, &be);
+    b32 ar = ae > as, br = be > bs;
+    if (ar && br) return MAX(as, bs) < MIN(ae, be);
+    if (ar) return as < b->point && b->point < ae;
+    if (br) return bs < a->point && a->point < be;
+    return 0;
+}
+
+static b32 test_mc_before(const TestMcCursor *a, i32 ai, const TestMcCursor *b, i32 bi) {
+    i64 as, ae, bs, be;
+    test_mc_span(a, &as, &ae);
+    test_mc_span(b, &bs, &be);
+    if (as != bs) return as < bs;
+    if (a->point != b->point) return a->point < b->point;
+    return ai < bi;
+}
+
+// Naive normalization: groups of the pairwise rule (transitive), merged at once, again until none overlap; sorted.
+static void test_mc_normalize(TestMcRef *r) {
+    for (;;) {
+        i32 group[TEST_MC_REF_MAX];
+        for (i32 i = 0; i < r->count; i++) group[i] = i;
+        b32 any = 0;
+        for (b32 changed = 1; changed;) { // the smallest index of each connected group
+            changed = 0;
+            for (i32 i = 0; i < r->count; i++) {
+                for (i32 j = i + 1; j < r->count; j++) {
+                    if (!test_mc_overlap(&r->c[i], &r->c[j])) continue;
+                    any = 1;
+                    i32 g = MIN(group[i], group[j]);
+                    if (group[i] != g || group[j] != g) changed = 1;
+                    group[i] = group[j] = g;
+                }
+            }
+        }
+        TestMcCursor out[TEST_MC_REF_MAX];
+        i32 m = 0, primary = 0;
+        for (i32 g = 0; g < r->count; g++) {
+            i32 survivor = -1;
+            i64 gs = I64_MAX, ge = -1;
+            i32 members = 0;
+            for (i32 i = 0; i < r->count; i++) {
+                if (group[i] != g) continue;
+                members++;
+                i64 s, e;
+                test_mc_span(&r->c[i], &s, &e);
+                gs = MIN(gs, s);
+                ge = MAX(ge, e);
+                if (survivor < 0 || i == r->primary || (survivor != r->primary && test_mc_before(&r->c[i], i, &r->c[survivor], survivor))) survivor = i;
+            }
+            if (survivor < 0) continue;
+            TestMcCursor c = r->c[survivor];
+            if (members > 1 && ge > gs) {
+                i64 s, e;
+                test_mc_span(&c, &s, &e);
+                b32 at_end = c.point == e, shift = c.mark_active && c.mark_shift;
+                c.point = at_end ? ge : gs;
+                c.mark = at_end ? gs : ge;
+                c.mark_set = c.mark_active = 1;
+                c.mark_shift = shift;
+            }
+            if (group[r->primary] == g) primary = m;
+            out[m++] = c;
+        }
+        // Sorted by (span start, point).
+        for (i32 i = 1; i < m; i++) {
+            for (i32 j = i; j > 0 && test_mc_before(&out[j], j, &out[j - 1], j - 1); j--) {
+                TestMcCursor x = out[j];
+                out[j] = out[j - 1];
+                out[j - 1] = x;
+                if (primary == j) primary = j - 1;
+                else if (primary == j - 1) primary = j;
+            }
+        }
+        memcpy(r->c, out, sizeof(TestMcCursor) * (u64)m);
+        r->count = m;
+        r->primary = primary;
+        if (!any) return;
+    }
+}
+
+static i64 test_mc_line(Buffer *buf, i64 pos) {
+    return buffer_line_of(buf, pos);
+}
+
+static void test_mc_add(TestMcRef *r, i64 point, i64 mark, b32 region, i64 goal) {
+    TestMcCursor c = { point, region ? mark : point, goal, region, region, 0, ++r->serial, 0 };
+    r->c[r->count] = c;
+    r->primary = r->count++;
+}
+
+static void test_mc_ref_collapse(TestMcRef *r) {
+    r->c[0] = r->c[r->primary];
+    r->count = 1;
+    r->primary = 0;
+}
+
+static i32 test_mc_newest(TestMcRef *r) {
+    i32 k = 0;
+    for (i32 i = 1; i < r->count; i++) if (r->c[i].serial > r->c[k].serial) k = i;
+    return k;
+}
+
+// Naive search in the flat text: forward, the first start >= from; backward, the last match ending <= from. -1: none.
+static i64 test_mc_find(Buffer *buf, Arena *arena, String8 needle, b32 forward, i64 from) {
+    String8 text = str8_copy(arena, buffer_text(buf, arena, 0, buffer_size(buf)));
+    if (forward) {
+        for (i64 s = from; s + needle.len <= text.len; s++) if (mem_equal(text.data + s, needle.data, needle.len)) return s;
+    } else {
+        for (i64 s = from - needle.len; s >= 0; s--) if (mem_equal(text.data + s, needle.data, needle.len)) return s;
+    }
+    return -1;
+}
+
+// The reference of the COMMAND_ONCE commands in the fuzz (keyboard-quit and the new ones).
+static void test_mc_ref_once(Test *t, TestMcRef *r, const Command *cmd, i32 max) {
+    Buffer *buf = r->buf;
+    TestMcCursor *p = &r->c[r->primary];
+    i64 rs, re;
+    test_mc_span(p, &rs, &re);
+    String8 needle = str8_copy(&t->arena, buffer_text(buf, &t->arena, rs, re));
+    b32 at_end = p->point >= p->mark;
+    if (cmd == &CMD_KEYBOARD_QUIT) {
+        b32 active = 0;
+        for (i32 i = 0; i < r->count; i++) active |= r->c[i].mark_active;
+        if (r->count > 1 && !active) test_mc_ref_collapse(r);
+        for (i32 i = 0; i < r->count; i++) r->c[i].mark_active = r->c[i].mark_shift = 0;
+    } else if (cmd == &CMD_MARK_NEXT_LIKE_THIS || cmd == &CMD_MARK_PREVIOUS_LIKE_THIS) {
+        b32 fwd = cmd == &CMD_MARK_NEXT_LIKE_THIS;
+        if (r->count >= max) return;
+        TestMcCursor *edge = fwd ? &r->c[r->count - 1] : &r->c[0];
+        i64 es, ee;
+        test_mc_span(edge, &es, &ee);
+        if (re > rs) {
+            i64 m = test_mc_find(buf, &t->arena, needle, fwd, fwd ? ee : es);
+            if (m >= 0) test_mc_add(r, at_end ? m + needle.len : m, at_end ? m : m + needle.len, 1, -1);
+        } else {
+            i64 line = test_mc_line(buf, edge->point) + (fwd ? 1 : -1);
+            if (line < 0 || line >= buffer_line_count(buf)) return;
+            i64 col = edge->goal >= 0 ? edge->goal : view_column_of(buf, edge->point);
+            test_mc_add(r, view_offset_at_column(buf, line, col), 0, 0, col);
+        }
+    } else if (cmd == &CMD_SKIP_TO_NEXT_LIKE_THIS) {
+        i32 k = test_mc_newest(r);
+        TestMcCursor *n = &r->c[k];
+        i64 ns, ne;
+        test_mc_span(n, &ns, &ne);
+        if (re > rs) {
+            i64 m = test_mc_find(buf, &t->arena, needle, 1, ne);
+            if (m < 0) return;
+            n->point = at_end ? m + needle.len : m;
+            n->mark = at_end ? m : m + needle.len;
+            n->mark_set = n->mark_active = 1;
+            n->mark_shift = 0;
+        } else {
+            i64 line = test_mc_line(buf, n->point) + 1;
+            if (line >= buffer_line_count(buf)) return;
+            i64 col = n->goal >= 0 ? n->goal : view_column_of(buf, n->point);
+            n->point = view_offset_at_column(buf, line, col);
+            n->goal = col;
+        }
+        r->primary = k;
+    } else if (cmd == &CMD_UNMARK_NEXT_LIKE_THIS) {
+        if (r->count <= 1) return;
+        i32 k = test_mc_newest(r);
+        memmove(&r->c[k], &r->c[k + 1], sizeof(TestMcCursor) * (u64)(r->count - k - 1));
+        r->count--;
+        r->primary = test_mc_newest(r);
+    } else if (cmd == &CMD_MARK_ALL_LIKE_THIS) {
+        if (re <= rs) return;
+        test_mc_ref_collapse(r);
+        i64 found[TEST_MC_REF_MAX], n = 0;
+        for (i64 from = 0; n + 1 < max;) {
+            i64 m = test_mc_find(buf, &t->arena, needle, 1, from);
+            if (m < 0) break;
+            if (m != rs) found[n++] = m;
+            from = m + needle.len;
+        }
+        for (i64 i = 0; i < n; i++) {
+            i32 keep = r->primary;
+            test_mc_add(r, at_end ? found[i] + needle.len : found[i], at_end ? found[i] : found[i] + needle.len, 1, -1);
+            r->primary = keep;
+        }
+    } else { // the edit-lines family
+        if (!(p->mark_set && p->mark_active)) return;
+        i32 mode = cmd == &CMD_EDIT_LINES ? 0 : cmd == &CMD_EDIT_ENDS_OF_LINES ? 1 : 2;
+        i64 point = p->point, pline = test_mc_line(buf, point), col = view_column_of(buf, point);
+        i64 first = test_mc_line(buf, rs), last = test_mc_line(buf, re);
+        test_mc_ref_collapse(r);
+        r->c[0].mark_active = r->c[0].mark_shift = 0;
+        if (last - first + 1 > max) last = first + max - 1;
+        for (i64 line = first; line <= last; line++) {
+            i64 pos = mode == 0 ? view_offset_at_column(buf, line, col) : mode == 1 ? buffer_line_end(buf, line) : buffer_line_start(buf, line);
+            if (line == first) {
+                r->c[0].point = pos;
+            } else {
+                i32 keep = r->primary;
+                test_mc_add(r, pos, 0, 0, -1);
+                r->primary = keep;
+            }
+            r->c[r->count - 1].goal = mode == 0 ? col : -1;
+            if (line == pline) r->primary = r->count - 1;
+        }
+        if (pline > last) r->primary = 0; // capped before point's line: the first cursor stays the primary
+    }
+}
+
+static b32 test_mc_fuzz(Test *t, u64 seed) {
+    t->rng = seed ^ 0x6d6366757aull;
+    static const struct { const Command *cmd; u32 cp; b32 shift; } cmds[] = {
+        { &CMD_FORWARD_CHAR }, { &CMD_BACKWARD_CHAR }, { &CMD_NEXT_LINE }, { &CMD_PREVIOUS_LINE }, { &CMD_FORWARD_WORD },
+        { &CMD_BACKWARD_WORD }, { &CMD_MOVE_BEGINNING_OF_LINE }, { &CMD_MOVE_END_OF_LINE }, { &CMD_FORWARD_CHAR, 0, 1 },
+        { &CMD_NEXT_LINE, 0, 1 }, { &CMD_BACKWARD_WORD, 0, 1 }, { &CMD_FORWARD_PARAGRAPH }, { &CMD_END_OF_BUFFER },
+        { &CMD_SELF_INSERT, 'a' }, { &CMD_SELF_INSERT, ' ' }, { &CMD_SELF_INSERT, '}' }, { &CMD_SELF_INSERT, ')' },
+        { &CMD_SELF_INSERT, ':' }, { &CMD_SELF_INSERT, 0x11F }, { &CMD_DELETE_BACKWARD_CHAR }, { &CMD_DELETE_CHAR },
+        { &CMD_NEWLINE }, { &CMD_OPEN_LINE }, { &CMD_TRANSPOSE_CHARS }, { &CMD_UPCASE_WORD }, { &CMD_CAPITALIZE_WORD },
+        { &CMD_JUST_ONE_SPACE }, { &CMD_DELETE_HORIZONTAL_SPACE }, { &CMD_TAB_TO_TAB_STOP },
+        { &CMD_KILL_LINE }, { &CMD_KILL_WORD }, { &CMD_BACKWARD_KILL_WORD }, { &CMD_KILL_REGION }, { &CMD_KILL_WHOLE_LINE },
+        { &CMD_KILL_RING_SAVE }, { &CMD_YANK }, { &CMD_YANK },
+        { &CMD_INDENT_FOR_TAB_COMMAND }, { &CMD_UNINDENT }, { &CMD_COMMENT_LINE }, { &CMD_DELETE_INDENTATION },
+        { &CMD_SET_MARK_COMMAND }, { &CMD_EXCHANGE_POINT_AND_MARK }, { &CMD_KEYBOARD_QUIT },
+        { &CMD_MARK_NEXT_LIKE_THIS }, { &CMD_MARK_NEXT_LIKE_THIS }, { &CMD_MARK_PREVIOUS_LIKE_THIS }, { &CMD_MARK_ALL_LIKE_THIS },
+        { &CMD_SKIP_TO_NEXT_LIKE_THIS }, { &CMD_UNMARK_NEXT_LIKE_THIS }, { &CMD_EDIT_LINES }, { &CMD_EDIT_ENDS_OF_LINES },
+        { &CMD_EDIT_BEGINNINGS_OF_LINES },
+    };
+    static const char *pieces[] = { "a", "b", "x", " ", " ", "\n", "\n", "\t", "{", "}", "(", ")", ";", ":", "foo", "foo ", "\xC4\x9F", "\xE2\x82\xAC" };
+    TestMcRef *r = PUSH_STRUCT(&t->arena, TestMcRef);
+    r->buf = buffer_create(STR8_LIT("ref"));
+    buffer_undo_enable(r->buf, 0);
+    r->buf->dev_edits = PUSH_ARRAY(&t->arena, BufferBatchEdit, TEST_MC_EDIT_LOG);
+    r->buf->dev_edit_cap = TEST_MC_EDIT_LOG;
+    TestView *one = &r->one;
+    if (!test_view_open(t, one, "", 10, 40)) return 0;
+    view_destroy(one->view); // the one-cursor view runs on the reference buffer
+    buffer_destroy(one->buf);
+    one->buf = r->buf;
+    view_init(one->view, r->buf);
+    one->view->rows = 10;
+    one->view->cols = 40;
+    TestView tv;
+    u8 *text = PUSH_ARRAY(&t->arena, u8, 1024);
+    i64 steps = 0, epochs = 0, max_seen = 0, merges = 0, kills = 0;
+    u64 epoch_mark = arena_pos(&t->arena);
+    while (steps < TEST_MC_FUZZ_STEPS) {
+        arena_pop_to(&t->arena, epoch_mark);
+        // An epoch: a random text and random cursors.
+        i64 len = 0, want = test_below(t, 220);
+        while (len < want) {
+            const char *pc = pieces[test_below(t, ARRAY_COUNT(pieces))];
+            while (*pc) text[len++] = (u8)*pc++;
+        }
+        text[len] = 0;
+        for (i64 i = 0; i < len; i++) if (text[i] == '|') text[i] = 'x';
+        if (!test_view_open(t, &tv, (const char *)text, 10, 40)) return 0;
+        i32 n = 1 + (i32)test_below(t, TEST_MC_FUZZ_MAX);
+        i64 pts[TEST_MC_FUZZ_MAX], mks[TEST_MC_FUZZ_MAX];
+        for (i32 i = 0; i < n; i++) {
+            pts[i] = buffer_snap_char(tv.buf, test_below(t, len + 1));
+            mks[i] = test_below(t, 3) ? -1 : buffer_snap_char(tv.buf, test_below(t, len + 1));
+        }
+        test_mc_set(tv.view, pts, mks, n, (i32)test_below(t, n));
+        view_normalize_cursors(tv.view, &test_settings, &t->arena);
+        u64 step_mark = arena_pos(&t->arena);
+        for (i32 k = 0; k < 30 && steps < TEST_MC_FUZZ_STEPS; k++, steps++) {
+            arena_pop_to(&t->arena, step_mark);
+            View *v = tv.view;
+            i32 pick = (i32)test_below(t, ARRAY_COUNT(cmds));
+            const Command *cmd = cmds[pick].cmd;
+            // The reference starts from the real state.
+            test_mc_read(v, r);
+            String8 before = str8_copy(&t->arena, buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)));
+            buffer_replace(r->buf, 0, buffer_size(r->buf), before);
+            i32 n0 = v->cursor_count;
+            KillRing *k0 = tv.kills;
+            i32 count0 = k0->count, pieces0 = kill_pieces(k0, 0);
+            String8 old[TEST_MC_REF_MAX];
+            for (i32 i = 0; i < pieces0 && i < TEST_MC_REF_MAX; i++) old[i] = str8_copy(&t->arena, kill_piece(k0, 0, i));
+            String8 newest0 = str8_copy(&t->arena, kill_entry(k0, 0));
+            const Command *last = tv.ctx.last_command;
+            b32 append = (cmd->flags & COMMAND_KILL) && last && (last->flags & COMMAND_KILL);
+            // The real one.
+            tv.ctx.codepoint = cmds[pick].cp;
+            tv.ctx.shift_translated = cmds[pick].shift;
+            test_view_run(&tv, cmd);
+            tv.ctx.shift_translated = 0;
+            // The reference.
+            String8 added[TEST_MC_REF_MAX];
+            i32 added_count = 0;
+            if (cmd->flags & COMMAND_ONCE) {
+                test_mc_ref_once(t, r, cmd, test_settings.max_cursors);
+            } else {
+                i64 lines0[TEST_MC_REF_MAX];
+                for (i32 i = 0; i < r->count; i++) lines0[i] = test_mc_line(r->buf, r->c[i].point);
+                i64 last_line = -1;
+                for (i32 i = 0; i < r->count; i++) {
+                    if (r->c[i].swallowed) continue;
+                    if (cmd->flags & COMMAND_LINE) {
+                        if (lines0[i] == last_line) continue;
+                        last_line = lines0[i];
+                    }
+                    View *ov = one->view;
+                    Cursor *oc = &ov->cursors[0];
+                    view_set_point(ov, oc, r->c[i].point);
+                    buffer_marker_set(r->buf, oc->mark, r->c[i].mark);
+                    oc->mark_set = r->c[i].mark_set;
+                    oc->mark_active = r->c[i].mark_active;
+                    oc->mark_shift = r->c[i].mark_shift;
+                    oc->goal_col = r->c[i].goal;
+                    KillRing *fk = one->kills;
+                    fk->count = 0;
+                    if (cmd == &CMD_YANK && count0) {
+                        String8 y = pieces0 > 1 && pieces0 == n0 ? old[i] : newest0;
+                        u8 *dst = kill_push(fk, y.len);
+                        memcpy(dst, y.data, (size_t)y.len);
+                    }
+                    fk->clip_seq = os_clipboard_seq();
+                    r->buf->dev_edit_count = 0;
+                    one->ctx.last_command = last;
+                    one->ctx.codepoint = cmds[pick].cp;
+                    one->ctx.shift_translated = cmds[pick].shift;
+                    view_run_command(&one->ctx, cmd);
+                    r->c[i].point = view_point(ov, oc);
+                    r->c[i].mark = buffer_marker_get(r->buf, oc->mark);
+                    r->c[i].mark_set = oc->mark_set;
+                    r->c[i].mark_active = oc->mark_active;
+                    r->c[i].mark_shift = oc->mark_shift;
+                    r->c[i].goal = oc->goal_col;
+                    if (cmd->flags & COMMAND_KILL) added[added_count++] = fk->count ? str8_copy(&t->arena, kill_entry(fk, 0)) : STR8_LIT("");
+                    for (i64 e = 0; e < r->buf->dev_edit_count; e++) {
+                        BufferBatchEdit *ed = &r->buf->dev_edits[e];
+                        for (i32 j = 0; j < r->count; j++) {
+                            if (j == i) continue;
+                            r->c[j].point = test_mc_rule(r->c[j].point, ed->start, ed->start + ed->removed, ed->inserted, 1, &r->c[j].swallowed);
+                            r->c[j].mark = test_mc_rule(r->c[j].mark, ed->start, ed->start + ed->removed, ed->inserted, 0, NULL);
+                        }
+                    }
+                }
+                if (cmd->flags & (COMMAND_EDIT | COMMAND_KILL)) for (i32 i = 0; i < r->count; i++) r->c[i].mark_active = r->c[i].mark_shift = 0;
+            }
+            tv.kills->clip_seq = os_clipboard_seq(); // the one-cursor view's kills went to the (fake) clipboard
+            i32 before_norm = r->count;
+            test_mc_normalize(r);
+            merges += before_norm - r->count;
+            // Compare: the text, every cursor, the newest kill.
+            String8 got = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf)), want_text = buffer_text(r->buf, &t->arena, 0, buffer_size(r->buf));
+            b32 same = str8_equal(got, want_text) && v->cursor_count == r->count && v->primary == r->primary;
+            for (i32 i = 0; same && i < r->count; i++) {
+                Cursor *c = &v->cursors[i];
+                TestMcCursor *x = &r->c[i];
+                same = view_point(v, c) == x->point && c->mark_set == x->mark_set && c->mark_active == x->mark_active &&
+                       c->mark_shift == x->mark_shift && c->goal_col == x->goal && (!x->mark_set || buffer_marker_get(tv.buf, c->mark) == x->mark);
+            }
+            if (!same) {
+                char *real = test_mc_full(t, v);
+                String8 ref = STR8_LIT("");
+                for (i32 i = 0; i < r->count; i++) {
+                    ref = str8_fmt(&t->arena, "%S%s%s%D", ref, i ? " " : "", i == r->primary ? "*" : "", r->c[i].point);
+                    if (r->c[i].mark_set) ref = str8_fmt(&t->arena, "%S,%D%s", ref, r->c[i].mark, r->c[i].mark_active ? "a" : "");
+                }
+                TEST_CHECK(t, 0, "cursors fuzz step %D (%s%s): text '%S' cursors \"%s\"; reference '%S' \"%S\"; before '%S' (seed 0x%X)", steps,
+                           cmd->name, cmds[pick].shift ? ", shifted" : "", got, real, want_text, ref, before, seed);
+            }
+            // The kill ring.
+            if (cmd->flags & COMMAND_KILL) {
+                i32 want_count = count0;
+                String8 want_pieces[TEST_MC_REF_MAX];
+                i32 want_n = 0;
+                i64 total = 0;
+                for (i32 i = 0; i < added_count; i++) total += added[i].len;
+                if (n0 == 1) {
+                    if (total) {
+                        b32 merge = append && count0 && pieces0 == 1;
+                        b32 back = (cmd->flags & COMMAND_KILL_BACKWARD) != 0;
+                        want_pieces[0] = merge ? (back ? str8_fmt(&t->arena, "%S%S", added[0], newest0) : str8_fmt(&t->arena, "%S%S", newest0, added[0])) : added[0];
+                        want_n = 1;
+                        if (!merge) want_count = MIN(count0 + 1, tv.kills->max);
+                    }
+                } else if (total) {
+                    b32 merge = append && count0 && pieces0 == added_count;
+                    b32 back = (cmd->flags & COMMAND_KILL_BACKWARD) != 0;
+                    for (i32 i = 0; i < added_count; i++) {
+                        want_pieces[i] = !merge ? added[i] : back ? str8_fmt(&t->arena, "%S%S", added[i], old[i]) : str8_fmt(&t->arena, "%S%S", old[i], added[i]);
+                    }
+                    want_n = added_count;
+                    if (!merge) want_count = MIN(count0 + 1, tv.kills->max);
+                }
+                b32 ok = tv.kills->count == want_count;
+                if (want_n) {
+                    ok = ok && kill_pieces(tv.kills, 0) == want_n;
+                    for (i32 i = 0; ok && i < want_n; i++) ok = str8_equal(kill_piece(tv.kills, 0, i), want_pieces[i]);
+                }
+                TEST_CHECK(t, ok, "cursors fuzz step %D (%s): the kill ring: %d entries, %d pieces, newest '%S'; expected %d entries, %d pieces "
+                           "(seed 0x%X)", steps, cmd->name, tv.kills->count, kill_pieces(tv.kills, 0), kill_entry(tv.kills, 0), want_count, want_n, seed);
+                kills++;
+            }
+            // The invariants.
+            for (i32 i = 0; i < v->cursor_count; i++) {
+                i64 p = view_point(v, &v->cursors[i]);
+                TEST_CHECK(t, buffer_snap_char(tv.buf, p) == p && (i == 0 || p > view_point(v, &v->cursors[i - 1])) && v->cursor_count <= test_settings.max_cursors,
+                           "cursors fuzz step %D: invariant at cursor %d (seed 0x%X)", steps, i, seed);
+            }
+            max_seen = MAX(max_seen, v->cursor_count);
+        }
+        if (!test_view_close(t, &tv)) return 0;
+        epochs++;
+    }
+    view_destroy(one->view);
+    kill_destroy(one->kills);
+    i64 live = r->buf->marker_live;
+    buffer_destroy(r->buf);
+    TEST_CHECK(t, live == 0, "cursors fuzz: %D reference markers live", live);
+    LOG("test: ok: multiple-cursor differential fuzz (%D commands of %d kinds in %D epochs against the single-cursor commands run "
+        "cursor by cursor on a flat text and normalized naively; %D merges, %D kills compared, up to %D cursors; text, every cursor "
+        "and the newest kill after each command; seed 0x%X)", steps, (i32)ARRAY_COUNT(cmds), epochs, merges, kills, max_seen, seed);
+    return 1;
+}
+
 // Read-only buffers refuse every edit with a message; save-buffer messages.
 static b32 test_view_edit_limits(Test *t) {
     TestView tv;
@@ -10893,6 +11367,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_mc_app(&t);
     arena_reset(&t.arena);
     test_mc_mouse(&t);
+    arena_reset(&t.arena);
+    test_mc_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);

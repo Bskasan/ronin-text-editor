@@ -825,6 +825,11 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
         buf->modified = 1;
     }
     buf->edit_count++;
+#if TEAL_DEV
+    if (buf->dev_edits && buf->dev_edit_count < buf->dev_edit_cap) {
+        buf->dev_edits[buf->dev_edit_count++] = (BufferBatchEdit){ start, end - start, text.len, 0 };
+    }
+#endif
     return 1;
 }
 
