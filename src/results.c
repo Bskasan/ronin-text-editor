@@ -1146,6 +1146,16 @@ static void results_compile_line(App *app, Results *r, const CompileLine *l) {
     u8 *at = PUSH_ARRAY(&r->pend, u8, l->text.len + 1);
     memcpy(at, l->text.data, (size_t)l->text.len);
     at[l->text.len] = '\n';
+    if (l->summary) { // a tool's own count: each count word colored, none counted
+        CompileKind kind;
+        i64 len;
+        for (i64 w = compile_count_word(l->text, 0, &kind, &len); w >= 0; w = compile_count_word(l->text, w + len, &kind, &len)) {
+            *PUSH_STRUCT(&r->mark_arena, ResultsMark) = (ResultsMark){ row, (u16)w, (u16)len, (u8)kind };
+            r->mark_count++;
+        }
+        if (arena_pos(&r->pend) >= RESULTS_FLUSH_BYTES) results_flush(app, r);
+        return;
+    }
     if (l->kind == COMPILE_ERROR) r->errors++;
     else if (l->kind == COMPILE_WARNING) r->warnings++;
     if (l->located) {

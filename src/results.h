@@ -36,7 +36,8 @@ typedef enum ResultsKind {
 
 enum { RESULTS_BUILD_RUNNING, RESULTS_BUILD_EXITED, RESULTS_BUILD_KILLED, RESULTS_BUILD_FAILED }; // a build's state
 
-// A kind word on a build's line without a location ("LINK : fatal error LNK1104"): drawn, never visited.
+// A kind word on a build's line without a location ("LINK : fatal error LNK1104"), or a count word of a
+// tool's summary ("2 errors"; one mark each): drawn, never visited.
 typedef struct ResultsMark {
     i64 row;
     u16 off, len;
@@ -133,7 +134,7 @@ typedef struct Results {
     i64 batch_at;            // where the first batch is read up to
     String8 build_root;      // the project (path resolution and recompile), may be empty
     i64 rows;                // output lines written
-    i64 errors, warnings;    // every error and warning line, with a location or not
+    i64 errors, warnings;    // every error and warning line, with a location or not (a tool's summary is not)
     b32 first_error;         // compilation_scroll_output = first-error: written; windows stopped following
     i32 build_state;         // RESULTS_BUILD_*
     u32 exit_code;

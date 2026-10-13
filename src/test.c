@@ -9165,10 +9165,55 @@ static b32 test_compile_match(Test *t) {
         String8 got = test_match_text(&t->arena, line, compile_match_kind(line, &m), &m);
         TEST_CHECK(t, str8_equal(got, str8_cstr(kinds[i].want)), "compile kind %d: '%S' gave '%S', expected '%s'", i, line, got, kinds[i].want);
     }
+    // A tool's summary: every count word ("kind {word}" each), "-" for none.
+    static const struct { const char *line, *want; } summaries[] = {
+        // Clang
+        { "1 error generated.", "error {error}" },
+        { "2 warnings generated.", "warning {warnings}" },
+        { "3 warnings and 1 error generated.", "warning {warnings} error {error}" },
+        // MSBuild
+        { "    0 Warning(s)", "warning {Warning(s)}" },
+        { "    2 Error(s)", "error {Error(s)}" },
+        { "Build succeeded, 0 Warning(s), 0 Error(s)", "warning {Warning(s)} error {Error(s)}" },
+        // tsc
+        { "Found 2 errors.", "error {errors}" },
+        // Jai
+        { "Compilation failed (1 error)", "error {error}" },
+        { "0 errors", "error {errors}" },
+        // Not summaries: GCC prints no count of its own; make's "Error 1" has its number after the word
+        { "make: *** [all] Error 1", "-" },
+        { "cc1: all warnings being treated as errors", "-" },
+        { "errors: 3", "-" },
+        { "Compilation finished with no errors", "-" },
+        { "compiling error.c", "-" },
+        { "v1.2 errors", "-" },
+        { "x2 errors", "-" },
+        { "100errors", "-" },
+        { "2 errorsome things", "-" },
+        { "", "-" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(summaries); i++) {
+        String8 line = str8_cstr(summaries[i].line);
+        CompileMatch m;
+        b32 ok = compile_match_summary(line, &m);
+        String8 got = STR8_LIT("-");
+        CompileKind kind;
+        i64 len, first = -1;
+        static const char *names[] = { "none", "error", "warning", "info" };
+        for (i64 at = compile_count_word(line, 0, &kind, &len); at >= 0; at = compile_count_word(line, at + len, &kind, &len)) {
+            String8 one = str8_fmt(&t->arena, "%s {%S}", names[kind], str8(line.data + at, len));
+            got = first < 0 ? one : str8_fmt(&t->arena, "%S %S", got, one);
+            if (first < 0) first = at;
+        }
+        TEST_CHECK(t, str8_equal(got, str8_cstr(summaries[i].want)), "compile summary %d: '%S' gave '%S', expected '%s'", i, line, got,
+                   summaries[i].want);
+        TEST_CHECK(t, ok == (first >= 0) && (!ok || (m.summary && m.kind_off == first && !m.located)), "compile summary %d: the match", i);
+    }
     LOG("test: ok: compile matchers (%d located lines and traps: MSVC with drive letters, spaces and (x86), cl / csc / tsc / MSBuild "
         "with its prefix and project, GCC and Clang with and without a column, bare, notes, includes, Jai, tsc's pretty form; times, "
-        "URLs, versions, linker lines; %d lines with a kind and no location, and what does not count)",
-        (i32)ARRAY_COUNT(located), (i32)ARRAY_COUNT(kinds));
+        "URLs, versions, linker lines; %d lines with a kind and no location, and what does not count; %d summaries: Clang, MSBuild, "
+        "tsc, Jai, and traps with the number after the word)",
+        (i32)ARRAY_COUNT(located), (i32)ARRAY_COUNT(kinds), (i32)ARRAY_COUNT(summaries));
     return 1;
 }
 
@@ -9370,7 +9415,7 @@ static b32 test_compile_config(Test *t) {
 typedef struct TestBuild {
     CompileRun *c;
     String8 text;      // every line and LF
-    i32 lines, located, errors, warnings, infos;
+    i32 lines, located, errors, warnings, infos, summaries;
     String8 first_file; // the first located line's file (in first_buf)
     u8 first_buf[1024];
     i64 first_line, first_col;
@@ -9395,9 +9440,13 @@ static void test_build_pump(TestBuild *b, u8 *out, i64 cap, i64 *n) {
                 }
                 b->located++;
             }
-            b->errors += l.kind == COMPILE_ERROR;
-            b->warnings += l.kind == COMPILE_WARNING;
-            b->infos += l.kind == COMPILE_INFO;
+            if (l.summary) {
+                b->summaries++; // not counted, as results_compile_line does
+            } else {
+                b->errors += l.kind == COMPILE_ERROR;
+                b->warnings += l.kind == COMPILE_WARNING;
+                b->infos += l.kind == COMPILE_INFO;
+            }
             i64 take = MIN(l.text.len, cap - *n - 1);
             if (take > 0) {
                 memcpy(out + *n, l.text.data, (size_t)take);
@@ -9497,13 +9546,14 @@ static b32 test_compile_run(Test *t) {
         "out x.c(5): error C3: nowhere\n"
         "out x.c:6: nowhere and no kind\n"
         "out LINK : fatal error LNK1104: cannot open file 'a.exe'\n"
+        "out 4 errors and 1 warning generated.\n"
         "exit 2\n", sub_fwd));
     os_write_file(str8_fmt(&t->arena, "%S\\go.bat", bdir), str8_fmt(&t->arena, "@cd ..\\sub\r\n@%S\r\n", loc_cmd));
     // ".\": cmd may be told not to look in the current directory (NoDefaultCurrentDirectoryInExePath).
     test_build(t, STR8_LIT(".\\go.bat"), bdir, root, MB(16), NULL, 10000, &b);
-    TEST_CHECK(t, b.ended && b.lines == 6 && b.located == 3 && b.errors == 4 && b.warnings == 1 && b.c->exit_code == 2,
-               "build: locations: %d lines, %d located, %d errors, %d warnings, exit %u: '%S'", b.lines, b.located, b.errors, b.warnings,
-               b.c->exit_code, b.text);
+    TEST_CHECK(t, b.ended && b.lines == 7 && b.located == 3 && b.errors == 4 && b.warnings == 1 && b.summaries == 1 && b.c->exit_code == 2,
+               "build: locations: %d lines, %d located, %d errors, %d warnings, %d summaries, exit %u: '%S'", b.lines, b.located, b.errors,
+               b.warnings, b.summaries, b.c->exit_code, b.text);
     TEST_CHECK(t, str8_equal(b.first_file, str8_fmt(&t->arena, "%S\\here.c", bdir)) && b.first_line == 2 && b.first_col == 3,
                "build: the first location '%S' %D:%D", b.first_file, b.first_line, b.first_col);
     test_build_free(&b);
@@ -9511,7 +9561,8 @@ static b32 test_compile_run(Test *t) {
                "build: counters back (%d processes, %d threads, %d events)", os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events());
     LOG("test: ok: builds (order with stderr, exit codes 3 0 255 -1, CRLF / ANSI / OEM / a line across reads / no last newline, the cap "
         "with one mark and the rest read, a missing command, a missing directory, the working directory, locations from a .bat that "
-        "changes directory: the build directory, the root, MSBuild's project, nowhere as an error without a location, the linker)");
+        "changes directory: the build directory, the root, MSBuild's project, nowhere as an error without a location, the linker, a "
+        "summary not counted)");
     return 1;
 }
 
@@ -9865,6 +9916,7 @@ static b32 test_compile_app(Test *t) {
     {
         String8 link = test_child(t, "app_link", STR8_LIT("out teal.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
                                                          "out LINK : fatal error LNK1120: 1 unresolved externals\n"
+                                                         "out Build FAILED: 2 Error(s), 0 Warning(s)\n"
                                                          "exit 1120\n"));
         App *app = test_manual_app(t, a_c, 0, 0, none);
         results_compile_remember(app, root, link);
@@ -9872,14 +9924,20 @@ static b32 test_compile_app(Test *t) {
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the link build did not end");
         String8 want = str8_fmt(&t->arena, "Command: %S\nDirectory: %S\n\n"
                                            "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
-                                           "LINK : fatal error LNK1120: 1 unresolved externals\n\n"
+                                           "LINK : fatal error LNK1120: 1 unresolved externals\n"
+                                           "Build FAILED: 2 Error(s), 0 Warning(s)\n\n"
                                            "Compilation exited abnormally with code 1120 in ", link, shown);
         String8 got = test_compile_text(t, app);
         Results *r = results_compilation(app);
         TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "compile app: the link text '%S'", got);
-        TEST_CHECK(t, r->count == 0 && r->mark_count == 2 && r->marks[0].row == 3 && r->marks[0].off == 11 && r->marks[0].len == 5 &&
+        TEST_CHECK(t, r->count == 0 && r->mark_count == 4 && r->marks[0].row == 3 && r->marks[0].off == 11 && r->marks[0].len == 5 &&
                           r->marks[1].off == 7 && r->marks[1].len == 11 && r->marks[1].kind == LOCATION_ERROR,
                    "compile app: the link marks (%D locations, %D marks)", r->count, r->mark_count);
+        // The summary: both count words colored, neither counted (the echo below says 2 errors, 0 warnings).
+        TEST_CHECK(t, r->mark_count == 4 && r->marks[2].row == 5 && r->marks[2].off == 16 && r->marks[2].len == 8 &&
+                          r->marks[2].kind == LOCATION_ERROR && r->marks[3].row == 5 && r->marks[3].off == 28 && r->marks[3].len == 10 &&
+                          r->marks[3].kind == LOCATION_WARNING,
+                   "compile app: the summary's marks");
         TEST_CHECK(t, test_app_echo_is(app, "Compilation exited abnormally with code 1120: 2 errors, 0 warnings"), "compile app: the link echo '%S'",
                    test_echo(app));
         app_dev_feed(app, "M-g n", &t->arena);

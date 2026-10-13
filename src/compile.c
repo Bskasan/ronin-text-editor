@@ -275,6 +275,49 @@ b32 compile_match_kind(String8 line, CompileMatch *m) {
     return 1;
 }
 
+i64 compile_count_word(String8 s, i64 from, CompileKind *kind, i64 *len) {
+    static const struct { const char *word; CompileKind kind; } words[] = {
+        { "error(s)", COMPILE_ERROR },     { "errors", COMPILE_ERROR },     { "error", COMPILE_ERROR },
+        { "warning(s)", COMPILE_WARNING }, { "warnings", COMPILE_WARNING }, { "warning", COMPILE_WARNING },
+    };
+    for (i64 i = MAX(from, 0); i < s.len; i++) {
+        if (!compile_is_digit(s.data[i])) continue;
+        u8 before = i > 0 ? s.data[i - 1] : ' ';
+        if (compile_is_alpha(before) || compile_is_digit(before) || before == '_' || before == '.') continue;
+        i64 v, d = compile_digits(s, i, &v);
+        i64 w = d;
+        while (w < s.len && (s.data[w] == ' ' || s.data[w] == '\t')) w++;
+        if (w == d) {
+            i = d - 1;
+            continue;
+        }
+        for (i32 k = 0; k < ARRAY_COUNT(words); k++) {
+            if (!compile_word_at(s, w, words[k].word)) continue;
+            i64 n = 0;
+            while (words[k].word[n]) n++;
+            u8 next = w + n < s.len ? s.data[w + n] : ' ';
+            if (compile_is_alpha(next) || compile_is_digit(next) || next == '_') continue;
+            *kind = words[k].kind;
+            *len = n;
+            return w;
+        }
+        i = d - 1;
+    }
+    return -1;
+}
+
+b32 compile_match_summary(String8 line, CompileMatch *m) {
+    *m = (CompileMatch){ 0 };
+    CompileKind kind;
+    i64 len, at = compile_count_word(line, 0, &kind, &len);
+    if (at < 0) return 0;
+    m->kind = kind;
+    m->kind_off = (i32)at;
+    m->kind_len = (i32)len;
+    m->summary = 1;
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // File existence, cached
 
@@ -542,10 +585,11 @@ static void compile_put(CompileWorker *w, String8 text, const CompileMatch *m, S
     u32 tl = (u32)text.len;
     u16 f[7] = { 0 };
     i64 line = 0, col = 0;
-    u8 kind = 0, located = 0;
+    u8 kind = 0, located = 0, summary = 0;
     if (m) {
         kind = (u8)m->kind;
         located = (u8)(m->located && file.len);
+        summary = (u8)(m->summary != 0);
         f[4] = (u16)m->kind_off;
         f[5] = (u16)m->kind_len;
         if (located) {
@@ -560,7 +604,7 @@ static void compile_put(CompileWorker *w, String8 text, const CompileMatch *m, S
     }
     memcpy(at, &tl, 4);
     at[4] = kind;
-    at[5] = located;
+    at[5] = (u8)(located | summary << 1);
     memcpy(at + 6, f, sizeof(f));
     memcpy(at + 20, &line, 8);
     memcpy(at + 28, &col, 8);
@@ -591,10 +635,10 @@ static void compile_worker_line(void *data, String8 raw) {
         if (file.len > 0x7FFF) file.len = 0;
         if (!file.len) { // a file that is nowhere: an error without a location if it said so
             m.located = 0;
-            any = m.kind_len > 0 || compile_match_kind(text, &m);
+            any = m.kind_len > 0 || compile_match_kind(text, &m) || compile_match_summary(text, &m);
         }
     } else {
-        any = compile_match_kind(text, &m);
+        any = compile_match_kind(text, &m) || compile_match_summary(text, &m);
     }
     compile_put(w, text, any ? &m : NULL, file);
 }
@@ -712,7 +756,8 @@ b32 compile_next_line(CompileBatch *b, i64 *at, CompileLine *out) {
     memcpy(f, p + 6, sizeof(f));
     *out = (CompileLine){ 0 };
     out->kind = (CompileKind)p[4];
-    out->located = p[5];
+    out->located = p[5] & 1;
+    out->summary = (p[5] >> 1) & 1;
     out->path_off = f[0];
     out->path_len = f[1];
     out->num_off = f[2];
