@@ -16,12 +16,14 @@ Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
     u8 *text = (u8 *)os_reserve((u64)text_reserve);
     u32 *nl = (u32 *)os_reserve((u64)text_reserve * sizeof(u32));
     BufferMarkerSlot *markers = (BufferMarkerSlot *)os_reserve(BUFFER_MARKER_RESERVE);
+    u32 *live = (u32 *)os_reserve(BUFFER_MARKER_RESERVE / sizeof(BufferMarkerSlot) * 2 * sizeof(u32)); // the list, then the index
     u8 *undo_log = (u8 *)os_reserve(BUFFER_UNDO_RESERVE);
     BufferUndoGroup *undo_groups = (BufferUndoGroup *)os_reserve(BUFFER_UNDO_GROUP_RESERVE);
-    if (!text || !nl || !markers || !undo_log || !undo_groups) {
+    if (!text || !nl || !markers || !live || !undo_log || !undo_groups) {
         if (text) os_release(text);
         if (nl) os_release(nl);
         if (markers) os_release(markers);
+        if (live) os_release(live);
         if (undo_log) os_release(undo_log);
         if (undo_groups) os_release(undo_groups);
         return NULL;
@@ -35,6 +37,8 @@ Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
     buf->nl_reserved = text_reserve; // at most one newline per byte
     buf->markers = markers;
     buf->marker_reserved = (i64)(BUFFER_MARKER_RESERVE / sizeof(BufferMarkerSlot));
+    buf->marker_live_list = live;
+    buf->marker_live_at = live + buf->marker_reserved;
     buf->name = str8_copy(&buf->meta, name);
     buf->tab_width = BUFFER_DEFAULT_TAB_WIDTH;
     buf->undo.enabled = 1;
@@ -54,6 +58,7 @@ b32 buffer_destroy(Buffer *buf) {
     b32 ok = os_release(buf->text);
     ok &= os_release(buf->nl);
     ok &= os_release(buf->markers);
+    ok &= os_release(buf->marker_live_list);
     ok &= os_release(buf->undo.log);
     ok &= os_release(buf->undo.groups);
     if (buf->line_state) ok &= os_release(buf->line_state);
@@ -225,10 +230,13 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance) {
         if (buf->marker_count == buf->marker_cap) {
             u64 bytes = (u64)buf->marker_cap * sizeof(BufferMarkerSlot);
             u64 grown = commit_grow(bytes, bytes + sizeof(BufferMarkerSlot));
-            if (grown > (u64)buf->marker_reserved * sizeof(BufferMarkerSlot) || !os_commit((u8 *)buf->markers + bytes, grown - bytes)) {
+            i64 cap = (i64)(grown / sizeof(BufferMarkerSlot)), old = buf->marker_cap;
+            u64 lb = (u64)old * sizeof(u32), lg = (u64)cap * sizeof(u32);
+            if (grown > (u64)buf->marker_reserved * sizeof(BufferMarkerSlot) || !os_commit((u8 *)buf->markers + bytes, grown - bytes) ||
+                !os_commit((u8 *)buf->marker_live_list + lb, lg - lb) || !os_commit((u8 *)buf->marker_live_at + lb, lg - lb)) {
                 os_fatal(STR8_LIT("Out of memory (markers)."));
             }
-            buf->marker_cap = (i64)(grown / sizeof(BufferMarkerSlot));
+            buf->marker_cap = cap;
         }
         slot = (u32)buf->marker_count++;
     }
@@ -237,6 +245,8 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance) {
     s->flags = BUFFER_MARKER_LIVE | (advance ? BUFFER_MARKER_ADVANCE : 0);
     s->next_free = buf->batch_depth ? (u32)buf->batch_count : 0; // its epoch: it has seen the run's edits so far
     buf->batch_pinned = buf->batch_count;
+    buf->marker_live_list[buf->marker_live] = slot;
+    buf->marker_live_at[slot] = (u32)buf->marker_live;
     buf->marker_live++;
     return slot + 1;
 }
@@ -246,7 +256,9 @@ void buffer_marker_destroy(Buffer *buf, BufferMarker m) {
     s->flags = 0;
     s->next_free = buf->marker_free;
     buf->marker_free = m;
-    buf->marker_live--;
+    u32 at = buf->marker_live_at[m - 1], last = buf->marker_live_list[--buf->marker_live];
+    buf->marker_live_list[at] = last;
+    buf->marker_live_at[last] = at;
 }
 
 // The marker rules (buffer.h) for a marker at pos when [start, end) becomes len bytes. *swallowed is set when pos
@@ -332,9 +344,8 @@ b32 buffer_marker_swallowed(Buffer *buf, BufferMarker m) {
 static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
     i64 snap_lo = start - 3, snap_hi = start + len + 3; // where a boundary can have disappeared
     b32 swallowed = 0;
-    for (i64 i = 0; i < buf->marker_count; i++) {
-        BufferMarkerSlot *m = &buf->markers[i];
-        if (!(m->flags & BUFFER_MARKER_LIVE)) continue;
+    for (i64 i = 0; i < buf->marker_live; i++) {
+        BufferMarkerSlot *m = &buf->markers[buf->marker_live_list[i]];
         i64 pos = buffer_marker_rule(m->pos, start, end, len, len, m->flags & BUFFER_MARKER_ADVANCE, &swallowed);
         if (pos >= snap_lo && pos <= snap_hi) pos = buffer_snap_char(buf, pos);
         m->pos = pos;
@@ -344,9 +355,8 @@ static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
 // The run so far goes to every marker (each mapped from its epoch, then snapped); a new run starts. At the end of
 // the batch the swallowed flags go too; before it they keep what the run said.
 static void buffer_batch_apply(Buffer *buf, b32 end) {
-    for (i64 i = 0; i < buf->marker_count; i++) {
-        BufferMarkerSlot *m = &buf->markers[i];
-        if (!(m->flags & BUFFER_MARKER_LIVE)) continue;
+    for (i64 i = 0; i < buf->marker_live; i++) {
+        BufferMarkerSlot *m = &buf->markers[buf->marker_live_list[i]];
         if (m->next_free < buf->batch_count) {
             b32 swallowed = 0;
             m->pos = buffer_snap_cheap(buf, buffer_batch_map(buf, m->pos, m->next_free, m->flags & BUFFER_MARKER_ADVANCE, &swallowed));

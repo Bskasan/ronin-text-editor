@@ -2797,7 +2797,7 @@ AppDevMemory app_dev_memory(App *app) {
     m.meta = buf->meta.committed;
     m.text = (u64)buf->text_cap;
     m.line_index = (u64)buf->nl_cap * sizeof(u32);
-    m.markers = (u64)buf->marker_cap * sizeof(BufferMarkerSlot);
+    m.markers = (u64)buf->marker_cap * (sizeof(BufferMarkerSlot) + 2 * sizeof(u32)); // the slots and the live list
     m.undo_log = m.undo;
     m.states = buffer_states_memory(buf);
     m.buffer = m.meta + m.text + m.line_index + m.markers + m.undo_log + m.states;
