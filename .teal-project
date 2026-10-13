@@ -1,0 +1,4 @@
+# teal's own project file. C-x p c offers this command (it never runs without RET). ".\" because cmd may be
+# told not to look in the current directory (NoDefaultCurrentDirectoryInExePath).
+[build]
+command = .\build.bat
