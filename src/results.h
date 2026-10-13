@@ -5,7 +5,8 @@
 // A results buffer is read-only, written through inhibit_read_only, and owns a list of locations (a file
 // or a buffer, a line, a column, a length). Its text: a header line, a blank line, one line per location
 // ("path:line:col: text", 1-based line and byte column; occur: "line:col: text"), then a progress line
-// that becomes the summary. Location i is on line first_line + i. next-error and previous-error walk the
+// that becomes the summary. Each location knows its row (line of the buffer), in increasing order, and
+// where its parts are in that line. next-error and previous-error walk the
 // locations of the most recent results buffer from any window; its keymap ([keys search-results]) has
 // RET, n, p, g and q.
 //
@@ -32,15 +33,19 @@ typedef enum ResultsKind {
     RESULTS_OCCUR,   // occur: one buffer
 } ResultsKind;
 
+enum { LOCATION_MATCH, LOCATION_ERROR, LOCATION_WARNING, LOCATION_INFO }; // a search match; a build's (CompileKind's order)
+
+// A location and where its line of the results buffer shows its parts (offsets into that line).
 typedef struct Location {
     u32 file;            // its entry in the file table
     i32 col;             // 0-based byte column
     i64 line;            // 1-based
-    i64 len;             // bytes
-    u16 path_len;        // the path's bytes at the start of the line (0 for occur)
-    u16 num_len;         // "line:col" after it
-    u16 match_off;       // the match in the shown text (after the "path:line:col: " prefix)
-    u16 match_shown;
+    i64 len;             // bytes (0: a build's location, its whole line)
+    i64 row;             // its line in the results buffer (0-based); rows only grow along the list
+    u16 path_off, path_len; // the file name
+    u16 num_off, num_len;   // "line:col"
+    u16 mark_off, mark_len; // a match: the matched text (lazy_highlight); a build: the kind word (its color)
+    u8 kind;             // LOCATION_*
 } Location;
 
 // A list entry of a project search on the main thread: its records wait here until every earlier file
@@ -69,7 +74,7 @@ typedef struct Results {
     Location *locs;
     i64 count;
     i64 current;         // next-error's position: -1 before the first location
-    i64 first_line;      // the 0-based line of location 0
+    i64 first_line;      // the 0-based line after the header (the first location's in a search)
     i64 tail;            // the start of the last line (the progress line, then the summary)
     String8 query, root; // root: the project (project-search) or the buffer's name (occur)
     b32 fold;

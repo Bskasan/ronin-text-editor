@@ -126,6 +126,7 @@ static void results_cancel_all(App *app);
 static void results_shutdown(App *app, u64 deadline);
 static void results_index_changing(App *app, ProjectIndex *x, b32 incomplete);
 static Results *results_of(App *app, Buffer *buf);
+static i64 results_lower_bound(Results *r, i64 row);
 static b32  results_wake(App *app);
 static b32  results_running(App *app);
 
@@ -555,22 +556,23 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
     // A results buffer: each location's line has its file name and line:column in their colors and the
     // match on the lazy_highlight background.
     Results *res = results_of(app, buf);
-    for (i32 row = 0; res && row < draw_rows && top + row < count; row++) {
-        i64 idx = top + row - res->first_line;
-        if (idx < 0 || idx >= res->count) continue;
-        Location *loc = &res->locs[idx];
-        i64 ls = buffer_line_start(buf, top + row);
-        i64 text_at = ls + (loc->path_len ? loc->path_len + 1 : 0) + loc->num_len + 2;
-        app_draw_span(r, l, v, text_at + loc->match_off, text_at + loc->match_off + loc->match_shown, draw_rows, th->lazy_highlight);
+    i64 first = res ? results_lower_bound(res, top) : 0;
+    for (i64 k = first; res && k < res->count && res->locs[k].row < top + draw_rows; k++) {
+        Location *loc = &res->locs[k];
+        if (loc->kind != LOCATION_MATCH) continue;
+        i64 ls = buffer_line_start(buf, loc->row);
+        app_draw_span(r, l, v, ls + loc->mark_off, ls + loc->mark_off + loc->mark_len, draw_rows, th->lazy_highlight);
     }
+    i64 next = first;
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
-        AppSpan spans[3];
+        AppSpan spans[4];
         i32 n = 0;
-        if (res && top + row - res->first_line >= 0 && top + row - res->first_line < res->count) {
-            Location *loc = &res->locs[top + row - res->first_line];
-            i64 ls = buffer_line_start(buf, top + row), num_at = ls + (loc->path_len ? loc->path_len + 1 : 0);
-            spans[n++] = (AppSpan){ ls, ls + loc->path_len, th->search_file };
-            spans[n++] = (AppSpan){ num_at, num_at + loc->num_len, th->search_line_number };
+        while (res && next < res->count && res->locs[next].row < top + row) next++;
+        if (res && next < res->count && res->locs[next].row == top + row) {
+            Location *loc = &res->locs[next];
+            i64 ls = buffer_line_start(buf, top + row);
+            spans[n++] = (AppSpan){ ls + loc->path_off, ls + loc->path_off + loc->path_len, th->search_file };
+            spans[n++] = (AppSpan){ ls + loc->num_off, ls + loc->num_off + loc->num_len, th->search_line_number };
         }
         if (current.start >= 0) spans[n++] = current;
         app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, spans, n, in->scratch);

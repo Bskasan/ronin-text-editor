@@ -232,8 +232,10 @@ static b32 results_add(App *app, Results *r, String8 path, i64 line, i64 col, i6
     n += tl;
     buf[n++] = '\n';
     Location *loc = PUSH_STRUCT(&r->loc_arena, Location);
-    *loc = (Location){ .file = results_file(r, r->kind == RESULTS_OCCUR ? r->root : path), .col = (i32)MIN(col, (i64)0x7FFFFFFF), .line = line, .len = len, .path_len = (u16)pl,
-                       .num_len = (u16)num_len, .match_off = (u16)MIN(match_off, tl), .match_shown = (u16)CLAMP(match_shown, 0, tl - MIN(match_off, tl)) };
+    i64 text_at = num_at + num_len + 2, off = MIN(match_off, tl);
+    *loc = (Location){ .file = results_file(r, r->kind == RESULTS_OCCUR ? r->root : path), .col = (i32)MIN(col, (i64)0x7FFFFFFF), .line = line, .len = len,
+                       .row = r->first_line + r->count, .path_len = (u16)pl, .num_off = (u16)num_at, .num_len = (u16)num_len,
+                       .mark_off = (u16)(text_at + off), .mark_len = (u16)CLAMP(match_shown, 0, tl - off), .kind = LOCATION_MATCH };
     memcpy(PUSH_ARRAY(&r->pend, u8, n), buf, (size_t)n); // written with the frame's other lines (results_flush)
     r->count++;
     r->found++;
@@ -249,9 +251,9 @@ static void results_flush(App *app, Results *r) {
     results_replace(r, r->tail, r->tail, str8(r->pend.base, (i64)n));
     r->tail += (i64)n;
     arena_reset(&r->pend);
-    if (!r->point_set) { // the first location: point there in the windows that have not moved it (RET works at once)
+    if (!r->point_set && r->count) { // the first location: point there in the windows that have not moved it (RET works at once)
         r->point_set = 1;
-        i64 at = buffer_line_start(r->buffer, r->first_line);
+        i64 at = buffer_line_start(r->buffer, r->locs[0].row);
         View *views[WINDOW_MAX];
         for (i32 i = 0, k = app_views(app, views); i < k; i++) {
             if (views[i]->buffer == r->buffer && view_point(views[i], &views[i]->cursors[0]) == 0) {
@@ -786,9 +788,20 @@ typedef enum ResultsVisit {
     RESULTS_VISIT_HERE,   // in the selected window (next-error from elsewhere)
 } ResultsVisit;
 
+// The first location whose row is at or after `row` (count: none).
+static i64 results_lower_bound(Results *r, i64 row) {
+    i64 lo = 0, hi = r->count;
+    while (lo < hi) {
+        i64 mid = lo + (hi - lo) / 2;
+        if (r->locs[mid].row < row) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 // The windows showing the results buffer: point on the location's line.
 static void results_show_entry(App *app, Results *r, i64 idx) {
-    i64 at = buffer_line_start(r->buffer, r->first_line + idx);
+    i64 at = buffer_line_start(r->buffer, r->locs[idx].row);
     View *views[WINDOW_MAX];
     for (i32 i = 0, k = app_views(app, views); i < k; i++) {
         if (views[i]->buffer != r->buffer) continue;
@@ -844,8 +857,9 @@ static b32 results_visit(CommandContext *ctx, Results *r, i64 idx, ResultsVisit 
 
 // The location on point's line in a results buffer, or -1.
 static i64 results_at_point(Results *r, View *v) {
-    i64 idx = buffer_line_of(r->buffer, view_point(v, &v->cursors[0])) - r->first_line;
-    return idx >= 0 && idx < r->count ? idx : -1;
+    i64 row = buffer_line_of(r->buffer, view_point(v, &v->cursors[0]));
+    i64 idx = results_lower_bound(r, row);
+    return idx < r->count && r->locs[idx].row == row ? idx : -1;
 }
 
 // The results buffer of the command's window, or NULL with a message.
@@ -870,8 +884,8 @@ static void cmd_compile_goto_error(CommandContext *ctx) {
 static void results_step_here(CommandContext *ctx, i32 dir) {
     Results *r = results_here(ctx);
     if (!r) return;
-    i64 line = buffer_line_of(r->buffer, view_point(ctx->view, &ctx->view->cursors[0])) - r->first_line;
-    i64 idx = dir > 0 ? (line < 0 ? 0 : line + 1) : (line >= r->count ? r->count - 1 : line - 1);
+    i64 row = buffer_line_of(r->buffer, view_point(ctx->view, &ctx->view->cursors[0]));
+    i64 idx = dir > 0 ? results_lower_bound(r, row + 1) : results_lower_bound(r, row) - 1;
     if (idx < 0 || idx >= r->count) {
         echo_message(ctx->echo, "No more matches");
         return;
