@@ -196,6 +196,9 @@ typedef struct Buffer {
     i64 marker_count;    // slots ever used (live or free)
     u32 marker_free;     // first free slot + 1, 0 = none
     i64 marker_live;
+    // The live slots, densely: the passes over every marker visit only these, so slots once used by many markers
+    // (100,000 cursors gone again) cost nothing later. marker_live_at[slot] is the slot's index in the list.
+    u32 *marker_live_list, *marker_live_at;
 
     // A batch (see above).
     i32 batch_depth;     // > 0: inside a batch (they nest; the outermost end applies)
