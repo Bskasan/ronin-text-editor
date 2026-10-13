@@ -162,6 +162,42 @@ i32  os_atomic_cas(volatile i32 *v, i32 expected, i32 x);   // sets x if *v == e
 
 // The main loop calls app_wake soon after (sets coalesce): a worker has results.
 void os_wake_main(void);
+
+// A file's attributes, the path converted in the caller's arena (popped again). swap_ok is not set.
+OsFileStatus os_file_info_arena(Arena *arena, String8 path, OsFileInfo *info);
+// Bytes in the system's OEM code page (a console program's output) as UTF-8, in `arena`.
+String8 os_oem_to_utf8(Arena *arena, String8 text);
+
+// Processes: a command run through cmd.exe /s /c in a directory, with no window, stdin from the NUL
+// device, stdout and stderr into one pipe, the whole tree inside a job object (killing the job ends every
+// process in it; so does teal's exit, a crash included). Only the pipe and NUL are inherited. Any thread;
+// one OsProcess is used by one thread at a time (the build's reader worker: the main thread never touches
+// one).
+typedef struct OsProcess {
+    void *process, *job, *pipe, *io_event;
+    u32 pid;
+    b32 exited; // cmd.exe has ended: only what is already in the pipe is left to read
+} OsProcess;
+
+typedef enum OsProcessRead {
+    OS_PROCESS_DATA,      // *got > 0 bytes
+    OS_PROCESS_EXITED,    // cmd.exe has ended and the pipe holds nothing more (or every writer closed it)
+    OS_PROCESS_CANCELLED, // `cancel` was set (nothing read)
+    OS_PROCESS_ERROR,
+} OsProcessRead;
+
+// Started, or a status (a directory that does not exist: OS_FILE_NOT_FOUND / OS_FILE_BAD_PATH) with
+// nothing left open. Temporary memory in `arena` (popped again).
+OsFileStatus  os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p);
+// Waits for output, the end of cmd.exe or `cancel` (an event set only to cancel; it is left set), whichever
+// comes first.
+OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, void *dst, i64 cap, i64 *got);
+b32  os_process_wait(OsProcess *p, u32 timeout_ms); // cmd.exe has ended within the timeout
+u32  os_process_exit_code(OsProcess *p);            // after it ended
+void os_process_kill(OsProcess *p);                 // every process of the job, at once
+// Every handle. kill_rest: processes still in the job end too; otherwise they are let go (build servers
+// that a finished build left running).
+void os_process_close(OsProcess *p, b32 kill_rest);
 #if TEAL_DEV
 b32  os_dev_wake_wait(u32 timeout_ms); // headless tests: the wake was set (and is consumed)
 i32  os_dev_live_threads(void);        // started and not joined (nor abandoned)
@@ -172,6 +208,11 @@ void os_dev_background_normal(b32 on); // --bench-grep: background workers start
 i32  os_dev_thread_priority(OsThread thread); // the thread's priority (Win32 value: 0 normal, -1 below normal)
 b32  os_dev_make_junction(String8 link, String8 target); // a new directory junction (no admin rights needed)
 b32  os_dev_remove_dir(String8 path);                     // an empty directory, or a junction (not its target)
+i32  os_dev_live_processes(void);      // os_process_start minus os_process_close
+b32  os_dev_process_alive(u32 pid);    // a process with this id is running
+void os_dev_kill_pid(u32 pid);         // tests: a leftover they made goes
+i32  os_dev_handle_count(void);        // the process's open kernel handles
+String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
 #endif
 
 // ---------------------------------------------------------------------------

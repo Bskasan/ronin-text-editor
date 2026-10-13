@@ -8868,6 +8868,149 @@ static b32 test_occur(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 13: processes and builds
+
+// tmp\p13\<name>.txt holding a --child script; the command that runs this executable on it.
+static String8 test_child(Test *t, const char *name, String8 script) {
+    String8 dir = str8_fmt(&t->arena, "%S\\p13", t->tmp_dir);
+    os_make_dir(dir);
+    String8 path = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\%s.txt", dir, name));
+    os_write_file(path, script);
+    return str8_fmt(&t->arena, "\"%S\" --child \"%S\"", os_dev_exe_path(&t->arena), path);
+}
+
+// A grandchild's id from "grandchild <pid>" in `out`, 0 when not there.
+static u32 test_grandchild_pid(String8 out) {
+    String8 key = STR8_LIT("grandchild ");
+    for (i64 i = 0; i + key.len <= out.len; i++) {
+        if (!mem_equal(out.data + i, key.data, key.len)) continue;
+        u32 pid = 0;
+        for (i64 k = i + key.len; k < out.len && out.data[k] >= '0' && out.data[k] <= '9'; k++) pid = pid * 10 + (out.data[k] - '0');
+        return pid;
+    }
+    return 0;
+}
+
+typedef struct TestProcRun {
+    OsFileStatus status;
+    String8 out;   // everything read (at most 4 MB kept)
+    u32 code;
+    b32 exited;    // os_process_read reported the end
+    u32 grandchild;
+} TestProcRun;
+
+// Runs a command through os_process_* on this thread until it ends; with `kill_after` set, kills the job
+// once that text was read (and the grandchild's id, if any, is known).
+static TestProcRun test_proc_run(Test *t, String8 command, String8 dir, const char *kill_after) {
+    TestProcRun run = { 0 };
+    OsProcess p;
+    run.status = os_process_start(&t->arena, command, dir, &p);
+    if (run.status != OS_FILE_OK) return run;
+    OsEvent cancel;
+    os_event_create(&cancel);
+    i64 cap = MB(4);
+    u8 *out = PUSH_ARRAY(&t->arena, u8, cap);
+    i64 n = 0;
+    b32 killed = 0;
+    for (;;) {
+        u8 chunk[4096];
+        i64 got = 0;
+        OsProcessRead r = os_process_read(&p, cancel, chunk, sizeof(chunk), &got);
+        if (r == OS_PROCESS_DATA) {
+            i64 take = MIN(got, cap - n);
+            memcpy(out + n, chunk, (size_t)take);
+            n += take;
+            if (kill_after && !killed) {
+                String8 key = str8_cstr(kill_after);
+                for (i64 i = 0; i + key.len <= n; i++) {
+                    if (mem_equal(out + i, key.data, key.len)) {
+                        killed = 1;
+                        break;
+                    }
+                }
+                if (killed) {
+                    run.grandchild = test_grandchild_pid(str8(out, n));
+                    os_process_kill(&p);
+                }
+            }
+            continue;
+        }
+        run.exited = r == OS_PROCESS_EXITED;
+        break;
+    }
+    os_process_wait(&p, 5000);
+    run.code = os_process_exit_code(&p);
+    if (!run.grandchild) run.grandchild = test_grandchild_pid(str8(out, n));
+    os_process_close(&p, killed);
+    os_event_destroy(cancel);
+    run.out = str8(out, n);
+    return run;
+}
+
+// Waits up to `ms` for a process id to be gone.
+static b32 test_pid_gone(u32 pid, u32 ms) {
+    OsEvent pause = { 0 };
+    os_event_create(&pause);
+    b32 gone = 0;
+    for (u32 waited = 0; waited <= ms && !gone; waited += 10) {
+        gone = !os_dev_process_alive(pid);
+        if (!gone) os_event_wait(pause, 10);
+    }
+    os_event_destroy(pause);
+    return gone;
+}
+
+static b32 test_process_platform(Test *t) {
+    i32 procs0 = os_dev_live_processes(), events0 = os_dev_live_events();
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13", t->tmp_dir));
+    os_make_dir(dir);
+    // Output order across stdout and stderr (one pipe), CRLF kept, the exit code.
+    String8 cmd = test_child(t, "order", STR8_LIT("out one\nerr two\nout three\nexit 3\n"));
+    TestProcRun r = test_proc_run(t, cmd, dir, NULL);
+    TEST_CHECK(t, r.status == OS_FILE_OK && r.exited, "process: the child did not run (status %d)", (i32)r.status);
+    TEST_CHECK(t, str8_equal(r.out, STR8_LIT("one\r\ntwo\r\nthree\r\n")) && r.code == 3, "process: output '%S', exit code %u", r.out, r.code);
+    // The working directory.
+    r = test_proc_run(t, test_child(t, "cwd", STR8_LIT("cwd\n")), dir, NULL);
+    TEST_CHECK(t, str8_equal(r.out, str8_fmt(&t->arena, "%S\r\n", dir)) && r.code == 0, "process: cwd '%S', not '%S'", r.out, dir);
+    // A directory that does not exist: nothing starts, nothing is left open.
+    i32 handles0 = os_dev_handle_count();
+    OsProcess none;
+    OsFileStatus st = os_process_start(&t->arena, cmd, str8_fmt(&t->arena, "%S\\no_such_dir", dir), &none);
+    TEST_CHECK(t, st == OS_FILE_NOT_FOUND && os_dev_live_processes() == procs0 && os_dev_handle_count() <= handles0,
+               "process: a missing directory gave status %d, %d processes, handles %d -> %d", (i32)st, os_dev_live_processes(), handles0,
+               os_dev_handle_count());
+    // A kill ends the child and its grandchild.
+    test_child(t, "hang", STR8_LIT("hang\n"));
+    String8 hang = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\hang.txt", dir));
+    String8 tree = test_child(t, "tree", str8_fmt(&t->arena, "spawn %S\nout spawned\nhang\n", hang));
+    r = test_proc_run(t, tree, dir, "spawned");
+    TEST_CHECK(t, r.grandchild, "process: no grandchild id in '%S'", r.out);
+    b32 gone = test_pid_gone(r.grandchild, 1000);
+    if (!gone) os_dev_kill_pid(r.grandchild);
+    TEST_CHECK(t, gone, "process: the grandchild %u survived the kill", r.grandchild);
+    // A normal end while a grandchild still holds the pipe: the end is cmd.exe's, the grandchild is let go.
+    r = test_proc_run(t, test_child(t, "linger", str8_fmt(&t->arena, "spawn %S\nout done\nexit 0\n", hang)), dir, NULL);
+    b32 lingering = r.grandchild && os_dev_process_alive(r.grandchild);
+    if (r.grandchild) os_dev_kill_pid(r.grandchild);
+    TEST_CHECK(t, r.exited && r.code == 0 && lingering, "process: a lingering grandchild: ended %d, code %u, grandchild %u alive %d", r.exited,
+               r.code, r.grandchild, lingering);
+    // No handle growth over rounds.
+    i32 after_first = 0;
+    for (i32 round = 0; round < 20; round++) {
+        r = test_proc_run(t, cmd, dir, NULL);
+        TEST_CHECK(t, r.code == 3, "process: round %d exit code %u", round, r.code);
+        if (!round) after_first = os_dev_handle_count();
+    }
+    TEST_CHECK(t, os_dev_handle_count() <= after_first, "process: handles grew from %d to %d over 20 runs", after_first, os_dev_handle_count());
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_events() == events0, "process: counters back (%d processes, %d events)",
+               os_dev_live_processes(), os_dev_live_events());
+    LOG("test: ok: processes (stdout and stderr in order through one pipe, CRLF, the exit code, the working directory, a missing "
+        "directory leaving nothing open, a kill ending the child and its grandchild, a normal end with a grandchild holding the pipe "
+        "(let go), no handle growth over 20 runs)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -9003,6 +9146,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_results(&t);
     arena_reset(&t.arena);
     test_occur(&t);
+    arena_reset(&t.arena);
+    test_process_platform(&t);
     arena_reset(&t.arena);
     test_finder(&t);
     arena_reset(&t.arena);
