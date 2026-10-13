@@ -12,13 +12,13 @@
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
 | `src/font.h/.c` | metrics, CPU glyph atlas (shelf packer), glyph cache, `font_draw_text` |
-| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, the undo log (groups, state ids, undo / redo, limit), markers, language from the extension, file load (encodings, line endings) and save |
+| `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, the undo log (groups, state ids, undo / redo, limit, a multiple-cursor command's cursors), markers (and their live list), batches (deferred marker adjustment for ordered edit runs), language from the extension, file load (encodings, line endings) and save |
 | `src/syntax.h/.c` | token kinds, the line lexer interface, keyword tables, the catch-up of line states (budget, convergence), bracket matching and line summaries on tokens (indentation, show-paren) |
 | `src/lex_c.c`, `lex_jai.c`, `lex_cs.c`, `lex_js.c` | the lexers: C and C++ (one), Jai, C#, JavaScript and TypeScript (one) |
 | `src/command.h/.c` | `Command` and `CommandContext`; the table of every command, lookup by Emacs name |
-| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll, the position it remembers for every buffer it showed), the command driver `view_run_command` (undo boundaries, shift-select, region rules, kill appending, clipboard), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
+| `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll, the position it remembers for every buffer it showed), the command driver `view_run_command` (undo boundaries and the cursors kept with them, shift-select, region rules, kill appending, clipboard; with several cursors the ordered pass in one batch, the swallowed and line rules, the kill pieces, the normalization), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
 | `src/window.h/.c` | headless: the frame's windows, a binary tree of splits whose leaves are Views (fixed node array), the selected window and use ticks (LRU / MRU), layout in whole cells by ratios (minimum sizes, frames too small for them), split, delete, move a split line (adjacent windows only), resize, balance, cyclic order, hit tests (window, divider, mode line) |
-| `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link), undo / undo-redo, kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
+| `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link, a multiple-cursor kill's pieces), undo / undo-redo (every cursor back), kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
 | `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
@@ -30,19 +30,20 @@
 | `src/grep.h/.c` | the project-wide search's worker side: one file in fixed chunks that overlap (encodings, binary files, lines counted, long lines cut), the workers claiming files of an append-only list in order, their batches through one locked queue, cancel, bounded join |
 | `src/compile.h/.c` | builds, the worker side: the reader worker owning the process (start, read, kill, close), the lines (split across reads, CR, ANSI, OEM, the cut, the output cap), the error matchers (MSVC, GCC / Clang, includes, Jai, tsc, MSBuild; kinds without a location), the path resolution and its cache, batches through one locked queue |
 | `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*, *compilation*: each location's row and line offsets, a build's marks without a location), the landing highlight, the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; *compilation* (its lines inside the frame budget, the scroll rule, the end and its check of rewritten files), project-compile, compile, recompile, kill-compilation, the save, kill and exit questions' chain, the commands remembered per directory; dev: smoke and bench helpers |
+| `src/cursors.h/.c` | the multiple-cursors commands (mark-next / previous / all-like-this, skip, unmark, the edit-lines family) and the CursorJob, their search spread over frames |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield) |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield) |
 | `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
-Core (`app.c`, `files.c`, `finder.c`, `results.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
+Core (`app.c`, `files.c`, `finder.c`, `results.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
 `fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
 additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c) and the build's reader
 (compile.c) call only the os_* functions platform.h marks "any thread".
@@ -460,6 +461,74 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   GetOverlappedResult, CancelIoEx, ResetEvent, WaitForMultipleObjects, InitializeProcThreadAttributeList,
   UpdateProcThreadAttribute, DeleteProcThreadAttributeList, GetSystemDirectoryW and GetTickCount64.
 
+## Measurements (Phase 14)
+
+Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe --bench-cursors`, build = the
+command plus the frame's build (Present not included). Averages over 100 commands (10 at 10,000 cursors); ranges are
+over several runs.
+
+- The old pass first (commit 6d7ea9a, every edit adjusting every marker), on the 100 MB file with the cursors on
+  consecutive lines from line 1,000,000: a self-insert at 1,000 cursors 2.1 ms, at 10,000 177 ms (on src/app.c 192
+  ms). That is what chose the batch.
+- With the batch, the same layout: a self-insert at 10 cursors 31-34 us (one cursor in the same bench: DEL 39-47
+  us, RET 36-39 us; the self-insert row's average includes one ~6 ms first insert moving the gap), at 100 cursors
+  59-71 us, at 1,000 0.23-0.26 ms, at 10,000 1.7-2.1 ms; DEL the same. Targets: 10 cursors within the one-cursor
+  range, 1,000 under 1 ms, 10,000 under 10 ms: met. 0 batch flushes.
+- src/app.c (140 KB) with the cursors spread over it (every 14 bytes at 10,000): a self-insert at 1,000 cursors
+  0.19-0.29 ms, at 10,000 1.95-2.25 ms; RET 4.8 ms at 1,000, 29-45 ms at 10,000.
+- Cursors spread evenly over the whole 100 MB file: 13-22 ms per key from 10 cursors on (one cursor 26-109 us):
+  the gap travels ~100 MB every command (back to the first cursor, then forward), whatever the markers cost. Not
+  reordered (the approved plan); see "Later".
+- RET on the 100 MB file's consecutive lines: 0.16 ms at 10 cursors, 4.4-5.5 ms at 100, 0.38-0.5 s at 1,000, 5.5-7 s
+  at 10,000, with 0 flushes: each new line's indentation looks back for a matching brace through the bench text's
+  random, unbalanced braces (up to SYNTAX_MATCH_MAX, 256 KB, with a 256 KB stack zeroed per walk), ~0.4-0.6 ms a
+  cursor, the same as for one cursor on those lines. On real code (src/app.c, the C file below) RET is 0.7-7.0 ms.
+- The classes that reindent (a C file of 12,000 8-line blocks, a fresh copy and fresh cursors per command; batch
+  flushes per command):
+
+  | class | 1,000 cursors | 10,000 cursors | flushes |
+  |---|---|---|---|
+  | self-insert | 0.26-0.29 ms | 1.8-2.0 ms | 0 |
+  | DEL | 0.17 ms | 1.8-2.2 ms | 0 |
+  | RET | 0.73-0.86 ms | 7.0-7.8 ms | 0 |
+  | TAB | 0.68-0.71 ms | 7.0-7.9 ms | 0 |
+  | comment-line | 0.31-0.33 ms | 3.4-3.9 ms | 0 |
+  | RET at the end of a whitespace-only line | 8.9 ms -> 0.77-0.82 ms | 913 ms -> 6.9-7.4 ms | one per cursor -> 0 |
+  | '}' first on a line (electric reindent) | 12.5 ms -> 2.6-3.0 ms | 908 ms -> 26-32 ms | one per cursor -> 0 |
+  | ':' ending a case label (electric reindent) | 11-12.8 ms | 0.92-1.07 s | one per cursor |
+
+  The two classes that flushed once per cursor (an edit before point after inserting at point) were fixed by the
+  join (commit f8fff0f, the arrows); the case label's colon keeps text between its two edits and still flushes
+  ("Later").
+- The undo of a self-insert at 10,000 cursors (one group of 10,000 records and its cursors): 1.07-1.53 ms, with the
+  10,000 cursors back; its undo-redo 1.17-1.73 ms. The undo of 20 merged self-inserts at 10,000 cursors (200,000
+  records, 20 descending runs): 15-19.5 ms. The undo log grows 576 KB for the first command (10,000 records of 32
+  bytes and the 240 KB of cursors); 20 more commands bring it from 42 MB to 57.7 MB committed (the 100 MB file's
+  earlier benches made the first 41 MB).
+- mark-all-like-this on a word with 1,000,000 occurrences (1,000,000 lines of 64 bytes): at max_cursors 10,000 one
+  frame of 0.57-0.67 ms; at 100,000 one frame of 4.9-5.5 ms (the cursors made at the end, in one pass). A word only
+  at the end of the 100 MB file (the whole file searched): 5 frames, the longest 2.3-2.4 ms, 8.4-9.2 ms of work in
+  all. A self-insert at 10,000 cursors there 7.3-8.0 ms (the first edit after loading moves the gap over the file),
+  its undo 1.2-1.3 ms; at 100,000 cursors 21-22 ms, its undo 12.6-13.9 ms.
+- Memory: 10,000 cursors +760-916 KB of private bytes, 100,000 +7.1-8.7 MB (the cursor array, 40 bytes a cursor,
+  and two markers of 16 bytes plus 8 bytes of the live list each).
+- A single cursor after 100,000 cursors were made and collapsed: DEL 106 us and RET 265 us before the live marker
+  list (every pass walked the 200,000 slots ever used), 39 us after it (commit 467f493).
+- One cursor, against Phase 13 (rebuilt from 1fd5708, alternated): `--bench-view` self-insert at line 1,000,000
+  8-22 us avg against 8-20 us (the quiet rounds 9 us against 8 us); `--bench-edit` (undo on) 16-24 us against
+  9-23 us. Unchanged within the noise.
+- `--test` takes ~22.5 s on teal_bench.exe; the Phase 13 build took 23.8-24.7 s on the same day (Phase 13 recorded ~21 s):
+  the machine's noise is larger than what the new groups add.
+- Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`): *scratch* 75.9-77.5 MB; src\keymap.c
+  76.5-77.7 MB; the 100 MB .txt 192.0-193.5 MB; the 100 MB .c 216.0-217.5 MB (Phase 13: 76.7-77.0, 76.4-77.3,
+  191.8-193.0, 216.7-217.5).
+- Startup (`--startup-ms --no-activate`, release, 15 runs each): 176 ms median (174-183) against Phase 13's 176 ms
+  (173-184), alternating; after the last two commits 180 ms (177-205), alone.
+- `--idle-check` (debug): 0 frames, 0 us of CPU in 5 s, with one cursor and with 10,000 (`build\tmp\bench_cursors.c
+  --keys "C-x h C-S-c C-S-c" --idle-check`, mc:10000 checked in a screenshot of the same keys); the bench also finds
+  no frame wanted with 10,000 and 100,000 cursors.
+- Release exe 482,304 bytes (453,632 after Phase 13); the same six DLLs and the same 195 imported functions.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -583,8 +652,8 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   that loops over cursors, and it does the work after the loop (keep point visible, update
   `last_command`). Commands that act on the View as a whole (scroll-up-command,
   scroll-down-command, recenter-top-bottom, save-buffer) are flagged COMMAND_ONCE and run once
-  with the primary cursor. Phase 14 adds cursor creation, merging and ordered edits to that
-  driver only.
+  with the primary cursor. Phase 14 added cursor creation, merging and the ordered edit pass to that
+  driver only (see "Multiple cursors (Phase 14)").
 - Markers: every position that must survive edits (each cursor's point and mark, each View's
   top of window) is a marker registered with its buffer, and `buffer_replace` is the only
   thing that adjusts positions. For a replace of [start, end) by len bytes: a marker before
@@ -593,7 +662,8 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   advancing marker (insertion type: point markers advance, the top-of-window marker does not).
   Markers within 3 bytes of the edit are then snapped back to a character boundary, since
   joined invalid bytes can form a valid sequence. Storage: a flat slot array with a free list
-  in its own reservation, one linear pass per edit.
+  in its own reservation, one linear pass per edit over the live markers (a dense list of the live
+  slots since Phase 14; inside a batch the pass waits for the batch's end).
 - Point is always visible, as in Emacs: scrolling drags point along (to the start of the
   nearest visible line), and moving point off screen recenters the window on it. The top line
   may scroll as far as the last line of the buffer. Visibility follows the primary cursor.
@@ -735,7 +805,7 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Everything the driver does is driven by command flags; no command implements these rules:
   COMMAND_MOTION (shift-select), COMMAND_EDIT (deactivates the mark afterwards), COMMAND_KILL /
   COMMAND_KILL_BACKWARD (a kill directly after a kill appends to the same entry, a backward kill
-  prepends; all cursors of one command share it), COMMAND_MERGE_INSERT / MERGE_DELETE (undo
+  prepends; with several cursors one piece per cursor, Phase 14), COMMAND_MERGE_INSERT / MERGE_DELETE (undo
   merging), COMMAND_REGION_DELETE (DEL and C-d delete an active region, Emacs'
   delete-active-region) and COMMAND_REGION_REPLACE (typing, RET and yank replace an active
   region with delete_selection_mode).
@@ -1237,6 +1307,14 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   colored and they are counted in the summary, but they are not locations, so next-error never stops on
   them. A location whose file is nowhere falls back to that, when it had a kind word. A build whose output
   has an error line never reports "0 errors".
+- A tool's summary (Phase 14): a line without a location whose text has a number right before an error or
+  warning word ("1 error generated.", "3 warnings and 1 error generated.", "0 Error(s)", "Found 2 errors.",
+  "Compilation failed (1 error)") has every count word colored in its kind's color and none counted. A number
+  after the word ("errors: 3", make's "Error 1") is not a count.
+- compilation_relative_paths (Phase 14, true): a location printed with an absolute path under the project
+  root is shown with the path relative to the root (from the resolved file, backslashes); the location keeps
+  the full path and its offsets follow. Paths printed relative, files outside the root and builds without a
+  root are shown as printed.
 - *compilation* is a results buffer: the Phase 12 locations mechanism with next-error, previous-error,
   RET, n and p. A Location now knows its row and where its file name, line:column and marked part are in
   its line (for a search the match, for a build the kind word), so a results buffer's lines need not be
@@ -1268,6 +1346,86 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   any window, so the run that started it keeps its log. The tests prove they can fail: a matcher without
   its column, and a kill that ends only cmd.exe (the grandchild survived and three tests said so).
 
+### Multiple cursors (Phase 14)
+
+- Multiple cursors build on what exists since Phase 4: the cursor array per View, per-cursor commands, the
+  single driver loop, markers, and one undo group per command. No command has a cursor loop of its own; the
+  new commands (cursors.c) act on the View once (COMMAND_ONCE).
+- The array is sorted by position after every command; View.primary names the primary (the view follows it,
+  the mode line reports it and shows "mc:N"; show-paren follows it), and each cursor has a creation serial
+  (the newest is skip's and unmark's target).
+- Normalization, after every command and every mouse action: a cursor's span is its active region, or its
+  point. Two cursors merge when their points are equal, when their regions share more than a boundary, or
+  when a bare cursor lies strictly inside the other's region; touching regions and a cursor on a region's
+  boundary stay apart; inactive marks never merge. Merges are transitive (one sweep over the spans sorted by
+  start, then point). The merged cursor is the primary if it is one of them, else the first; with a region
+  the union becomes its region, point at the union's end unless the survivor's point was at its region's
+  start. A merged point that meets another cursor merges in a further pass. A linear check is the fast path.
+- The ordered edit pass: with several cursors the driver runs them in position order inside one buffer
+  batch (buffer.h): buffer_replace logs the edits of an ascending run instead of adjusting every marker, a
+  marker is mapped through the run when read (its epoch, a binary search, the rules while it touches the next
+  edit), and the batch's end applies the run to every marker once: O(markers x log edits) instead of
+  O(markers x edits). An edit out of order flushes the run first, so the order decides only the speed. An
+  edit that replaces the text ending exactly where the run's last edit inserted joins that insertion (one
+  edit with an inner split that keeps both edits' marker rules), so RET leaving a whitespace-only line and a
+  closing bracket reindenting its line stay one run. Chosen by measurement against the old pass (the
+  numbers below) and checked against the sequential path (test_marker_batch: ascending, descending, mixed and
+  joined runs, valid UTF-8 and invalid bytes). The gap moves one way within a command. One cursor keeps the
+  old path.
+- Swallowed cursors: within one command a cursor whose point lay strictly inside text an earlier cursor's edit
+  removed is skipped (the batch reports it); a cursor at either end of a removed range still runs. Two
+  cursors on one line with C-k: the second does nothing and the line below is not joined; adjacent cursors
+  with C-d delete two characters.
+- Line commands (COMMAND_LINE: indent-for-tab-command, unindent, comment-line, kill-whole-line,
+  delete-indentation) run once per line: a cursor on the same line as the cursor before it (lines as the
+  command found them) is skipped.
+- COMMAND_SINGLE commands collapse to the primary first: isearch-forward and -backward, query-replace,
+  replace-string, goto-line, mark-whole-buffer. A plain click collapses; switching buffers leaves one cursor
+  (view_switch_buffer), a prompt aborted before it switches keeps them. keyboard-quit with several cursors:
+  if any mark is active it deactivates the marks and keeps the cursors, otherwise it collapses (a C-g that
+  cancels a prefix is keyboard-quit too).
+- Undo restores every cursor: a command that starts with several cursors hands them to the buffer, and the
+  group it starts keeps them in the log in front of its records (24 bytes each: point, mark, mark set, the
+  primary); undoing that group rebuilds the view's cursors from them, marks inactive (Phase 6's rule). A
+  merged typing group keeps the cursors of its first command; an undo group keeps those of the moment it
+  ran, so undo-redo brings them back. A group made with one cursor restores one cursor at its point, as
+  before. Undo of a group of more than 64 records runs in a batch (its records replayed newest first are
+  descending runs). The cursors of the last undo stay valid until the next edit, which trims instead.
+- The kill ring: a kill with several cursors keeps one piece per cursor that ran it, in order, in one entry:
+  its text is the pieces joined by newlines (the clipboard's text), its piece offsets follow the text. A
+  kill right after a kill with as many pieces adds each to its own piece (prepends for backward kills);
+  otherwise it is a new entry. A yank with as many cursors as pieces gives each cursor its piece, with any
+  other number the whole text; text from the clipboard is one piece; the first cursor checks the clipboard
+  and yank-pop's index moves once.
+- The commands (Emacs has none built in; the names and keys are the multiple-cursors package's without
+  "mc/"): mark-next-like-this (C->) and mark-previous-like-this (C-<): with an active region, a cursor with
+  the same region and direction at the next occurrence (literal, case sensitive, not overlapping the last
+  cursor's span) after the last cursor / before the first; without one, a cursor on the next / previous line
+  at that cursor's column (its goal column across vertical motions, as next-line). The new cursor is the
+  primary; "No more matches" at the end. mark-all-like-this (C-c C-<): every occurrence from the start of
+  the buffer, not overlapping, the others dropped first and the primary's own kept; "Marked N
+  occurrences". skip-to-next-like-this moves the newest cursor on, unmark-next-like-this removes it (no
+  keys). edit-lines (C-S-c C-S-c): a cursor on each line of the region, both ends included, at point's
+  column or at the end of a shorter line; edit-ends-of-lines and edit-beginnings-of-lines (no keys).
+  Ctrl+Shift+click adds a cursor (the primary) or removes the one there, never the last.
+- A search that does not end within one slice inside the command goes on as the app's CursorJob in the
+  frame's search work, like replace-string's replace-all; C-g stops it (nothing added), other keys and
+  clicks wait. mark-all collects the positions and makes the cursors at the end, in one sorted pass.
+- The cursor commands refuse in the minibuffer ("Multiple cursors are not available in the minibuffer"),
+  which keeps one cursor; M-x does not run inside a prompt, so there they are only reached by a key binding.
+- At most max_cursors (10000, 1 to 100000): every adding command stops there and says so ("Cursor limit
+  reached (max_cursors = N)"). The cursor array's reservation holds about 419,000 (40 bytes a cursor).
+- Drawing finds the cursors and regions on the visible lines by binary search on the sorted array (their
+  spans' starts and ends both increase): cursors elsewhere cost nothing per frame. Every visible cursor and
+  region is drawn in the selected window as before; other windows show their own cursors hollow and no
+  regions.
+- The differential fuzz (20,000 random commands of 53 kinds on random texts and cursor sets) runs each
+  cursor's command through the one-cursor path on a flat text, moves the other cursors by the marker rules
+  from a dev edit log of buffer_replace, applies the swallowed, line and piece rules, and normalizes with a
+  naive pairwise implementation; the text, every cursor and the newest kill are compared after each command.
+  The tests were shown to fail with the merge rule broken (touching regions merging: the fuzz) and with the
+  cursor restore in undo broken (two undo tests), each in a scratch copy.
+
 ## Later
 
 - Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
@@ -1289,8 +1447,6 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - System font fallback for codepoints Consolas lacks.
 - Bold / italic faces, if a theme ever wants them.
 - Linear-space (gamma-corrected) ClearType blending for dark text on light backgrounds.
-- Apply multi-cursor edits in one ordered pass so the gap moves monotonically (random-position
-  edits on a 100 MB file cost ~2.3 ms each; Phase 14).
 - Line wrapping (visual lines).
 - Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
   more layout).
@@ -1301,7 +1457,18 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Clipboard delayed rendering (a 50 MB kill is converted to UTF-16 at once).
 - Auto-scroll while dragging outside the window; after a double or triple click, a drag that
   extends by words or lines.
-- Multiple cursors and undo: undo restores only the primary cursor's point (Phase 14).
+- Multiple cursors: typing the ':' of a case label (or ';' in Jai) reindents before point after inserting at
+  it, which flushes the batch once per cursor: 11 ms at 1,000 cursors, 1.07 s at 10,000 (a C file). The join
+  of Phase 14 covers only a replacement ending where the insertion is; this one keeps text between them.
+- Multiple cursors spread over a whole 100 MB file cost ~20 ms per key (the gap travels through ~100 MB each
+  command); processing the cursors from the gap's end when it is past the last cursor would halve it.
+- RET on lines with unbalanced braces far apart (the 100 MB bench text) costs ~0.4-0.6 ms per cursor, the
+  same as with one cursor there: the indentation's bracket match looks back up to SYNTAX_MATCH_MAX (256 KB)
+  and zeroes a 256 KB stack for each walk.
+- A mark-all with 100,000 cursors (max_cursors at the top of its range) makes them all in one frame (~5.5
+  ms); and keys typed while a long mark-all searches wait instead of being queued.
+- Per-cursor kill rings (the multiple-cursors package's mc/kill-ring); undo with one cursor still restores
+  only its point, not its mark.
 - Auto-save and crash recovery.
 - Writing to a path another buffer visits (Emacs asks first; teal then has two buffers on it).
 - Clicking a candidate in the list; dimming the shadowed part of a file name ("c:/a/~/b").

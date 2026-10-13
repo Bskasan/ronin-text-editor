@@ -215,6 +215,13 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # 1,000,000 while builds print, against none
     build/teal_debug.exe <dir> --keys "C-x p c RET" --compile-wait MS --screenshot ..   # waits up to MS for
                                                           # running builds to end (also before --keys-after)
+    build/teal_bench.exe --bench-cursors                  # self-insert, DEL and RET at 1 to 10,000 cursors (the
+                                                          # 100 MB file: consecutive lines and spread; src/app.c)
+                                                          # with the batch flushes per command; the classes that
+                                                          # reindent on a generated C file at 1,000 / 10,000; the undo
+                                                          # of a 10,000-cursor edit; mark-all on a million occurrences
+                                                          # (max_cursors 10,000 and 100,000) and over the 100 MB file;
+                                                          # the memory of 10,000 / 100,000 cursors (exit 9 if wrong)
 
 The benches never take the focus (shown cloaked without activation, as the smoke and --idle-check);
 screenshot runs take the workers' results (project scans, searches, builds' output; until none came for
@@ -269,7 +276,9 @@ the other window without selecting it, its workers done before the frame: the fi
 text color on the background, the window's inactive mode line; then the window and the buffer go. A build (stage 9): the --child program
 in build\tmp\smoke_compile (an error and a warning on a.c, exit 2) into *compilation*, not selected: the file
 name in search_file, "(1,5)" in search_line_number, "error" in compilation_error, "warning" in
-compilation_warning, the mode line's "exit [2]" in its cells; then the window and the buffer go. Every
+compilation_warning, the mode line's "exit [2]" in its cells; then the window and the buffer go. Three cursors
+with regions (stage 10): on lines 0-2 of *scratch*, focus on, each filled cursor cell, each region in the selection
+color, the cells after the lines in the background, "mc:3" drawn in the mode line; then one cursor again. Every
 syntax frame also has a number pixel in its color. The window
 title must be "*scratch* - teal",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
@@ -396,7 +405,14 @@ directory); kills (the tree gone, during a flood, 100 start / kill rounds, handl
 headless app (the prompt, the exact *compilation* text, the mode line's state, the summary, next-error over
 errors and a note, RET, n, p, q, g, recompile, every compilation_scroll_output and compilation_save_buffers
 value, a second build, C-c C-k, killing the buffer, quitting, a link-only failure, files rewritten by a build,
-[build] directory and diagnostics, a build that cannot start, the shutdown with a build running). A failed
+[build] directory and diagnostics, a build that cannot start, the shutdown with a build running); summary lines
+(goldens, not counted) and compilation_relative_paths (Phase 14). Phase 14: marker batches against the sequential
+path (ascending, descending, mixed and joined runs, valid UTF-8 and invalid bytes, the swallowed flag); the
+multiple-cursor driver (swallowed cursors, line commands with two cursors on a line, the merge rule, keyboard-quit's
+two steps, max_cursors); collapsing through the keys; undo with several cursors (merged typing, undo-redo, the chain,
+random commands); kill pieces and yanks; the new commands on tricky input and through the headless app (their keys,
+mark-all over frames, C-g, the minibuffer's refusals); the mouse and two windows on one buffer; a differential fuzz
+of 20,000 commands against the one-cursor commands applied cursor by cursor to a flat text. A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\teal.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);

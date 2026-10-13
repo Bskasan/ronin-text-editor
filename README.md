@@ -14,10 +14,10 @@ changed.
 
 Early and experimental: teal is a learning project (see [How this project is
 made](#how-this-project-is-made)). It is built in 15 phases (the roadmap is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)).
-Phases 1 to 13 are done: window and renderer, font, text buffer, views, commands and the config file,
+Phases 1 to 14 are done: window and renderer, font, text buffer, views, commands and the config file,
 editing, the minibuffer, syntax highlighting, isearch and query-replace, window splitting, projects
-and fuzzy file open, project-wide search, building and jumping to errors. Still to come: 14 multiple
-cursors, 15 a performance and size pass.
+and fuzzy file open, project-wide search, building and jumping to errors, multiple cursors. Still to
+come: 15 a performance and size pass.
 
 Windows 10 or later, x64; developed and tested on Windows 11 only.
 
@@ -35,6 +35,26 @@ Only what exists today.
 - Files: UTF-8 (with or without BOM) and UTF-16 with BOM; LF, CRLF and mixed line endings are kept
   byte for byte; a 100 MB file loads in 35-40 ms. Saving writes a temporary file and swaps it in. Buffers whose file changed on disk are reloaded when they have no unsaved changes, and
   flagged otherwise. Quitting, and signing out of Windows, ask about unsaved buffers.
+
+**Multiple cursors**
+- The commands of Emacs' multiple-cursors package (without its `mc/` prefix): `C->` adds a cursor at the
+  next occurrence of the region's text (literal, case sensitive) with the same region, or, without a
+  region, on the next line at the same column; `C-<` the same backwards; `C-c C-<` marks every occurrence
+  (on a large file the search runs over several frames, `C-g` stops it); `C-S-c C-S-c` puts a cursor on
+  every line of the region; Ctrl+Shift+click adds a cursor or removes the one there. Without keys:
+  skip-to-next-like-this, unmark-next-like-this, edit-ends-of-lines, edit-beginnings-of-lines.
+- Typing, motions, kills, yanks, indentation and the other editing commands act at every cursor, in one
+  undo step that also brings every cursor back. Cursors that meet, or whose regions overlap, become one.
+  A kill keeps one piece per cursor: a yank with as many cursors gives each its own piece, with another
+  number the whole text; the clipboard gets the pieces one per line. Line commands (TAB, comment-line,
+  kill-whole-line, M-^) act once per line.
+- The new cursor of `C->` is the main one: the window follows it, the mode line shows its line and
+  column and the number of cursors (`mc:3`). `C-g` first deactivates the regions, then leaves only the
+  main cursor; isearch, query-replace, goto-line, `C-x h`, a plain click and switching buffers leave it
+  alone too. At most `max_cursors` (10,000; up to 100,000).
+- Typing at 10,000 cursors takes ~2 ms per key, command and frame, on a 100 MB file.
+
+![mark-all-like-this on "job" in src/cursors.c: 111 cursors with their regions](docs/images/cursors.png)
 
 **Windows**
 - Split below or to the right (up to 8 windows), each with its own point and scroll position; move
@@ -72,8 +92,10 @@ Only what exists today.
   thread: typing is as fast during a build as without. Error lines of MSVC (cl, link, csc, tsc, MSBuild),
   GCC and Clang, Jai and tsc's pretty form are recognized when their file exists: the file and the line in
   the colors of `*search*`, "error" red, "warning" orange, notes green. Lines like `LINK : fatal error
-  LNK1104` have no file position but are counted and colored too. ANSI colors are removed, the console's
-  code page is converted.
+  LNK1104` have no file position but are counted and colored too; a tool's own summary ("1 error
+  generated.", "0 Error(s)") is colored but not counted. An absolute path under the project root is shown
+  relative to it (`compilation_relative_paths`). ANSI colors are removed, the console's code page is
+  converted.
 - The mode line shows running, exit [0] or exit [N]; the last line and the echo area say how it ended
   ("Compilation finished: 2 errors, 3 warnings"). next-error and previous-error walk the errors (notes are
   skipped); in `*compilation*` RET, n, p and q work as in `*search*`, g runs the command again and C-c C-k
@@ -117,10 +139,11 @@ window.
 
 | what | value | where |
 |---|---|---|
-| executable size (release) | 453,632 bytes; imports only kernel32, user32, gdi32, d3d11, dwmapi and dwrite | Phase 13 |
-| startup to the first frame on screen | ~177 ms median, of which 125-150 ms is waiting for `D3D11CreateDevice` (the driver) | Phases 9, 10 and 13 |
-| typing: one keystroke's command plus building its frame | 9-20 us average, at line 1,000,000 of a 100 MB file | Phase 11 |
-| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build | Phase 13 |
+| executable size (release) | 482,304 bytes; imports only kernel32, user32, gdi32, d3d11, dwmapi and dwrite | Phase 14 |
+| startup to the first frame on screen | ~176-180 ms median, of which 125-150 ms is waiting for `D3D11CreateDevice` (the driver) | Phases 9, 10, 13 and 14 |
+| typing: one keystroke's command plus building its frame | 8-24 us average, at line 1,000,000 of a 100 MB file | Phases 11 and 14 |
+| typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms | Phase 14 |
+| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build and with 10,000 cursors | Phases 13 and 14 |
 | memory (private bytes, idle) | 76-77 MB with an empty buffer, ~67 MB of it Direct3D and the driver; 192-194 MB with a 100 MB file open | Phases 6 and 12 |
 | loading a 100 MB file | 35-40 ms | Phase 3 |
 | searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without | Phase 12 |
@@ -190,6 +213,10 @@ One deliberate difference from Emacs: `ESC` is keyboard-quit, not a Meta prefix.
 | `C-l` | recenter |
 | `M-g g` | goto-line |
 | `C-SPC` | set the mark |
+| `C->` `C-<` (on a US keyboard Ctrl+Shift+. and Ctrl+Shift+,) | a cursor at the next / previous occurrence of the region, or on the next / previous line |
+| `C-c C-<` | a cursor at every occurrence of the region |
+| `C-S-c C-S-c` | a cursor on every line of the region |
+| Ctrl+Shift+click | add a cursor, or remove the one there |
 | `C-w` `M-w` | kill (cut) / copy the region |
 | `C-k` | kill to the end of the line |
 | `C-y` `M-y` | yank (paste), then cycle through older kills |
@@ -208,7 +235,7 @@ One deliberate difference from Emacs: `ESC` is keyboard-quit, not a Meta prefix.
 | `C-x p c` | build the project (`*compilation*`; there: `g` again, `C-c C-k` kill) |
 | `M-g n` `M-g p` | next-error / previous-error: the next / previous match or error of the latest results |
 | `M-x` | run a command by name |
-| `C-g` | keyboard-quit (also cancels a prompt) |
+| `C-g` | keyboard-quit (also cancels a prompt; with several cursors: their regions, then the extra cursors) |
 | `C-h k` | describe the next key |
 | `C-c ,` | open the config file |
 | `C-x C-c` | quit (asks about unsaved buffers) |
@@ -276,7 +303,11 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
   replace. Results show 1-based byte columns (as grep does), and a location is the line and column
   where the match was found: editing the file above it moves the target. Case folding does not pair the Turkish
   dotted and dotless i.
-- Not yet: multiple cursors (phase 14).
+- Multiple cursors: one kill ring for all of them (a kill keeps a piece per cursor in one entry); M-x cannot
+  run inside a prompt, so the commands without keys need a binding there; while a large mark-all runs, other
+  keys wait for it. Typing `:` after `case` at thousands of cursors is slow (~1 s at 10,000: the
+  reindent edits before point); cursors spread over a whole 100 MB file cost ~20 ms per key (the text
+  between them moves).
 - Builds: one at a time (`*compilation*`), no input to the process, one build command per project, no
   "Entering directory" tracking, and only the built-in error formats. A line shows when its newline
   arrives (a progress line without one waits). Error locations are the line and column as printed.
@@ -307,13 +338,14 @@ Testing is built into the dev builds:
   through the real keymap (commands, prompts, windows, isearch, the project finder, project-wide search,
   occur and builds); the search over files against a whole-text reference and on generated trees with 1 to 8
   threads; the error matchers' golden lines; builds of a scripted child program (output, exit codes,
-  kills of the whole process tree, 100 start / kill rounds); file round trips; and a harness that posts
+  kills of the whole process tree, 100 start / kill rounds); a differential fuzz of multiple cursors against
+  the one-cursor commands applied cursor by cursor; file round trips; and a harness that posts
   real key messages through the window procedure on US, UK, Turkish Q and Finnish keyboard layouts.
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
-  the minibuffer, isearch, windows, the finder, a results buffer, a build), the D3D11 debug layer and
+  the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors), the D3D11 debug layer and
   leaks (processes, threads and handles too).
 - Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans, the
-  project-wide search and a build's output on a 100 MB file or tree.
+  project-wide search, a build's output and typing at up to 10,000 cursors on a 100 MB file or tree.
 - `verify.bat` builds the three configurations, runs the smoke and the tests and prints one PASS or
   FAIL line; it is the gate before every commit.
 

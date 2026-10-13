@@ -37,6 +37,8 @@ dev builds; they are not part of the repository.
 | `--child <script>` | Dev builds: the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten). |
 | `--bench-compile` | A `--child` program printing 100 MB into *compilation* (with the cap raised and at the default 16 MB: time, frames, the longest frame, memory), typing at line 1,000,000 of the 100 MB file while builds print. Never takes the focus. |
 | build tests | The `--test` groups logged as "test: ok: processes", "compile matchers", "compile path resolution", "build settings and colors", "compile cleaning", "builds", "build kills", "builds in the app" and "the landing highlight" (Phase 13). |
+| `--bench-cursors` | Typing (self-insert, DEL, RET) at 1, 10, 100, 1,000 and 10,000 cursors on the 100 MB file (consecutive lines and spread) and on src/app.c; the language-aware classes on a C file at 1,000 and 10,000 cursors with the batch flushes per command; the undo of a 10,000-cursor edit; mark-all-like-this on a million occurrences and over the whole 100 MB file; the memory of 10,000 and 100,000 cursors. Never takes the focus. |
+| cursor tests | The `--test` groups logged as "test: ok: marker batches", "the multiple-cursor driver", "multiple cursors collapsing", "multiple-cursor undo", "multiple-cursor kills and yanks", "multiple-cursor commands", "multiple-cursor commands in the app", "multiple cursors and the mouse" and "multiple-cursor differential fuzz" (Phase 14). |
 | project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".teal-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
@@ -363,6 +365,38 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 | O23 | Building teal itself from teal: a clean build, then one with an error | AUTOMATED-NEW + HUMAN | screenshots p13_selfbuild.png (teal_bench.exe on the repository, C-x p c RET: .\build.bat, 2.39 s, exit [0]) and p13_selfbuild_error.png / p13_selfbuild_next_error.png (a copy with an error and a warning in edit.c: both listed and colored, M-g n on edit.c line 866). Looking at a real failing build: HUMAN step 21. |
 | O24 | After a build teal is idle again: 0% CPU | AUTOMATED-NEW | `teal_debug.exe build\tmp\demo_build\particles.jai --keys "C-x p c RET" --compile-wait 10000 --idle-check`: 0 frames, 0 us of CPU in 5 s (and the same with no build). The build's worker waits in the kernel; nothing polls. |
 
+## P. Multiple cursors (Phase 14)
+
+"cursor tests" are the `--test` groups listed above ("the multiple-cursor differential fuzz" runs 20,000 random
+commands against the one-cursor commands applied cursor by cursor to a flat text). Screenshots are in build/shots.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| P1 | Select a word, C->: a cursor with the same region at its next occurrence, which becomes the main cursor (the view follows it); at the last one "No more matches" | AUTOMATED-NEW | multiple-cursor commands ("aaaa" with "aa": not overlapping, then "No more matches"; at the end of the buffer; a multi-line region; case sensitive); in the app (C-> by its key on a 1.2 MB buffer); screenshot p14_next.png (C-> three times: four regions). |
+| P2 | C-< does the same backwards, before the first cursor | AUTOMATED-NEW | multiple-cursor commands (at the start, point at the region's start, "No more matches"); in the app (C-< at the first occurrence). |
+| P3 | Without a region, C-> / C-< add a cursor on the next / previous line at the same column (at the end of a shorter line, the column kept for the next one) | FIXED | multiple-cursor commands (a short line, the column kept, the first and last lines); "a stale goal column" (C-n C-e C->: the column of the end of the line, not the one C-n left) failed in screenshot p14_typing.png and was fixed in 3356c01 (fix(cursors): the goal column only across vertical motions). |
+| P4 | Select a word, C-c C-<: a cursor on every occurrence, the count in the echo area; on a huge file it runs over several frames, keys wait, C-g stops it | AUTOMATED-NEW | multiple-cursor commands ("Marked 3 occurrences", overlapping occurrences, "No region"); in the app (13 frames at 64 KB a frame, keys typed meanwhile do nothing, C-g: "Quit" and no cursor added); `--bench-cursors` (a million occurrences: the cap in one frame; the whole 100 MB file: 5 frames); screenshot p14_mark_all.png ("Marked 120 occurrences", mc:120). |
+| P5 | M-x skip-to-next-like-this moves the newest cursor to the next occurrence, M-x unmark-next-like-this removes it | AUTOMATED-NEW | multiple-cursor commands (skip by text and by lines, "No more matches", unmark, "Only one cursor"). |
+| P6 | Select some lines, C-S-c C-S-c: a cursor on each line at point's column (at the end of a shorter line); M-x edit-ends-of-lines / edit-beginnings-of-lines | AUTOMATED-NEW | multiple-cursor commands (short lines, point on the first or the last line, both variants, "No region"); in the app (C-S-c C-S-c by its key); screenshot p14_edit_lines.png. |
+| P7 | Typing, DEL, C-d, RET, motions and C-SPC act at every cursor; cursors that meet become one | AUTOMATED-NEW | multiple-cursor differential fuzz (every cursor and the text after each command); three cursors; the multiple-cursor driver (8 merge cases); screenshot p14_typing.png. |
+| P8 | Kills with several cursors: one piece per cursor; C-y with as many cursors gives each its piece, with another number the whole text; the clipboard gets the pieces one per line | AUTOMATED-NEW + HUMAN | multiple-cursor kills and yanks (pieces, appending and prepending, yank-pop, a clipboard changed elsewhere, kill-ring-save, the clipboard text) on the in-memory clipboard; the fuzz compares the newest kill after every kill. Pasting into another program: HUMAN step 26. |
+| P9 | C-/ after a command with several cursors brings the text and every cursor back; C-? goes forward again | AUTOMATED-NEW | multiple-cursor undo (merged typing, undo-redo, the chain, 1,452 random commands undone and redone, a one-cursor group undone with three); proven to fail with the cursor restore broken in a scratch copy. |
+| P10 | C-g with several cursors first deactivates their regions, then leaves the main cursor only | AUTOMATED-NEW | the multiple-cursor driver (keyboard-quit's two steps); in the app (C-g C-g). |
+| P11 | C-s, M-%, M-x replace-string, M-g g, C-x h, a plain click and switching buffers leave one cursor | AUTOMATED-NEW | multiple cursors collapsing (through the keys; an aborted prompt keeps one cursor); the multiple-cursor driver (C-x h); multiple cursors and the mouse (a plain click). |
+| P12 | Ctrl+Shift+click adds a cursor there, or removes the one already there (never the last) | AUTOMATED-NEW + HUMAN | multiple cursors and the mouse (adding, removing, the last one kept, refused on the minibuffer) through the app's mouse events. With a real mouse and keyboard: HUMAN step 25. |
+| P13 | TAB, S-TAB, comment-line, kill-whole-line and M-^ with two cursors on one line act on that line once | AUTOMATED-NEW | the multiple-cursor driver (each line command with two cursors on one line). |
+| P14 | Two cursors on one line, C-k: the first kills to the end of the line, the second (inside the killed text) does nothing; C-d at two adjacent cursors deletes two characters; a cursor at the end of the killed text still runs | AUTOMATED-NEW | the multiple-cursor driver (the three cases, DEL over a region, kill-word); the fuzz applies the same rule. |
+| P15 | The mode line shows "mc:N" with more than one cursor | AUTOMATED-NEW | smoke stage 10 ("mc:3" drawn); multiple cursors and the mouse; screenshots p14_*.png and p14_idle_10000_modeline.png (mc:10000). |
+| P16 | Every cursor and region is drawn in the selected window; the bracket match only at the main cursor | AUTOMATED-NEW | smoke stage 10 (each cursor cell, each region, the cells after the lines); screenshot p14_next.png (the paren match on the main cursor's line only). |
+| P17 | In the minibuffer the cursor commands and Ctrl+Shift+click are refused with a message | AUTOMATED-NEW | multiple-cursor commands in the app (8 refusals, by the default keys and by keys bound in a config; M-x does not run inside a prompt); multiple cursors and the mouse. |
+| P18 | max_cursors (10000) stops every adding command with "Cursor limit reached" | AUTOMATED-NEW | multiple-cursor commands (the cap at 5 for mark-all, mark-next, mark-previous and edit-lines); the multiple-cursor driver (the default, the range, the warning); `--bench-cursors` (100,000). |
+| P19 | Two windows on one buffer: each keeps its own cursors, which follow the other window's edits | AUTOMATED-NEW | multiple cursors and the mouse (three cursors in one window, one in the other, typing in each). |
+| P20 | Typing at 1,000 and 10,000 cursors stays fast, on a 100 MB file too | AUTOMATED-NEW + HUMAN | `--bench-cursors` (a self-insert at 1,000 cursors 0.2-0.3 ms, at 10,000 1.7-2.4 ms, command plus frame, in several runs); the feel: HUMAN step 27. |
+| P21 | Idle with 10,000 cursors: 0% CPU | AUTOMATED-NEW | `teal_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
+| P22 | C-> and C-< are Ctrl+Shift+. and Ctrl+Shift+, on a US keyboard | AUTOMATED-NEW | harness: every default binding on US and United Kingdom; on Turkish Q and Finnish they are listed as US keys landing elsewhere (the keys with > and < run them there). |
+| P23 | A tool's summary line ("1 error generated.", "0 Error(s)", "Compilation failed (1 error)") is colored and not counted | AUTOMATED-NEW | compile matchers (19 summaries and traps); builds (a summary not counted); builds in the app (both count words of an MSBuild line marked, the echo's counts unchanged). |
+| P24 | An error printed with an absolute path under the project root shows the path relative to the root; visiting it still works | AUTOMATED-NEW | compile path resolution (10 shown-path cases); builds in the app (on and off: under the root, outside it, relative; next-error to the file). |
+
 ## HUMAN steps
 
 In this order, with `build\teal.exe` (or teal_debug.exe):
@@ -422,6 +456,15 @@ Phase 13, builds:
     `git checkout -- <file>` in a terminal. Both succeed; nothing complains that a file is in use.
 24. **O10**: M-x compile with `ping -t localhost`, wait a few lines, C-c C-k. *compilation* says
     "Compilation killed"; Task Manager shows no ping.exe and no cmd.exe started by teal.
+
+Phase 14, multiple cursors:
+
+25. **P12**: In a file, Ctrl+Shift+click three places: three cursors, "mc:4" in the mode line. Ctrl+Shift+click one of
+    them again: it goes. A plain click: one cursor.
+26. **P8**: With three cursors on three lines, C-k, then paste in Notepad: three lines, the killed texts in order.
+27. **P20**: Open a long file, C-x h C-S-c C-S-c (10,000 cursors), type a word, DEL, RET RET. Nothing lags (dev
+    helper for the look: `teal_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --screenshot
+    build\shots\p14_many.png`).
 
 Dev helpers that take most of the work out of the others: `teal_debug.exe --idle-check` (A4, Z1),
 `teal_debug.exe --dpi-check build\shots\dpi` (A9), and `teal_debug.exe --clipboard-check` (E14,
