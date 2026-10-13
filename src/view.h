@@ -43,7 +43,7 @@ void echo_clear(Echo *e);
 // ---------------------------------------------------------------------------
 // Views
 
-#define VIEW_CURSOR_RESERVE MB(16)  // address space for the cursor array (~1M cursors)
+#define VIEW_CURSOR_RESERVE MB(16)  // address space for the cursor array (~419,000 cursors of 40 bytes)
 #define VIEW_MEMORY_RESERVE MB(1)   // address space for the positions a view remembers (~32,000 buffers)
 #define VIEW_CONTEXT_LINES 2        // kept on screen by scroll-up/down-command (Emacs next-screen-context-lines)
 
