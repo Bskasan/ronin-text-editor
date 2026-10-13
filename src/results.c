@@ -33,9 +33,12 @@ static void results_drop_search(App *app, GrepSearch *s, b32 cancel) {
     app->grep_dying[app->grep_dying_count++] = s;
 }
 
-// Stops what fills the buffer (workers, the list's feeding, a buffer being searched).
+static void results_drop_run(App *app, Results *r);
+
+// Stops what fills the buffer (workers, the list's feeding, a buffer being searched, a build).
 static void results_stop(App *app, Results *r) {
     if (r->grep) results_drop_search(app, r->grep, 1);
+    if (r->run) results_drop_run(app, r);
     r->grep = NULL;
     r->follow = NULL;
     r->source = NULL;
@@ -45,7 +48,7 @@ static void results_stop(App *app, Results *r) {
 }
 
 // A slot's arenas (each a 1 GB reservation, committed as used), in one list.
-#define RESULTS_ARENAS 6
+#define RESULTS_ARENAS 7
 static void results_arenas(Results *r, Arena **list) {
     list[0] = &r->arena;
     list[1] = &r->loc_arena;
@@ -53,6 +56,7 @@ static void results_arenas(Results *r, Arena **list) {
     list[3] = &r->held[0];
     list[4] = &r->held[1];
     list[5] = &r->pend;
+    list[6] = &r->mark_arena;
 }
 
 // The slot for a results buffer named `name` (made, or reused with its search stopped), its text and
@@ -69,7 +73,6 @@ static Results *results_open(App *app, String8 name, ResultsKind kind) {
         if (!buf) buf = app_new_buffer(app, name);
         buf->read_only = 1;
         buffer_undo_enable(buf, 0); // a program buffer: no undo
-        buf->keymap = BUFFER_KEYMAP_SEARCH_RESULTS;
         r->buffer = buf;
         Arena *arenas[RESULTS_ARENAS];
         results_arenas(r, arenas);
@@ -90,6 +93,8 @@ static Results *results_open(App *app, String8 name, ResultsKind kind) {
     r->first_line = 2;
     r->locs = (Location *)r->loc_arena.base;
     r->state = (ResultsFile *)r->state_arena.base;
+    r->marks = (ResultsMark *)r->mark_arena.base;
+    buf->keymap = kind == RESULTS_COMPILE ? BUFFER_KEYMAP_COMPILATION : BUFFER_KEYMAP_SEARCH_RESULTS;
     if (app->results_last == r) app->results_last = NULL;
     return r;
 }
@@ -251,7 +256,7 @@ static void results_flush(App *app, Results *r) {
     results_replace(r, r->tail, r->tail, str8(r->pend.base, (i64)n));
     r->tail += (i64)n;
     arena_reset(&r->pend);
-    if (!r->point_set && r->count) { // the first location: point there in the windows that have not moved it (RET works at once)
+    if (!r->point_set && r->count && r->kind != RESULTS_COMPILE) { // the first location: point there in the windows that have not moved it (RET works at once)
         r->point_set = 1;
         i64 at = buffer_line_start(r->buffer, r->locs[0].row);
         View *views[WINDOW_MAX];
@@ -541,8 +546,10 @@ static b32 results_running(App *app) {
     return 0;
 }
 
+static b32 results_compile_work(App *app, Results *r, u64 deadline, i64 budget);
+
 // The frame's results work within its deadline: the lists fed, the files written in order, buffers
-// searched. True while some of it can go on at once (another frame).
+// searched, a build's lines. True while some of it can go on at once (another frame).
 static b32 results_work(App *app, u64 deadline, i64 budget) {
     b32 pending = 0;
 #if TEAL_DEV
@@ -551,6 +558,10 @@ static b32 results_work(App *app, u64 deadline, i64 budget) {
     for (i32 i = 0; i < RESULTS_MAX; i++) {
         Results *r = &app->results[i];
         if (!r->buffer || !r->running) continue;
+        if (r->kind == RESULTS_COMPILE) {
+            pending |= results_compile_work(app, r, deadline, budget);
+            continue;
+        }
         results_feed(r, budget ? 0 : deadline);
         pending |= results_emit(app, r, deadline, budget);
         // The claim window moves once a frame (it wakes every worker): emit_next + the window, unless the
@@ -578,6 +589,16 @@ static b32 results_wake(App *app) {
     for (i32 i = 0; i < RESULTS_MAX; i++) {
         Results *r = &app->results[i];
         if (!r->buffer || !r->running) continue;
+        if (r->run) { // a build's batches: taken now, written by the frame's work
+            CompileBatch *b = compile_take(r->run);
+            if (b) {
+                if (r->batches_last) r->batches_last->next = b;
+                else r->batches = b;
+                while (b->next) b = b->next;
+                r->batches_last = b;
+                frame = 1;
+            }
+        }
         if (r->grep && grep_drain(r->grep, results_record, r)) frame = 1;
 #if TEAL_DEV
         if (r->grep) r->dev_max_ahead = MAX(r->dev_max_ahead, os_atomic_get(&r->grep->claimed) - r->emit_next);
@@ -589,6 +610,19 @@ static b32 results_wake(App *app) {
         if (app->grep_dying[i]->ended) {
             grep_free(app->grep_dying[i]);
             app->grep_dying[i] = app->grep_dying[--app->grep_dying_count];
+        } else {
+            i++;
+        }
+    }
+    for (i32 i = 0; i < app->compile_dying_count;) { // killed builds: their batches go back unread
+        CompileRun *c = app->compile_dying[i];
+        for (CompileBatch *b = compile_take(c), *next; b; b = next) {
+            next = b->next;
+            compile_give_back(c, b);
+        }
+        if (c->ended) {
+            compile_free(c);
+            app->compile_dying[i] = app->compile_dying[--app->compile_dying_count];
         } else {
             i++;
         }
@@ -639,7 +673,27 @@ static void results_shutdown(App *app, u64 deadline) {
         }
     }
     app->grep_dying_count = 0;
+    for (i32 i = 0; i < app->compile_dying_count; i++) {
+        CompileRun *c = app->compile_dying[i];
+        for (CompileBatch *b = compile_take(c), *next; b; b = next) {
+            next = b->next;
+            compile_give_back(c, b);
+        }
+        if (compile_join(c, deadline)) {
+            compile_free(c);
+        } else {
+            LOG("compile: the build worker of '%S' did not end within %d ms of the exit: left to the process exit (abandoned)", c->command,
+                PROJECT_SHUTDOWN_MS);
+#if TEAL_DEV
+            app->dev_compile_abandoned++;
+            os_dev_thread_abandoned();
+#endif
+        }
+    }
+    app->compile_dying_count = 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) if (app->results[i].buffer) results_free(&app->results[i]);
+    if (app->compile_arena.base) os_release(app->compile_arena.base);
+    if (app->compile_next_arena.base) os_release(app->compile_next_arena.base);
 }
 
 // ---------------------------------------------------------------------------
@@ -824,8 +878,8 @@ static b32 results_visit(CommandContext *ctx, Results *r, i64 idx, ResultsVisit 
         }
     } else {
         arena_reset(&app->files_arena);
-        String8 path = str8_fmt(&app->files_arena, "%S\\%S", r->root, name);
-        for (i64 i = r->root.len; i < path.len; i++) if (path.data[i] == '/') path.data[i] = '\\';
+        String8 path = r->kind == RESULTS_COMPILE ? str8_copy(&app->files_arena, name) : str8_fmt(&app->files_arena, "%S\\%S", r->root, name);
+        for (i64 i = r->kind == RESULTS_COMPILE ? 0 : r->root.len; i < path.len; i++) if (path.data[i] == '/') path.data[i] = '\\';
         String8 full = os_full_path(&app->files_arena, path);
         buf = buffer_list_find_path(&app->buffers, full.len ? full : path);
         OsFileInfo info;
@@ -880,7 +934,7 @@ static void cmd_compile_goto_error(CommandContext *ctx) {
     if (!r) return;
     i64 idx = results_at_point(r, ctx->view);
     if (idx < 0) {
-        echo_message(ctx->echo, "No match on this line");
+        echo_message(ctx->echo, r->kind == RESULTS_COMPILE ? "No error on this line" : "No match on this line");
         return;
     }
     results_visit(ctx, r, idx, RESULTS_VISIT_SELECT);
@@ -892,6 +946,7 @@ static void results_step_here(CommandContext *ctx, i32 dir) {
     if (!r) return;
     i64 row = buffer_line_of(r->buffer, view_point(ctx->view, &ctx->view->cursors[0]));
     i64 idx = dir > 0 ? results_lower_bound(r, row + 1) : results_lower_bound(r, row) - 1;
+    while (idx >= 0 && idx < r->count && r->locs[idx].kind == LOCATION_INFO) idx += dir; // notes are skipped
     if (idx < 0 || idx >= r->count) {
         echo_message(ctx->echo, "No more matches");
         return;
@@ -916,6 +971,7 @@ static void results_step(CommandContext *ctx, i32 dir) {
     }
     i64 idx = r->current + dir;
     if (r->current < 0 && dir < 0) idx = -1;
+    while (idx >= 0 && idx < r->count && r->locs[idx].kind == LOCATION_INFO) idx += dir; // notes are skipped
     if (idx < 0 || idx >= r->count) {
         echo_message(ctx->echo, "No more matches");
         return;
@@ -981,9 +1037,15 @@ static void cmd_occur(CommandContext *ctx) {
     if (minibuffer_read(ctx, &req)) ctx->mini->state.text = str8_copy(&ctx->mini->arena, def);
 }
 
+static void results_compile_again(CommandContext *ctx);
+
+// In *search* and *occur*: the search again. Anywhere else (*compilation* too): the last build again.
 static void cmd_recompile(CommandContext *ctx) {
-    Results *r = results_here(ctx);
-    if (!r) return;
+    Results *r = results_of(ctx->app, ctx->view->buffer);
+    if (!r || r->kind == RESULTS_COMPILE) {
+        results_compile_again(ctx);
+        return;
+    }
     String8 root = str8_copy(ctx->scratch, r->root), query = str8_copy(ctx->scratch, r->query);
     if (r->kind == RESULTS_PROJECT) {
         results_project_search(ctx, root, query, r->fold, 1);
@@ -1010,6 +1072,392 @@ static void cmd_quit_window(CommandContext *ctx) {
     ctx->cursor = &ctx->view->cursors[0];
 }
 
+// ---------------------------------------------------------------------------
+// Builds: *compilation*. A build is a CompileRun (compile.c) whose worker owns the process; app_wake takes
+// its batches, the frame's results work writes them a line at a time inside the frame budget, each with its
+// location (or the kind word of a line without one). The windows showing it follow its output by
+// compilation_scroll_output. When it ends, the buffers whose files it rewrote are checked at once.
+
+_Static_assert((i32)LOCATION_ERROR == (i32)COMPILE_ERROR && (i32)LOCATION_WARNING == (i32)COMPILE_WARNING && (i32)LOCATION_INFO == (i32)COMPILE_INFO,
+               "a build's location kinds are CompileKind's");
+
+static Results *results_compilation(App *app) {
+    for (i32 i = 0; i < RESULTS_MAX; i++) if (app->results[i].buffer && app->results[i].kind == RESULTS_COMPILE) return &app->results[i];
+    return NULL;
+}
+
+static b32 results_compile_running(App *app) {
+    Results *r = results_compilation(app);
+    return r && r->run;
+}
+
+// A build that is not wanted any more: killed, its batches given back unread; app_wake frees it once it ended.
+static void results_drop_run(App *app, Results *r) {
+    CompileRun *c = r->run;
+    r->run = NULL;
+    for (CompileBatch *b = r->batches, *next; b; b = next) {
+        next = b->next;
+        compile_give_back(c, b);
+    }
+    r->batches = r->batches_last = NULL;
+    r->batch_at = 0;
+    if (c->ended) {
+        compile_free(c);
+        return;
+    }
+    compile_cancel(c);
+    if (app->compile_dying_count == RESULTS_DYING_MAX) { // never in practice: wait for the oldest
+        CompileRun *old = app->compile_dying[0];
+        for (CompileBatch *b = compile_take(old), *next; b; b = next) {
+            next = b->next;
+            compile_give_back(old, b);
+        }
+        if (compile_join(old, os_time_us() + (u64)PROJECT_SHUTDOWN_MS * 1000)) compile_free(old);
+        memmove(app->compile_dying, app->compile_dying + 1, sizeof(app->compile_dying[0]) * (RESULTS_DYING_MAX - 1));
+        app->compile_dying_count--;
+    }
+    app->compile_dying[app->compile_dying_count++] = c;
+}
+
+// "2", "-1", or "0xc0000005" for the codes a crash gives.
+static i64 results_exit_text(u8 *out, i64 cap, u32 code) {
+    return code >= 0xC0000000u ? fmt_buf(out, cap, "0x%x", code) : fmt_buf(out, cap, "%d", (i32)code);
+}
+
+// The mode name in the mode line: a build's state in *compilation*.
+static String8 results_mode_name(App *app, Buffer *buf, Arena *arena) {
+    Results *r = results_of(app, buf);
+    if (!r || r->kind != RESULTS_COMPILE) return str8_cstr(buffer_language_name(buf->language));
+    if (r->build_state == RESULTS_BUILD_RUNNING) return STR8_LIT("Compilation:running");
+    if (r->build_state == RESULTS_BUILD_KILLED) return STR8_LIT("Compilation:killed");
+    if (r->build_state == RESULTS_BUILD_FAILED) return STR8_LIT("Compilation:failed");
+    u8 code[32];
+    return str8_fmt(arena, "Compilation:exit [%S]", str8(code, results_exit_text(code, sizeof(code), r->exit_code)));
+}
+
+static i64 results_counts(u8 *out, i64 cap, Results *r) {
+    return fmt_buf(out, cap, "%D %s, %D %s", r->errors, results_plural(r->errors, "error", "errors"), r->warnings,
+                   results_plural(r->warnings, "warning", "warnings"));
+}
+
+// One line of output: into the frame's pending text, its location or its kind word kept.
+static void results_compile_line(App *app, Results *r, const CompileLine *l) {
+    i64 row = r->first_line + r->rows++;
+    u8 *at = PUSH_ARRAY(&r->pend, u8, l->text.len + 1);
+    memcpy(at, l->text.data, (size_t)l->text.len);
+    at[l->text.len] = '\n';
+    if (l->kind == COMPILE_ERROR) r->errors++;
+    else if (l->kind == COMPILE_WARNING) r->warnings++;
+    if (l->located) {
+        Location *loc = PUSH_STRUCT(&r->loc_arena, Location);
+        *loc = (Location){ .file = results_file(r, l->file), .col = (i32)CLAMP(l->col - 1, 0, 0x7FFFFFFF), .line = l->line, .row = row,
+                           .path_off = l->path_off, .path_len = l->path_len, .num_off = l->num_off, .num_len = l->num_len,
+                           .mark_off = l->kind_off, .mark_len = l->kind_len, .kind = (u8)l->kind };
+        r->count++;
+        r->found++;
+    } else if (l->kind != COMPILE_NONE && l->kind_len) {
+        *PUSH_STRUCT(&r->mark_arena, ResultsMark) = (ResultsMark){ row, l->kind_off, l->kind_len, (u8)l->kind };
+        r->mark_count++;
+    }
+    if (arena_pos(&r->pend) >= RESULTS_FLUSH_BYTES) results_flush(app, r);
+}
+
+// The end: the last line, the summary in the echo area, the run freed; the buffers whose files the build
+// rewrote are checked now (as on an activation).
+static void results_compile_finish(App *app, Results *r) {
+    CompileRun *c = r->run;
+    r->run = NULL;
+    r->running = 0;
+    r->end_us = os_time_us();
+    r->exit_code = c->exit_code;
+    b32 started = c->start_status == OS_FILE_OK;
+    u8 time[32], code[32], counts[96], line[600], echo[700];
+    i64 tn = results_seconds(time, sizeof(time), c->end_us - c->start_us);
+    i64 cn = results_exit_text(code, sizeof(code), c->exit_code);
+    i64 kn = results_counts(counts, sizeof(counts), r);
+    i64 n, en;
+    arena_reset(&app->files_arena);
+    if (!started) {
+        r->build_state = RESULTS_BUILD_FAILED;
+        n = fmt_buf(line, sizeof(line), "Compilation could not start: %s (%S)", buffer_status_text(c->start_status),
+                    results_dir_shown(&app->files_arena, r->root));
+        memcpy(echo, line, (size_t)n);
+        en = n;
+    } else if (c->killed) {
+        r->build_state = RESULTS_BUILD_KILLED;
+        n = en = fmt_buf(line, sizeof(line), "Compilation killed");
+        memcpy(echo, line, (size_t)n);
+    } else if (!c->exit_code) {
+        r->build_state = RESULTS_BUILD_EXITED;
+        n = fmt_buf(line, sizeof(line), "Compilation finished in %S", str8(time, tn));
+        en = fmt_buf(echo, sizeof(echo), "Compilation finished: %S", str8(counts, kn));
+    } else {
+        r->build_state = RESULTS_BUILD_EXITED;
+        n = fmt_buf(line, sizeof(line), "Compilation exited abnormally with code %S in %S", str8(code, cn), str8(time, tn));
+        en = fmt_buf(echo, sizeof(echo), "Compilation exited abnormally with code %S: %S", str8(code, cn), str8(counts, kn));
+    }
+    results_replace(r, r->tail, buffer_size(r->buffer), str8_fmt(&app->files_arena, "\n%S", str8(line, n)));
+    echo_message(&app->echo, "%S", str8(echo, en));
+    compile_free(c);
+    if (started) files_check_all(app);
+}
+
+// The frame's share of a build's lines. True while more can be written at once.
+static b32 results_compile_work(App *app, Results *r, u64 deadline, i64 budget) {
+    // The windows that follow it: point at the end of what was written.
+    i32 scroll = app->config->settings.compilation_scroll_output;
+    View *views[WINDOW_MAX], *follow[WINDOW_MAX];
+    i32 nf = 0;
+    if (scroll != COMPILATION_SCROLL_NEVER && !r->first_error) {
+        for (i32 i = 0, k = app_views(app, views); i < k; i++) {
+            if (views[i]->buffer == r->buffer && view_point(views[i], &views[i]->cursors[0]) >= r->tail) follow[nf++] = views[i];
+        }
+    }
+    i64 error_row = -1, lines = 0;
+    b32 more = 0, finished = 0;
+    while (r->batches) {
+        CompileBatch *b = r->batches;
+        CompileLine l;
+        b32 stop = 0;
+        while (!stop && compile_next_line(b, &r->batch_at, &l)) {
+            if (error_row < 0 && l.located && l.kind == COMPILE_ERROR) error_row = r->first_line + r->rows;
+            results_compile_line(app, r, &l);
+            lines++;
+            stop = budget ? lines >= budget : (lines % RESULTS_LINES_PER_CHECK == 0 && os_time_us() >= deadline);
+        }
+        if (r->batch_at < b->used) { // the frame's time is up inside this batch
+            more = 1;
+            break;
+        }
+        r->batches = b->next;
+        if (!r->batches) r->batches_last = NULL;
+        r->batch_at = 0;
+        b32 last = b->last;
+        compile_give_back(r->run, b);
+        if (last) {
+            finished = 1;
+            break;
+        }
+        if (stop) {
+            more = r->batches != NULL;
+            break;
+        }
+    }
+    results_flush(app, r);
+    if (finished) results_compile_finish(app, r);
+    b32 to_error = error_row >= 0 && scroll == COMPILATION_SCROLL_FIRST_ERROR && !r->first_error;
+    if (to_error) r->first_error = 1; // first-error: the windows stop there
+    for (i32 i = 0; i < nf; i++) {
+        i64 at = to_error ? buffer_line_start(r->buffer, error_row) : finished ? buffer_size(r->buffer) : r->tail;
+        view_set_point(follow[i], &follow[i]->cursors[0], at);
+        view_ensure_visible(follow[i]);
+    }
+    return more;
+}
+
+// A build of `command` in `dir` into *compilation*, shown through the pop-up rule and not selected (as in
+// Emacs; the selected window keeps it when it shows it already).
+static void results_compile_start(CommandContext *ctx, String8 command, String8 dir, String8 root) {
+    App *app = ctx->app;
+    Results *r = results_open(app, STR8_LIT("*compilation*"), RESULTS_COMPILE);
+    if (!r) {
+        echo_message(ctx->echo, "Too many results buffers");
+        return;
+    }
+    r->query = str8_copy(&r->arena, command);
+    r->root = str8_copy(&r->arena, dir);
+    r->build_root = str8_copy(&r->arena, root);
+    arena_reset(&app->files_arena);
+    results_begin_text(app, r, str8_fmt(&app->files_arena, "Command: %S\nDirectory: %S", command, results_dir_shown(&app->files_arena, dir)));
+    r->first_line = 3;
+    r->running = 1;
+    r->build_state = RESULTS_BUILD_RUNNING;
+    r->start_us = os_time_us();
+    app->results_last = r;
+    if (ctx->view->buffer != r->buffer) app_display_buffer(app, r->buffer, 0);
+    CompileRun *c = compile_create(command, dir, root, (i64)app->config->settings.compilation_max_output_mb * MB(1));
+    if (!compile_start(c)) {
+        compile_free(c);
+        r->running = 0;
+        r->build_state = RESULTS_BUILD_FAILED;
+        results_replace(r, r->tail, buffer_size(r->buffer), STR8_LIT("\nCompilation could not start: no thread"));
+        echo_message(ctx->echo, "Compilation could not start: no thread");
+        return;
+    }
+    r->run = c;
+    b32 follow = app->config->settings.compilation_scroll_output != COMPILATION_SCROLL_NEVER;
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, k = app_views(app, views); i < k; i++) {
+        if (views[i]->buffer != r->buffer) continue;
+        view_set_point(views[i], &views[i]->cursors[0], follow ? r->tail : 0);
+        view_ensure_visible(views[i]);
+    }
+}
+
+static Arena *results_compile_arena(Arena *a) {
+    if (!a->base) *a = arena_create(MB(64));
+    return a;
+}
+
+// The command last used for a directory (a project's root, or compile's directory) this session.
+static String8 results_compile_remembered(App *app, String8 key) {
+    for (i32 i = 0; i < app->compile_command_count; i++) {
+        if (!grep_path_compare(app->compile_keys[i], key)) return app->compile_commands[i];
+    }
+    return str8(NULL, 0);
+}
+
+static void results_compile_remember(App *app, String8 key, String8 command) {
+    Arena *a = results_compile_arena(&app->compile_arena);
+    i32 at = -1;
+    for (i32 i = 0; i < app->compile_command_count && at < 0; i++) if (!grep_path_compare(app->compile_keys[i], key)) at = i;
+    if (at < 0) {
+        if (app->compile_command_count == RESULTS_COMMANDS) { // the oldest goes
+            memmove(app->compile_keys, app->compile_keys + 1, sizeof(String8) * (RESULTS_COMMANDS - 1));
+            memmove(app->compile_commands, app->compile_commands + 1, sizeof(String8) * (RESULTS_COMMANDS - 1));
+            app->compile_command_count--;
+        }
+        at = app->compile_command_count++;
+        app->compile_keys[at] = str8_copy(a, key);
+    }
+    app->compile_commands[at] = str8_copy(a, command);
+    app->compile_last_command = app->compile_commands[at];
+    app->compile_last_dir = str8_copy(a, app->compile_next_dir);
+    app->compile_last_root = str8_copy(a, app->compile_next_root);
+}
+
+static void results_compile_start_next(CommandContext *ctx) {
+    App *app = ctx->app;
+    results_compile_start(ctx, app->compile_next_command, app->compile_next_dir, app->compile_next_root);
+}
+
+static void results_compile_kill_answer(CommandContext *ctx, MiniResult *res) {
+    if (res->yes) results_compile_start_next(ctx);
+}
+
+// After the save question (files.c): the kill question while a build runs, then the start.
+static void results_compile_go(CommandContext *ctx) {
+    if (results_compile_running(ctx->app)) {
+        MiniRequest req = { .kind = MINI_YES_NO, .prompt = STR8_LIT("A compilation process is running; kill it? (yes or no) "),
+                            .done = results_compile_kill_answer };
+        minibuffer_read(ctx, &req);
+        return;
+    }
+    results_compile_start_next(ctx);
+}
+
+// The command is known (app->compile_next_*): the unsaved file buffers first, by compilation_save_buffers.
+static void results_compile_ask(CommandContext *ctx) {
+    i32 save = ctx->app->config->settings.compilation_save_buffers;
+    if (save == COMPILATION_SAVE_NONE) results_compile_go(ctx);
+    else files_save_some_start(ctx, FILES_COMPILE | (save == COMPILATION_SAVE_ALL ? FILES_SAVE_ALL : 0));
+}
+
+static void results_compile_command_done(CommandContext *ctx, MiniResult *res) {
+    App *app = ctx->app;
+    b32 blank = 1;
+    for (i64 i = 0; i < res->text.len && blank; i++) blank = res->text.data[i] == ' ' || res->text.data[i] == '\t';
+    if (blank) {
+        echo_message(ctx->echo, "No compile command");
+        return;
+    }
+    app->compile_next_command = str8_copy(&app->compile_next_arena, res->text);
+    results_compile_remember(app, app->compile_next_key, res->text);
+    results_compile_ask(ctx);
+}
+
+// "Compile command: " with `initial` ready to edit; the build then runs in `dir`. Nothing runs before RET.
+static void results_compile_prompt(CommandContext *ctx, String8 key, String8 dir, String8 root, String8 initial) {
+    App *app = ctx->app;
+    Arena *a = results_compile_arena(&app->compile_next_arena);
+    arena_reset(a);
+    app->compile_next_key = str8_copy(a, key);
+    app->compile_next_dir = str8_copy(a, dir);
+    app->compile_next_root = str8_copy(a, root);
+    app->compile_next_command = str8(NULL, 0);
+    MiniRequest req = { .kind = MINI_TEXT, .prompt = STR8_LIT("Compile command: "), .initial = initial, .history = MINI_HISTORY_COMPILE,
+                        .done = results_compile_command_done };
+    minibuffer_read(ctx, &req);
+}
+
+// A directory as CreateProcess takes it: '\' separators, no trailing one but a drive root's.
+static String8 results_compile_dir(Arena *arena, String8 dir) {
+    String8 d = str8_copy(arena, dir);
+    for (i64 i = 0; i < d.len; i++) if (d.data[i] == '/') d.data[i] = '\\';
+    while (d.len > 3 && d.data[d.len - 1] == '\\') d.len--;
+    if (d.len == 2 && d.data[1] == ':') d = str8_fmt(arena, "%S\\", d);
+    return d;
+}
+
+static void cmd_project_compile(CommandContext *ctx) {
+    App *app = ctx->app;
+    if (ctx->mini->active) {
+        echo_message(ctx->echo, "Command attempted to use minibuffer while in minibuffer");
+        return;
+    }
+    String8 found = finder_root(app, ctx->view->buffer);
+    if (!found.len) {
+        echo_message(ctx->echo, PROJECT_NOT_IN_PROJECT);
+        return;
+    }
+    arena_reset(&app->files_arena);
+    String8 root = str8_copy(&app->files_arena, found);
+    ProjectFile pf;
+    OsFileStatus st = project_file_read(&app->files_arena, root, &pf);
+    if (st == OS_FILE_OK) finder_report(app, &pf);
+    else if (st != OS_FILE_NOT_FOUND) files_echo(&app->echo, "Cannot read %S\\%s: %s", root, PROJECT_FILE_NAME, buffer_status_text(st));
+    String8 dir = root;
+    if (pf.build_directory.len) { // relative to the root (an absolute one is taken as it is)
+        String8 d = pf.build_directory;
+        b32 absolute = (d.len >= 2 && d.data[1] == ':') || d.data[0] == '\\' || d.data[0] == '/';
+        dir = results_compile_dir(&app->files_arena, absolute ? d : str8_fmt(&app->files_arena, "%S\\%S", root, d));
+        String8 full = os_full_path(&app->files_arena, dir);
+        if (full.len) dir = results_compile_dir(&app->files_arena, full);
+    }
+    String8 initial = results_compile_remembered(app, root);
+    if (!initial.len) initial = pf.build_command;
+    results_compile_prompt(ctx, root, dir, root, initial);
+}
+
+static void cmd_compile(CommandContext *ctx) {
+    App *app = ctx->app;
+    if (ctx->mini->active) {
+        echo_message(ctx->echo, "Command attempted to use minibuffer while in minibuffer");
+        return;
+    }
+    Buffer *buf = ctx->view->buffer;
+    arena_reset(&app->files_arena);
+    String8 dir = buf->path.len ? str8(buf->path.data, MAX(buf->path.len - config_file_name(buf->path).len - 1, 0))
+                : app->finder.cmdline_dir.len ? app->finder.cmdline_dir : os_full_path(&app->files_arena, STR8_LIT("."));
+    dir = results_compile_dir(&app->files_arena, dir);
+    String8 root = str8_copy(&app->files_arena, finder_root(app, buf));
+    results_compile_prompt(ctx, dir, dir, root, results_compile_remembered(app, dir));
+}
+
+// recompile outside *search* and *occur*: the last command again, in its directory, without the prompt.
+static void results_compile_again(CommandContext *ctx) {
+    App *app = ctx->app;
+    if (!app->compile_last_command.len) {
+        echo_message(ctx->echo, "No previous compilation");
+        return;
+    }
+    Arena *a = results_compile_arena(&app->compile_next_arena);
+    arena_reset(a);
+    app->compile_next_key = str8_copy(a, app->compile_last_dir);
+    app->compile_next_command = str8_copy(a, app->compile_last_command);
+    app->compile_next_dir = str8_copy(a, app->compile_last_dir);
+    app->compile_next_root = str8_copy(a, app->compile_last_root);
+    results_compile_ask(ctx);
+}
+
+static void cmd_kill_compilation(CommandContext *ctx) {
+    Results *r = results_compilation(ctx->app);
+    if (!r || !r->run) {
+        echo_message(ctx->echo, "No compilation process");
+        return;
+    }
+    compile_cancel(r->run); // its last batch writes "Compilation killed"
+}
 #if TEAL_DEV
 // The state of every search (a test or a bench that waited too long).
 void app_dev_results_log(App *app, const char *why) {
@@ -1037,7 +1485,7 @@ void app_dev_results_log(App *app, const char *why) {
 static b32 results_dev_wait(App *app, Arena *scratch, u32 timeout_ms) {
     u64 start = os_time_us();
     for (;;) {
-        b32 busy = app->grep_dying_count > 0;
+        b32 busy = app->grep_dying_count > 0 || app->compile_dying_count > 0;
         for (i32 i = 0; i < RESULTS_MAX; i++) busy |= app->results[i].buffer && app->results[i].running;
         if (!busy) return 1;
         if (os_time_us() - start > (u64)timeout_ms * 1000) {
@@ -1056,7 +1504,7 @@ u64 app_dev_results_work_max(App *app) {
 }
 
 b32 app_dev_results_busy(App *app) {
-    b32 busy = app->grep_dying_count > 0;
+    b32 busy = app->grep_dying_count > 0 || app->compile_dying_count > 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) busy |= app->results[i].buffer && app->results[i].running;
     return busy;
 }
@@ -1132,3 +1580,6 @@ const Command CMD_PREVIOUS_ERROR_NO_SELECT = { "previous-error-no-select", cmd_p
 const Command CMD_RECOMPILE = { "recompile", cmd_recompile, COMMAND_ONCE };
 const Command CMD_QUIT_WINDOW = { "quit-window", cmd_quit_window, COMMAND_ONCE };
 const Command CMD_OCCUR = { "occur", cmd_occur, COMMAND_ONCE };
+const Command CMD_PROJECT_COMPILE = { "project-compile", cmd_project_compile, COMMAND_ONCE };
+const Command CMD_COMPILE = { "compile", cmd_compile, COMMAND_ONCE };
+const Command CMD_KILL_COMPILATION = { "kill-compilation", cmd_kill_compilation, COMMAND_ONCE };
