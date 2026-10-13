@@ -173,6 +173,19 @@ Cursor *view_primary(View *v) {
     return &v->cursors[v->primary];
 }
 
+void view_collapse_cursors(View *v) {
+    if (v->cursor_count <= 1) return;
+    for (i32 i = 0; i < v->cursor_count; i++) {
+        if (i == v->primary) continue;
+        buffer_marker_destroy(v->buffer, v->cursors[i].point);
+        buffer_marker_destroy(v->buffer, v->cursors[i].mark);
+    }
+    v->cursors[0] = v->cursors[v->primary];
+    v->cursor_count = 1;
+    v->primary = 0;
+    arena_pop_to(&v->cursor_arena, sizeof(Cursor));
+}
+
 i64 view_point(View *v, Cursor *c) {
     return buffer_marker_get(v->buffer, c->point);
 }

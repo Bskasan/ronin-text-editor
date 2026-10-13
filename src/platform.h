@@ -421,6 +421,11 @@ String8 app_dev_replace_prompt(App *app, Arena *arena); // query-replace's quest
 u64  app_dev_bench_complete_open(App *app, i64 count);
 void app_dev_filter_stats(App *app, u64 *filters, u64 *last_us, i64 *matches);
 i64  app_dev_line_count(App *app);
+// The selected view's cursors for a bench or a test: `count` of them at the starts of lines first, first + step, ...
+// (or, spread, at byte positions k * size / count); the first is the primary.
+void app_dev_cursors(App *app, i64 first_line, i64 step, i32 count);
+void app_dev_cursors_spread(App *app, i32 count);
+i32  app_dev_cursor_count(App *app);
 u64  app_dev_build_us(App *app); // the last frame, from its start to r_end_frame
 u64  os_dev_private_bytes(void);  // the process's committed private memory
 typedef struct AppDevMemory {

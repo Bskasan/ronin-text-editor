@@ -87,6 +87,7 @@ void    view_init(View *view, Buffer *buf);     // the same in a View struct the
 void    view_destroy(View *view);               // releases its markers, the cursor array and its remembered positions
 Cursor *view_add_cursor(View *view, i64 pos);
 Cursor *view_primary(View *view);
+void    view_collapse_cursors(View *view); // only the primary is left (the others' markers released)
 i64     view_point(View *view, Cursor *cursor);
 void    view_set_point(View *view, Cursor *cursor, i64 pos);
 i64     view_top_line(View *view);
