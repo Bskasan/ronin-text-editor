@@ -450,6 +450,10 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`): *scratch* 76.7-77.0 MB;
   src\keymap.c 76.4-77.3 MB; the 100 MB .txt 191.8-193.0 MB; the 100 MB .c 216.7-217.5 MB (Phase 12:
   75.6-77.2, 75.8-76.2, 191.9-193.5, 216.0-216.8).
+- Startup (`--startup-ms`, release, 15 runs each, alternating with the Phase 12 build rebuilt from 6d57cee):
+  177 ms median (175-186) against 178 ms (175-182).
+- `--idle-check` (debug): 0 frames, 0 us of CPU in 5 s, with no build and right after C-x p c RET on a small
+  project (a 0.05 s build that ended in the check's first second).
 - Release exe 453,632 bytes (416,768 after Phase 12, rebuilt from 6d57cee to compare); the same six DLLs;
   kernel32 adds 18 functions: CreateProcessW, ResumeThread, GetExitCodeProcess, CreateJobObjectW,
   AssignProcessToJobObject, SetInformationJobObject, TerminateJobObject, CreateNamedPipeW, PeekNamedPipe,
