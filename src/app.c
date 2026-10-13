@@ -2407,6 +2407,34 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = my, .x1 = rx + 24 * cw, .y1 = my + lh, .rgb = th->mode_line_inactive_text,
                            .what = "results: the results window's mode line (not selected) in mode_line_inactive_text");
         }
+    } else if (stage == 9) {
+        // app_dev_smoke_compile: *compilation* in the other window, from its top: "Command: ...",
+        // "Directory: ...", a blank line, "Building...", then "a.c(1,5): error C2065: ..." (the file name in
+        // columns 0-2, "(1,5)" in 3-7, "error" in 10-14) and "a.c(2): warning C4100: ..." ("warning" in 8-14).
+        Theme *th = &app->config->theme;
+        View *views[WINDOW_MAX];
+        View *cv = NULL;
+        for (i32 i = 0, k = app_views(app, views); i < k; i++) if (results_of(app, views[i]->buffer)) cv = views[i];
+        if (cv && view_top_line(cv) == 0) {
+            i32 cx = cv->x + l.pad, ey = cv->y + 4 * lh, wy = cv->y + 5 * lh, my = cv->y + cv->h - lh;
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = cx, .y0 = ey, .x1 = cx + 3 * cw, .y1 = ey + lh, .rgb = th->search_file,
+                           .what = "build: the file name 'a.c' in search_file");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = cx + 3 * cw, .y0 = ey, .x1 = cx + 8 * cw, .y1 = ey + lh, .rgb = th->search_line_number,
+                           .what = "build: '(1,5)' in search_line_number");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = cx + 10 * cw, .y0 = ey, .x1 = cx + 15 * cw, .y1 = ey + lh, .rgb = th->compilation_error,
+                           .what = "build: 'error' in compilation_error");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = cx + 8 * cw, .y0 = wy, .x1 = cx + 15 * cw, .y1 = wy + lh, .rgb = th->compilation_warning,
+                           .what = "build: 'warning' in compilation_warning");
+            // The mode line's state: "exit [2]" drawn in its cells.
+            String8 mode = app_mode_line_format(cv, in->scratch, results_mode_name(app, cv->buffer, in->scratch));
+            String8 key = STR8_LIT("(Compilation:exit [2])");
+            i64 at = -1;
+            for (i64 i = 0; i + key.len <= mode.len && at < 0; i++) if (mem_equal(mode.data + i, key.data, key.len)) at = i;
+            if (at >= 0) {
+                APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = cx + (i32)(at + 13) * cw, .y0 = my, .x1 = cx + (i32)(at + 21) * cw, .y1 = my + lh,
+                               .rgb = th->mode_line_inactive_text, .what = "build: the mode line's state 'exit [2]' (not selected: mode_line_inactive_text)");
+            }
+        }
     } else if (stage == 7) {
         // app_dev_smoke_finder after "a p": three rows above the minibuffer line, src/app.c (selected), src/apple.c,
         // docs/map.md; "ap" at columns 4-5 of the first two rows.

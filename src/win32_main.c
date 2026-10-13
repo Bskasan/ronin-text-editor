@@ -102,6 +102,7 @@ typedef struct Platform {
     String8 keys; // --keys: injected after startup
     String8 keys_after; // --keys-after: a screenshot run's keys once the workers' results of --keys are in
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
+    u32 compile_wait_ms;  // --compile-wait MS: a screenshot run waits up to MS for running builds to end
     String8 child_script; // --child: run this script (win32_child.c) and exit: the tests' scripted program
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
     u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
@@ -2564,13 +2565,14 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
     i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == 5 ? 1 : stage == 6 ? 10
-                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == -1 ? 13 : 5;
+                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == -1 ? 13 : 5;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
                                          : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
                                          : stage == 4 ? "isearch (current match, lazy highlight)"
                                          : stage == 5 ? "isearch (failing)" : stage == 6 ? "two windows"
                                          : stage == 7 ? "project finder" : stage == 8 ? "results buffer (*search*)"
+                                         : stage == 9 ? "build (*compilation*)"
                                          : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
         language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
@@ -2794,11 +2796,17 @@ static i32 win32_write_outputs(Platform *p) {
         win32_frame(p);
     }
     if (p->quit) return EXIT_OK;
-    // The workers' results (a project scan, a search), taken until none came for 300 ms (a held scan or
-    // search stops there), with the frames that work on them; then --keys-after, and their results.
+    // The workers' results (a project scan, a search, a build's output), taken until none came for 300 ms
+    // (a held scan or search, a quiet build stops there; with --compile-wait, builds are waited for up to
+    // that long), with the frames that work on them; then --keys-after, and their results.
     for (i32 pass = 0; pass < 2; pass++) {
+        u64 pass_start = os_time_us();
         for (;;) {
             for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p);
+            if (p->compile_wait_ms && app_dev_compile_busy(p->app) && os_time_us() - pass_start < (u64)p->compile_wait_ms * 1000) {
+                if (os_dev_wake_wait(50) && app_wake(p->app)) win32_frame(p);
+                continue;
+            }
             if (!os_dev_wake_wait(300)) break;
             if (app_wake(p->app)) win32_frame(p);
         }
@@ -4207,6 +4215,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--keys-after")) && has_value) { p->keys_after = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--child")) && has_value) { p->child_script = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--compile-wait")) && has_value) { p->compile_wait_ms = (u32)win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--type-ahead-check"))) { p->type_ahead_check = 1; continue; }
@@ -4615,6 +4624,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                     win32_frame(p);
                     code3 = win32_smoke_check_frame(p, 8, NULL);
                     app_dev_smoke_results_end(p->app);
+                }
+                if (code3 == EXIT_OK) { // stage 9: a build of the --child program (a real process, its worker)
+                    app_dev_smoke_compile(p->app, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
+                    for (i32 k = 0; k < 5000 && app_dev_compile_busy(p->app); k++) {
+                        if (os_dev_wake_wait(app_wants_frame(p->app) ? 0 : 5)) app_wake(p->app);
+                        win32_frame(p);
+                    }
+                    for (i32 k = 0; k < 100 && app_wants_frame(p->app); k++) win32_frame(p);
+                    r_request_capture(p->renderer);
+                    win32_frame(p);
+                    code3 = win32_smoke_check_frame(p, 9, NULL);
+                    app_dev_smoke_compile_end(p->app);
                 }
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
