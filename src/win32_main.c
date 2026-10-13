@@ -3311,6 +3311,15 @@ static void win32_bench_cursors(Platform *p) {
     LOG("bench-cursors: %D lines; build = command + frame build", app_dev_line_count(p->app));
     r_dev_take_frame_stats(p->renderer);
     String8 tmp = str8_fmt(&p->perm, "%S\\tmp", p->exe_dir), big = p->files[0].path;
+    // The memory of 10,000 cursors (first: nothing committed for them yet), and of 100,000.
+    u64 bytes0 = os_dev_private_bytes();
+    app_dev_cursors(p->app, 1000000, 1, 10000);
+    u64 bytes1 = os_dev_private_bytes();
+    app_dev_cursors(p->app, 0, 1, 100000);
+    u64 bytes2 = os_dev_private_bytes();
+    LOG("bench-cursors: memory: 10,000 cursors +%U KB private bytes, 100,000 cursors +%U KB (the cursor array and the markers)",
+        (bytes1 - MIN(bytes0, bytes1)) / 1024, (bytes2 - MIN(bytes0, bytes2)) / 1024);
+    app_dev_cursors(p->app, 0, 1, 1);
     win32_bench_cursors_layout(p, "(a) 100 MB, consecutive lines from 1,000,000", 0);
     win32_bench_cursors_undo(p);
     win32_bench_cursors_layout(p, "(b) 100 MB, spread over the file", 1);
