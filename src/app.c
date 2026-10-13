@@ -407,8 +407,9 @@ static String8 app_mode_line_format(View *v, Arena *arena, String8 mode) {
     String8 where = top == 0 && bottom ? STR8_LIT("All") : top == 0 ? STR8_LIT("Top") : bottom ? STR8_LIT("Bot")
                   : str8_fmt(arena, "%D%%", top_pos * 100 / MAX(buffer_size(buf), 1));
     i64 p = view_point(v, view_primary(v));
-    return str8_fmt(arena, " -:%s-  %S%s%S    %S   L%D C%D    (%S)    %s %s", flags, buf->name, disk, pad, where,
-                    buffer_line_of(buf, p) + 1, view_column_of(buf, p), mode,
+    String8 count = v->cursor_count > 1 ? str8_fmt(arena, "  mc:%d", v->cursor_count) : STR8_LIT(""); // multiple-cursors' lighter
+    return str8_fmt(arena, " -:%s-  %S%s%S    %S   L%D C%D%S    (%S)    %s %s", flags, buf->name, disk, pad, where,
+                    buffer_line_of(buf, p) + 1, view_column_of(buf, p), count, mode,
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol));
 }
 
@@ -561,8 +562,12 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
     // Only the visible lines: the partial one above the mode line too.
     i64 top = view_top_line(v), count = buffer_line_count(buf);
     i32 draw_rows = (mode_y - v->y + line_h - 1) / line_h;
-    if (app_window_shows_region(app, index)) {
-        for (i32 k = 0; k < v->cursor_count; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
+    // The cursors on the visible lines (found by binary search): the others cost nothing.
+    i32 vis_first, vis_end;
+    view_cursors_between(v, buffer_line_start(buf, top), buffer_line_end(buf, MIN(top + draw_rows, count) - 1), &app->config->settings,
+                         &vis_first, &vis_end);
+    if (selected) { // only the selected window shows its regions
+        for (i32 k = vis_first; k < vis_end; k++) app_draw_region(app, r, l, v, &v->cursors[k], draw_rows);
     }
     i64 pair[2];
     if (active && app->config->settings.show_paren_mode && app_paren(app, index, in->scratch, &pair[0], &pair[1])) {
@@ -624,7 +629,7 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
         app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, spans, n, in->scratch);
     }
     b32 filled = active && app_has_focus(app);
-    for (i32 k = 0; k < v->cursor_count; k++) {
+    for (i32 k = vis_first; k < vis_end; k++) {
         app_draw_cursor(app, r, l, v, view_point(v, &v->cursors[k]), rows, filled, in->dpi_scale, in->scratch);
     }
     // The mode line: inverse video in the selected window.
@@ -1223,8 +1228,22 @@ MouseCursor app_mouse_cursor(App *app, i32 x, i32 y) {
 // cell (a drag from there selects, in that window only); a double click selects the word, a triple
 // click the line with its newline. On a divider, or a mode line with a window below it, a drag moves
 // that split line. While the minibuffer is active only its line takes clicks.
-static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
+// Ctrl+Shift+click: a cursor there, or the one there goes (never the last one).
+static void app_toggle_cursor(App *app, View *v, i64 pos) {
+    for (i32 k = 0; k < v->cursor_count; k++) {
+        if (view_point(v, &v->cursors[k]) != pos) continue;
+        view_remove_cursor(v, k);
+        return;
+    }
+    if (!view_can_add_cursor(v, &app->config->settings, &app->echo)) return;
+    Cursor *c = view_add_cursor(v, pos);
+    v->primary = (i32)(c - v->cursors);
+    view_normalize_cursors(v, &app->config->settings, app->ctx.scratch);
+}
+
+static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks, u32 mods) {
     View *v;
+    if (cursor_job_pending(&app->cursor_job)) return; // clicks wait for a multiple-cursor search
     isearch_exit(&app->ctx); // a click ends a search at its match first
     if (app->replace.state == REPLACE_SEARCHING || app->replace.state == REPLACE_ALL) return; // clicks wait for it
     replace_finish(&app->replace, REPLACE_END_DONE); // a click ends a question
@@ -1249,8 +1268,16 @@ static void app_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         if (y >= v->y + v->h - l->line_h) return; // a mode line with nothing below it: only selects
     }
     Buffer *buf = v->buffer;
-    Cursor *c = view_primary(v);
     i64 pos = app_mouse_pos(l, v, x, y);
+    if ((mods & (KEYMOD_CTRL | KEYMOD_SHIFT | KEYMOD_ALT)) == (KEYMOD_CTRL | KEYMOD_SHIFT)) {
+        if (v == app->mini.view) echo_message(&app->echo, "Multiple cursors are not available in the minibuffer");
+        else app_toggle_cursor(app, v, pos);
+        view_ensure_visible(v);
+        app->ctx.last_command = NULL;
+        return;
+    }
+    view_collapse_cursors(v); // a plain click leaves one cursor
+    Cursor *c = view_primary(v);
     view_deactivate_mark(v);
     if (clicks == 2) {
         i64 start, end;
@@ -2006,7 +2033,7 @@ static b32 app_update(App *app, FrameInput *in) {
             app_key_event(app, e);
             break;
         case EVENT_MOUSE_DOWN:
-            if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y, MAX(e->clicks, 1));
+            if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y, MAX(e->clicks, 1), e->mods);
             break;
         case EVENT_MOUSE_MOVE:
             if (app->resizing >= 0) app_drag_split(app, e->x, e->y);

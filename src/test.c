@@ -4969,6 +4969,70 @@ static b32 test_mc_app(Test *t) {
     return 1;
 }
 
+static b32 test_mode_line_has(Test *t, App *app, const char *what);
+
+// A left click at a text cell of the headless frame (8 x 16 cells, a 4 px pad), with modifiers.
+static void test_mc_click(Test *t, App *app, i32 col, i32 row, u32 mods) {
+    Event e[2] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = 4 + col * 8 + 2, .y = row * 16 + 2, .mods = mods },
+                   { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 4 + col * 8 + 2, .y = row * 16 + 2, .mods = mods } };
+    app_dev_feed_events(app, e, 2, &t->arena);
+}
+
+// The mouse with several cursors: Ctrl+Shift+click adds a cursor (the primary) or removes the one there (never the
+// last), a plain click leaves one; refused on the minibuffer. The mode line's count. Two windows on one buffer:
+// each window's cursors are its own and follow the other window's edits.
+static b32 test_mc_mouse(Test *t) {
+    App *app = test_search_app(t, STR8_LIT("line0\nline1\nline2\nline3\n"), 0);
+    TEST_CHECK(t, app, "cursors mouse: no app");
+    View *v = app_selected_view(app);
+    u32 cs = KEYMOD_CTRL | KEYMOD_SHIFT;
+    test_mc_click(t, app, 3, 2, cs);
+    TEST_CHECK(t, v->cursor_count == 2 && view_point(v, view_primary(v)) == 15 && test_mode_line_has(t, app, "L3 C3  mc:2"),
+               "cursors mouse: Ctrl+Shift+click added (%d cursors)", v->cursor_count);
+    test_mc_click(t, app, 3, 2, cs);
+    TEST_CHECK(t, v->cursor_count == 1 && view_point(v, view_primary(v)) == 0 && !test_mode_line_has(t, app, "mc:"),
+               "cursors mouse: Ctrl+Shift+click removed (%d cursors)", v->cursor_count);
+    test_mc_click(t, app, 0, 0, cs); // the only cursor: stays
+    TEST_CHECK(t, v->cursor_count == 1, "cursors mouse: the last cursor was removed");
+    test_mc_click(t, app, 1, 1, cs);
+    test_mc_click(t, app, 1, 3, cs);
+    TEST_CHECK(t, v->cursor_count == 3 && test_mode_line_has(t, app, "mc:3"), "cursors mouse: three cursors (%d)", v->cursor_count);
+    test_mc_click(t, app, 2, 0, 0); // a plain click: one cursor there
+    TEST_CHECK(t, v->cursor_count == 1 && view_point(v, view_primary(v)) == 2, "cursors mouse: a plain click left %d", v->cursor_count);
+    // On the minibuffer: refused.
+    app_dev_feed(app, "M-g g", &t->arena);
+    Event m[2] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = 4 + 20 * 8 + 2, .y = 800 - 16 + 2, .mods = cs },
+                   { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 4 + 20 * 8 + 2, .y = 800 - 16 + 2, .mods = cs } };
+    app_dev_feed_events(app, m, 2, &t->arena);
+    TEST_CHECK(t, app->mini.active && app->mini.view->cursor_count == 1 && test_app_echo_is(app, "Multiple cursors are not available in the minibuffer"),
+               "cursors mouse: on the minibuffer, '%S'", test_echo(app));
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // Two windows on one buffer.
+    app_dev_feed(app, "C-x 3", &t->arena);
+    View *left = app_selected_view(app);
+    app_dev_feed(app, "C-x o M->", &t->arena);
+    View *right = app_selected_view(app);
+    TEST_CHECK(t, left != right && left->buffer == right->buffer && view_point(right, view_primary(right)) == 24, "cursors windows: the setup");
+    app_dev_feed(app, "C-x o", &t->arena);
+    app_dev_cursors(app, 0, 1, 3); // the left window: lines 0-2
+    app_dev_feed(app, "X", &t->arena);
+    TEST_CHECK(t, left->cursor_count == 3 && right->cursor_count == 1 && view_point(right, view_primary(right)) == 27,
+               "cursors windows: the right window's point followed (%D), %d / %d cursors", view_point(right, view_primary(right)),
+               left->cursor_count, right->cursor_count);
+    app_dev_feed(app, "C-x o C-a Y", &t->arena); // the right window types on the last line, after the left's cursors
+    String8 text = test_app_text(t, app);
+    TEST_CHECK(t, str8_equal(text, STR8_LIT("Xline0\nXline1\nXline2\nline3\nY")) && left->cursor_count == 3 && right->cursor_count == 1,
+               "cursors windows: '%S'", text);
+    app_dev_feed(app, "M-< Z", &t->arena); // the right window at the start: the left's cursors move along
+    TEST_CHECK(t, view_point(left, &left->cursors[0]) == 2 && view_point(left, &left->cursors[2]) == 16 && left->cursor_count == 3,
+               "cursors windows: the left window's cursors followed (%D, %D)", view_point(left, &left->cursors[0]), view_point(left, &left->cursors[2]));
+    if (!test_app_destroy(t, app, "cursors mouse")) return 0;
+    LOG("test: ok: multiple cursors and the mouse (Ctrl+Shift+click adding, removing, never the last; a plain click; refused on the "
+        "minibuffer; the mode line's count) and two windows on one buffer (independent cursors that follow each other's edits)");
+    return 1;
+}
+
 // The commands that make sense with one cursor collapse to the primary first (through the keys); switching buffers
 // leaves one cursor; a prompt aborted afterwards does not bring the others back.
 static b32 test_mc_collapse(Test *t) {
@@ -10827,6 +10891,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_mc_commands(&t);
     arena_reset(&t.arena);
     test_mc_app(&t);
+    arena_reset(&t.arena);
+    test_mc_mouse(&t);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);

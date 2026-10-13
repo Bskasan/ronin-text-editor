@@ -186,6 +186,22 @@ void view_restore_cursors(View *v, const BufferUndoCursor *cs, i64 n) {
     }
 }
 
+void view_remove_cursor(View *v, i32 k) {
+    if (v->cursor_count <= 1 || k < 0 || k >= v->cursor_count) return;
+    buffer_marker_destroy(v->buffer, v->cursors[k].point);
+    buffer_marker_destroy(v->buffer, v->cursors[k].mark);
+    memmove(&v->cursors[k], &v->cursors[k + 1], sizeof(Cursor) * (u64)(v->cursor_count - k - 1));
+    v->cursor_count--;
+    arena_pop_to(&v->cursor_arena, sizeof(Cursor) * (u64)v->cursor_count);
+    if (v->primary == k) {
+        i32 newest = 0;
+        for (i32 i = 1; i < v->cursor_count; i++) if (v->cursors[i].serial > v->cursors[newest].serial) newest = i;
+        v->primary = newest;
+    } else if (v->primary > k) {
+        v->primary--;
+    }
+}
+
 void view_collapse_cursors(View *v) {
     if (v->cursor_count <= 1) return;
     for (i32 i = 0; i < v->cursor_count; i++) {
@@ -607,6 +623,24 @@ static void view_merge_pass(View *v, const Settings *s, Arena *scratch) {
     v->primary = primary;
     arena_pop_to(&v->cursor_arena, sizeof(Cursor) * (u64)m);
     arena_pop_to(scratch, mark);
+}
+
+void view_cursors_between(View *v, i64 from, i64 to, const Settings *s, i32 *first, i32 *end) {
+    // Sorted and disjoint: the spans' starts and ends both increase. Two binary searches.
+    i32 lo = 0, hi = v->cursor_count;
+    while (lo < hi) {
+        i32 mid = lo + (hi - lo) / 2;
+        if (view_span(v, mid, s).end < from) lo = mid + 1;
+        else hi = mid;
+    }
+    *first = lo;
+    hi = v->cursor_count;
+    while (lo < hi) {
+        i32 mid = lo + (hi - lo) / 2;
+        if (view_span(v, mid, s).start <= to) lo = mid + 1;
+        else hi = mid;
+    }
+    *end = lo;
 }
 
 void view_normalize_cursors(View *v, const Settings *s, Arena *scratch) {
