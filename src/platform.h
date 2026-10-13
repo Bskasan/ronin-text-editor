@@ -426,6 +426,13 @@ i64  app_dev_line_count(App *app);
 // The selected view's cursors for a bench or a test: `count` of them at the starts of lines first, first + step, ...
 // (or, spread, at byte positions k * size / count); the first is the primary.
 void app_dev_cursors(App *app, i64 first_line, i64 step, i32 count);
+void app_dev_cursors_at(App *app, i64 first_line, i64 step, i32 count, i64 col); // at a visual column (-1: the line's end)
+void app_dev_select(App *app, i64 start, i64 end);  // one cursor with the active region [start, end), point at end
+u64  app_dev_batch_flushes(App *app);               // the selected buffer's batch flushes so far
+i64  app_dev_buffer_size(App *app);                 // the selected buffer's size
+void app_dev_revert(App *app);                      // the selected buffer read again from its file (no question)
+String8 test_bench_cursors_c(Arena *arena, String8 tmp_dir);     // --bench-cursors: the C file of 8-line blocks (made once)
+String8 test_bench_cursors_words(Arena *arena, String8 tmp_dir); // --bench-cursors: a million lines with "needle" (made once)
 void app_dev_cursors_spread(App *app, i32 count);
 i32  app_dev_cursor_count(App *app);
 u64  app_dev_build_us(App *app); // the last frame, from its start to r_end_frame

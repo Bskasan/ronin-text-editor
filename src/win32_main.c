@@ -3146,8 +3146,9 @@ static void win32_bench_windows(Platform *p) {
 }
 
 // --bench-cursors: one layout at 1, 10, 100, 1,000 and 10,000 cursors: self-insert, DEL and RET, each command and its
-// frame (build = command + frame build); 100 commands each (10 at 10,000 cursors). mode 0: consecutive lines from
-// line 1,000,000; 1: spread over the whole buffer.
+// frame (build = command + frame build); 100 commands each (10 at 10,000 cursors), and the batch flushes per command.
+// mode 0: consecutive lines from line 1,000,000; 1: spread over the whole buffer. The classes run in sequence at
+// the same cursors: typing, DEL over what was typed, RET.
 static void win32_bench_cursors_layout(Platform *p, const char *layout, i32 mode) {
     static const i32 counts[] = { 1, 10, 100, 1000, 10000 };
     Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
@@ -3159,19 +3160,148 @@ static void win32_bench_cursors_layout(Platform *p, const char *layout, i32 mode
         BenchStat skip = { 0 };
         Event events[3] = { type, del, ret };
         const char *names[3] = { "self-insert", "delete-backward-char (DEL)", "newline (RET)" };
-        // Typing, then DEL over what was typed, then RET at the same places.
         if (mode == 0) app_dev_cursors(p->app, 1000000, 1, n);
         else app_dev_cursors_spread(p->app, n);
         win32_bench_view_step(p, plain, &skip); // ends dropping text after a jump
+        i64 lines0 = app_dev_line_count(p->app);
         for (i32 c = 0; c < 3; c++) {
             i32 have = app_dev_cursor_count(p->app);
+            u64 f0 = app_dev_batch_flushes(p->app);
             BenchStat st = { 0 };
             for (i32 i = 0; i < commands; i++) win32_bench_view_step(p, events[c], &st);
-            u8 what[160];
-            i64 wn = fmt_buf(what, sizeof(what) - 1, "%s, %d cursors, %s", layout, have, names[c]);
+            u64 flushes = app_dev_batch_flushes(p->app) - f0;
+            u8 what[200];
+            i64 wn = fmt_buf(what, sizeof(what) - 1, "%s, %d cursors, %s (%U batch flushes in %d commands)", layout, have, names[c], flushes, commands);
             what[wn] = 0;
             win32_bench_log(p, "bench-cursors", (const char *)what, &st);
+            if ((c < 2 && app_dev_cursor_count(p->app) != have) || (c == 1 && app_dev_line_count(p->app) != lines0)) { // RET may merge
+                LOG("bench-cursors: FAIL: %s: %d cursors after %s (%d before), %D lines (%D before)", layout, app_dev_cursor_count(p->app),
+                    names[c], have, app_dev_line_count(p->app), lines0);
+                p->exit_code = EXIT_TEST;
+            }
         }
+    }
+}
+
+// The undo of a 10,000-cursor self-insert (one group of 10,000 records with its cursors), its undo-redo, and the
+// undo of a merged group of 20 such commands; the undo log's commit before and after.
+static void win32_bench_cursors_undo(Platform *p) {
+    BenchStat skip = { 0 };
+    Event plain = { .kind = EVENT_KEY_DOWN, .key = KEY_X, .codepoint = 'x' };
+    app_dev_cursors(p->app, 1000000, 1, 10000);
+    win32_bench_view_step(p, plain, &skip); // one command: one group
+    AppDevMemory m0 = app_dev_memory(p->app);
+    win32_bench_keys(p, "C-f"); // ends the merge
+    u64 type = win32_bench_keys(p, "x");
+    AppDevMemory m1 = app_dev_memory(p->app);
+    u64 undo = win32_bench_keys(p, "C-/");
+    i32 after_undo = app_dev_cursor_count(p->app);
+    u64 redo = win32_bench_keys(p, "C-?");
+    i32 after_redo = app_dev_cursor_count(p->app);
+    win32_bench_keys(p, "C-f");
+    u64 sum20 = 0;
+    for (i32 i = 0; i < 20; i++) sum20 += win32_bench_keys(p, "y");
+    u64 undo20 = win32_bench_keys(p, "C-/");
+    AppDevMemory m2 = app_dev_memory(p->app);
+    LOG("bench-cursors: undo: a self-insert at 10,000 cursors %U us; its undo %U us (%d cursors back), undo-redo %U us (%d cursors); "
+        "20 merged self-inserts %U us each, their undo %U us; undo log committed %U KB before, %U KB after the one command, %U KB at the "
+        "end", type, undo, after_undo, redo, after_redo, sum20 / 20, undo20, m0.undo / 1024, m1.undo / 1024, m2.undo / 1024);
+    if (after_undo != 10000 || after_redo != 10000) {
+        LOG("bench-cursors: FAIL: undo restored %d cursors, undo-redo %d (10,000 expected)", after_undo, after_redo);
+        p->exit_code = EXIT_TEST;
+    }
+}
+
+// The language-aware classes on a C file of 8-line blocks (test_bench_cursors_c) at 1,000 and 10,000 cursors: a
+// fresh file and fresh cursors for each command (the file read again), the command and its frame, and the batch
+// flushes it caused. A class that flushes once per cursor costs a pass over every marker per cursor.
+static void win32_bench_cursors_classes(Platform *p, String8 tmp) {
+    String8 path = test_bench_cursors_c(&p->perm, tmp);
+    if (!app_dev_visit(p->app, path)) {
+        LOG("bench-cursors: cannot visit %S", path);
+        return;
+    }
+    static const struct { const char *name, *keys; i64 line, col; } classes[] = {
+        { "self-insert", "x", 3, 0 },
+        { "delete-backward-char (DEL)", "DEL", 3, 1 },
+        { "newline (RET)", "RET", 3, 0 },
+        { "'}' first on a line (electric reindent)", "}", 5, 0 },
+        { "':' ending a case label (electric reindent)", ":", 2, -1 },
+        { "indent-for-tab-command (TAB)", "TAB", 3, 0 },
+        { "comment-line (M-;)", "M-;", 3, 0 },
+        { "RET at the end of a whitespace-only line", "RET", 4, -1 },
+    };
+    static const i32 counts[] = { 1000, 10000 };
+    for (i32 k = 0; k < ARRAY_COUNT(counts); k++) {
+        i32 n = counts[k], reps = n >= 10000 ? 3 : 5;
+        for (i32 c = 0; c < ARRAY_COUNT(classes); c++) {
+            u64 sum = 0, worst = 0, flushes = 0;
+            for (i32 r = 0; r < reps; r++) {
+                app_dev_revert(p->app);
+                app_dev_cursors_at(p->app, classes[c].line, 8, n, classes[c].col);
+                Event idle = { .kind = EVENT_WAKEUP };
+                BenchStat skip = { 0 };
+                win32_bench_view_step(p, idle, &skip); // a frame: the view settled
+                u64 f0 = app_dev_batch_flushes(p->app);
+                u64 build = win32_bench_keys(p, classes[c].keys);
+                flushes += app_dev_batch_flushes(p->app) - f0;
+                sum += build;
+                worst = MAX(worst, build);
+            }
+            LOG("bench-cursors: (d) C file, %d cursors, %s: build avg %U us, worst %U us; %U batch flushes per command (%d commands)", n,
+                classes[c].name, sum / reps, worst, flushes / reps, reps);
+        }
+    }
+    app_dev_revert(p->app);
+}
+
+// mark-all-like-this: a word with a million occurrences (test_bench_cursors_words) at the default max_cursors (10,000)
+// and at the range's top (100,000), then a word only at the end of the 100 MB file (the whole file searched over
+// frames). The command's frame and the frames after it until the search ended: their count, the longest one, the
+// work in all (builds) and the time in all (with the Presents). Then a self-insert and its undo at that many cursors.
+static void win32_bench_cursors_mark_all(Platform *p, String8 tmp, String8 big) {
+    Event idle = { .kind = EVENT_WAKEUP };
+    String8 words = test_bench_cursors_words(&p->perm, tmp);
+    String8 conf = str8_fmt(&p->perm, "%S\\bench_cursors.conf", tmp);
+    for (i32 round = 0; round < 3; round++) {
+        i32 cap = round == 1 ? 100000 : 10000;
+        if (round == 1) {
+            os_write_file(conf, STR8_LIT("[settings]\nmax_cursors = 100000\n"));
+            app_dev_use_config(p->app, conf);
+        }
+        if (round < 2) {
+            if (!app_dev_visit(p->app, words)) {
+                LOG("bench-cursors: cannot visit %S", words);
+                return;
+            }
+            app_dev_select(p->app, 29, 35); // the first "needle"
+        } else {
+            if (!app_dev_visit(p->app, big)) return;
+            app_dev_append(p->app, STR8_LIT("\nzqxwvu\n"));
+            i64 end = app_dev_buffer_size(p->app);
+            app_dev_select(p->app, end - 7, end - 1);
+        }
+        BenchStat st = { 0 };
+        u64 t0 = os_time_us();
+        u64 first = win32_bench_keys(p, "C-c C-<");
+        while (app_wants_frame(p->app) && st.count < 100000) win32_bench_view_step(p, idle, &st);
+        u64 total = os_time_us() - t0;
+        i32 have = app_dev_cursor_count(p->app);
+        LOG("bench-cursors: mark-all-like-this %s: %d cursors; %U frames, the command's %U us, the longest %U us, %U us of work in all, "
+            "%U ms in all with the Presents", round == 0 ? "on a word with 1,000,000 occurrences (max_cursors 10,000)"
+            : round == 1 ? "on a word with 1,000,000 occurrences (max_cursors 100,000)" : "on a word only at the end of the 100 MB file",
+            have, st.count + 1, first, MAX(first, st.build_max), first + st.build_sum, total / 1000);
+        if (have != (round == 2 ? 1 : cap)) {
+            LOG("bench-cursors: FAIL: mark-all gave %d cursors", have);
+            p->exit_code = EXIT_TEST;
+        }
+        if (round < 2) {
+            u64 type = win32_bench_keys(p, "x"), undo = win32_bench_keys(p, "C-/");
+            LOG("bench-cursors: at %d cursors (one per line of the word file): a self-insert %U us, its undo %U us", have, type, undo);
+            win32_bench_view_step(p, idle, &st);
+            LOG("bench-cursors: idle with %d cursors: %s", app_dev_cursor_count(p->app), app_wants_frame(p->app) ? "a frame wanted" : "no frame wanted");
+        }
+        win32_bench_keys(p, "C-g C-g");
     }
 }
 
@@ -3180,11 +3310,15 @@ static void win32_bench_cursors(Platform *p) {
     win32_bench_log_display(p);
     LOG("bench-cursors: %D lines; build = command + frame build", app_dev_line_count(p->app));
     r_dev_take_frame_stats(p->renderer);
+    String8 tmp = str8_fmt(&p->perm, "%S\\tmp", p->exe_dir), big = p->files[0].path;
     win32_bench_cursors_layout(p, "(a) 100 MB, consecutive lines from 1,000,000", 0);
+    win32_bench_cursors_undo(p);
     win32_bench_cursors_layout(p, "(b) 100 MB, spread over the file", 1);
     String8 src = os_full_path(&p->perm, str8_fmt(&p->perm, "%S\\..\\src\\app.c", p->exe_dir));
     if (app_dev_visit(p->app, src)) win32_bench_cursors_layout(p, "(c) src/app.c, spread over the file", 1);
     else LOG("bench-cursors: cannot visit %S", src);
+    win32_bench_cursors_classes(p, tmp);
+    win32_bench_cursors_mark_all(p, tmp, big);
     r_dev_set_present_interval(p->renderer, 1);
 }
 

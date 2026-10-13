@@ -5143,6 +5143,43 @@ String8 test_bench_syntax_file(Arena *arena, String8 tmp_dir) {
     return path;
 }
 
+// --bench-cursors: a C file of TEST_BENCH_CURSOR_BLOCKS blocks of 8 lines, each with a line for every class measured
+// (made once): 0 "void fN(int a) {", 1 "    switch (a) {", 2 "    case 1" (':' at its end), 3 "x = 1;" (TAB,
+// comment-line), 4 eight spaces (RET at its end: a whitespace-only line), 5 "" ('}' first on the line), 6 "    }",
+// 7 "}".
+#define TEST_BENCH_CURSOR_BLOCKS 12000
+
+String8 test_bench_cursors_c(Arena *arena, String8 tmp_dir) {
+    String8 path = str8_fmt(arena, "%S\\bench_cursors.c", tmp_dir);
+    OsFileInfo info;
+    if (os_file_info(path, &info) == OS_FILE_OK && info.size > 0) return path;
+    Arena scratch = arena_create(MB(64));
+    String8 text = STR8_LIT("");
+    u8 *out = PUSH_ARRAY(&scratch, u8, MB(32));
+    i64 n = 0;
+    for (i32 b = 0; b < TEST_BENCH_CURSOR_BLOCKS; b++) {
+        n += fmt_buf(out + n, MB(1), "void f%d(int a) {\n    switch (a) {\n    case 1\nx = 1;\n        \n\n    }\n}\n", b);
+    }
+    text = str8(out, n);
+    if (!os_write_file(path, text)) LOG("bench-cursors: cannot write %S", path);
+    os_release(scratch.base);
+    return path;
+}
+
+// --bench-cursors: 1,000,000 lines of 64 bytes, each with "needle" once (made once).
+String8 test_bench_cursors_words(Arena *arena, String8 tmp_dir) {
+    String8 path = str8_fmt(arena, "%S\\bench_cursors_words.txt", tmp_dir);
+    OsFileInfo info;
+    if (os_file_info(path, &info) == OS_FILE_OK && info.size >= 64 * 1000000) return path;
+    Arena scratch = arena_create(MB(128));
+    u8 *out = PUSH_ARRAY(&scratch, u8, 64 * 1000000);
+    String8 line = STR8_LIT("some ordinary words around a needle, then more words to fill it\n");
+    for (i64 i = 0; i < 1000000; i++) memcpy(out + i * 64, line.data, 64);
+    if (!os_write_file(path, str8(out, 64 * 1000000))) LOG("bench-cursors: cannot write %S", path);
+    os_release(scratch.base);
+    return path;
+}
+
 String8 test_bench_buffer_file(Arena *arena, String8 tmp_dir) {
     String8 path = str8_fmt(arena, "%S\\bench_100mb.txt", tmp_dir);
     OsFileInfo info;

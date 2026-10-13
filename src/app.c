@@ -2716,17 +2716,47 @@ i64 app_dev_line_count(App *app) {
     return buffer_line_count(app_selected_view(app)->buffer);
 }
 
-void app_dev_cursors(App *app, i64 first_line, i64 step, i32 count) {
+void app_dev_cursors_at(App *app, i64 first_line, i64 step, i32 count, i64 col) {
     View *v = app_selected_view(app);
     Buffer *buf = v->buffer;
     view_collapse_cursors(v);
     view_deactivate_mark(v);
-    view_set_point(v, view_primary(v), buffer_line_start(buf, first_line));
-    for (i32 k = 1; k < count; k++) {
+    for (i32 k = 0; k < count; k++) {
         i64 line = first_line + k * step;
         if (line >= buffer_line_count(buf)) break;
-        view_add_cursor(v, buffer_line_start(buf, line));
+        i64 pos = col < 0 ? buffer_line_end(buf, line) : view_offset_at_column(buf, line, col);
+        if (k) view_add_cursor(v, pos);
+        else view_set_point(v, view_primary(v), pos);
     }
+    view_ensure_visible(v);
+}
+
+void app_dev_cursors(App *app, i64 first_line, i64 step, i32 count) {
+    app_dev_cursors_at(app, first_line, step, count, 0);
+}
+
+void app_dev_select(App *app, i64 start, i64 end) {
+    View *v = app_selected_view(app);
+    view_collapse_cursors(v);
+    view_set_mark(v, view_primary(v), start, 1);
+    view_set_point(v, view_primary(v), end);
+    view_ensure_visible(v);
+}
+
+i64 app_dev_buffer_size(App *app) {
+    return buffer_size(app_selected_view(app)->buffer);
+}
+
+u64 app_dev_batch_flushes(App *app) {
+    return app_selected_view(app)->buffer->dev_batch_flushes;
+}
+
+void app_dev_revert(App *app) {
+    View *v = app_selected_view(app);
+    view_collapse_cursors(v);
+    view_deactivate_mark(v);
+    buffer_revert(v->buffer, 0);
+    view_set_point(v, view_primary(v), 0);
     view_ensure_visible(v);
 }
 
