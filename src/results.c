@@ -1503,6 +1503,10 @@ u64 app_dev_results_work_max(App *app) {
     return m;
 }
 
+b32 app_dev_compile_busy(App *app) {
+    return app->compile_dying_count > 0 || results_compile_running(app);
+}
+
 b32 app_dev_results_busy(App *app) {
     b32 busy = app->grep_dying_count > 0 || app->compile_dying_count > 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) busy |= app->results[i].buffer && app->results[i].running;
@@ -1525,6 +1529,34 @@ void app_dev_smoke_results(App *app, String8 tmp_dir) {
     ctx.view = app_selected_view(app);
     ctx.cursor = &ctx.view->cursors[0];
     results_project_search(&ctx, str8(buf, n), STR8_LIT("foo"), 1, 0);
+}
+
+// Smoke stage 9: a build of the --child program in tmp_dir\smoke_compile (an error and a warning on a.c, exit
+// code 2) into *compilation*, shown in another window without selecting it.
+void app_dev_smoke_compile(App *app, String8 tmp_dir) {
+    String8 dir = os_full_path(&app->files_arena, str8_fmt(&app->files_arena, "%S\\smoke_compile", tmp_dir));
+    os_make_dir(dir);
+    os_write_file(str8_fmt(&app->files_arena, "%S\\a.c", dir), STR8_LIT("int f(int y) {\n    return x;\n}\n"));
+    String8 script = str8_fmt(&app->files_arena, "%S\\build.txt", dir);
+    os_write_file(script, STR8_LIT("out Building...\nout a.c(1,5): error C2065: 'x': undeclared identifier\n"
+                                   "out a.c(2): warning C4100: 'y': unreferenced formal parameter\nexit 2\n"));
+    String8 command = str8_fmt(&app->files_arena, "\"%S\" --child \"%S\"", os_dev_exe_path(&app->files_arena), script);
+    u8 buf[3 * PROJECT_PATH_MAX];
+    i64 n = MIN(command.len, (i64)sizeof(buf));
+    memcpy(buf, command.data, (size_t)n);
+    u8 dbuf[PROJECT_PATH_MAX];
+    i64 dn = MIN(dir.len, (i64)sizeof(dbuf));
+    memcpy(dbuf, dir.data, (size_t)dn);
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    ctx.cursor = &ctx.view->cursors[0];
+    results_compile_start(&ctx, str8(buf, n), str8(dbuf, dn), str8(NULL, 0));
+}
+
+void app_dev_smoke_compile_end(App *app) {
+    app_run_command(app, &CMD_DELETE_OTHER_WINDOWS, 0, 0);
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+    if (b) files_kill_buffer(app, b);
 }
 
 void app_dev_smoke_results_end(App *app) {
