@@ -2567,14 +2567,14 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
     i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == 5 ? 1 : stage == 6 ? 10
-                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == -1 ? 13 : 5;
+                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == 10 ? 11 : stage == -1 ? 13 : 5;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
                                          : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
                                          : stage == 4 ? "isearch (current match, lazy highlight)"
                                          : stage == 5 ? "isearch (failing)" : stage == 6 ? "two windows"
                                          : stage == 7 ? "project finder" : stage == 8 ? "results buffer (*search*)"
-                                         : stage == 9 ? "build (*compilation*)"
+                                         : stage == 9 ? "build (*compilation*)" : stage == 10 ? "three cursors with regions"
                                          : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
         language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
@@ -4829,6 +4829,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                     win32_frame(p);
                     code3 = win32_smoke_check_frame(p, 9, NULL);
                     app_dev_smoke_compile_end(p->app);
+                }
+                if (code3 == EXIT_OK) { // stage 10: three cursors with regions
+                    app_dev_smoke_cursors(p->app);
+                    r_request_capture(p->renderer);
+                    win32_frame(p);
+                    code3 = win32_smoke_check_frame(p, 10, NULL);
+                    app_dev_smoke_cursors_end(p->app);
                 }
                 i32 code4 = win32_smoke_check_title(p);
                 i32 code5 = win32_smoke_config_and_keys(p);

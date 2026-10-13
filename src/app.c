@@ -2215,6 +2215,32 @@ void app_dev_smoke_buffer_view(App *app) {
     app->force_focus = 0;
 }
 
+// Smoke stage 10: three cursors with regions in the selected buffer (*scratch*), focus on: "abcdef" on lines 0-2,
+// each cursor's region from column 1 to its point at column 4; the primary is the middle one.
+void app_dev_smoke_cursors(App *app) {
+    View *v = app_selected_view(app);
+    Buffer *buf = v->buffer;
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("abcdef\nabcdef\nabcdef\n"));
+    view_collapse_cursors(v);
+    for (i64 line = 0; line < 3; line++) {
+        i64 ls = buffer_line_start(buf, line);
+        Cursor *c = line ? view_add_cursor(v, ls + 4) : view_primary(v);
+        view_set_point(v, c, ls + 4);
+        view_set_mark(v, c, ls + 1, 1);
+    }
+    v->primary = 1;
+    buffer_marker_set(buf, v->top, 0);
+    v->left_col = 0;
+    app->force_focus = 1;
+}
+
+void app_dev_smoke_cursors_end(App *app) {
+    View *v = app_selected_view(app);
+    view_collapse_cursors(v);
+    view_deactivate_mark(v);
+    app->force_focus = 0;
+}
+
 void app_dev_use_config(App *app, String8 path) {
     os_unwatch(app->config_watch);
     app->config_watch = 0;
@@ -2395,7 +2421,28 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
     i32 t = MAX((i32)(in->dpi_scale + 0.5f), 1); // the hollow cursor's line width
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
 #define CELL(col, line) .x0 = x + (col) * cw, .y0 = (line) * lh, .x1 = x + ((col) + 1) * cw, .y1 = ((line) + 1) * lh
-    if (stage == 6) {
+    if (stage == 10) {
+        // app_dev_smoke_cursors: on each of lines 0-2 the filled cursor at column 4, the region over columns 1-3,
+        // nothing after the line's end (column 6 on); "mc:3" in the mode line.
+        Theme *th = &app->config->theme;
+        for (i32 line = 0; line < 3; line++) {
+            APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + 4 * cw, .y0 = line * lh, .rgb = th->cursor,
+                           .what = "cursors: a filled cursor at column 4 (lines 0, 1, 2)");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x + cw, .y0 = line * lh, .x1 = x + 4 * cw, .y1 = (line + 1) * lh, .rgb = th->selection,
+                           .what = "cursors: the region over columns 1-3 in the selection color (lines 0, 1, 2)");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 6 * cw, .y0 = line * lh, .x1 = x + 12 * cw, .y1 = (line + 1) * lh,
+                           .rgb = th->background, .what = "cursors: unselected cells after the line in the background (lines 0, 1, 2)");
+        }
+        String8 mode = app_mode_line_text(app_selected_view(app), in->scratch), key = STR8_LIT("mc:3");
+        i64 at = -1;
+        for (i64 i = 0; i + key.len <= mode.len && at < 0; i++) if (mem_equal(mode.data + i, key.data, key.len)) at = i;
+        if (at >= 0) {
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x + (i32)at * cw, .y0 = mode_y, .x1 = x + (i32)(at + 4) * cw, .y1 = mode_y + lh,
+                           .rgb = th->background, .what = "cursors: 'mc:3' drawn in the mode line (inverse video)");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + (i32)(at - 1) * cw, .y0 = mode_y, .x1 = x + (i32)at * cw, .y1 = mode_y + lh,
+                           .rgb = th->text, .what = "cursors: the blank before 'mc:3' in the mode line's color");
+        }
+    } else if (stage == 6) {
         // app_dev_smoke_windows: the divider, both mode line styles, both cursors, the right window's first column.
         Theme *th = &app->config->theme;
         i32 leaves[WINDOW_MAX];
