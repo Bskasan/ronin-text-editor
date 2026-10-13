@@ -3159,11 +3159,12 @@ static void win32_bench_cursors_layout(Platform *p, const char *layout, i32 mode
         BenchStat skip = { 0 };
         Event events[3] = { type, del, ret };
         const char *names[3] = { "self-insert", "delete-backward-char (DEL)", "newline (RET)" };
+        // Typing, then DEL over what was typed, then RET at the same places.
+        if (mode == 0) app_dev_cursors(p->app, 1000000, 1, n);
+        else app_dev_cursors_spread(p->app, n);
+        win32_bench_view_step(p, plain, &skip); // ends dropping text after a jump
         for (i32 c = 0; c < 3; c++) {
-            if (mode == 0) app_dev_cursors(p->app, 1000000, 1, n);
-            else app_dev_cursors_spread(p->app, n);
             i32 have = app_dev_cursor_count(p->app);
-            if (c == 0) win32_bench_view_step(p, plain, &skip); // ends dropping text after a jump
             BenchStat st = { 0 };
             for (i32 i = 0; i < commands; i++) win32_bench_view_step(p, events[c], &st);
             u8 what[160];
