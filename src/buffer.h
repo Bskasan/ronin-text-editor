@@ -50,9 +50,28 @@ enum {
 typedef u32 BufferMarker;
 
 enum {
-    BUFFER_MARKER_LIVE    = 1 << 0,
-    BUFFER_MARKER_ADVANCE = 1 << 1, // insertion type: text inserted exactly at the marker goes before it
+    BUFFER_MARKER_LIVE      = 1 << 0,
+    BUFFER_MARKER_ADVANCE   = 1 << 1, // insertion type: text inserted exactly at the marker goes before it
+    BUFFER_MARKER_SWALLOWED = 1 << 2, // in a batch: it lay strictly inside a range an edit of the batch removed
 };
+
+// Batches (buffer_batch_begin / _end, Phase 14): the edits of a multiple-cursor command, or of a large undo,
+// adjust the markers once instead of every marker on every edit. Inside a batch buffer_replace does all it
+// does otherwise but leave the markers: it appends the edit to the batch's list. The list is one run of edits
+// in order, ascending (each starts at or after the end of the text the previous one inserted) or descending
+// (each ends at or before the start of the previous one); an edit out of order first applies the run to every
+// marker (a flush) and starts a new one, so the order only decides the speed, never the result. Each live
+// marker slot keeps the run's edit count when it was last set (its epoch, in next_free): buffer_marker_get maps
+// its position through the edits since then (a binary search, then the marker rules while it touches the next
+// edit). The end of a batch applies the run to every marker: O(markers x log edits) instead of O(markers x
+// edits). A marker is snapped to a character boundary against the text at the end of the run (not after each
+// edit; the two differ only when invalid bytes join across two nearby edits).
+#define BUFFER_BATCH_RESERVE MB(256) // the edit list (address space, reserved by a buffer's first batch)
+
+typedef struct BufferBatchEdit {
+    i64 start, removed, inserted; // as buffer_replace got them
+    i64 delta_before;             // the sum of (inserted - removed) over the run's earlier edits
+} BufferBatchEdit;
 
 // The visited file, as the app last saw it on disk (files changed outside the editor).
 typedef enum BufferDiskState {
@@ -103,6 +122,7 @@ typedef struct BufferUndoGroup {
     i64 point_before;             // the primary point before the command; where undo puts point
     u64 state_before, state_after;
     i64 target;                   // an undo group: the id of the group it reverts; -1 otherwise
+    i64 records;                  // edits logged in it
     i32 merge, merge_count;       // BufferUndoMerge of the commands merged into it
     b32 backward;                 // it moved back in history: the undo of a forward group (normal groups go forward)
 } BufferUndoGroup;
@@ -160,6 +180,15 @@ typedef struct Buffer {
     i64 marker_count;    // slots ever used (live or free)
     u32 marker_free;     // first free slot + 1, 0 = none
     i64 marker_live;
+
+    // A batch (see above).
+    i32 batch_depth;     // > 0: inside a batch (they nest; the outermost end applies)
+    i32 batch_dir;       // the run's order: 1 ascending, -1 descending, 0 not decided yet (each pair fits both)
+    BufferBatchEdit *batch_edits;
+    i64 batch_count, batch_committed; // entries
+#if TEAL_DEV
+    u64 dev_batch_flushes; // runs applied before their batch ended (an edit out of order, or a full list)
+#endif
 
     String8 path; // full, normalized; empty when not visiting a file
     String8 name;
@@ -221,6 +250,11 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance); // pos cla
 void         buffer_marker_destroy(Buffer *buf, BufferMarker m);
 i64          buffer_marker_get(Buffer *buf, BufferMarker m);
 void         buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos); // clamped and snapped
+// Batches (see above). A marker swallowed in the batch lay strictly inside a range one of its edits removed
+// since the marker was last set (false outside a batch).
+void buffer_batch_begin(Buffer *buf);
+void buffer_batch_end(Buffer *buf);
+b32  buffer_marker_swallowed(Buffer *buf, BufferMarker m);
 
 // Undo (see above). Undo is on for a new buffer; program buffers (*Messages*) turn it off.
 void buffer_undo_enable(Buffer *buf, b32 on);      // off also drops the log

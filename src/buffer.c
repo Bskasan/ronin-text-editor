@@ -57,6 +57,7 @@ b32 buffer_destroy(Buffer *buf) {
     ok &= os_release(buf->undo.log);
     ok &= os_release(buf->undo.groups);
     if (buf->line_state) ok &= os_release(buf->line_state);
+    if (buf->batch_edits) ok &= os_release(buf->batch_edits);
     ok &= os_release(meta.base);
     return ok;
 }
@@ -234,7 +235,7 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance) {
     BufferMarkerSlot *s = &buf->markers[slot];
     s->pos = buffer_snap_char(buf, pos);
     s->flags = BUFFER_MARKER_LIVE | (advance ? BUFFER_MARKER_ADVANCE : 0);
-    s->next_free = 0;
+    s->next_free = buf->batch_depth ? (u32)buf->batch_count : 0; // its epoch: it has seen the run's edits so far
     buf->marker_live++;
     return slot + 1;
 }
@@ -247,33 +248,170 @@ void buffer_marker_destroy(Buffer *buf, BufferMarker m) {
     buf->marker_live--;
 }
 
+// The marker rules (buffer.h) for a marker at pos when [start, end) becomes len bytes. *swallowed is set when pos
+// lies strictly inside the removed range.
+static i64 buffer_marker_rule(i64 pos, i64 start, i64 end, i64 len, b32 advance, b32 *swallowed) {
+    if (pos < start) return pos;
+    if (pos > end) return pos + len - (end - start);
+    if (pos == end && end > start) return start + len;
+    if (pos > start) *swallowed = 1;
+    return advance ? start + len : start;
+}
+
+// A batch's run maps a position from a marker's epoch (the run's edit count when it was set) to now.
+static i64 buffer_batch_map(Buffer *buf, i64 pos, i64 epoch, b32 advance, b32 *swallowed) {
+    BufferBatchEdit *e = buf->batch_edits;
+    i64 n = buf->batch_count;
+    if (epoch >= n) return pos;
+    i64 base = e[epoch].delta_before, total = e[n - 1].delta_before + e[n - 1].inserted - e[n - 1].removed;
+    if (buf->batch_dir >= 0) {
+        // Ascending: in the marker's coordinates edit j starts at start - (delta_before - base), and the edits
+        // end in order. The first one that ends at or after pos is the first that can touch it.
+        i64 lo = epoch, hi = n;
+        while (lo < hi) {
+            i64 mid = lo + (hi - lo) / 2;
+            if (e[mid].start - (e[mid].delta_before - base) + e[mid].removed < pos) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo == n) return pos + total - base;
+        i64 cur = pos + e[lo].delta_before - base;
+        for (i64 j = lo; j < n && cur >= e[j].start; j++) { // later edits touch it only at their start
+            cur = buffer_marker_rule(cur, e[j].start, e[j].start + e[j].removed, e[j].inserted, advance, swallowed);
+        }
+        return cur;
+    }
+    // Descending: edit j is where it was recorded (the run's earlier edits are all above it); the starts decrease.
+    // The edits above pos leave it; from the first one at or below it, the rules apply while it touches the next.
+    i64 lo = epoch, hi = n;
+    while (lo < hi) {
+        i64 mid = lo + (hi - lo) / 2;
+        if (e[mid].start > pos) lo = mid + 1;
+        else hi = mid;
+    }
+    i64 cur = pos;
+    for (i64 j = lo; j < n; j++) {
+        if (cur > e[j].start + e[j].removed) return cur + total - e[j].delta_before; // every later edit is below it
+        cur = buffer_marker_rule(cur, e[j].start, e[j].start + e[j].removed, e[j].inserted, advance, swallowed);
+    }
+    return cur;
+}
+
+// Only a continuation byte can be inside a character: one byte read decides whether a snap is needed.
+static i64 buffer_snap_cheap(Buffer *buf, i64 pos) {
+    return pos < buffer_size(buf) && (buffer_byte(buf, pos) & 0xC0) == 0x80 ? buffer_snap_char(buf, pos) : pos;
+}
+
 i64 buffer_marker_get(Buffer *buf, BufferMarker m) {
-    return buffer_marker_slot(buf, m)->pos;
+    BufferMarkerSlot *s = buffer_marker_slot(buf, m);
+    if (!buf->batch_depth || s->next_free >= buf->batch_count) return s->pos;
+    b32 swallowed = 0;
+    return buffer_snap_cheap(buf, buffer_batch_map(buf, s->pos, s->next_free, s->flags & BUFFER_MARKER_ADVANCE, &swallowed));
 }
 
 void buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos) {
-    buffer_marker_slot(buf, m)->pos = buffer_snap_char(buf, pos);
+    BufferMarkerSlot *s = buffer_marker_slot(buf, m);
+    s->pos = buffer_snap_char(buf, pos);
+    s->next_free = buf->batch_depth ? (u32)buf->batch_count : 0;
+    s->flags &= ~(u32)BUFFER_MARKER_SWALLOWED;
+}
+
+b32 buffer_marker_swallowed(Buffer *buf, BufferMarker m) {
+    BufferMarkerSlot *s = buffer_marker_slot(buf, m);
+    if (!buf->batch_depth) return 0;
+    if (s->flags & BUFFER_MARKER_SWALLOWED) return 1;
+    b32 swallowed = 0;
+    buffer_batch_map(buf, s->pos, s->next_free, s->flags & BUFFER_MARKER_ADVANCE, &swallowed);
+    return swallowed;
 }
 
 // After [start, end) became `len` bytes. See buffer.h for the rules.
 static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
-    i64 delta = len - (end - start);
     i64 snap_lo = start - 3, snap_hi = start + len + 3; // where a boundary can have disappeared
+    b32 swallowed = 0;
     for (i64 i = 0; i < buf->marker_count; i++) {
         BufferMarkerSlot *m = &buf->markers[i];
         if (!(m->flags & BUFFER_MARKER_LIVE)) continue;
-        i64 pos = m->pos;
-        if (pos < start) {
-        } else if (pos > end) {
-            pos += delta;
-        } else if (pos == end && end > start) {
-            pos = start + len;
-        } else {
-            pos = (m->flags & BUFFER_MARKER_ADVANCE) ? start + len : start;
-        }
+        i64 pos = buffer_marker_rule(m->pos, start, end, len, m->flags & BUFFER_MARKER_ADVANCE, &swallowed);
         if (pos >= snap_lo && pos <= snap_hi) pos = buffer_snap_char(buf, pos);
         m->pos = pos;
     }
+}
+
+// The run so far goes to every marker (each mapped from its epoch, then snapped); a new run starts. At the end of
+// the batch the swallowed flags go too; before it they keep what the run said.
+static void buffer_batch_apply(Buffer *buf, b32 end) {
+    for (i64 i = 0; i < buf->marker_count; i++) {
+        BufferMarkerSlot *m = &buf->markers[i];
+        if (!(m->flags & BUFFER_MARKER_LIVE)) continue;
+        if (m->next_free < buf->batch_count) {
+            b32 swallowed = 0;
+            m->pos = buffer_snap_cheap(buf, buffer_batch_map(buf, m->pos, m->next_free, m->flags & BUFFER_MARKER_ADVANCE, &swallowed));
+            if (swallowed) m->flags |= BUFFER_MARKER_SWALLOWED;
+        }
+        m->next_free = 0;
+        if (end) m->flags &= ~(u32)BUFFER_MARKER_SWALLOWED;
+    }
+    buf->batch_count = 0;
+    buf->batch_dir = 0;
+}
+
+void buffer_batch_begin(Buffer *buf) {
+    if (buf->batch_depth++) return;
+    if (!buf->batch_edits) buf->batch_edits = (BufferBatchEdit *)os_reserve(BUFFER_BATCH_RESERVE);
+    if (!buf->batch_edits) os_fatal(STR8_LIT("Out of address space (batch)."));
+    buf->batch_count = 0;
+    buf->batch_dir = 0;
+}
+
+void buffer_batch_end(Buffer *buf) {
+    ASSERT(buf->batch_depth > 0);
+    if (--buf->batch_depth) return;
+    buffer_batch_apply(buf, 1);
+    // A large list gives its commit back (one MB stays).
+    u64 keep = MB(1), committed = (u64)buf->batch_committed * sizeof(BufferBatchEdit);
+    if (committed > keep) {
+        os_decommit((u8 *)buf->batch_edits + keep, committed - keep);
+        buf->batch_committed = (i64)(keep / sizeof(BufferBatchEdit));
+    }
+}
+
+// Inside a batch, before buffer_replace changes [start, end) into len bytes: the edit joins the run, or the run is
+// applied first when the edit is out of its order (or the list is full).
+static void buffer_batch_add(Buffer *buf, i64 start, i64 end, i64 len) {
+    i64 n = buf->batch_count;
+    if (n > 0) {
+        BufferBatchEdit *last = &buf->batch_edits[n - 1];
+        b32 asc = start >= last->start + last->inserted, desc = end <= last->start;
+        i32 dir = buf->batch_dir; // 0: undecided, every pair so far fits both orders (an insertion where a deletion was)
+        if (dir > 0 ? !asc : dir < 0 ? !desc : !asc && !desc) {
+            buffer_batch_apply(buf, 0);
+#if TEAL_DEV
+            buf->dev_batch_flushes++;
+#endif
+            n = 0;
+            dir = 0;
+        } else if (!dir) {
+            dir = asc && desc ? 0 : asc ? 1 : -1;
+        }
+        buf->batch_dir = dir;
+    }
+    if (n == buf->batch_committed) {
+        u64 bytes = (u64)n * sizeof(BufferBatchEdit);
+        u64 grown = MIN(commit_grow(bytes, bytes + sizeof(BufferBatchEdit)), (u64)BUFFER_BATCH_RESERVE);
+        if (grown <= bytes || !os_commit((u8 *)buf->batch_edits + bytes, grown - bytes)) {
+            if (!n) os_fatal(STR8_LIT("Out of memory (batch)."));
+            buffer_batch_apply(buf, 0); // full: what it holds goes to the markers
+#if TEAL_DEV
+            buf->dev_batch_flushes++;
+#endif
+            n = 0;
+        } else {
+            buf->batch_committed = (i64)(grown / sizeof(BufferBatchEdit));
+        }
+    }
+    BufferBatchEdit *prev = n ? &buf->batch_edits[n - 1] : NULL;
+    buf->batch_edits[n] = (BufferBatchEdit){ start, end - start, len, prev ? prev->delta_before + prev->inserted - prev->removed : 0 };
+    buf->batch_count = n + 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +630,7 @@ static b32 buffer_undo_record(Buffer *buf, i64 start, i64 end, i64 inserted) {
     buffer_copy(buf, start, end, u->log + u->log_used + sizeof(BufferUndoRecord));
     g->last = u->log_used;
     g->size += bytes;
+    g->records++;
     u->log_used += bytes;
     return 1;
 }
@@ -545,6 +684,10 @@ static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, i64 point, i64 *
     i64 undo_index = u->group_count - 1;
     u->groups[undo_index].backward = !target.backward;
     u->applying = 1;
+    // A large group (a multiple-cursor command, a replace-all) goes back in one batch: its records replayed newest
+    // first are descending runs, so the markers are adjusted once per run instead of on every record.
+    b32 batch = target.records > 64;
+    if (batch) buffer_batch_begin(buf);
     BufferUndoResult result = BUFFER_UNDO_DONE;
     // The target's records, newest first.
     for (u64 at = target.last, n = target.size ? 1 : 0; n; ) {
@@ -557,6 +700,7 @@ static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, i64 point, i64 *
         if (!r.prev) break;
         at -= r.prev;
     }
+    if (batch) buffer_batch_end(buf);
     u->applying = 0;
     BufferUndoGroup *g = &u->groups[undo_index];
     if (result == BUFFER_UNDO_DONE) {
@@ -614,6 +758,7 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
     if (!buffer_reserve_gap(buf, text.len - (end - start))) return 0;
     if (!buffer_reserve_nl_gap(buf, new_lines)) return 0;
     if (buf->undo.enabled && !buffer_undo_record(buf, start, end, text.len)) return 0; // the last thing that can fail
+    if (buf->batch_depth) buffer_batch_add(buf, start, end, text.len);
 
     // Put the gap inside [start, end], then widen it over the range.
     if (buf->gap_start < start) buffer_move_gap(buf, start);
@@ -636,7 +781,7 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
     }
     buf->gap_start += text.len;
     if (buf->states_on) buffer_states_edited(buf, first_line, removed_lines, new_lines);
-    if (buf->marker_live) buffer_adjust_markers(buf, start, end, text.len);
+    if (buf->marker_live && !buf->batch_depth) buffer_adjust_markers(buf, start, end, text.len);
 
     if (buf->undo.enabled) {
         buf->undo.state = ++buf->undo.next_state;
@@ -932,6 +1077,7 @@ static void buffer_restore_places(Buffer *buf, BufferPlace *places, i64 count) {
 }
 
 OsFileStatus buffer_revert(Buffer *buf, i64 point) {
+    ASSERT(!buf->batch_depth); // it reads and puts back marker slots itself
     if (!buf->path.len) return OS_FILE_NO_PATH;
     Buffer *fresh = buffer_create(STR8_LIT(""));
     if (!fresh) return OS_FILE_OUT_OF_MEMORY;

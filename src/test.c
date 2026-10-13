@@ -532,6 +532,146 @@ static b32 test_markers(Test *t, u64 seed) {
     return ok;
 }
 
+// Valid UTF-8 only (whole characters), at least len bytes.
+static String8 test_valid_text(Test *t, u8 *out, i64 len) {
+    static const char *pieces[] = { "a", "b", "x", "Z", "0", " ", "\t", "\n", "\n", "\xC4\x9F", "\xE2\x82\xAC", "\xF0\x9F\x98\x80" };
+    i64 n = 0;
+    while (n < len) {
+        const char *p = pieces[test_below(t, ARRAY_COUNT(pieces))];
+        while (*p) out[n++] = (u8)*p++;
+    }
+    return str8(out, n);
+}
+
+#define TEST_BATCH_ROUNDS 600
+#define TEST_BATCH_MARKERS 60
+
+// Batches against the sequential path: two buffers with the same text and markers get the same edits, B inside a
+// batch. Runs that are ascending, descending or mixed (flushes); markers set, created, destroyed and read in the
+// middle; the swallowed flag against a naive one (strictly inside a removed range since the marker was last set).
+// Valid UTF-8 with edits on boundaries: every marker equal. Invalid bytes: the same text, every marker of B on a
+// boundary (snapped against the run's final text, not after each edit).
+static b32 test_marker_batch(Test *t, u64 seed) {
+    t->rng = seed ^ 0xba7c4ull;
+    Buffer *a = buffer_create(STR8_LIT("seq")), *b = buffer_create(STR8_LIT("batch"));
+    TEST_CHECK(t, a && b, "marker batch: buffer_create failed");
+    buffer_undo_enable(a, 0);
+    buffer_undo_enable(b, 0);
+    u8 *text = PUSH_ARRAY(&t->arena, u8, KB(16));
+    BufferMarker ma[TEST_BATCH_MARKERS], mb[TEST_BATCH_MARKERS];
+    b32 sw[TEST_BATCH_MARKERS];
+    i64 edits = 0, gets = 0, swallowed = 0, flushes_mixed = 0;
+    for (i32 round = 0; round < TEST_BATCH_ROUNDS; round++) {
+        b32 valid = round % 3 != 2;
+        i32 kind = round % 4; // 0 ascending, 1 descending, 2 mixed, 3 ascending runs with deletes at cursors
+        buffer_replace(a, 0, buffer_size(a), STR8_LIT(""));
+        buffer_replace(b, 0, buffer_size(b), STR8_LIT(""));
+        String8 init = valid ? test_valid_text(t, text, 200 + test_below(t, 1500)) : test_random_text(t, text, 200 + test_below(t, 1500));
+        buffer_replace(a, 0, 0, init);
+        buffer_replace(b, 0, 0, init);
+        for (i32 k = 0; k < TEST_BATCH_MARKERS; k++) {
+            b32 adv = (b32)test_below(t, 2);
+            i64 pos = test_below(t, buffer_size(a) + 1);
+            ma[k] = buffer_marker_create(a, pos, adv);
+            mb[k] = buffer_marker_create(b, pos, adv);
+            sw[k] = 0;
+        }
+        u64 flushes0 = b->dev_batch_flushes;
+        buffer_batch_begin(b);
+        i64 next = kind == 1 ? buffer_size(a) : buffer_snap_char(a, test_below(t, 64)); // ascending: the next edit starts here or after; descending: ends here or before
+        i32 ops = 1 + (i32)test_below(t, 60);
+        for (i32 op = 0; op < ops; op++) {
+            i64 r = test_below(t, 100), size = buffer_size(a);
+            if (r < 75) {
+                i64 start, end, step = test_below(t, 40), len = test_below(t, 3) ? test_below(t, 6) : 0; // (MIN evaluates twice)
+                if (kind == 0 || kind == 3) {
+                    start = MIN(next + step, size);
+                    end = MIN(start + len, size);
+                } else if (kind == 1) {
+                    end = MAX(next - step, 0);
+                    start = MAX(end - len, 0);
+                } else {
+                    start = test_below(t, size + 1);
+                    end = MIN(start + len, size);
+                }
+                if (valid) { // on boundaries; an ascending run keeps its order (next is a boundary)
+                    start = buffer_snap_char(a, start);
+                    if ((kind == 0 || kind == 3) && start < next) start = next;
+                    end = MAX(buffer_snap_char(a, end), start);
+                }
+                if (kind == 1 && end > next) end = start; // snapping must not leave the descending order
+                u8 ins[64];
+                i64 il = test_below(t, 4) ? test_below(t, 12) : 0;
+                if (kind == 3) il = test_below(t, 2); // typing and deleting at many places
+                String8 s = valid ? test_valid_text(t, ins, il) : test_random_text(t, ins, il);
+                if (!il) s.len = 0;
+                for (i32 k = 0; k < TEST_BATCH_MARKERS; k++) {
+                    i64 p = buffer_marker_get(a, ma[k]);
+                    if (start < p && p < end) sw[k] = 1;
+                }
+                buffer_replace(a, start, end, s);
+                buffer_replace(b, start, end, s);
+                edits++;
+                if (kind == 1) next = start;
+                else next = start + s.len;
+            } else if (r < 82) {
+                i32 k = (i32)test_below(t, TEST_BATCH_MARKERS);
+                i64 pos = test_below(t, size + 1);
+                buffer_marker_set(a, ma[k], pos);
+                buffer_marker_set(b, mb[k], pos);
+                sw[k] = 0;
+            } else if (r < 86) {
+                i32 k = (i32)test_below(t, TEST_BATCH_MARKERS);
+                b32 adv = (b32)test_below(t, 2);
+                i64 pos = test_below(t, size + 1);
+                buffer_marker_destroy(a, ma[k]);
+                buffer_marker_destroy(b, mb[k]);
+                ma[k] = buffer_marker_create(a, pos, adv);
+                mb[k] = buffer_marker_create(b, pos, adv);
+                sw[k] = 0;
+            } else {
+                i32 k = (i32)test_below(t, TEST_BATCH_MARKERS);
+                i64 pa = buffer_marker_get(a, ma[k]), pb = buffer_marker_get(b, mb[k]);
+                TEST_CHECK(t, !valid || pa == pb, "marker batch round %d op %d: marker %d at %D, sequential %D (seed 0x%X)", round, op, k,
+                           pb, pa, seed);
+                TEST_CHECK(t, !valid || buffer_marker_swallowed(b, mb[k]) == sw[k], "marker batch round %d op %d: marker %d swallowed %d, "
+                           "naive %d (seed 0x%X)", round, op, k, buffer_marker_swallowed(b, mb[k]), sw[k], seed);
+                gets++;
+            }
+        }
+        for (i32 k = 0; k < TEST_BATCH_MARKERS; k++) {
+            TEST_CHECK(t, !valid || buffer_marker_swallowed(b, mb[k]) == sw[k], "marker batch round %d: marker %d swallowed %d, naive %d (seed 0x%X)",
+                       round, k, buffer_marker_swallowed(b, mb[k]), sw[k], seed);
+            swallowed += sw[k];
+        }
+        buffer_batch_end(b);
+        u64 flushes = b->dev_batch_flushes - flushes0;
+        if (kind == 2) flushes_mixed += (i64)flushes;
+        else TEST_CHECK(t, flushes == 0, "marker batch round %d: %U flushes in an ordered run (seed 0x%X)", round, flushes, seed);
+        String8 ta = buffer_text(a, &t->arena, 0, buffer_size(a)), tb = buffer_text(b, &t->arena, 0, buffer_size(b));
+        TEST_CHECK(t, str8_equal(ta, tb), "marker batch round %d: the texts differ (seed 0x%X)", round, seed);
+        for (i32 k = 0; k < TEST_BATCH_MARKERS; k++) {
+            i64 pa = buffer_marker_get(a, ma[k]), pb = buffer_marker_get(b, mb[k]);
+            TEST_CHECK(t, valid ? pa == pb : buffer_snap_char(b, pb) == pb, "marker batch round %d: marker %d at %D, sequential %D (%s, "
+                       "seed 0x%X)", round, k, pb, pa, valid ? "valid" : "invalid bytes", seed);
+            TEST_CHECK(t, !buffer_marker_swallowed(b, mb[k]) && !(b->markers[mb[k] - 1].flags & BUFFER_MARKER_SWALLOWED),
+                       "marker batch round %d: marker %d still swallowed after the batch", round, k);
+        }
+        for (i32 k = 0; k < TEST_BATCH_MARKERS; k++) {
+            buffer_marker_destroy(a, ma[k]);
+            buffer_marker_destroy(b, mb[k]);
+        }
+    }
+    TEST_CHECK(t, flushes_mixed > 0 && b->marker_live == 0 && !b->batch_depth, "marker batch: %D flushes in mixed runs, %D live",
+               flushes_mixed, b->marker_live);
+    LOG("test: ok: marker batches against the sequential path (%d rounds, %d markers: ascending, descending, mixed and typing runs, "
+        "valid UTF-8 and invalid bytes; %D edits, %D reads in the middle, %D swallowed, %D flushes in mixed runs, none in ordered "
+        "ones; seed 0x%X)", TEST_BATCH_ROUNDS, TEST_BATCH_MARKERS, edits, gets, swallowed, flushes_mixed, seed);
+    buffer_destroy(a);
+    buffer_destroy(b);
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Capacity and read-only
 
@@ -10102,6 +10242,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_markers(&t, seed);
+    arena_reset(&t.arena);
+    test_marker_batch(&t, seed);
     arena_reset(&t.arena);
     test_line_states(&t, seed);
     arena_reset(&t.arena);
