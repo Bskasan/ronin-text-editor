@@ -71,6 +71,7 @@ enum {
 typedef struct BufferBatchEdit {
     i64 start, removed, inserted; // as buffer_replace got them
     i64 delta_before;             // the sum of (inserted - removed) over the run's earlier edits
+    i64 split;                    // inserted, or for a joined edit the length of its first part (buffer.c)
 } BufferBatchEdit;
 
 // The visited file, as the app last saw it on disk (files changed outside the editor).
@@ -199,10 +200,12 @@ typedef struct Buffer {
     // A batch (see above).
     i32 batch_depth;     // > 0: inside a batch (they nest; the outermost end applies)
     i32 batch_dir;       // the run's order: 1 ascending, -1 descending, 0 not decided yet (each pair fits both)
+    i64 batch_pinned;    // the run's edit count when a marker was last set in it (a join keeps that edit as it is)
     BufferBatchEdit *batch_edits;
     i64 batch_count, batch_committed; // entries
 #if TEAL_DEV
     u64 dev_batch_flushes; // runs applied before their batch ended (an edit out of order, or a full list)
+    u64 dev_batch_joins;   // edits joined to the insertion before them (buffer.c)
     BufferBatchEdit *dev_edits; // tests: every successful edit appended here (NULL: off), dev_edit_cap at most
     i64 dev_edit_count, dev_edit_cap;
 #endif
