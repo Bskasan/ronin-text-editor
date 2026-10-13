@@ -83,12 +83,21 @@ struct App {
     i64 landing_start, landing_end;
     GrepSearch *grep_dying[RESULTS_DYING_MAX]; // cancelled or finished searches whose workers are still ending
     i32 grep_dying_count;
+    CompileRun *compile_dying[RESULTS_DYING_MAX]; // builds killed to start another (or with their buffer), still ending
+    i32 compile_dying_count;
+    Arena compile_arena;         // the build commands of the session (made on first use)
+    String8 compile_keys[RESULTS_COMMANDS], compile_commands[RESULTS_COMMANDS]; // the last command per directory
+    i32 compile_command_count;
+    String8 compile_last_command, compile_last_dir, compile_last_root; // recompile's
+    Arena compile_next_arena;    // a start waiting for its prompt and questions (reset by each)
+    String8 compile_next_key, compile_next_command, compile_next_dir, compile_next_root;
     b32 results_pending;         // results work can go on at once: another frame
 #if TEAL_DEV
     i32 dev_grep_hold_after;     // --grep-hold N: every search's workers stand still after N files until released
     b32 dev_grep_stuck_next;     // the next search's workers are stuck in the "file system" (shutdown tests)
     GrepSearch *dev_last_grep;
     i32 dev_grep_abandoned;      // search workers left to the process exit by the shutdown
+    i32 dev_compile_abandoned;   // build workers left to the process exit by the shutdown
     i32 dev_claim_ahead;         // tests: the claim window instead of RESULTS_CLAIM_AHEAD (0 = it)
     u64 dev_held_max;            // tests: the held records' limit instead of RESULTS_HELD_MAX (0 = it)
     u64 dev_results_max_us;      // benches: the longest results_work of a frame since it was last read
@@ -132,6 +141,9 @@ static Results *results_of(App *app, Buffer *buf);
 static i64 results_lower_bound(Results *r, i64 row);
 static b32  results_wake(App *app);
 static b32  results_running(App *app);
+static b32  results_compile_running(App *app);
+static void results_compile_go(CommandContext *ctx);
+static String8 results_mode_name(App *app, Buffer *buf, Arena *arena);
 
 // Shows `buf` in `v`: where `v` last showed it, else where the most recently used other window showing
 // it is, else where it was last shown (view_switch_buffer).
@@ -380,7 +392,8 @@ static void app_draw_cursor(App *app, Renderer *r, AppLayout *l, View *v, i64 po
 }
 
 // " -:**-  win32_main.c    37%   L120 C8    (C)    UTF-8 CRLF"
-static String8 app_mode_line_text(View *v, Arena *arena) {
+// The mode line of a window, with `mode` as its mode name.
+static String8 app_mode_line_format(View *v, Arena *arena, String8 mode) {
     Buffer *buf = v->buffer;
     const char *flags = buf->read_only ? "%%" : buf->modified ? "**" : "--";
     i64 name_cells = 0;
@@ -393,9 +406,13 @@ static String8 app_mode_line_text(View *v, Arena *arena) {
     String8 where = top == 0 && bottom ? STR8_LIT("All") : top == 0 ? STR8_LIT("Top") : bottom ? STR8_LIT("Bot")
                   : str8_fmt(arena, "%D%%", top_pos * 100 / MAX(buffer_size(buf), 1));
     i64 p = view_point(v, &v->cursors[0]);
-    return str8_fmt(arena, " -:%s-  %S%s%S    %S   L%D C%D    (%s)    %s %s", flags, buf->name, disk, pad, where,
-                    buffer_line_of(buf, p) + 1, view_column_of(buf, p), buffer_language_name(buf->language),
+    return str8_fmt(arena, " -:%s-  %S%s%S    %S   L%D C%D    (%S)    %s %s", flags, buf->name, disk, pad, where,
+                    buffer_line_of(buf, p) + 1, view_column_of(buf, p), mode,
                     app_encoding_name(buf->encoding), app_eol_name(buf->eol));
+}
+
+static String8 app_mode_line_text(View *v, Arena *arena) {
+    return app_mode_line_format(v, arena, str8_cstr(buffer_language_name(v->buffer->language)));
 }
 
 // A background color behind the cells of [start, end) on the visible rows; on a line whose newline is
@@ -570,16 +587,33 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
         i64 ls = buffer_line_start(buf, loc->row);
         app_draw_span(r, l, v, ls + loc->mark_off, ls + loc->mark_off + loc->mark_len, draw_rows, th->lazy_highlight);
     }
-    i64 next = first;
+    // A build's lines: the kind word in its color, with a location or not.
+    u32 kind_rgb[4] = { 0, th->compilation_error, th->compilation_warning, th->compilation_info };
+    i64 next = first, mark = 0;
+    if (res && res->mark_count) {
+        i64 lo = 0, hi = res->mark_count;
+        while (lo < hi) {
+            i64 mid = lo + (hi - lo) / 2;
+            if (res->marks[mid].row < top) lo = mid + 1;
+            else hi = mid;
+        }
+        mark = lo;
+    }
     for (i32 row = 0; row < draw_rows && top + row < count; row++) {
         AppSpan spans[4];
         i32 n = 0;
         while (res && next < res->count && res->locs[next].row < top + row) next++;
+        while (res && mark < res->mark_count && res->marks[mark].row < top + row) mark++;
         if (res && next < res->count && res->locs[next].row == top + row) {
             Location *loc = &res->locs[next];
             i64 ls = buffer_line_start(buf, top + row);
             spans[n++] = (AppSpan){ ls + loc->path_off, ls + loc->path_off + loc->path_len, th->search_file };
             spans[n++] = (AppSpan){ ls + loc->num_off, ls + loc->num_off + loc->num_len, th->search_line_number };
+            if (loc->kind != LOCATION_MATCH) spans[n++] = (AppSpan){ ls + loc->mark_off, ls + loc->mark_off + loc->mark_len, kind_rgb[loc->kind & 3] };
+        } else if (res && mark < res->mark_count && res->marks[mark].row == top + row) {
+            ResultsMark *m = &res->marks[mark];
+            i64 ls = buffer_line_start(buf, top + row);
+            spans[n++] = (AppSpan){ ls + m->off, ls + m->off + m->len, kind_rgb[m->kind & 3] };
         }
         if (current.start >= 0) spans[n++] = current;
         app_draw_buffer_line(app, r, buf, top + row, text_x, v->y + row * line_h, v->left_col, v->cols + 1, spans, n, in->scratch);
@@ -593,7 +627,7 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
     u32 mode_bg = selected ? th->text : th->mode_line_inactive_background;
     u32 mode_fg = selected ? th->background : th->mode_line_inactive_text;
     r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)right, (f32)(mode_y + line_h) }, COLOR_HEX(mode_bg));
-    String8 mode = app_mode_line_text(v, in->scratch);
+    String8 mode = app_mode_line_format(v, in->scratch, results_mode_name(app, buf, in->scratch));
     font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((right - text_x) / l->cell_w, 0)), COLOR_HEX(mode_fg));
     if (divider) {
         Rect line = { (f32)right, (f32)v->y, (f32)(v->x + v->w), (f32)(mode_y + line_h) };
@@ -1769,7 +1803,7 @@ String8 app_dev_text(App *app, Arena *arena) {
 
 String8 app_dev_binding(App *app, Arena *arena, i32 keymap, i32 index, const char **command) {
     Keymap *map = keymap == 0 ? &app->config->global : keymap == 1 ? &app->config->minibuffer : keymap == 2 ? &app->config->isearch
-                                                                                                           : &app->config->search_results;
+                : keymap == 3 ? &app->config->search_results : &app->config->compilation;
     if (index < 0 || index >= map->count) return str8(NULL, 0);
     *command = map->bindings[index].command->name;
     u8 *text = PUSH_ARRAY(arena, u8, KEY_SEQ_TEXT_CAP);
@@ -1804,7 +1838,8 @@ static void app_describe_no_chord(App *app, Event *e) {
 // itself, after the keymap has said what the key is bound to, so the quit keys still abort it.
 // A buffer's own keymap (placed before the global one), or NULL.
 static Keymap *app_buffer_keymap(App *app, Buffer *buf) {
-    return buf->keymap == BUFFER_KEYMAP_SEARCH_RESULTS ? &app->config->search_results : NULL;
+    return buf->keymap == BUFFER_KEYMAP_SEARCH_RESULTS ? &app->config->search_results
+         : buf->keymap == BUFFER_KEYMAP_COMPILATION    ? &app->config->compilation : NULL;
 }
 
 static void app_key_event(App *app, Event *e) {

@@ -43,6 +43,7 @@ typedef enum BufferLanguage {
 enum {
     BUFFER_KEYMAP_NONE,
     BUFFER_KEYMAP_SEARCH_RESULTS, // [keys search-results]: *search*, *occur*
+    BUFFER_KEYMAP_COMPILATION,    // [keys compilation]: *compilation*
 };
 
 // A position that survives edits: buffer_replace adjusts every live marker. Handle = slot + 1.

@@ -3847,7 +3847,7 @@ static b32 test_config(Test *t, u64 seed) {
         "font = x\n");                        // 25: a key sequence "font =", command "x"
     config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
     static const char *expected[] = {
-        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch] or [keys search-results])",
+        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results] or [keys compilation])",
         "t.conf:3: font_size: 'big' is not a number",
         "t.conf:4: unknown setting 'nosuch'",
         "t.conf:5: expected name = value",
@@ -3857,7 +3857,7 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:11: unknown command 'no-such-command'",
         "t.conf:12: expected a key sequence and a command",
         "t.conf:13: unknown section [bogus]",
-        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch] or [keys search-results])",
+        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results] or [keys compilation])",
         "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
         "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
         "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",
@@ -9581,6 +9581,368 @@ static b32 test_compile_kill(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Builds through the headless app
+
+// Frames until *compilation* holds `what` (or the timeout).
+static b32 test_compile_wait_text(Test *t, App *app, const char *what, u32 timeout_ms) {
+    u64 start = os_time_us();
+    while (os_time_us() - start < (u64)timeout_ms * 1000) {
+        Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+        if (b) {
+            u64 mark = arena_pos(&t->arena);
+            b32 has = test_contains(buffer_text(b, &t->arena, 0, buffer_size(b)), what);
+            arena_pop_to(&t->arena, mark);
+            if (has) return 1;
+        }
+        if (os_dev_wake_wait(app_wants_frame(app) ? 0 : 5)) app_wake(app);
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+    }
+    return 0;
+}
+
+static String8 test_compile_text(Test *t, App *app) {
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+    return b ? buffer_text(b, &t->arena, 0, buffer_size(b)) : str8(NULL, 0);
+}
+
+static String8 test_compile_mode(Test *t, App *app) {
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+    return b ? results_mode_name(app, b, &t->arena) : str8(NULL, 0);
+}
+
+// The point of the window that shows *compilation* (-1: none).
+static i64 test_compile_window_point(App *app) {
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
+        if (str8_equal(views[i]->buffer->name, STR8_LIT("*compilation*"))) return view_point(views[i], &views[i]->cursors[0]);
+    }
+    return -1;
+}
+
+static String8 test_mini_input(Test *t, App *app) {
+    return buffer_text(app->mini.buffer, &t->arena, 0, buffer_size(app->mini.buffer));
+}
+
+static b32 test_compile_app(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13app", t->tmp_dir));
+    os_make_dir(root);
+    os_make_dir(str8_fmt(&t->arena, "%S\\sub", root));
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", root);
+    os_write_file(a_c, STR8_LIT("line one\nint y = x;\nline three\nint z\nline five\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\b.h", root), STR8_LIT("a\nb\nunused c\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\note.h", root), STR8_LIT("int x;\n"));
+    String8 shown = str8_fmt(&t->arena, "%S/", root);
+    for (i64 i = 0; i < shown.len; i++) if (shown.data[i] == '\\') shown.data[i] = '/';
+    String8 cmd = test_child(t, "app_build", STR8_LIT("out Building...\n"
+                                                     "out a.c(2,5): error C2065: 'x': undeclared identifier\n"
+                                                     "out note.h(1): note: see declaration of 'x'\n"
+                                                     "out b.h:3:1: warning: unused [-Wunused]\n"
+                                                     "out a.c(4): error C2143: missing ';'\n"
+                                                     "out done\n"
+                                                     "exit 2\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
+    String8 none = test_results_conf(t, "p13none.conf", "[settings]\ncompilation_save_buffers = none\n");
+    String8 want_head = str8_fmt(&t->arena,
+                                 "Command: %S\nDirectory: %S\n\nBuilding...\n"
+                                 "a.c(2,5): error C2065: 'x': undeclared identifier\n"
+                                 "note.h(1): note: see declaration of 'x'\n"
+                                 "b.h:3:1: warning: unused [-Wunused]\n"
+                                 "a.c(4): error C2143: missing ';'\n"
+                                 "done\n\nCompilation exited abnormally with code 2 in ", cmd, shown);
+
+    // The whole flow: the prompt with .teal-project's command, *compilation* in the other window (not
+    // selected), its exact text, the state, the summary, the locations; next-error with the landing
+    // highlight; RET, n, p; a note skipped; g.
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        Buffer *ab = test_current(app);
+        TEST_CHECK(t, str8_equal(test_compile_mode(t, app), STR8_LIT("")), "compile app: a mode before any build");
+        app_dev_feed(app, "C-x p c", &t->arena);
+        TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Compile command: ")) && str8_equal(test_mini_input(t, app), cmd),
+                   "compile app: the prompt '%S' with '%S'", app_dev_prompt(app), test_mini_input(t, app));
+        TEST_CHECK(t, !buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*")) && os_dev_live_processes() == procs0,
+                   "compile app: something ran before RET");
+        app_dev_feed(app, "RET", &t->arena);
+        Buffer *cb = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+        TEST_CHECK(t, cb && test_current(app) == ab && app_dev_window_count(app) == 2, "compile app: *compilation* not shown beside a.c");
+        TEST_CHECK(t, str8_equal(test_compile_mode(t, app), STR8_LIT("Compilation:running")), "compile app: mode '%S' while running",
+                   test_compile_mode(t, app));
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the build did not end");
+        String8 got = test_compile_text(t, app);
+        TEST_CHECK(t, got.len > want_head.len && mem_equal(got.data, want_head.data, want_head.len) && got.data[got.len - 1] == 's' &&
+                          got.data[got.len - 2] == ' ', "compile app: *compilation* holds '%S'", got);
+        TEST_CHECK(t, str8_equal(test_compile_mode(t, app), STR8_LIT("Compilation:exit [2]")), "compile app: mode '%S'", test_compile_mode(t, app));
+        TEST_CHECK(t, test_app_echo_is(app, "Compilation exited abnormally with code 2: 2 errors, 1 warning"), "compile app: echo '%S'", test_echo(app));
+        Results *r = results_of(app, cb);
+        TEST_CHECK(t, r && r->count == 4 && r->locs[0].row == 4 && r->locs[1].kind == LOCATION_INFO && r->locs[3].row == 7 && !r->mark_count,
+                   "compile app: %D locations", r ? r->count : -1);
+        TEST_CHECK(t, cb->read_only && !cb->modified && cb->keymap == BUFFER_KEYMAP_COMPILATION, "compile app: the buffer's flags");
+        // next-error from a.c: here, the whole line highlighted until the next key.
+        app_dev_feed(app, "M-g n", &t->arena);
+        TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("a.c:13")), "compile app: next-error to '%S'", test_results_where(t, app));
+        TEST_CHECK(t, app->landing_buffer == ab && app->landing_start == 9 && app->landing_end == 19, "compile app: landing %D-%D",
+                   app->landing_start, app->landing_end);
+        app_dev_feed(app, "M-g n", &t->arena); // the note is skipped
+        TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("b.h:4")), "compile app: next-error skips the note: '%S'",
+                   test_results_where(t, app));
+        TEST_CHECK(t, app->landing_buffer == test_current(app) && app->landing_start == 4 && app->landing_end == 12, "compile app: landing on b.h");
+        app_dev_feed(app, "C-f", &t->arena);
+        TEST_CHECK(t, !app->landing_buffer, "compile app: the landing highlight outlived a key");
+        app_dev_feed(app, "M-g n", &t->arena);
+        TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("a.c:31")), "compile app: next-error to '%S'", test_results_where(t, app));
+        app_dev_feed(app, "M-g n", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No more matches"), "compile app: past the last: '%S'", test_echo(app));
+        app_dev_feed(app, "M-g p", &t->arena);
+        TEST_CHECK(t, str8_equal(test_results_where(t, app), STR8_LIT("b.h:4")), "compile app: previous-error skips nothing back to '%S'",
+                   test_results_where(t, app));
+        // In *compilation*: RET on the note visits it; RET on a plain line; n and p skip the note.
+        app_dev_feed(app, "C-x o", &t->arena);
+        if (test_current(app) != cb) app_dev_feed(app, "C-x o", &t->arena);
+        app_dev_feed(app, "M-< C-n C-n C-n", &t->arena);
+        app_dev_feed(app, "RET", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No error on this line"), "compile app: RET on 'Building...': '%S'", test_echo(app));
+        app_dev_feed(app, "n", &t->arena);
+        TEST_CHECK(t, buffer_line_of(cb, test_app_point(app)) == 4, "compile app: n to row %D", buffer_line_of(cb, test_app_point(app)));
+        app_dev_feed(app, "n", &t->arena);
+        TEST_CHECK(t, buffer_line_of(cb, test_app_point(app)) == 6, "compile app: n skips the note: row %D", buffer_line_of(cb, test_app_point(app)));
+        app_dev_feed(app, "p", &t->arena);
+        TEST_CHECK(t, buffer_line_of(cb, test_app_point(app)) == 4, "compile app: p skips the note: row %D", buffer_line_of(cb, test_app_point(app)));
+        app_dev_feed(app, "C-n RET", &t->arena);
+        TEST_CHECK(t, test_current_is(app, "note.h") && test_app_point(app) == 0, "compile app: RET on the note: '%S'", test_results_where(t, app));
+        // g in *compilation*: the same build again, without the prompt; M-x recompile from elsewhere too.
+        app_dev_feed(app, "C-x b * c o m p i l a t i o n * RET g", &t->arena);
+        TEST_CHECK(t, !app_dev_prompt(app).len && results_compile_running(app), "compile app: g did not start the build");
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: g's build did not end");
+        got = test_compile_text(t, app);
+        TEST_CHECK(t, got.len > want_head.len && mem_equal(got.data, want_head.data, want_head.len), "compile app: g gave '%S'", got);
+        app_dev_feed(app, "C-x b a . c RET M-x r e c o m p i l e RET", &t->arena);
+        TEST_CHECK(t, results_compile_running(app) && test_current(app) == ab, "compile app: M-x recompile");
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: recompile did not end");
+        // The prompt now offers the command last used here (over .teal-project's): an edited one.
+        app_dev_feed(app, "C-x p c C-e SPC e x t r a RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the edited command did not end");
+        app_dev_feed(app, "C-x p c", &t->arena);
+        TEST_CHECK(t, str8_equal(test_mini_input(t, app), str8_fmt(&t->arena, "%S extra", cmd)), "compile app: the prompt offers '%S'",
+                   test_mini_input(t, app));
+        app_dev_feed(app, "C-a C-k RET", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No compile command"), "compile app: an empty command: '%S'", test_echo(app));
+        app_dev_feed(app, "M-x k i l l - c o m p i l a t i o n RET", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No compilation process"), "compile app: kill with none: '%S'", test_echo(app));
+        if (!test_app_destroy(t, app, "compile app")) return 0;
+    }
+
+    // recompile before any build; compile in a buffer's directory.
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        app_dev_feed(app, "M-x r e c o m p i l e RET", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No previous compilation"), "compile app: recompile with none: '%S'", test_echo(app));
+        app_dev_feed(app, "M-x c o m p i l e RET", &t->arena);
+        TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("Compile command: ")) && !test_mini_input(t, app).len,
+                   "compile app: compile's prompt '%S' '%S'", app_dev_prompt(app), test_mini_input(t, app));
+        app_dev_feed(app, "C-g", &t->arena);
+        if (!test_app_destroy(t, app, "compile app")) return 0;
+    }
+
+    // compilation_scroll_output: the window follows until the first error, always, never.
+    {
+        static const struct { const char *conf; i32 want; } cases[] = {
+            { "[settings]\ncompilation_save_buffers = none\ncompilation_scroll_output = first-error\n", 0 },
+            { "[settings]\ncompilation_save_buffers = none\ncompilation_scroll_output = true\n", 1 },
+            { "[settings]\ncompilation_save_buffers = none\ncompilation_scroll_output = false\n", 2 },
+        };
+        for (i32 c = 0; c < ARRAY_COUNT(cases); c++) {
+            App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p13scroll.conf", cases[c].conf));
+            app_dev_feed(app, "C-x p c RET", &t->arena);
+            TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: scroll %d did not end", c);
+            Buffer *cb = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+            i64 p = test_compile_window_point(app);
+            i64 want = cases[c].want == 0 ? buffer_line_start(cb, 4) : cases[c].want == 1 ? buffer_size(cb) : 0;
+            TEST_CHECK(t, p == want, "compile app: compilation_scroll_output case %d: point %D, expected %D", c, p, want);
+            if (!test_app_destroy(t, app, "compile app")) return 0;
+        }
+    }
+
+    // compilation_save_buffers: ask (y, n, q), all, none.
+    {
+        static const struct { const char *conf, *keys; b32 asked, saved; } cases[] = {
+            { "[settings]\ncompilation_save_buffers = ask\n", "y", 1, 1 },
+            { "[settings]\ncompilation_save_buffers = ask\n", "n", 1, 0 },
+            { "[settings]\ncompilation_save_buffers = ask\n", "q", 1, 0 },
+            { "[settings]\ncompilation_save_buffers = all\n", NULL, 0, 1 },
+            { "[settings]\ncompilation_save_buffers = none\n", NULL, 0, 0 },
+        };
+        for (i32 c = 0; c < ARRAY_COUNT(cases); c++) {
+            os_write_file(a_c, STR8_LIT("line one\nint y = x;\nline three\nint z\nline five\n"));
+            App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p13save.conf", cases[c].conf));
+            Buffer *ab = test_current(app);
+            app_dev_feed(app, "M-> x C-x p c RET", &t->arena);
+            b32 asked = test_contains(app_dev_prompt(app), "Save file");
+            if (asked && cases[c].keys) app_dev_feed(app, cases[c].keys, &t->arena);
+            b32 started = results_compile_running(app) || buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
+            TEST_CHECK(t, asked == cases[c].asked && ab->modified == !cases[c].saved && started, "compile app: save case %d: asked %d, modified %d, "
+                       "started %d ('%S')", c, asked, ab->modified, started, app_dev_prompt(app));
+            TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: save case %d did not end", c);
+            if (ab->modified) app_dev_feed(app, "C-x C-s", &t->arena);
+            if (!test_app_destroy(t, app, "compile app")) return 0;
+        }
+        os_write_file(a_c, STR8_LIT("line one\nint y = x;\nline three\nint z\nline five\n"));
+    }
+
+    // A second build while one runs (no, then yes); kill-compilation; killing the buffer; quitting (no,
+    // then yes) and the shutdown ending the tree.
+    String8 hang = str8_fmt(&t->arena, "%S\\p13\\hang.txt", t->tmp_dir);
+    test_child(t, "hang", STR8_LIT("hang\n"));
+    String8 tree = test_child(t, "app_tree", str8_fmt(&t->arena, "spawn %S\nout started\nhang\n", os_full_path(&t->arena, hang)));
+    {
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        Buffer *ab = test_current(app);
+        results_compile_remember(app, root, tree);
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the tree did not start");
+        u32 g1 = test_grandchild_pid(test_compile_text(t, app));
+        Results *r = results_compilation(app);
+        CompileRun *first = r->run;
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, str8_equal(app_dev_prompt(app), STR8_LIT("A compilation process is running; kill it? (yes or no) ")),
+                   "compile app: the second build's question '%S'", app_dev_prompt(app));
+        app_dev_feed(app, "n o RET", &t->arena);
+        TEST_CHECK(t, r->run == first && results_compile_running(app), "compile app: 'no' stopped the build");
+        app_dev_feed(app, "C-x p c RET y e s RET", &t->arena);
+        TEST_CHECK(t, r->run && r->run != first && app->compile_dying_count == 1, "compile app: 'yes' did not start another build");
+        TEST_CHECK(t, test_pid_gone(g1, 2000), "compile app: the first build's grandchild %u survived", g1);
+        TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the second build did not start");
+        u32 g2 = test_grandchild_pid(test_compile_text(t, app));
+        app_dev_feed(app, "C-x o", &t->arena);
+        if (test_current(app) == ab) app_dev_feed(app, "C-x o", &t->arena);
+        app_dev_feed(app, "C-c C-k", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000) && str8_equal(test_compile_mode(t, app), STR8_LIT("Compilation:killed")) &&
+                          test_contains(test_compile_text(t, app), "\n\nCompilation killed") && test_app_echo_is(app, "Compilation killed"),
+                   "compile app: C-c C-k: mode '%S', echo '%S'", test_compile_mode(t, app), test_echo(app));
+        TEST_CHECK(t, test_pid_gone(g2, 2000), "compile app: the killed build's grandchild %u survived", g2);
+        // Killing *compilation* while it runs kills the build.
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the third build did not start");
+        u32 g3 = test_grandchild_pid(test_compile_text(t, app));
+        files_kill_buffer(app, buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*")));
+        TEST_CHECK(t, !results_compile_running(app) && results_dev_wait(app, &t->arena, 5000) && test_pid_gone(g3, 2000),
+                   "compile app: killing *compilation* left the build");
+        // Quitting while a build runs: asked; no stays, yes quits and the shutdown ends the tree.
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the fourth build did not start");
+        u32 g4 = test_grandchild_pid(test_compile_text(t, app));
+        b32 alive = app_dev_feed(app, "C-x C-c", &t->arena);
+        TEST_CHECK(t, alive && str8_equal(app_dev_prompt(app), STR8_LIT("A compilation is running; kill it and exit? (yes or no) ")),
+                   "compile app: the exit question '%S'", app_dev_prompt(app));
+        alive = app_dev_feed(app, "n o RET", &t->arena);
+        TEST_CHECK(t, alive && results_compile_running(app), "compile app: 'no' quit or stopped the build");
+        alive = app_dev_feed(app, "C-x C-c y e s RET", &t->arena);
+        TEST_CHECK(t, !alive, "compile app: 'yes' did not quit");
+        if (!test_app_destroy(t, app, "compile app")) return 0;
+        TEST_CHECK(t, test_pid_gone(g4, 2000), "compile app: the shutdown left the grandchild %u", g4);
+    }
+
+    // A link-only failure: errors without a location, colored, counted, not visited.
+    {
+        String8 link = test_child(t, "app_link", STR8_LIT("out teal.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
+                                                         "out LINK : fatal error LNK1120: 1 unresolved externals\n"
+                                                         "exit 1120\n"));
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        results_compile_remember(app, root, link);
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the link build did not end");
+        String8 want = str8_fmt(&t->arena, "Command: %S\nDirectory: %S\n\n"
+                                           "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
+                                           "LINK : fatal error LNK1120: 1 unresolved externals\n\n"
+                                           "Compilation exited abnormally with code 1120 in ", link, shown);
+        String8 got = test_compile_text(t, app);
+        Results *r = results_compilation(app);
+        TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "compile app: the link text '%S'", got);
+        TEST_CHECK(t, r->count == 0 && r->mark_count == 2 && r->marks[0].row == 3 && r->marks[0].off == 11 && r->marks[0].len == 5 &&
+                          r->marks[1].off == 7 && r->marks[1].len == 11 && r->marks[1].kind == LOCATION_ERROR,
+                   "compile app: the link marks (%D locations, %D marks)", r->count, r->mark_count);
+        TEST_CHECK(t, test_app_echo_is(app, "Compilation exited abnormally with code 1120: 2 errors, 0 warnings"), "compile app: the link echo '%S'",
+                   test_echo(app));
+        app_dev_feed(app, "M-g n", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No more matches"), "compile app: next-error over the link errors: '%S'", test_echo(app));
+        app_dev_feed(app, "C-x o", &t->arena);
+        if (!test_current_is(app, "*compilation*")) app_dev_feed(app, "C-x o", &t->arena);
+        app_dev_feed(app, "M-< C-n C-n C-n RET", &t->arena);
+        TEST_CHECK(t, test_app_echo_is(app, "No error on this line"), "compile app: RET on a link error: '%S'", test_echo(app));
+        if (!test_app_destroy(t, app, "compile app")) return 0;
+    }
+
+    // Outside changes after a build: an unmodified buffer whose file it rewrote is reverted at once, a
+    // modified one flagged; a killed build checks too. No activation event.
+    {
+        String8 gen = str8_fmt(&t->arena, "%S\\gen.h", root), mod = str8_fmt(&t->arena, "%S\\mod.h", root);
+        os_write_file(gen, STR8_LIT("generated 1\n"));
+        os_write_file(mod, STR8_LIT("mod 1\n"));
+        String8 gen_fwd = str8_copy(&t->arena, gen), mod_fwd = str8_copy(&t->arena, mod);
+        for (i64 i = 0; i < gen_fwd.len; i++) if (gen_fwd.data[i] == 92) gen_fwd.data[i] = '/';
+        for (i64 i = 0; i < mod_fwd.len; i++) if (mod_fwd.data[i] == 92) mod_fwd.data[i] = '/';
+        String8 writes = test_child(t, "app_write", str8_fmt(&t->arena, "sleep 30\nwrite %S generated 2\\n\nwrite %S mod on disk\\n\nexit 0\n", gen_fwd, mod_fwd));
+        App *app = test_manual_app(t, gen, 0, 0, none);
+        Buffer *gb = test_current(app);
+        app_dev_visit(app, mod);
+        Buffer *mb = test_current(app);
+        app_dev_feed(app, "x", &t->arena);
+        app_dev_feed(app, "C-x b g e n . h RET", &t->arena);
+        results_compile_remember(app, root, writes);
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the writing build did not end");
+        String8 gtext = buffer_text(gb, &t->arena, 0, buffer_size(gb));
+        TEST_CHECK(t, str8_equal(gtext, STR8_LIT("generated 2\n")) && !gb->modified, "compile app: gen.h after the build: '%S'", gtext);
+        TEST_CHECK(t, mb->modified && mb->disk_state == BUFFER_DISK_CHANGED, "compile app: mod.h not flagged (state %d)", (i32)mb->disk_state);
+        String8 killed = test_child(t, "app_write2", str8_fmt(&t->arena, "write %S generated 3\\n\nout written\nhang\n", gen_fwd));
+        results_compile_remember(app, root, killed);
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, test_compile_wait_text(t, app, "written", 10000), "compile app: the second writing build did not write");
+        app_dev_feed(app, "M-x k i l l - c o m p i l a t i o n RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "compile app: the killed writing build did not end");
+        gtext = buffer_text(gb, &t->arena, 0, buffer_size(gb));
+        TEST_CHECK(t, str8_equal(gtext, STR8_LIT("generated 3\n")), "compile app: gen.h after the killed build: '%S'", gtext);
+        app_dev_feed(app, "C-x b m o d . h RET M-x r e v e r t - b u f f e r RET y e s RET", &t->arena);
+        if (!test_app_destroy(t, app, "compile app")) return 0;
+    }
+
+    // .teal-project: [build] directory, a diagnostic, the shutdown with a build running (no question).
+    {
+        String8 cwd = test_child(t, "app_cwd", STR8_LIT("cwd\n"));
+        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\ndirectory = sub\nbogus = 1\n", cwd));
+        App *app = test_manual_app(t, a_c, 0, 0, none);
+        app_dev_feed(app, "C-x p c", &t->arena);
+        String8 log = buffer_text(app->messages, &t->arena, 0, buffer_size(app->messages));
+        TEST_CHECK(t, test_contains(log, ".teal-project:4: unknown name 'bogus' in [build]") && str8_equal(test_mini_input(t, app), cwd),
+                   "compile app: [build] diagnostics in *Messages*, command '%S'", test_mini_input(t, app));
+        app_dev_feed(app, "RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the cwd build did not end");
+        String8 text = test_compile_text(t, app);
+        String8 want_dir = str8_fmt(&t->arena, "\n%S\\sub\n", root);
+        b32 found = 0;
+        for (i64 i = 0; i + want_dir.len <= text.len && !found; i++) found = mem_equal(text.data + i, want_dir.data, want_dir.len);
+        TEST_CHECK(t, found, "compile app: [build] directory: '%S'", text);
+        results_compile_remember(app, root, tree);
+        app_dev_feed(app, "C-x p c RET", &t->arena);
+        TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the last tree did not start");
+        u32 g = test_grandchild_pid(test_compile_text(t, app));
+        if (!test_app_destroy(t, app, "compile app")) return 0;
+        TEST_CHECK(t, test_pid_gone(g, 2000), "compile app: the shutdown left the grandchild %u", g);
+        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
+    }
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0,
+               "compile app: counters back (%d processes, %d threads, %d events)", os_dev_live_processes(), os_dev_live_threads(),
+               os_dev_live_events());
+    LOG("test: ok: builds in the app (the prompt with .teal-project's command, nothing run before RET, *compilation* beside and not "
+        "selected, its exact text, the mode line's state, the summary, next-error with the landing highlight and a skipped note, RET, n, "
+        "p, g, M-x recompile, the command last used here offered, an empty command, kill with none, recompile with none, compile's "
+        "prompt; compilation_scroll_output first-error / true / false; compilation_save_buffers ask (y, n, q) / all / none; a second "
+        "build while one runs (no, yes), C-c C-k, killing the buffer, quitting (no, yes), every tree gone; a link-only failure; "
+        "outside changes after a build and after a kill; [build] directory and diagnostics; the shutdown with a build running)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -9732,6 +10094,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_compile_run(&t);
     arena_reset(&t.arena);
     test_compile_kill(&t);
+    arena_reset(&t.arena);
+    test_compile_app(&t);
     arena_reset(&t.arena);
     test_finder(&t);
     arena_reset(&t.arena);

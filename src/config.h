@@ -81,6 +81,7 @@ typedef struct Config {
     Keymap minibuffer; // [keys minibuffer]: searched before global while the minibuffer is active
     Keymap isearch;    // [keys isearch]: searched before global while an isearch is active
     Keymap search_results; // [keys search-results]: before global in a results buffer (*search*, *occur*)
+    Keymap compilation;    // [keys compilation]: before global in *compilation*
     u32 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
     ConfigDiags diags;
 } Config;

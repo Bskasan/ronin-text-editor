@@ -192,6 +192,7 @@ enum {
     FILES_QUIT      = 1 << 1, // save-buffers-kill-terminal: then the exit question
     FILES_ASKED     = 1 << 2, // some buffer needed saving
     FILES_WALK      = 1 << 3, // a save-some-buffers walk: it goes on after the guard's answer
+    FILES_COMPILE   = 1 << 4, // before a build: then the build starts (results_compile_go)
 };
 
 static void files_guard_answer(CommandContext *ctx, MiniResult *r) {
@@ -278,8 +279,23 @@ static b32 files_unsaved(Buffer *b) {
     return b->modified && b->path.len;
 }
 
+static void files_quit_build_answer(CommandContext *ctx, MiniResult *r) {
+    if (r->yes) ctx->app->quit = 1; // app_shutdown kills the build
+}
+
+// The last question when quitting: a build still running.
+static void files_quit_now(CommandContext *ctx) {
+    if (results_compile_running(ctx->app)) {
+        MiniRequest req = { .kind = MINI_YES_NO, .prompt = STR8_LIT("A compilation is running; kill it and exit? (yes or no) "),
+                            .done = files_quit_build_answer };
+        minibuffer_read(ctx, &req);
+        return;
+    }
+    ctx->app->quit = 1;
+}
+
 static void files_quit_confirmed(CommandContext *ctx, MiniResult *r) {
-    if (r->yes) ctx->app->quit = 1;
+    if (r->yes) files_quit_now(ctx);
 }
 
 // The end of the walk when quitting: modified file buffers left over ask once more.
@@ -292,7 +308,7 @@ static void files_quit_check(CommandContext *ctx) {
         minibuffer_read(ctx, &req);
         return;
     }
-    app->quit = 1;
+    files_quit_now(ctx);
 }
 
 static void files_save_some_answer(CommandContext *ctx, MiniResult *r);
@@ -445,6 +461,7 @@ static void files_save_some_next(CommandContext *ctx) {
         return;
     }
     if (s->flags & FILES_QUIT) files_quit_check(ctx);
+    else if (s->flags & FILES_COMPILE) results_compile_go(ctx);
     else if (!(s->flags & FILES_ASKED)) echo_message(ctx->echo, "(No files need saving)");
 }
 
@@ -452,6 +469,7 @@ static void files_save_some_answer(CommandContext *ctx, MiniResult *r) {
     MiniState *s = &ctx->mini->state;
     if (r->key == 'q') {
         if (s->flags & FILES_QUIT) files_quit_check(ctx);
+        else if (s->flags & FILES_COMPILE) results_compile_go(ctx); // q stops asking, the build goes on
         return;
     }
     if (r->key == '!') s->flags |= FILES_SAVE_ALL;

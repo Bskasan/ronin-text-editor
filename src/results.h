@@ -1,6 +1,6 @@
 // results.h — results buffers and their locations: the project-wide search (*search*), occur (*occur*),
-// and build errors in Phase 13. Part of the app: results.c is included after finder.c and uses App
-// directly.
+// and a build's output (*compilation*). Part of the app: results.c is included after finder.c and uses
+// App directly.
 //
 // A results buffer is read-only, written through inhibit_read_only, and owns a list of locations (a file
 // or a buffer, a line, a column, a length). Its text: a header line, a blank line, one line per location
@@ -21,7 +21,7 @@
 #ifndef RESULTS_H
 #define RESULTS_H
 
-#define RESULTS_MAX 4                // results buffers at once (*search*, *occur*; *compilation* in Phase 13)
+#define RESULTS_MAX 4                // results buffers at once (*search*, *occur*, *compilation*)
 #define RESULTS_CLAIM_AHEAD 1024     // files the workers may claim past the first one not in the buffer
 #define RESULTS_HELD_MAX MB(16)      // records held for files not in the buffer yet: no new claims above it
 #define RESULTS_DYING_MAX 16         // cancelled searches still ending
@@ -31,7 +31,19 @@
 typedef enum ResultsKind {
     RESULTS_PROJECT, // project-search: files under a root
     RESULTS_OCCUR,   // occur: one buffer
+    RESULTS_COMPILE, // a build's output (*compilation*): its file table holds full paths
 } ResultsKind;
+
+enum { RESULTS_BUILD_RUNNING, RESULTS_BUILD_EXITED, RESULTS_BUILD_KILLED, RESULTS_BUILD_FAILED }; // a build's state
+
+// A kind word on a build's line without a location ("LINK : fatal error LNK1104"): drawn, never visited.
+typedef struct ResultsMark {
+    i64 row;
+    u16 off, len;
+    u8 kind; // LOCATION_*
+} ResultsMark;
+
+#define RESULTS_COMMANDS 64 // build commands remembered per directory (the session)
 
 enum { LOCATION_MATCH, LOCATION_ERROR, LOCATION_WARNING, LOCATION_INFO }; // a search match; a build's (CompileKind's order)
 
@@ -114,6 +126,20 @@ typedef struct Results {
     String8 mem_path;    // its path in the results (relative to the root; empty for occur)
     i64 mem_found_before; // r->found when it started (files with matches)
     Search msearch;
+    // A build (*compilation*): its run, the batches taken from it and not written yet, what it found. query
+    // is the command, root the directory it runs in.
+    CompileRun *run;
+    CompileBatch *batches, *batches_last;
+    i64 batch_at;            // where the first batch is read up to
+    String8 build_root;      // the project (path resolution and recompile), may be empty
+    i64 rows;                // output lines written
+    i64 errors, warnings;    // every error and warning line, with a location or not
+    b32 first_error;         // compilation_scroll_output = first-error: written; windows stopped following
+    i32 build_state;         // RESULTS_BUILD_*
+    u32 exit_code;
+    Arena mark_arena;        // ResultsMark[]
+    ResultsMark *marks;
+    i64 mark_count;
 #if TEAL_DEV
     i32 dev_max_ahead;   // the most files claimed past emit_next seen
     i32 dev_held_back;   // times the claim limit was not raised (held records over the limit)
