@@ -88,6 +88,11 @@ void    view_destroy(View *view);               // releases its markers, the cur
 Cursor *view_add_cursor(View *view, i64 pos);
 Cursor *view_primary(View *view);
 void    view_collapse_cursors(View *view); // only the primary is left (the others' markers released)
+// After every command (the driver) and every mouse action: sorted by position, merged where points are equal or
+// spans overlap (view.c has the rule). Uses scratch, gives it back.
+void    view_normalize_cursors(View *view, const Settings *settings, Arena *scratch);
+// Another cursor fits under max_cursors; if not, says so (echo may be NULL).
+b32     view_can_add_cursor(View *view, const Settings *settings, Echo *echo);
 i64     view_point(View *view, Cursor *cursor);
 void    view_set_point(View *view, Cursor *cursor, i64 pos);
 i64     view_top_line(View *view);
@@ -159,7 +164,7 @@ void         view_forget_buffer(View *view, Buffer *buf);
 
 // ---------------------------------------------------------------------------
 // Commands (command.h). view_run_command is the single place that loops over the cursors
-// (Phase 14 adds merging and ordered edits there); COMMAND_ONCE commands act on the View as a
+// (merging and the ordered edit pass since Phase 14); COMMAND_ONCE commands act on the View as a
 // whole and run once, with the primary cursor. A command that leaves its window (delete-window)
 // sets ctx->view to the window selected instead; the work after the command uses ctx->view.
 

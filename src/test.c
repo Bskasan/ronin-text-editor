@@ -1252,7 +1252,7 @@ static b32 test_columns(Test *t, u64 seed) {
 // The built-in defaults that matter to view commands (word bytes, fsync on save).
 static const Settings test_settings = { .font_size = 12, .line_height = 100, .tab_width = 4, .fsync_on_save = 1,
                                         .undo_limit_mb = 64, .transient_mark_mode = 1, .kill_ring_max = 60,
-                                        .indent_width = 4 };
+                                        .indent_width = 4, .max_cursors = 10000 };
 
 typedef struct TestView {
     Buffer *buf;
@@ -1586,6 +1586,166 @@ static b32 test_multi_cursor(Test *t) {
     TEST_CHECK(t, tv.ctx.last_command == &TEST_CMD_ONCE && tv.ctx.cursor == NULL, "cursors: driver did not update the context");
     if (!test_view_close(t, &tv)) return 0;
     LOG("test: ok: three cursors (self-insert, deletes, newline, motion) and the command driver");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Multiple cursors (Phase 14)
+
+// The cursors as text, in array order: "*" before the primary, the point, ":mark" when the region is active.
+static char *test_mc_state(Test *t, View *v) {
+    String8 s = STR8_LIT("");
+    for (i32 i = 0; i < v->cursor_count; i++) {
+        Cursor *c = &v->cursors[i];
+        String8 one = str8_fmt(&t->arena, "%s%D", i == v->primary ? "*" : "", view_point(v, c));
+        if (c->mark_set && c->mark_active) one = str8_fmt(&t->arena, "%S:%D", one, buffer_marker_get(v->buffer, c->mark));
+        s = i ? str8_fmt(&t->arena, "%S %S", s, one) : one;
+    }
+    char *out = PUSH_ARRAY(&t->arena, char, s.len + 1);
+    memcpy(out, s.data, (size_t)s.len);
+    out[s.len] = 0;
+    return out;
+}
+
+// The cursors of a view replaced by these, in this order (not normalized): points, marks (-1: no active region),
+// the primary's index.
+static void test_mc_set(View *v, const i64 *points, const i64 *marks, i32 count, i32 primary) {
+    view_collapse_cursors(v);
+    view_set_point(v, &v->cursors[0], points[0]);
+    for (i32 i = 1; i < count; i++) view_add_cursor(v, points[i]);
+    for (i32 i = 0; i < count; i++) {
+        Cursor *c = &v->cursors[i];
+        c->mark_active = c->mark_set = c->mark_shift = 0;
+        if (marks && marks[i] >= 0) view_set_mark(v, c, marks[i], 1);
+    }
+    v->primary = primary;
+}
+
+static b32 test_echo_is(TestView *tv, const char *expected);
+
+// The driver's rules: cursors swallowed by an earlier cursor's edit, line commands with two cursors on one line,
+// the merge rule (normalization), the single-cursor commands of the view, keyboard-quit's two steps, max_cursors.
+static b32 test_mc_driver(Test *t) {
+    TestView tv;
+    // Swallowed: a cursor strictly inside text an earlier cursor's edit removed is skipped; at either end it runs.
+    struct { const char *before; const Command *cmd; const char *after; } swallow[] = {
+        { "ab|cd|ef\nline2", &CMD_KILL_LINE, "ab|\nline2" },     // the second is skipped: the line below is not joined
+        { "a|b|cd", &CMD_DELETE_CHAR, "a|d" },                    // adjacent: both delete
+        { "ab|cd|\nxy", &CMD_KILL_LINE, "ab|xy" },                // at the end of the killed text: it kills the newline
+        { "foo| b|ar baz", &CMD_KILL_WORD, "foo| baz" },          // inside the killed word
+        { "foo| bar| baz", &CMD_KILL_WORD, "foo|" },              // at its end: it runs
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(swallow); i++) {
+        if (!test_view_open(t, &tv, swallow[i].before, 10, 40)) return 0;
+        test_view_run(&tv, swallow[i].cmd);
+        char *got = test_view_marked(t, &tv);
+        TEST_CHECK(t, test_cstr_equal(got, swallow[i].after), "cursors swallowed %d (%s): got \"%s\", expected \"%s\"", i,
+                   swallow[i].cmd->name, got, swallow[i].after);
+        if (!test_view_close(t, &tv)) return 0;
+    }
+    // DEL with an active region: a bare cursor inside it (not merged yet) is swallowed, not deleting a character.
+    if (!test_view_open(t, &tv, "abcdef", 10, 40)) return 0;
+    {
+        i64 points[] = { 5, 3 }, marks[] = { 1, -1 };
+        test_mc_set(tv.view, points, marks, 2, 0);
+        test_view_run(&tv, &CMD_DELETE_BACKWARD_CHAR);
+        char *got = test_view_marked(t, &tv);
+        TEST_CHECK(t, test_cstr_equal(got, "a|f") && tv.view->cursor_count == 1, "cursors swallowed: DEL over a region gave \"%s\"", got);
+    }
+    if (!test_view_close(t, &tv)) return 0;
+
+    // Line commands: of several cursors on one line only the first runs it.
+    struct { const char *before; const Command *cmd; const char *after; } lines[] = {
+        { "a|b|c\nd", &CMD_COMMENT_LINE, "// ab|c\n|d" },               // toggled once (twice would undo it)
+        { "x\n        a|b|c\ny", &CMD_UNINDENT, "x\n    a|b|c\ny" },     // one level, not two
+        { "x\na\nb|c|d", &CMD_DELETE_INDENTATION, NULL },                // joined once: "x\na bcd"
+        { "a|b|c\nd\ne", &CMD_KILL_WHOLE_LINE, "|d\ne" },                // one line killed
+        { "  a|b|c\nd", &CMD_INDENT_FOR_TAB_COMMAND, NULL },             // reindented once
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(lines); i++) {
+        if (!test_view_open(t, &tv, lines[i].before, 10, 40)) return 0;
+        test_view_run(&tv, lines[i].cmd);
+        char *got = test_view_marked(t, &tv);
+        if (lines[i].after) {
+            TEST_CHECK(t, test_cstr_equal(got, lines[i].after), "cursors on one line %d (%s): got \"%s\", expected \"%s\"", i,
+                       lines[i].cmd->name, got, lines[i].after);
+        } else if (lines[i].cmd == &CMD_DELETE_INDENTATION) {
+            String8 text = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf));
+            TEST_CHECK(t, str8_equal(text, STR8_LIT("x\na bcd")), "cursors on one line: delete-indentation gave '%S'", text);
+        } else {
+            String8 text = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf));
+            TEST_CHECK(t, str8_equal(text, STR8_LIT("abc\nd")), "cursors on one line: indent-for-tab-command gave '%S'", text);
+        }
+        if (!test_view_close(t, &tv)) return 0;
+    }
+
+    // The merge rule, on cursors set directly (out of order, overlapping), then normalized.
+    struct { i64 points[4], marks[4]; i32 count, primary; const char *after; } merges[] = {
+        { { 5, 3, 3 }, { -1, -1, -1 }, 3, 0, "3 *5" },                     // equal points: one left, sorted, the primary kept
+        { { 6, 4 }, { 2, 9 }, 2, 0, "*9:2" },                              // overlapping regions: the union, point at its end
+        { { 4, 6 }, { 9, 2 }, 2, 0, "*2:9" },                              // the survivor's point was at its region's start
+        { { 5, 8 }, { 2, 5 }, 2, 0, "*5:2 8:5" },                          // touching regions stay apart
+        { { 2, 5 }, { 8, -1 }, 2, 1, "*8:2" },                             // a bare primary inside a region: it survives
+        { { 8, 2 }, { 2, -1 }, 2, 0, "2 *8:2" },                           // a bare cursor on a region's boundary stays
+        { { 4, 7, 10, 20 }, { 0, 3, 6, -1 }, 4, 3, "10:0 *20" },           // a chain merges into its first
+        { { 0, 3, 5 }, { 5, -1, -1 }, 3, 1, "*5:0" },                      // the merged point meets another: a second pass
+    };
+    if (!test_view_open(t, &tv, "0123456789abcdefghijklmn", 10, 40)) return 0;
+    for (i32 i = 0; i < ARRAY_COUNT(merges); i++) {
+        test_mc_set(tv.view, merges[i].points, merges[i].marks, merges[i].count, merges[i].primary);
+        view_normalize_cursors(tv.view, &test_settings, &t->arena);
+        char *got = test_mc_state(t, tv.view);
+        TEST_CHECK(t, test_cstr_equal(got, merges[i].after), "cursors merge %d: got \"%s\", expected \"%s\"", i, got, merges[i].after);
+    }
+    // Inactive marks never merge.
+    {
+        i64 points[] = { 6, 4 }, marks[] = { 2, 9 };
+        test_mc_set(tv.view, points, marks, 2, 0);
+        for (i32 k = 0; k < 2; k++) tv.view->cursors[k].mark_active = 0;
+        view_normalize_cursors(tv.view, &test_settings, &t->arena);
+        char *got = test_mc_state(t, tv.view);
+        TEST_CHECK(t, test_cstr_equal(got, "4 *6"), "cursors merge: inactive marks gave \"%s\"", got);
+    }
+    i64 live = tv.buf->marker_live;
+    TEST_CHECK(t, live == 2 * tv.view->cursor_count + 1, "cursors merge: %D markers live for %d cursors", live, tv.view->cursor_count);
+
+    // keyboard-quit: with an active mark it deactivates the marks and keeps the cursors; then it leaves the primary.
+    {
+        i64 points[] = { 2, 6, 9 }, marks[] = { -1, 4, -1 };
+        test_mc_set(tv.view, points, marks, 3, 1);
+        test_view_run(&tv, &CMD_KEYBOARD_QUIT);
+        char *got = test_mc_state(t, tv.view);
+        TEST_CHECK(t, test_cstr_equal(got, "2 *6 9") && test_echo_is(&tv, "Quit"), "cursors: the first C-g gave \"%s\"", got);
+        test_view_run(&tv, &CMD_KEYBOARD_QUIT);
+        got = test_mc_state(t, tv.view);
+        TEST_CHECK(t, test_cstr_equal(got, "*6"), "cursors: the second C-g gave \"%s\"", got);
+        // mark-whole-buffer collapses first.
+        test_mc_set(tv.view, points, NULL, 3, 2);
+        test_view_run(&tv, &CMD_MARK_WHOLE_BUFFER);
+        got = test_mc_state(t, tv.view);
+        TEST_CHECK(t, test_cstr_equal(got, "*0:24"), "cursors: mark-whole-buffer gave \"%s\"", got);
+    }
+    live = tv.buf->marker_live;
+    TEST_CHECK(t, live == 3, "cursors: %D markers live after the collapse", live);
+    if (!test_view_close(t, &tv)) return 0;
+
+    // max_cursors: the default, the range, the check.
+    Config c;
+    config_init(&c);
+    config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    TEST_CHECK(t, c.settings.max_cursors == 10000, "cursors: max_cursors default %d", c.settings.max_cursors);
+    config_parse(&c, &t->arena, STR8_LIT("[settings]\nmax_cursors = 0\n"), STR8_LIT("t.conf"));
+    TEST_CHECK(t, c.diags.first && str8_equal(c.diags.first->text, STR8_LIT("t.conf:2: warning: max_cursors 0 is out of range (1 to 100000), using 1")) &&
+                      c.settings.max_cursors == 1, "cursors: max_cursors 0: '%S'", c.diags.first ? c.diags.first->text : STR8_LIT(""));
+    if (!test_view_open(t, &tv, "a|b|c", 10, 40)) return 0;
+    Settings two = test_settings;
+    two.max_cursors = 2;
+    TEST_CHECK(t, !view_can_add_cursor(tv.view, &two, &tv.echo) && test_echo_is(&tv, "Cursor limit reached (max_cursors = 2)") &&
+                      view_can_add_cursor(tv.view, &test_settings, NULL), "cursors: the max_cursors check");
+    if (!test_view_close(t, &tv)) return 0;
+    LOG("test: ok: the multiple-cursor driver (%d swallowed cases and DEL over a region; %d line commands with two cursors on one "
+        "line; %d merge cases and inactive marks; keyboard-quit's two steps; mark-whole-buffer collapsing; max_cursors)",
+        (i32)ARRAY_COUNT(swallow), (i32)ARRAY_COUNT(lines), (i32)ARRAY_COUNT(merges));
     return 1;
 }
 
@@ -4446,6 +4606,36 @@ static i64 test_app_point(App *app) {
 
 static b32 test_app_echo_is(App *app, const char *expected) {
     return str8_equal(str8(app->echo.text, app->echo.len), str8_cstr(expected));
+}
+
+static b32 test_current_is(App *app, const char *name);
+
+// The commands that make sense with one cursor collapse to the primary first (through the keys); switching buffers
+// leaves one cursor; a prompt aborted afterwards does not bring the others back.
+static b32 test_mc_collapse(Test *t) {
+    App *app = test_search_app(t, STR8_LIT("one\ntwo\nthree\nfour\nfive\nsix\n"), 0);
+    TEST_CHECK(t, app, "cursors collapse: no app");
+    View *v = app_selected_view(app);
+    static const char *keys[] = { "C-s", "M-%", "M-x r e p l a c e - s t r i n g RET", "M-g g", "C-x b RET" };
+    for (i32 i = 0; i < ARRAY_COUNT(keys); i++) {
+        app_dev_cursors(app, 1, 1, 4); // lines 1-4, the primary on line 1
+        TEST_CHECK(t, app_dev_cursor_count(app) == 4, "cursors collapse: setup %d", i);
+        app_dev_feed(app, keys[i], &t->arena);
+        v = app_selected_view(app);
+        TEST_CHECK(t, v->cursor_count == 1, "cursors collapse: '%s' left %d cursors", keys[i], v->cursor_count);
+        if (i < 4) {
+            TEST_CHECK(t, view_point(v, view_primary(v)) == 4, "cursors collapse: '%s' did not keep the primary", keys[i]);
+            app_dev_feed(app, "C-g C-g", &t->arena);
+            TEST_CHECK(t, app_selected_view(app)->cursor_count == 1, "cursors collapse: '%s' then C-g", keys[i]);
+        } else {
+            app_dev_feed(app, "C-x b RET", &t->arena); // back
+            TEST_CHECK(t, test_current_is(app, "*scratch*") && app_selected_view(app)->cursor_count == 1, "cursors collapse: switching back");
+        }
+    }
+    if (!test_app_destroy(t, app, "cursors collapse")) return 0;
+    LOG("test: ok: multiple cursors collapsing (isearch, query-replace, replace-string, goto-line, the primary kept; switching "
+        "buffers; an aborted prompt)");
+    return 1;
 }
 
 // The wheel over the first view: positive notches scroll towards the top.
@@ -10266,6 +10456,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_scrolling(&t);
     arena_reset(&t.arena);
     test_multi_cursor(&t);
+    arena_reset(&t.arena);
+    test_mc_driver(&t);
+    arena_reset(&t.arena);
+    test_mc_collapse(&t);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);

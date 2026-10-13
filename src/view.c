@@ -497,9 +497,121 @@ static void view_run_for_cursor(CommandContext *ctx, const Command *cmd, Cursor 
     cmd->fn(ctx);
 }
 
+// ---------------------------------------------------------------------------
+// Cursor normalization (after every command): sorted by position, no two at one point, no overlapping spans.
+// A cursor's span is its active region, or [point, point]. Two cursors merge when their points are equal, when
+// their regions share more than a boundary, or when a bare cursor lies strictly inside the other's region (a
+// cursor at a region's boundary, and regions that only touch, stay apart). Merges are transitive. The merged
+// cursor is the primary if it is one of them, else the first by (span start, point); with a region the union
+// becomes its region, point at the union's end unless the survivor's point was at the start of its region.
+// A merged cursor whose point then meets another one merges in the next pass.
+
+typedef struct ViewSpan {
+    i64 start, end, point;
+    i32 index;
+} ViewSpan;
+
+static ViewSpan view_span(View *v, i32 i, const Settings *s) {
+    Cursor *c = &v->cursors[i];
+    ViewSpan sp = { 0, 0, view_point(v, c), i };
+    sp.start = sp.end = sp.point;
+    if (s && view_region_active(v, c, s)) view_region(v, c, &sp.start, &sp.end);
+    return sp;
+}
+
+static b32 view_span_before(const ViewSpan *a, const ViewSpan *b) {
+    if (a->start != b->start) return a->start < b->start;
+    if (a->point != b->point) return a->point < b->point;
+    return a->index < b->index;
+}
+
+// Merge sort (no CRT): sp[0, n) by view_span_before, tmp holds n.
+static void view_sort_spans(ViewSpan *sp, ViewSpan *tmp, i32 n) {
+    for (i32 width = 1; width < n; width *= 2) {
+        for (i32 lo = 0; lo < n; lo += 2 * width) {
+            i32 mid = MIN(lo + width, n), hi = MIN(lo + 2 * width, n), a = lo, b = mid, k = lo;
+            while (a < mid && b < hi) tmp[k++] = view_span_before(&sp[b], &sp[a]) ? sp[b++] : sp[a++];
+            while (a < mid) tmp[k++] = sp[a++];
+            while (b < hi) tmp[k++] = sp[b++];
+        }
+        memcpy(sp, tmp, sizeof(ViewSpan) * (u64)n);
+    }
+}
+
+// The cursors are in order: points strictly increasing, each span starting at or after the end of the one before.
+static b32 view_cursors_ordered(View *v, const Settings *s) {
+    ViewSpan prev = view_span(v, 0, s);
+    for (i32 i = 1; i < v->cursor_count; i++) {
+        ViewSpan sp = view_span(v, i, s);
+        if (sp.point <= prev.point || sp.start < prev.end) return 0;
+        prev = sp;
+    }
+    return 1;
+}
+
+// One pass: sorted, each group of overlapping cursors (a sweep over the sorted spans) merged into one.
+static void view_merge_pass(View *v, const Settings *s, Arena *scratch) {
+    i32 n = v->cursor_count;
+    u64 mark = arena_pos(scratch);
+    ViewSpan *sp = PUSH_ARRAY(scratch, ViewSpan, n), *tmp = PUSH_ARRAY(scratch, ViewSpan, n);
+    Cursor *out = PUSH_ARRAY(scratch, Cursor, n);
+    for (i32 i = 0; i < n; i++) sp[i] = view_span(v, i, s);
+    view_sort_spans(sp, tmp, n);
+    i32 m = 0, primary = 0;
+    for (i32 i = 0; i < n;) {
+        // The group: every following span that overlaps the union so far, or shares a member's point.
+        i64 gs = sp[i].start, ge = sp[i].end, max_point = sp[i].point;
+        i32 j = i + 1, survivor = i;
+        for (; j < n; j++) {
+            ViewSpan *b = &sp[j];
+            b32 region = ge > gs, bare = b->end == b->start;
+            b32 overlap = b->point == max_point || (region && (bare ? gs < b->point && b->point < ge : b->start < ge));
+            if (!overlap) break;
+            ge = MAX(ge, b->end);
+            max_point = MAX(max_point, b->point);
+        }
+        for (i32 k = i; k < j; k++) if (sp[k].index == v->primary) survivor = k;
+        Cursor c = v->cursors[sp[survivor].index];
+        if (j - i > 1 && ge > gs) {
+            b32 at_end = sp[survivor].point == sp[survivor].end;
+            b32 shift = c.mark_active && c.mark_shift;
+            view_set_point(v, &c, at_end ? ge : gs);
+            buffer_marker_set(v->buffer, c.mark, at_end ? gs : ge);
+            c.mark_set = c.mark_active = 1;
+            c.mark_shift = shift;
+        }
+        for (i32 k = i; k < j; k++) {
+            if (k == survivor) continue;
+            buffer_marker_destroy(v->buffer, v->cursors[sp[k].index].point);
+            buffer_marker_destroy(v->buffer, v->cursors[sp[k].index].mark);
+        }
+        if (sp[survivor].index == v->primary) primary = m;
+        out[m++] = c;
+        i = j;
+    }
+    memcpy(v->cursors, out, sizeof(Cursor) * (u64)m);
+    v->cursor_count = m;
+    v->primary = primary;
+    arena_pop_to(&v->cursor_arena, sizeof(Cursor) * (u64)m);
+    arena_pop_to(scratch, mark);
+}
+
+void view_normalize_cursors(View *v, const Settings *s, Arena *scratch) {
+    while (v->cursor_count > 1 && !view_cursors_ordered(v, s)) view_merge_pass(v, s, scratch);
+}
+
+b32 view_can_add_cursor(View *v, const Settings *s, Echo *echo) {
+    i32 max = s && s->max_cursors > 0 ? s->max_cursors : 1;
+    if (v->cursor_count < max) return 1;
+    if (echo) echo_message(echo, "Cursor limit reached (max_cursors = %d)", max);
+    return 0;
+}
+
 void view_run_command(CommandContext *ctx, const Command *cmd) {
     View *v = ctx->view;
     ctx->this_command = cmd;
+    // Commands that only make sense with one cursor (isearch, query-replace, goto-line, ...) collapse first.
+    if ((cmd->flags & COMMAND_SINGLE) && v->cursor_count > 1) view_collapse_cursors(v);
     // One command, over all cursors, is one undo group; consecutive self-inserts and single
     // deletes merge (the buffer caps a group at 20 commands).
     BufferUndoMerge merge = (cmd->flags & COMMAND_MERGE_INSERT) ? BUFFER_UNDO_MERGE_INSERT
@@ -508,14 +620,39 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     if (!(cmd->flags & COMMAND_UNDO_CONTINUE)) buffer_undo_boundary(v->buffer, merge, ctx->last_command == cmd, view_point(v, view_primary(v)));
     // A kill right after a kill appends to the same kill ring entry.
     ctx->kill_append = (cmd->flags & COMMAND_KILL) && ctx->last_command && (ctx->last_command->flags & COMMAND_KILL);
-    if (cmd->flags & COMMAND_ONCE) {
+    if ((cmd->flags & COMMAND_ONCE) || v->cursor_count == 1) {
         view_run_for_cursor(ctx, cmd, view_primary(v));
     } else {
-        for (i32 i = 0; i < v->cursor_count; i++) view_run_for_cursor(ctx, cmd, &v->cursors[i]);
+        // Several cursors: in position order, so the gap moves one way, in one batch, so the markers are adjusted
+        // once. A cursor that an earlier cursor's edit swallowed (it lay strictly inside removed text) is skipped,
+        // and so is a cursor on the same line as the one before it for a line command (lines as the command found
+        // them). Both merge afterwards.
+        Buffer *buf = v->buffer;
+        i32 n = v->cursor_count;
+        u64 mark = ctx->scratch ? arena_pos(ctx->scratch) : 0;
+        i64 *lines = NULL;
+        if ((cmd->flags & COMMAND_LINE) && ctx->scratch) {
+            lines = PUSH_ARRAY(ctx->scratch, i64, n);
+            for (i32 i = 0; i < n; i++) lines[i] = buffer_line_of(buf, view_point(v, &v->cursors[i]));
+        }
+        buffer_batch_begin(buf);
+        i64 last_line = -1;
+        for (i32 i = 0; i < n && i < v->cursor_count; i++) {
+            Cursor *c = &v->cursors[i];
+            if (buffer_marker_swallowed(buf, c->point)) continue;
+            if (lines) {
+                if (lines[i] == last_line) continue;
+                last_line = lines[i];
+            }
+            view_run_for_cursor(ctx, cmd, c);
+        }
+        buffer_batch_end(buf);
+        if (ctx->scratch) arena_pop_to(ctx->scratch, mark);
     }
     ctx->cursor = NULL;
     if (cmd->flags & (COMMAND_EDIT | COMMAND_KILL)) view_deactivate_mark(ctx->view); // the view may have changed buffers
     if (ctx->kills) kill_to_clipboard(ctx->kills); // once per command, when it killed
+    if (ctx->scratch) view_normalize_cursors(ctx->view, ctx->settings, ctx->scratch);
     view_ensure_visible(ctx->view); // not `v`: the command may have deleted its window
     ctx->last_command = cmd;
     if (ctx->mini) minibuffer_after_command(ctx); // filters candidates again; runs an accepted prompt's continuation
@@ -713,8 +850,13 @@ static void cmd_delete_char(CommandContext *ctx) {
 
 // The keymap also uses it to cancel a pending prefix (KEY_RESULT_QUIT).
 // Also deactivates the mark (of every cursor).
+// With several cursors: the first C-g deactivates their marks if any is active, the next one leaves only the primary.
 static void cmd_keyboard_quit(CommandContext *ctx) {
-    view_deactivate_mark(ctx->view);
+    View *v = ctx->view;
+    b32 active = 0;
+    for (i32 i = 0; i < v->cursor_count && !active; i++) active = v->cursors[i].mark_active;
+    if (v->cursor_count > 1 && !active) view_collapse_cursors(v);
+    view_deactivate_mark(v);
     echo_message(ctx->echo, "Quit");
 }
 
@@ -800,6 +942,6 @@ const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDI
 const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE | COMMAND_QUIT };
 const Command CMD_SET_MARK_COMMAND       = { "set-mark-command", cmd_set_mark_command, 0 };
 const Command CMD_EXCHANGE_POINT_AND_MARK = { "exchange-point-and-mark", cmd_exchange_point_and_mark, 0 };
-const Command CMD_MARK_WHOLE_BUFFER      = { "mark-whole-buffer", cmd_mark_whole_buffer, COMMAND_ONCE };
+const Command CMD_MARK_WHOLE_BUFFER      = { "mark-whole-buffer", cmd_mark_whole_buffer, COMMAND_ONCE | COMMAND_SINGLE };
 #undef MOTION
 #undef EDIT
