@@ -136,7 +136,7 @@ String8 minibuffer_input(Minibuffer *mb, Arena *arena) {
 static void minibuffer_set_input(Minibuffer *mb, String8 text) {
     Buffer *buf = mb->buffer;
     buffer_replace(buf, 0, buffer_size(buf), text);
-    view_set_point(mb->view, &mb->view->cursors[0], buffer_size(buf));
+    view_set_point(mb->view, view_primary(mb->view), buffer_size(buf));
 }
 
 // The input from scratch: no text, no undo history, no mark.
@@ -146,7 +146,7 @@ static void minibuffer_reset_input(Minibuffer *mb, String8 text) {
     buffer_replace(buf, 0, buffer_size(buf), text);
     buffer_undo_enable(buf, 1);
     View *v = mb->view;
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     view_set_point(v, c, buffer_size(buf));
     c->mark_set = c->mark_active = c->mark_shift = 0;
     buffer_marker_set(buf, v->top, 0);

@@ -28,7 +28,7 @@ IsearchStep *isearch_current(Isearch *is) {
 // Point goes to the current match (wherever the wheel dragged it meanwhile).
 static void isearch_show(Isearch *is) {
     View *v = is->view;
-    view_set_point(v, &v->cursors[0], isearch_current(is)->point);
+    view_set_point(v, view_primary(v), isearch_current(is)->point);
 }
 
 // Starts resolving step k from the step below it: true when that takes a search (then the engine is
@@ -172,7 +172,7 @@ static Isearch *isearch_here(CommandContext *ctx) {
 static void isearch_end(CommandContext *ctx, b32 abort) {
     Isearch *is = ctx->isearch;
     View *v = is->view;
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     // Keys typed ahead ("C-s foo RET" in one frame): one slice now usually resolves the pending steps,
     // so the search ends at the match the user typed for. Never more than a slice: then it ends at the
     // last step resolved.
@@ -235,7 +235,7 @@ static void isearch_start(CommandContext *ctx, b32 forward) {
     arena_reset(&is->text_arena);
     is->steps = (IsearchStep *)is->step_arena.base;
     is->view = ctx->view;
-    is->origin = view_point(ctx->view, &ctx->view->cursors[0]);
+    is->origin = view_point(ctx->view, view_primary(ctx->view));
     is->searching = -1;
     is->ring_pos = -1;
     IsearchStep *s = PUSH_STRUCT(&is->step_arena, IsearchStep);
@@ -453,7 +453,7 @@ String8 replace_case(Arena *arena, String8 to, String8 match) {
 void replace_finish(Replace *rp, ReplaceEnd how) {
     if (rp->state == REPLACE_OFF) return;
     View *v = rp->view;
-    view_set_point(v, &v->cursors[0], rp->point);
+    view_set_point(v, view_primary(v), rp->point);
     buffer_marker_destroy(v->buffer, rp->end);
     rp->state = REPLACE_OFF;
     if (how == REPLACE_END_QUIT) echo_message(rp->echo, "Quit");
@@ -506,7 +506,7 @@ i64 replace_work(Replace *rp, Arena *scratch, i64 budget) {
             rp->state = REPLACE_ASKING;
             rp->point = rp->match_end;
             rp->match_edits = buf->edit_count;
-            view_set_point(rp->view, &rp->view->cursors[0], rp->point);
+            view_set_point(rp->view, view_primary(rp->view), rp->point);
             break;
         }
         if (!replace_one(rp, scratch)) break;
@@ -532,7 +532,7 @@ static void replace_start(CommandContext *ctx, String8 from, String8 to) {
     Replace *rp = ctx->replace;
     View *v = ctx->view;
     Buffer *buf = v->buffer;
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     arena_reset(&rp->arena);
     rp->from = str8_copy(&rp->arena, from); // `from` and `to` may be the last pair itself
     rp->to = str8_copy(&rp->arena, to);
@@ -587,7 +587,7 @@ static void replace_command(CommandContext *ctx, b32 ask) {
         echo_message(ctx->echo, "Buffer is read-only: %S", buf->name);
         return;
     }
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     i64 lo = 0, hi = 0;
     b32 region = view_region_active(v, c, ctx->settings) && view_region(v, c, &lo, &hi);
     const char *what = ask ? "Query replace" : "Replace string";
@@ -608,7 +608,7 @@ static void cmd_replace_string(CommandContext *ctx) { replace_command(ctx, 0); }
 static void cmd_replace_answer(CommandContext *ctx) {
     Replace *rp = ctx->replace;
     if (!rp || rp->state != REPLACE_ASKING) return;
-    view_set_point(rp->view, &rp->view->cursors[0], rp->point); // back on the match, wherever the wheel left point
+    view_set_point(rp->view, view_primary(rp->view), rp->point); // back on the match, wherever the wheel left point
     if (rp->view->buffer->edit_count != rp->match_edits) { // changed outside since (a revert): look for the match again
         rp->next = MIN(rp->match_start, buffer_size(rp->view->buffer));
         replace_search_on(rp);

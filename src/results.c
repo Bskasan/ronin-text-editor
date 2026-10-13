@@ -123,7 +123,7 @@ static void results_begin_text(App *app, Results *r, String8 header) {
     // location can take it.
     View *views[WINDOW_MAX];
     for (i32 i = 0, k = app_views(app, views); i < k; i++) {
-        if (views[i]->buffer == r->buffer) view_set_point(views[i], &views[i]->cursors[0], 0);
+        if (views[i]->buffer == r->buffer) view_set_point(views[i], view_primary(views[i]), 0);
     }
     i32 e = buffer_list_index(&app->buffers, r->buffer);
     if (e >= 0) buffer_marker_set(r->buffer, app->buffers.entries[e].point, 0);
@@ -261,8 +261,8 @@ static void results_flush(App *app, Results *r) {
         i64 at = buffer_line_start(r->buffer, r->locs[0].row);
         View *views[WINDOW_MAX];
         for (i32 i = 0, k = app_views(app, views); i < k; i++) {
-            if (views[i]->buffer == r->buffer && view_point(views[i], &views[i]->cursors[0]) == 0) {
-                view_set_point(views[i], &views[i]->cursors[0], at);
+            if (views[i]->buffer == r->buffer && view_point(views[i], view_primary(views[i])) == 0) {
+                view_set_point(views[i], view_primary(views[i]), at);
             }
         }
     }
@@ -769,7 +769,7 @@ static Results *results_project_search(CommandContext *ctx, String8 root, String
         view_set_point(ctx->view, ctx->cursor, 0);
     } else {
         View *v = app_display_buffer(app, r->buffer, 0);
-        view_set_point(v, &v->cursors[0], 0);
+        view_set_point(v, view_primary(v), 0);
     }
     return r;
 }
@@ -779,7 +779,7 @@ static Results *results_project_search(CommandContext *ctx, String8 root, String
 static String8 results_default(CommandContext *ctx) {
     View *v = ctx->view;
     Buffer *buf = v->buffer;
-    Cursor *c = &v->cursors[0];
+    Cursor *c = view_primary(v);
     i64 lo, hi;
     if (view_region_active(v, c, ctx->settings) && view_region(v, c, &lo, &hi) && hi > lo && hi - lo <= 256) {
         String8 t = buffer_text(buf, ctx->scratch, lo, hi);
@@ -860,7 +860,7 @@ static void results_show_entry(App *app, Results *r, i64 idx) {
     View *views[WINDOW_MAX];
     for (i32 i = 0, k = app_views(app, views); i < k; i++) {
         if (views[i]->buffer != r->buffer) continue;
-        view_set_point(views[i], &views[i]->cursors[0], at);
+        view_set_point(views[i], view_primary(views[i]), at);
         view_ensure_visible(views[i]);
     }
 }
@@ -904,20 +904,20 @@ static b32 results_visit(CommandContext *ctx, Results *r, i64 idx, ResultsVisit 
     i64 line = CLAMP(loc->line - 1, 0, buffer_line_count(buf) - 1);
     i64 ls = buffer_line_start(buf, line), le = buffer_line_end(buf, line);
     i64 at = buffer_snap_char(buf, MIN(ls + loc->col, le));
-    view_set_point(v, &v->cursors[0], at);
+    view_set_point(v, view_primary(v), at);
     // Highlighted until the next key: the match, or a build location's whole line.
     app->landing_buffer = buf;
     app->landing_start = loc->kind == LOCATION_MATCH ? at : ls;
     app->landing_end = loc->kind == LOCATION_MATCH ? MIN(at + loc->len, buffer_size(buf)) : le;
     view_ensure_visible(v);
-    if (ctx->view == v) ctx->cursor = &v->cursors[0];
+    if (ctx->view == v) ctx->cursor = view_primary(v);
     buffer_list_touch(&app->buffers, buf);
     return 1;
 }
 
 // The location on point's line in a results buffer, or -1.
 static i64 results_at_point(Results *r, View *v) {
-    i64 row = buffer_line_of(r->buffer, view_point(v, &v->cursors[0]));
+    i64 row = buffer_line_of(r->buffer, view_point(v, view_primary(v)));
     i64 idx = results_lower_bound(r, row);
     return idx < r->count && r->locs[idx].row == row ? idx : -1;
 }
@@ -944,7 +944,7 @@ static void cmd_compile_goto_error(CommandContext *ctx) {
 static void results_step_here(CommandContext *ctx, i32 dir) {
     Results *r = results_here(ctx);
     if (!r) return;
-    i64 row = buffer_line_of(r->buffer, view_point(ctx->view, &ctx->view->cursors[0]));
+    i64 row = buffer_line_of(r->buffer, view_point(ctx->view, view_primary(ctx->view)));
     i64 idx = dir > 0 ? results_lower_bound(r, row + 1) : results_lower_bound(r, row) - 1;
     while (idx >= 0 && idx < r->count && r->locs[idx].kind == LOCATION_INFO) idx += dir; // notes are skipped
     if (idx < 0 || idx >= r->count) {
@@ -1069,7 +1069,7 @@ static void cmd_quit_window(CommandContext *ctx) {
     }
     Buffer *other = app_other_buffer(app, ctx->view->buffer);
     if (other) app_switch_buffer(app, ctx->view, other);
-    ctx->cursor = &ctx->view->cursors[0];
+    ctx->cursor = view_primary(ctx->view);
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,7 +1240,7 @@ static b32 results_compile_work(App *app, Results *r, u64 deadline, i64 budget) 
     i32 nf = 0;
     if (scroll != COMPILATION_SCROLL_NEVER && !r->first_error) {
         for (i32 i = 0, k = app_views(app, views); i < k; i++) {
-            if (views[i]->buffer == r->buffer && view_point(views[i], &views[i]->cursors[0]) >= r->tail) follow[nf++] = views[i];
+            if (views[i]->buffer == r->buffer && view_point(views[i], view_primary(views[i])) >= r->tail) follow[nf++] = views[i];
         }
     }
     i64 error_row = -1, lines = 0;
@@ -1279,7 +1279,7 @@ static b32 results_compile_work(App *app, Results *r, u64 deadline, i64 budget) 
     if (to_error) r->first_error = 1; // first-error: the windows stop there
     for (i32 i = 0; i < nf; i++) {
         i64 at = to_error ? buffer_line_start(r->buffer, error_row) : finished ? buffer_size(r->buffer) : r->tail;
-        view_set_point(follow[i], &follow[i]->cursors[0], at);
+        view_set_point(follow[i], view_primary(follow[i]), at);
         view_ensure_visible(follow[i]);
     }
     return more;
@@ -1319,7 +1319,7 @@ static void results_compile_start(CommandContext *ctx, String8 command, String8 
     View *views[WINDOW_MAX];
     for (i32 i = 0, k = app_views(app, views); i < k; i++) {
         if (views[i]->buffer != r->buffer) continue;
-        view_set_point(views[i], &views[i]->cursors[0], follow ? r->tail : 0);
+        view_set_point(views[i], view_primary(views[i]), follow ? r->tail : 0);
         view_ensure_visible(views[i]);
     }
 }
@@ -1557,7 +1557,7 @@ void app_dev_smoke_results(App *app, String8 tmp_dir) {
     memcpy(buf, full.data, (size_t)n);
     CommandContext ctx = app->ctx;
     ctx.view = app_selected_view(app);
-    ctx.cursor = &ctx.view->cursors[0];
+    ctx.cursor = view_primary(ctx.view);
     results_project_search(&ctx, str8(buf, n), STR8_LIT("foo"), 1, 0);
 }
 
@@ -1579,7 +1579,7 @@ void app_dev_smoke_compile(App *app, String8 tmp_dir) {
     memcpy(dbuf, dir.data, (size_t)dn);
     CommandContext ctx = app->ctx;
     ctx.view = app_selected_view(app);
-    ctx.cursor = &ctx.view->cursors[0];
+    ctx.cursor = view_primary(ctx.view);
     results_compile_start(&ctx, str8(buf, n), str8(dbuf, dn), str8(NULL, 0));
 }
 
@@ -1602,7 +1602,7 @@ void app_dev_bench_grep_start(App *app, String8 root, String8 needle, i32 worker
     app->config->settings.search_max_results = max_results;
     CommandContext ctx = app->ctx;
     ctx.view = app_selected_view(app);
-    ctx.cursor = &ctx.view->cursors[0];
+    ctx.cursor = view_primary(ctx.view);
     ctx.scratch = &app->files_arena;
     results_project_search(&ctx, root, needle, !search_has_upper(needle), 0);
 }
@@ -1623,7 +1623,7 @@ void app_dev_bench_compile_start(App *app, String8 command, String8 dir, i32 max
     app->config->settings.compilation_max_output_mb = max_output_mb;
     CommandContext ctx = app->ctx;
     ctx.view = app_selected_view(app);
-    ctx.cursor = &ctx.view->cursors[0];
+    ctx.cursor = view_primary(ctx.view);
     results_compile_start(&ctx, command, dir, str8(NULL, 0));
 }
 
