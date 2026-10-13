@@ -1141,11 +1141,31 @@ static i64 results_counts(u8 *out, i64 cap, Results *r) {
 }
 
 // One line of output: into the frame's pending text, its location or its kind word kept.
-static void results_compile_line(App *app, Results *r, const CompileLine *l) {
+static void results_compile_line(App *app, Results *r, const CompileLine *in) {
     i64 row = r->first_line + r->rows++;
-    u8 *at = PUSH_ARRAY(&r->pend, u8, l->text.len + 1);
-    memcpy(at, l->text.data, (size_t)l->text.len);
-    at[l->text.len] = '\n';
+    CompileLine shown = *in;
+    const CompileLine *l = &shown;
+    // An absolute path under the project root is shown relative to it (the location keeps the full path).
+    String8 rel = { 0 };
+    if (in->located && app->config->settings.compilation_relative_paths) {
+        rel = compile_shown_path(str8(in->text.data + in->path_off, in->path_len), in->file, r->build_root);
+    }
+    if (rel.len) {
+        i64 tail = in->path_off + in->path_len, delta = rel.len - in->path_len; // delta < 0: shorter
+        u8 *at = PUSH_ARRAY(&r->pend, u8, in->text.len + delta + 1);
+        memcpy(at, in->text.data, (size_t)in->path_off);
+        memcpy(at + in->path_off, rel.data, (size_t)rel.len);
+        memcpy(at + in->path_off + rel.len, in->text.data + tail, (size_t)(in->text.len - tail));
+        shown.text = str8(at, in->text.len + delta);
+        shown.path_len = (u16)rel.len;
+        if (shown.num_off >= tail) shown.num_off = (u16)(shown.num_off + delta);
+        if (shown.kind_off >= tail) shown.kind_off = (u16)(shown.kind_off + delta);
+        at[shown.text.len] = '\n';
+    } else {
+        u8 *at = PUSH_ARRAY(&r->pend, u8, l->text.len + 1);
+        memcpy(at, l->text.data, (size_t)l->text.len);
+        at[l->text.len] = '\n';
+    }
     if (l->summary) { // a tool's own count: each count word colored, none counted
         CompileKind kind;
         i64 len;
