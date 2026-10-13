@@ -570,6 +570,7 @@ void buffer_undo_enable(Buffer *buf, b32 on) {
     u->group_count = 0;
     u->open = 0;
     u->pending = -1;
+    u->restored_count = 0;
 }
 
 void buffer_undo_set_limit(Buffer *buf, u64 bytes) {
@@ -588,6 +589,21 @@ void buffer_undo_boundary(Buffer *buf, BufferUndoMerge merge, b32 consecutive, i
     u->open = 0;
     u->want_merge = merge;
     u->want_point = point;
+}
+
+void buffer_undo_cursors(Buffer *buf, const BufferUndoCursor *cursors, i64 count) {
+    buf->undo.want_cursors = count > 1 ? cursors : NULL;
+    buf->undo.want_cursor_count = count > 1 ? count : 0;
+}
+
+const BufferUndoCursor *buffer_undo_restored(Buffer *buf, i64 *count) {
+    *count = buf->undo.restored_count;
+    return buf->undo.restored_count ? (const BufferUndoCursor *)(buf->undo.log + buf->undo.restored_off) : NULL;
+}
+
+// The log bytes a new group's cursors take (none for a single cursor).
+static u64 buffer_undo_cursor_bytes(Buffer *buf) {
+    return (u64)buf->undo.want_cursor_count * sizeof(BufferUndoCursor);
 }
 
 static b32 buffer_undo_commit(Buffer *buf, u64 need) {
@@ -609,9 +625,18 @@ static BufferUndoGroup *buffer_undo_new_group(Buffer *buf, i64 point, BufferUndo
         if (!os_commit((u8 *)u->groups + bytes, grown - bytes)) return NULL;
         u->group_committed = (i64)(grown / sizeof(BufferUndoGroup));
     }
+    u64 cursor_bytes = buffer_undo_cursor_bytes(buf);
+    if (cursor_bytes && !buffer_undo_commit(buf, cursor_bytes)) return NULL;
     BufferUndoGroup *g = &u->groups[u->group_count++];
     *g = (BufferUndoGroup){ .offset = u->log_used, .last = u->log_used, .point_before = point, .state_before = u->state,
                             .state_after = u->state, .target = target, .merge = (i32)merge, .merge_count = 1 };
+    if (cursor_bytes) { // the command's cursors, in front of its records
+        memcpy(u->log + u->log_used, u->want_cursors, (size_t)cursor_bytes);
+        g->cursors_off = u->log_used;
+        g->cursor_count = u->want_cursor_count;
+        g->size = cursor_bytes;
+        g->last = u->log_used += cursor_bytes;
+    }
     u->open = 1;
     return g;
 }
@@ -622,11 +647,11 @@ static b32 buffer_undo_record(Buffer *buf, i64 start, i64 end, i64 inserted) {
     BufferUndo *u = &buf->undo;
     i64 removed = end - start;
     u64 bytes = sizeof(BufferUndoRecord) + ALIGN_UP_POW2((u64)removed, 8);
-    if (!buffer_undo_commit(buf, bytes)) return 0;
+    if (!buffer_undo_commit(buf, bytes + (u->open ? 0 : buffer_undo_cursor_bytes(buf)))) return 0;
     if (!u->open && !buffer_undo_new_group(buf, u->want_point, u->want_merge, -1)) return 0;
     BufferUndoGroup *g = &u->groups[u->group_count - 1];
     BufferUndoRecord *r = (BufferUndoRecord *)(u->log + u->log_used);
-    *r = (BufferUndoRecord){ start, removed, inserted, g->size ? u->log_used - g->last : 0 };
+    *r = (BufferUndoRecord){ start, removed, inserted, g->records ? u->log_used - g->last : 0 };
     buffer_copy(buf, start, end, u->log + u->log_used + sizeof(BufferUndoRecord));
     g->last = u->log_used;
     g->size += bytes;
@@ -665,6 +690,7 @@ static void buffer_undo_trim(Buffer *buf) {
     for (i64 i = 0; i < u->group_count; i++) {
         u->groups[i].offset -= cut;
         u->groups[i].last -= cut;
+        if (u->groups[i].cursor_count) u->groups[i].cursors_off -= cut;
     }
     u->first_id += drop;
     if (u->pending < u->first_id) u->pending = -1;
@@ -690,7 +716,7 @@ static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, i64 point, i64 *
     if (batch) buffer_batch_begin(buf);
     BufferUndoResult result = BUFFER_UNDO_DONE;
     // The target's records, newest first.
-    for (u64 at = target.last, n = target.size ? 1 : 0; n; ) {
+    for (u64 at = target.last, n = target.records ? 1 : 0; n; ) {
         BufferUndoRecord r = *(BufferUndoRecord *)(u->log + at);
         String8 removed = str8(u->log + at + sizeof(BufferUndoRecord), r.removed);
         if (!buffer_replace(buf, r.start, r.start + r.inserted, removed)) {
@@ -710,13 +736,18 @@ static BufferUndoResult buffer_undo_revert(Buffer *buf, i64 id, i64 point, i64 *
     }
     u->open = 0;
     *point_out = target.point_before;
-    buffer_undo_trim(buf);
+    // The cursors to put back stay in the log until the next edit, which trims instead (the target may be among
+    // the oldest groups a trim drops).
+    u->restored_count = result == BUFFER_UNDO_DONE ? target.cursor_count : 0;
+    u->restored_off = target.cursors_off;
+    if (!u->restored_count) buffer_undo_trim(buf);
     return result;
 }
 
 BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out) {
     BufferUndo *u = &buf->undo;
     *point_out = point;
+    u->restored_count = 0;
     if (!u->enabled) return BUFFER_UNDO_NOTHING;
     i64 id = chain ? u->pending : u->first_id + u->group_count - 1;
     if (id < u->first_id || u->group_count == 0) {
@@ -731,6 +762,7 @@ BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out) 
 BufferUndoResult buffer_redo(Buffer *buf, i64 point, i64 *point_out) {
     BufferUndo *u = &buf->undo;
     *point_out = point;
+    u->restored_count = 0;
     if (!u->enabled) return BUFFER_UNDO_NOTHING;
     // The most recent group that moved back in history and led to the current state.
     for (i64 i = u->group_count - 1; i >= 0; i--) {
@@ -758,6 +790,7 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
     if (!buffer_reserve_gap(buf, text.len - (end - start))) return 0;
     if (!buffer_reserve_nl_gap(buf, new_lines)) return 0;
     if (buf->undo.enabled && !buffer_undo_record(buf, start, end, text.len)) return 0; // the last thing that can fail
+    if (!buf->undo.applying) buf->undo.restored_count = 0;
     if (buf->batch_depth) buffer_batch_add(buf, start, end, text.len);
 
     // Put the gap inside [start, end], then widen it over the range.
