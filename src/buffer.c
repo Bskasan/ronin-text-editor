@@ -236,6 +236,7 @@ BufferMarker buffer_marker_create(Buffer *buf, i64 pos, b32 advance) {
     s->pos = buffer_snap_char(buf, pos);
     s->flags = BUFFER_MARKER_LIVE | (advance ? BUFFER_MARKER_ADVANCE : 0);
     s->next_free = buf->batch_depth ? (u32)buf->batch_count : 0; // its epoch: it has seen the run's edits so far
+    buf->batch_pinned = buf->batch_count;
     buf->marker_live++;
     return slot + 1;
 }
@@ -249,13 +250,15 @@ void buffer_marker_destroy(Buffer *buf, BufferMarker m) {
 }
 
 // The marker rules (buffer.h) for a marker at pos when [start, end) becomes len bytes. *swallowed is set when pos
-// lies strictly inside the removed range.
-static i64 buffer_marker_rule(i64 pos, i64 start, i64 end, i64 len, b32 advance, b32 *swallowed) {
+// lies strictly inside the removed range. `split` is len for a plain edit; a joined edit of a batch (a replacement of
+// [start, end) followed by an insertion at its end) puts advancing markers from inside the range, and the others from
+// its end, at start + split: where they were between the two edits.
+static i64 buffer_marker_rule(i64 pos, i64 start, i64 end, i64 len, i64 split, b32 advance, b32 *swallowed) {
     if (pos < start) return pos;
     if (pos > end) return pos + len - (end - start);
-    if (pos == end && end > start) return start + len;
+    if (pos == end && end > start) return advance ? start + len : start + split;
     if (pos > start) *swallowed = 1;
-    return advance ? start + len : start;
+    return advance ? start + split : start;
 }
 
 // A batch's run maps a position from a marker's epoch (the run's edit count when it was set) to now.
@@ -276,7 +279,7 @@ static i64 buffer_batch_map(Buffer *buf, i64 pos, i64 epoch, b32 advance, b32 *s
         if (lo == n) return pos + total - base;
         i64 cur = pos + e[lo].delta_before - base;
         for (i64 j = lo; j < n && cur >= e[j].start; j++) { // later edits touch it only at their start
-            cur = buffer_marker_rule(cur, e[j].start, e[j].start + e[j].removed, e[j].inserted, advance, swallowed);
+            cur = buffer_marker_rule(cur, e[j].start, e[j].start + e[j].removed, e[j].inserted, e[j].split, advance, swallowed);
         }
         return cur;
     }
@@ -291,7 +294,7 @@ static i64 buffer_batch_map(Buffer *buf, i64 pos, i64 epoch, b32 advance, b32 *s
     i64 cur = pos;
     for (i64 j = lo; j < n; j++) {
         if (cur > e[j].start + e[j].removed) return cur + total - e[j].delta_before; // every later edit is below it
-        cur = buffer_marker_rule(cur, e[j].start, e[j].start + e[j].removed, e[j].inserted, advance, swallowed);
+        cur = buffer_marker_rule(cur, e[j].start, e[j].start + e[j].removed, e[j].inserted, e[j].split, advance, swallowed);
     }
     return cur;
 }
@@ -313,6 +316,7 @@ void buffer_marker_set(Buffer *buf, BufferMarker m, i64 pos) {
     s->pos = buffer_snap_char(buf, pos);
     s->next_free = buf->batch_depth ? (u32)buf->batch_count : 0;
     s->flags &= ~(u32)BUFFER_MARKER_SWALLOWED;
+    buf->batch_pinned = buf->batch_count;
 }
 
 b32 buffer_marker_swallowed(Buffer *buf, BufferMarker m) {
@@ -331,7 +335,7 @@ static void buffer_adjust_markers(Buffer *buf, i64 start, i64 end, i64 len) {
     for (i64 i = 0; i < buf->marker_count; i++) {
         BufferMarkerSlot *m = &buf->markers[i];
         if (!(m->flags & BUFFER_MARKER_LIVE)) continue;
-        i64 pos = buffer_marker_rule(m->pos, start, end, len, m->flags & BUFFER_MARKER_ADVANCE, &swallowed);
+        i64 pos = buffer_marker_rule(m->pos, start, end, len, len, m->flags & BUFFER_MARKER_ADVANCE, &swallowed);
         if (pos >= snap_lo && pos <= snap_hi) pos = buffer_snap_char(buf, pos);
         m->pos = pos;
     }
@@ -353,6 +357,7 @@ static void buffer_batch_apply(Buffer *buf, b32 end) {
     }
     buf->batch_count = 0;
     buf->batch_dir = 0;
+    buf->batch_pinned = -1;
 }
 
 void buffer_batch_begin(Buffer *buf) {
@@ -361,6 +366,7 @@ void buffer_batch_begin(Buffer *buf) {
     if (!buf->batch_edits) os_fatal(STR8_LIT("Out of address space (batch)."));
     buf->batch_count = 0;
     buf->batch_dir = 0;
+    buf->batch_pinned = -1;
 }
 
 void buffer_batch_end(Buffer *buf) {
@@ -379,6 +385,27 @@ void buffer_batch_end(Buffer *buf) {
 // applied first when the edit is out of its order (or the list is full).
 static void buffer_batch_add(Buffer *buf, i64 start, i64 end, i64 len) {
     i64 n = buf->batch_count;
+    // A replacement that ends exactly where the run's last edit inserted text (and nothing was removed there), above
+    // the edit before that: RET leaving a whitespace-only line, a closing bracket reindenting its line. It joins
+    // that insertion as one edit, [start, end) replaced by its text then the insertion's, with the split between
+    // them, so an ascending run stays ascending. Not when a marker was set since that insertion (its epoch counts
+    // it).
+    if (n > 0 && buf->batch_dir >= 0 && buf->batch_pinned != n) {
+        BufferBatchEdit *last = &buf->batch_edits[n - 1];
+        i64 floor = n > 1 ? buf->batch_edits[n - 2].start + buf->batch_edits[n - 2].inserted : 0;
+        if (last->removed == 0 && end == last->start && start >= floor) {
+            i64 x = last->inserted;
+            last->split = start < end ? len : len + x; // nothing replaced: one plain insertion of both
+            last->start = start;
+            last->removed = end - start;
+            last->inserted = len + x;
+            if (n > 1) buf->batch_dir = 1;
+#if TEAL_DEV
+            buf->dev_batch_joins++;
+#endif
+            return;
+        }
+    }
     if (n > 0) {
         BufferBatchEdit *last = &buf->batch_edits[n - 1];
         b32 asc = start >= last->start + last->inserted, desc = end <= last->start;
@@ -410,7 +437,7 @@ static void buffer_batch_add(Buffer *buf, i64 start, i64 end, i64 len) {
         }
     }
     BufferBatchEdit *prev = n ? &buf->batch_edits[n - 1] : NULL;
-    buf->batch_edits[n] = (BufferBatchEdit){ start, end - start, len, prev ? prev->delta_before + prev->inserted - prev->removed : 0 };
+    buf->batch_edits[n] = (BufferBatchEdit){ start, end - start, len, prev ? prev->delta_before + prev->inserted - prev->removed : 0, len };
     buf->batch_count = n + 1;
 }
 
