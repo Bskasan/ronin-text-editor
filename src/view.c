@@ -654,8 +654,24 @@ b32 view_can_add_cursor(View *v, const Settings *s, Echo *echo) {
     return 0;
 }
 
+#if RONIN_DEV
+// The soak's random keys and M-x names never quit, never start a process and never touch the user's config.
+static b32 view_dev_soak_denied(const Command *cmd) {
+    static const char *denied[] = { "save-buffers-kill-terminal", "open-config", "reload-config", "compile", "project-compile",
+                                    "recompile", "text-scale-increase", "text-scale-decrease", "text-scale-reset" };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(denied); i++) if (str8_equal(str8_cstr(cmd->name), str8_cstr(denied[i]))) return 1;
+    return 0;
+}
+#endif
+
 void view_run_command(CommandContext *ctx, const Command *cmd) {
     View *v = ctx->view;
+#if RONIN_DEV
+    if (ctx->dev_soak && view_dev_soak_denied(cmd)) {
+        echo_message(ctx->echo, "soak: %s skipped", cmd->name);
+        return;
+    }
+#endif
     ctx->this_command = cmd;
     // Commands that only make sense with one cursor (isearch, query-replace, goto-line, ...) collapse first.
     if ((cmd->flags & COMMAND_SINGLE) && v->cursor_count > 1) view_collapse_cursors(v);

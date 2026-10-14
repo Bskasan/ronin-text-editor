@@ -11745,6 +11745,452 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     return t.failures;
 }
 
+// ---------------------------------------------------------------------------
+// Soak (--soak N): a long random stream of key and mouse events through the headless app (the real keymap,
+// driver, prompts, isearch, query-replace, multiple cursors, windows and mouse) over several buffers, with
+// the invariants checked every SOAK_CHECK_EVERY events. Its files live in build\tmp\soak, the only place
+// it may write (os_dev_write_root); commands that would quit, run a build or open the user's config do
+// nothing (CommandContext.dev_soak).
+
+#define SOAK_CHECK_EVERY 1000
+#define SOAK_BLOCK 100000
+#define SOAK_MAX_BUFFERS 12
+#define SOAK_MAX_SIZE MB(1)
+
+typedef struct Soak {
+    Test *t;
+    App *app;
+    String8 dir;
+    String8 *seqs; // every bound key sequence of the global, minibuffer, isearch and search-results keymaps (kbd)
+    i32 seq_count;
+    i32 w, h;      // the frame (h 0: minimized)
+    b32 after_key; // the last event was a key: the selected window's point must be visible
+    u64 keys, texts, mice, resizes, focus, truncated, killed;
+    char recent[32][64]; // the last events, logged when a check fails
+    u64 recent_count;
+} Soak;
+
+static void soak_note(Soak *s, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char *out = s->recent[s->recent_count++ % ARRAY_COUNT(s->recent)];
+    i64 n = fmt_v((u8 *)out, sizeof(s->recent[0]) - 1, fmt, args);
+    out[MIN(n, (i64)sizeof(s->recent[0]) - 1)] = 0;
+    va_end(args);
+}
+
+static void soak_feed(Soak *s, Event *events, i32 n) {
+    for (i32 i = 0; i < n; i++) {
+        Event *e = &events[i];
+        if (e->kind >= EVENT_MOUSE_DOWN && e->kind <= EVENT_MOUSE_WHEEL) {
+            soak_note(s, "mouse %d at %d,%d clicks %d wheel %d mods %x", e->kind, e->x, e->y, e->clicks, e->wheel, e->mods);
+        } else if (e->kind == EVENT_RESIZE) {
+            soak_note(s, "resize %dx%d", e->width, e->height);
+        } else if (e->kind == EVENT_FOCUS) {
+            soak_note(s, "focus %d", e->focused);
+        }
+    }
+    if (!n) soak_note(s, "frame");
+    app_dev_feed_events(s->app, events, n, &s->t->arena);
+}
+
+static void soak_keys(Soak *s, String8 kbd, b32 batch) {
+    Event events[16];
+    i32 n = app_dev_key_events(s->app, kbd, events, ARRAY_COUNT(events));
+    soak_note(s, "keys '%S'%s", kbd, batch ? " (one frame)" : "");
+    if (batch) app_dev_feed_events(s->app, events, n, &s->t->arena); // typed ahead: every event of the sequence in one frame
+    else for (i32 i = 0; i < n; i++) app_dev_feed_events(s->app, &events[i], 1, &s->t->arena);
+    s->after_key = 1;
+}
+
+static void soak_collect(Soak *s, Keymap *map) {
+    for (i32 i = 0; i < map->count; i++) {
+        u8 text[KEY_SEQ_TEXT_CAP];
+        i64 n = key_seq_print(&map->bindings[i].seq, text, sizeof(text));
+        s->seqs[s->seq_count++] = str8_copy(&s->t->arena, str8(text, n));
+    }
+}
+
+static b32 soak_busy(App *app) {
+    return app->mini.active || app->isearch.active || app->replace.state != REPLACE_OFF || cursor_job_pending(&app->cursor_job);
+}
+
+// The buffer against its own line index (a full scan), its markers, its batch and its modified flag.
+static b32 soak_check_buffer(Test *t, Buffer *buf, u64 event) {
+    i64 size = buffer_size(buf), lines = 1;
+    TEST_CHECK(t, buf->batch_depth == 0, "soak event %U: %S: a batch left open", event, buf->name);
+    String8 seg[2];
+    buffer_segments(buf, &seg[0], &seg[1]);
+    TEST_CHECK(t, seg[0].len + seg[1].len == size, "soak event %U: %S: segments %D + %D, size %D", event, buf->name, seg[0].len,
+               seg[1].len, size);
+    i64 pos = 0;
+    for (i32 k = 0; k < 2; k++) {
+        for (i64 i = 0; i < seg[k].len; i++, pos++) {
+            if (seg[k].data[i] != '\n') continue;
+            TEST_CHECK(t, buffer_line_start(buf, lines) == pos + 1, "soak event %U: %S: line %D starts at %D, expected %D", event,
+                       buf->name, lines, buffer_line_start(buf, lines), pos + 1);
+            lines++;
+        }
+    }
+    TEST_CHECK(t, buffer_line_count(buf) == lines, "soak event %U: %S: %D lines, expected %D", event, buf->name,
+               buffer_line_count(buf), lines);
+    for (i64 i = 0; i < buf->marker_live; i++) {
+        i64 p = buf->markers[buf->marker_live_list[i]].pos;
+        TEST_CHECK(t, p >= 0 && p <= size, "soak event %U: %S: a marker at %D (size %D)", event, buf->name, p, size);
+    }
+    if (buf->path.len && buf->undo.enabled) {
+        TEST_CHECK(t, buf->modified == (buf->undo.state != buf->undo.saved_state), "soak event %U: %S: modified %d, state %U, saved %U",
+                   event, buf->name, buf->modified, buf->undo.state, buf->undo.saved_state);
+    }
+    return 1;
+}
+
+// Every cursor of a view on a boundary, strictly ordered; the top a line start when the window is drawn (a window
+// too small to draw is laid out again when it grows).
+static b32 soak_check_view(Test *t, View *v, b32 drawn, u64 event) {
+    Buffer *buf = v->buffer;
+    i64 size = buffer_size(buf), last = -1;
+    TEST_CHECK(t, v->cursor_count >= 1 && v->primary >= 0 && v->primary < v->cursor_count, "soak event %U: %d cursors, primary %d", event,
+               v->cursor_count, v->primary);
+    for (i32 k = 0; k < v->cursor_count; k++) {
+        i64 p = view_point(v, &v->cursors[k]);
+        TEST_CHECK(t, p >= 0 && p <= size && buffer_snap_char(buf, p) == p, "soak event %U: %S: cursor %d at %D (size %D) is not a boundary",
+                   event, buf->name, k, p, size);
+        TEST_CHECK(t, p > last, "soak event %U: %S: cursor %d at %D after %D", event, buf->name, k, p, last);
+        last = p;
+    }
+    i64 top = buffer_marker_get(buf, v->top);
+    TEST_CHECK(t, !drawn || top == buffer_line_start(buf, buffer_line_of(buf, top)), "soak event %U: %S: top at %D is not a line start",
+               event, buf->name, top);
+    return 1;
+}
+
+static b32 soak_check(Soak *s, u64 event) {
+    Test *t = s->t;
+    App *app = s->app;
+    if (s->h > 0) TEST_CHECK(t, test_window_tiles(t, &app->windows, "soak"), "soak event %U: the windows", event);
+    View *views[WINDOW_MAX];
+    i32 n = app_views(app, views);
+    for (i32 i = 0; i < n; i++) if (!soak_check_view(t, views[i], s->h > 0 && !app_view_hidden(app, views[i]), event)) return 0;
+    if (!soak_check_view(t, app->mini.view, 0, event)) return 0;
+    View *sel = app_selected_view(app);
+    // Not *Messages*: a message logged outside a command (an undefined key) moves its point without scrolling
+    // until the next command ("Later").
+    if (s->after_key && s->h > 0 && !soak_busy(app) && !app_view_hidden(app, sel) && sel->buffer != app->messages) {
+        i64 p = view_point(sel, view_primary(sel));
+        i64 line = buffer_line_of(sel->buffer, p), top = view_top_line(sel);
+        TEST_CHECK(t, line >= top && line < top + sel->rows, "soak event %U: %S: point's line %D outside [%D, %D)", event, sel->buffer->name,
+                   line, top, top + sel->rows);
+    }
+    for (i32 i = 0; i < app->buffers.count; i++) if (!soak_check_buffer(t, app->buffers.entries[i].buffer, event)) return 0;
+    if (!soak_check_buffer(t, app->mini.buffer, event)) return 0;
+    TEST_CHECK(t, t->arena.committed <= MB(256), "soak event %U: the test arena committed %U MB", event, t->arena.committed >> 20);
+    return 1;
+}
+
+// Keeps the soak bounded: at most SOAK_MAX_BUFFERS buffers (the newest ones killed) and SOAK_MAX_SIZE bytes a
+// buffer (the second half deleted, as an edit). Only between prompts and searches.
+static void soak_tidy(Soak *s, i32 max_buffers) {
+    App *app = s->app;
+    if (soak_busy(app)) return;
+    while (app->buffers.count > max_buffers) {
+        Buffer *victim = NULL;
+        for (i32 i = app->buffers.count - 1; i >= 0 && !victim; i--) {
+            Buffer *b = app->buffers.entries[i].buffer;
+            if (b != app->messages && !str8_equal(b->name, STR8_LIT("*scratch*"))) victim = b;
+        }
+        if (!victim) break;
+        files_kill_buffer(app, victim);
+        s->killed++;
+    }
+    for (i32 i = 0; i < app->buffers.count; i++) {
+        Buffer *b = app->buffers.entries[i].buffer;
+        i64 size = buffer_size(b);
+        if (size <= SOAK_MAX_SIZE || b->read_only) continue;
+        buffer_replace(b, buffer_snap_char(b, size / 2), size, STR8_LIT(""));
+        s->truncated++;
+    }
+}
+
+// Back to a known shape for a memory reading: prompts and searches ended, the buffers made since the start killed,
+// one window. Returns the private bytes.
+static u64 soak_settle(Soak *s, i32 initial_buffers) {
+    for (i32 i = 0; i < 10 && soak_busy(s->app); i++) soak_keys(s, STR8_LIT("C-g"), 0);
+    soak_tidy(s, initial_buffers);
+    soak_keys(s, STR8_LIT("C-x 1"), 0);
+    soak_feed(s, NULL, 0);
+    return os_dev_private_bytes();
+}
+
+// The same work every time, for the slowdown: 10,000 characters typed into a new buffer and deleted again, in the
+// settled shape; the buffer is killed afterwards. Nanoseconds an event.
+static u64 soak_probe(Soak *s) {
+    App *app = s->app;
+    Buffer *probe = app_new_buffer(app, STR8_LIT("soak-probe"));
+    app_switch_buffer(app, app_selected_view(app), probe);
+    u64 t0 = os_time_us();
+    for (i32 i = 0; i < 10000; i++) {
+        Event e[2];
+        i32 n = app_dev_key_events(app, i % 50 == 49 ? STR8_LIT("RET") : str8((u8 *)"abcdefghij" + i % 10, 1), e, 2);
+        app_dev_feed_events(app, e, n, &s->t->arena);
+    }
+    for (i32 i = 0; i < 10000; i++) {
+        Event e[2];
+        i32 n = app_dev_key_events(app, STR8_LIT("DEL"), e, 2);
+        app_dev_feed_events(app, e, n, &s->t->arena);
+    }
+    u64 ns = (os_time_us() - t0) * 1000 / 20000;
+    files_kill_buffer(app, probe);
+    return ns;
+}
+
+static void soak_mouse(Soak *s) {
+    Test *t = s->t;
+    i32 w = MAX(s->w, 1), h = MAX(s->h, 1);
+    i32 x = (i32)test_below(t, w), y = (i32)test_below(t, h);
+    static const u32 mods[] = { 0, 0, 0, KEYMOD_SHIFT, KEYMOD_CTRL | KEYMOD_SHIFT };
+    u32 m = mods[test_below(t, ARRAY_COUNT(mods))];
+    s->mice++;
+    s->after_key = 0;
+    switch (test_below(t, 4)) {
+    case 0: case 1: { // a click (single, double or triple), now and then dragged
+        Event e[5];
+        i32 n = 0;
+        e[n++] = (Event){ .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1 + (i32)test_below(t, 3), .x = x, .y = y, .mods = m };
+        for (i32 k = (i32)test_below(t, 3); k > 0; k--) {
+            x = CLAMP(x + (i32)test_below(t, 161) - 80, 0, w - 1);
+            y = CLAMP(y + (i32)test_below(t, 97) - 48, 0, h - 1);
+            e[n++] = (Event){ .kind = EVENT_MOUSE_MOVE, .x = x, .y = y, .mods = m };
+        }
+        e[n++] = (Event){ .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = x, .y = y, .mods = m };
+        for (i32 i = 0; i < n; i++) soak_feed(s, &e[i], 1);
+        break;
+    }
+    case 2: { // the wheel
+        Event e = { .kind = EVENT_MOUSE_WHEEL, .x = x, .y = y, .wheel = ((i32)test_below(t, 7) - 3) * 120, .mods = m & KEYMOD_CTRL ? 0 : m };
+        soak_feed(s, &e, 1);
+        break;
+    }
+    default: { // a move alone
+        Event e = { .kind = EVENT_MOUSE_MOVE, .x = x, .y = y };
+        soak_feed(s, &e, 1);
+        break;
+    }
+    }
+}
+
+static void soak_resize(Soak *s) {
+    Test *t = s->t;
+    u64 r = test_below(t, 10);
+    if (r == 0) { s->w = 1; s->h = 0; }                                // minimized
+    else if (r == 1) { s->w = 8 + (i32)test_below(t, 40); s->h = 16 + (i32)test_below(t, 40); } // tiny
+    else { s->w = 200 + (i32)test_below(t, 1400); s->h = 120 + (i32)test_below(t, 900); }
+    app_dev_frame_size(s->app, s->w, s->h);
+    Event e = { .kind = EVENT_RESIZE, .width = s->w, .height = s->h };
+    soak_feed(s, &e, 1);
+    s->resizes++;
+    s->after_key = 0;
+}
+
+static void soak_event(Soak *s) {
+    Test *t = s->t;
+    App *app = s->app;
+    // Typed text: code characters; in a prompt nothing that names another directory or drive.
+    static const char code[] = "abcdefxyzABZ0129_ {}();:,.=+-*<>\"'#/";
+    static const char prompt[] = "abcdefgilnoprstuwxyz0129_-";
+    static const char *keys[] = { "RET", "TAB", "DEL", "C-d", "C-g", "SPC", "<left>", "<right>", "<up>", "<down>", "<home>", "<end>",
+                                  "<prior>", "<next>", "S-<right>", "S-<down>", "C-<right>", "<backtab>", "<delete>", "ESC" };
+    u64 r = test_below(t, 1000);
+    if (r < 430) {
+        char c = app->mini.active ? prompt[test_below(t, (i64)sizeof(prompt) - 1)] : code[test_below(t, (i64)sizeof(code) - 1)];
+        soak_keys(s, c == ' ' ? STR8_LIT("SPC") : str8((u8 *)&c, 1), 0);
+        s->texts++;
+    } else if (r < 520) {
+        soak_keys(s, str8_cstr(keys[test_below(t, ARRAY_COUNT(keys))]), 0);
+        s->keys++;
+    } else if (r < 850) {
+        soak_keys(s, s->seqs[test_below(t, s->seq_count)], test_below(t, 10) == 0);
+        s->keys++;
+    } else if (r < 860) { // a chord nothing may be bound to
+        static const char *mods[] = { "C-", "M-", "C-M-", "C-x C-", "C-c ", "C-x " };
+        char token[16];
+        test_cstr(token, sizeof(token), "%s%c", mods[test_below(t, ARRAY_COUNT(mods))], (u32)('a' + test_below(t, 26)));
+        soak_keys(s, str8_cstr(token), 0);
+        s->keys++;
+    } else if (r < 985) {
+        soak_mouse(s);
+    } else if (r < 990) {
+        soak_resize(s);
+    } else if (r < 995) {
+        Event e = { .kind = EVENT_FOCUS, .focused = (b32)test_below(t, 2) };
+        soak_feed(s, &e, 1);
+        s->focus++;
+    } else {
+        soak_feed(s, NULL, 0); // a frame without events (background work)
+    }
+    if (s->h == 0 && test_below(t, 4) == 0) soak_resize(s); // not minimized for long
+}
+
+static String8 soak_file(Test *t, String8 dir, const char *name, String8 text) {
+    String8 path = str8_fmt(&t->arena, "%S\\%s", dir, name);
+    os_write_file(path, text);
+    return path;
+}
+
+// One run; checks every `every` events (the workers' results and the tidying stay every SOAK_CHECK_EVERY, so a
+// rerun with every = 1 sees the same events). *failed_at: the event whose check failed.
+static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *failed_at) {
+    Test t = { 0 };
+    t.arena = arena_create(GB(4));
+    t.tmp_dir = tmp_dir;
+    t.rng = seed ^ 0x50a6ull;
+    syntax_init();
+    Soak s = { .t = &t, .w = 1280, .h = 800 };
+    s.dir = os_full_path(&t.arena, str8_fmt(&t.arena, "%S\\soak", tmp_dir));
+    os_make_dir(s.dir);
+    OsDirEntry *entries;
+    i64 count;
+    if (os_list_dir(&t.arena, s.dir, &entries, &count) == OS_FILE_OK) { // the last run's files
+        for (i64 i = 0; i < count; i++) if (!entries[i].is_dir) os_file_delete(str8_fmt(&t.arena, "%S\\%S", s.dir, entries[i].name));
+    }
+    // The files: C, JavaScript, Jai, plain text, and a 300 KB C file; the directory is the project.
+    u8 *big = PUSH_ARRAY(&t.arena, u8, KB(320));
+    i64 big_len = 0;
+    for (i32 i = 0; big_len < KB(300); i++) {
+        big_len += fmt_buf(big + big_len, 160, "int f%d(int a) {\n    switch (a) {\n    case %d: return a + 1; // one\n    default:\n"
+                                               "        return \"s%d\"[0];\n    }\n}\n\n", i, i, i);
+    }
+    soak_file(&t, s.dir, ".ronin-project", STR8_LIT("[ignore]\n*.log\n"));
+    String8 files[] = {
+        soak_file(&t, s.dir, "a.c", STR8_LIT("#include <stdio.h>\n\nint main(void) {\n    int x = 1;\n    if (x) {\n        printf(\"%d\\n\", x);\n"
+                                            "    }\n    return 0;\n}\n")),
+        soak_file(&t, s.dir, "b.js", STR8_LIT("function f(a, b) {\n    const s = `x ${a}`;\n    return [a, b].map((v) => v * 2);\n}\n")),
+        soak_file(&t, s.dir, "c.jai", STR8_LIT("main :: () {\n    x := 3;\n    if x == {\n        case 3; print(\"three\\n\");\n    }\n}\n")),
+        soak_file(&t, s.dir, "notes.txt", STR8_LIT("Plain text, a few words.\nAnd \xc5\x9f\xc4\x9f\xc3\xbc lines.\n")),
+        soak_file(&t, s.dir, "big.c", str8(big, big_len)),
+    };
+    String8 conf = soak_file(&t, s.dir, "soak.conf", STR8_LIT("[settings]\nundo_limit_mb = 2\nmax_cursors = 100\nfsync_on_save = false\nsearch_workers = 2\n"));
+    // The directory too, as on a command line: *scratch* and the file prompts start there.
+    AppFileArg args_files[ARRAY_COUNT(files) + 1];
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(files); i++) args_files[i] = (AppFileArg){ files[i], 0, 0 };
+    args_files[ARRAY_COUNT(files)] = (AppFileArg){ s.dir, 0, 0 };
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1, .files = args_files, .file_count = ARRAY_COUNT(args_files), .config_path = conf };
+    App *app = app_create(&t.arena, &args);
+    if (!app) {
+        LOG("soak: FAIL: app_create");
+        return 1;
+    }
+    s.app = app;
+    app->ctx.dev_soak = 1;
+    os_dev_write_root(s.dir);
+    app_dev_feed_events(app, NULL, 0, &t.arena);
+    s.seqs = PUSH_ARRAY(&t.arena, String8, 4 * KEYMAP_CAP);
+    soak_collect(&s, &app->config->global);
+    soak_collect(&s, &app->config->minibuffer);
+    soak_collect(&s, &app->config->isearch);
+    soak_collect(&s, &app->config->search_results);
+    u64 base = arena_pos(&t.arena);
+    i32 initial_buffers = app->buffers.count;
+    LOG("soak: %U events, seed 0x%X, %d key sequences, files in %S", events, seed, s.seq_count, s.dir);
+
+    u64 t0 = os_time_us(), block_t0 = t0, peak = 0, first_us = 0, second_us = 0, last_us = 0, mem_after_first = 0, mem_last = 0;
+    u64 done = 0;
+    for (u64 e = 1; e <= events && !t.failures; e++) {
+        soak_event(&s);
+        if (e % SOAK_CHECK_EVERY == 0) while (os_dev_wake_wait(0)) app_wake(app); // the workers' results (project search, scans)
+        if (e % every == 0 && !soak_check(&s, e)) {
+            *failed_at = e;
+            LOG("soak: FAIL at event %U (seed 0x%X); the events before it, the last one first:", e, seed);
+            for (u64 i = 0; i < ARRAY_COUNT(s.recent) && i < s.recent_count; i++) {
+                LOG("soak:   %s", s.recent[(s.recent_count - 1 - i) % ARRAY_COUNT(s.recent)]);
+            }
+            View *views[WINDOW_MAX];
+            i32 nv = app_views(app, views);
+            for (i32 i = 0; i <= nv; i++) {
+                View *v = i < nv ? views[i] : app->mini.view;
+                LOG("soak: %s %d: %S, %d cursors (primary %d): %D %D %D, top line %D, %d rows", i < nv ? "window" : "minibuffer", i,
+                    v->buffer->name, v->cursor_count, v->primary, view_point(v, &v->cursors[0]),
+                    v->cursor_count > 1 ? view_point(v, &v->cursors[1]) : -1, v->cursor_count > 2 ? view_point(v, &v->cursors[2]) : -1,
+                    view_top_line(v), v->rows);
+            }
+            LOG("soak: selected %S, minibuffer %s, echo '%S'", app_selected_view(app)->buffer->name, app->mini.active ? "active" : "off",
+                str8(app->echo.text, app->echo.len));
+            break;
+        }
+        if (e % SOAK_CHECK_EVERY == 0) {
+            soak_tidy(&s, SOAK_MAX_BUFFERS);
+            arena_pop_to(&t.arena, base);
+        }
+        if (e % SOAK_BLOCK == 0) {
+            u64 now = os_time_us(), mem = os_dev_private_bytes();
+            u64 per = (now - block_t0) * 1000 / SOAK_BLOCK; // ns an event
+            peak = MAX(peak, mem);
+            LOG("soak: %U events: %U ns an event in this block, private bytes %U KB, %d buffers, %d windows, %d cursors; keys %U, "
+                "text %U, mouse %U, resizes %U, focus %U; buffers killed %U, truncated %U; writes refused %U", e, per, mem >> 10,
+                app->buffers.count, window_count(&app->windows), app_selected_view(app)->cursor_count, s.keys, s.texts, s.mice,
+                s.resizes, s.focus, s.killed, s.truncated, os_dev_writes_refused());
+            u64 settled = soak_settle(&s, initial_buffers), undo = 0;
+            for (i32 i = 0; i < app->buffers.count; i++) undo += buffer_undo_memory(app->buffers.entries[i].buffer);
+            per = soak_probe(&s);
+            LOG("soak:   settled: private bytes %U KB; undo logs %U KB, kill ring %U KB; the probe %U ns an event", settled >> 10,
+                undo >> 10, app->kills.small_committed >> 10, per);
+            // The undo logs grow up to their limit (undo_limit_mb a buffer): the rest is what must stay flat.
+            settled = settled > undo ? settled - undo : 0;
+            if (e == SOAK_BLOCK) {
+                first_us = per;
+                mem_after_first = settled;
+            }
+            if (e == 2 * SOAK_BLOCK) second_us = per;
+            last_us = per;
+            mem_last = settled;
+            block_t0 = now;
+        }
+        done = e;
+    }
+    // Slowdown and growth: the last probe against the faster of the first two, memory after the first block against
+    // the last.
+    if (!t.failures && events >= 3 * SOAK_BLOCK) {
+        u64 ref = second_us ? MIN(first_us, second_us) : first_us;
+        if (last_us * 2 > ref * 3) {
+            LOG("test: FAIL: soak: the last probe took %U ns an event, the first ones %U", last_us, ref);
+            t.failures++;
+        }
+        // Leaks: settled (the starting buffers in one window), without the undo logs, after the first block and the last.
+        LOG("soak: settled, without the undo logs: %U KB after the first block, %U KB after the last", mem_after_first >> 10,
+            mem_last >> 10);
+        if (mem_last > mem_after_first + MB(2)) {
+            LOG("test: FAIL: soak: private bytes grew from %U KB to %U KB", mem_after_first >> 10, mem_last >> 10);
+            t.failures++;
+        }
+    }
+    u64 refused = os_dev_writes_refused();
+    for (i32 i = 0; i < 10 && soak_busy(app); i++) soak_keys(&s, STR8_LIT("C-g"), 0);
+    i32 leaks = app_shutdown(app);
+    if (leaks) {
+        LOG("test: FAIL: soak: %d leak(s) at shutdown", leaks);
+        t.failures++;
+    }
+    LOG("soak: %s, %U events in %U ms (seed 0x%X), private bytes peak %U KB, at the end %U KB; writes refused outside the directory %U",
+        t.failures ? "FAIL" : "PASS", done, (os_time_us() - t0) / 1000, seed, peak >> 10, os_dev_private_bytes() >> 10,
+        refused);
+    os_dev_write_root(STR8_LIT(""));
+    os_release(t.arena.base);
+    return t.failures;
+}
+
+// --soak N. A failure found by the periodic check is run again with a check after every event, up to it, to
+// name the event that broke the invariant.
+i32 test_soak(u64 events, u64 seed, String8 tmp_dir) {
+    u64 failed_at = 0;
+    i32 failures = soak_run(events, seed, tmp_dir, SOAK_CHECK_EVERY, &failed_at);
+    if (failed_at) {
+        LOG("soak: again up to event %U, checked after every event", failed_at);
+        u64 exact = 0;
+        soak_run(failed_at, seed, tmp_dir, 1, &exact);
+    }
+    return failures;
+}
+
 // --fuzz-seeds (one worker process's share): every group that takes the seed, for the seeds first, first +
 // step, ... below end (not the scanner and the project search: their seed only shapes trees on disk). Stops
 // at the first seed that fails.

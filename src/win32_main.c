@@ -84,6 +84,9 @@ typedef struct Platform {
     u64 seed;
     u64 fuzz_first, fuzz_count; // --fuzz-seeds FIRST COUNT
     i32 fuzz_worker, fuzz_workers; // --fuzz-worker K W FIRST COUNT: worker K + 1 of W (0: not a worker)
+    String8 dev_write_root;     // the soak: writes outside this directory are refused (os_dev_write_root)
+    u64 dev_writes_refused;
+    u64 soak_events;            // --soak N
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
     b32 bench_text;
@@ -178,7 +181,43 @@ void os_decommit(void *ptr, u64 size) {
     if (size) VirtualFree(ptr, size, MEM_DECOMMIT);
 }
 
+#if RONIN_DEV
+// The soak's guard (os_dev_write_root): while a root is set, a write, delete or new directory outside it
+// is refused and counted, whatever path random keys reached in a file prompt.
+static b32 win32_dev_write_refused(String8 path) {
+    Platform *p = g_platform;
+    if (!p || !p->dev_write_root.len) return 0;
+    WCHAR in[1024], full[1024];
+    win32_utf8_to_wide_fixed(path, (u16 *)in, ARRAY_COUNT(in));
+    DWORD n = GetFullPathNameW(in, ARRAY_COUNT(full), full, NULL);
+    String8 root = p->dev_write_root;
+    b32 inside = n > (DWORD)root.len && n < ARRAY_COUNT(full) && full[root.len] == L'\\';
+    for (i64 i = 0; i < root.len && inside; i++) {
+        u32 a = full[i], b = root.data[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        inside = a == b;
+    }
+    if (inside) return 0;
+    p->dev_writes_refused++;
+    LOG("soak: refused a write outside %S: %S", root, path);
+    return 1;
+}
+
+void os_dev_write_root(String8 dir) {
+    g_platform->dev_write_root = dir;
+    g_platform->dev_writes_refused = 0;
+}
+
+u64 os_dev_writes_refused(void) {
+    return g_platform->dev_writes_refused;
+}
+#endif
+
 b32 os_write_file(String8 path, String8 data) {
+#if RONIN_DEV
+    if (win32_dev_write_refused(path)) return 0;
+#endif
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
     String16 path16 = str16_from_str8(scratch, path);
@@ -411,6 +450,9 @@ OsFileStatus os_file_read(OsFile file, void *dst, i64 size) {
 OsFileStatus os_file_create_temp(String8 target, Arena *arena, OsFile *file, String8 *temp_path) {
     file->handle = NULL;
     *temp_path = str8(NULL, 0);
+#if RONIN_DEV
+    if (win32_dev_write_refused(target)) return OS_FILE_ACCESS_DENIED;
+#endif
     Arena *scratch = &g_platform->scratch;
     for (u32 n = 1; n < 100; n++) {
         u64 mark = arena_pos(scratch);
@@ -432,6 +474,9 @@ OsFileStatus os_file_create_temp(String8 target, Arena *arena, OsFile *file, Str
 
 OsFileStatus os_file_open_overwrite(String8 path, OsFile *file) {
     file->handle = NULL;
+#if RONIN_DEV
+    if (win32_dev_write_refused(path)) return OS_FILE_ACCESS_DENIED;
+#endif
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
     // OPEN_ALWAYS + SetEndOfFile instead of CREATE_ALWAYS, which refuses hidden and system files.
@@ -503,6 +548,9 @@ i32 os_cpu_count(void) {
 }
 
 OsFileStatus os_file_replace(String8 target, String8 temp) {
+#if RONIN_DEV
+    if (win32_dev_write_refused(target)) return OS_FILE_ACCESS_DENIED;
+#endif
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
     WCHAR *target16 = win32_path16(target);
@@ -522,6 +570,9 @@ OsFileStatus os_file_replace(String8 target, String8 temp) {
 }
 
 void os_file_delete(String8 path) {
+#if RONIN_DEV
+    if (win32_dev_write_refused(path)) return;
+#endif
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
     DeleteFileW(win32_path16(path));
@@ -1344,6 +1395,9 @@ String8 os_get_env(Arena *arena, String8 name) {
 }
 
 b32 os_make_dir(String8 path) {
+#if RONIN_DEV
+    if (win32_dev_write_refused(path)) return 0;
+#endif
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
     b32 ok = CreateDirectoryW(win32_path16(path), NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
@@ -4567,6 +4621,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             p->fuzz_count = win32_parse_u64(args[++i]);
             if (p->fuzz_count) continue;
         }
+        if (str8_equal(a, STR8_LIT("--soak")) && has_value) {
+            p->soak_events = win32_parse_u64(args[++i]);
+            if (p->soak_events) continue;
+        }
         if (str8_equal(a, STR8_LIT("--fuzz-worker")) && i + 4 < arg_count) {
             p->fuzz_worker = win32_parse_i32(args[++i]) + 1;
             p->fuzz_workers = win32_parse_i32(args[++i]);
@@ -4636,18 +4694,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
                                    : p->bench_cursors ? "bench-cursors"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
-    if (p->test || p->fuzz_count || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
+    if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
     if (p->clipboard_check) { // headless, the real clipboard
         i32 code = win32_dev_clipboard_check(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return code;
+    }
+    if (p->soak_events) { // headless: random key and mouse events through the app
+        i32 failures = test_soak(p->soak_events, p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return failures ? EXIT_TEST : EXIT_OK;
     }
     if (p->fuzz_count) { // headless: the seeded groups of --test over a range of seeds, in worker processes
         i32 code;
