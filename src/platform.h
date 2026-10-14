@@ -15,6 +15,9 @@ b32   os_write_file(String8 path, String8 data);
 void  os_fatal(String8 message); // does not return
 u64   os_time_us(void);              // monotonic microseconds
 void  os_set_window_title(String8 title);
+// early_window: shows the window at once, before the graphics device exists, painted in `rgb` (0xRRGGBB) and with
+// that caption color, activated as the first frame would be. Startup only; nothing after the first frame.
+void  os_show_window_early(u32 rgb);
 void  os_set_caption_color(u32 rgb); // the title bar (Windows 11; ignored elsewhere)
 // Whether some file-visiting buffer has unsaved changes. The window procedure answers Windows'
 // end-of-session query from it at once; false also removes the shutdown block reason.

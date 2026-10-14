@@ -169,6 +169,7 @@ static const struct { const char *name; u32 offset; } config_bool_settings[] = {
     { "auto_revert", offsetof(Settings, auto_revert) },
     { "show_paren_mode", offsetof(Settings, show_paren_mode) },
     { "compilation_relative_paths", offsetof(Settings, compilation_relative_paths) },
+    { "early_window", offsetof(Settings, early_window) },
 };
 
 static void config_setting(ConfigParser *p, String8 name, String8 value) {

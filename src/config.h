@@ -32,6 +32,7 @@ struct Settings {
     b32 show_paren_mode;      // the bracket at point and its match are highlighted
     i32 split_width_threshold; // columns: a single window pops up a buffer side by side from this frame width on
     i32 startup_windows;      // 1, or 2: the frame starts split side by side
+    b32 early_window;         // the window is shown in the background color as soon as the config is read
     u8 project_markers[CONFIG_LIST_CAP]; // blank-separated names whose presence makes a directory a project root
     i32 project_markers_len;
     u8 project_ignore[CONFIG_LIST_CAP];  // blank-separated .gitignore patterns never listed in a project

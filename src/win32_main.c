@@ -24,6 +24,7 @@ typedef struct Platform {
     HINSTANCE instance;
     HWND hwnd;
     HRESULT (WINAPI *dwm_set_attribute)(HWND, DWORD, LPCVOID, DWORD); // dwmapi.dll, loaded at the window's creation
+    HRESULT (WINAPI *dwm_flush)(void);
     Arena perm;
     Arena scratch; // reset after every frame
     App *app;
@@ -77,6 +78,8 @@ typedef struct Platform {
     FbRenderMode render_mode;
     b32 unsaved;      // some file buffer has unsaved changes (os_set_unsaved_files)
     b32 block_reason; // a shutdown block reason is registered
+    b32 shown_early;  // early_window: shown in the background color before the device exists (os_show_window_early)
+    HBRUSH early_brush; // ... painting the client area until the first frame
 #if RONIN_DEV
     HANDLE log_file;
     b32 smoke;
@@ -122,6 +125,8 @@ typedef struct Platform {
     b32 idle_check;       // --idle-check: shown without focus, idle; CPU time, frames and wakeups measured
     b32 memory_report;    // --memory-report: shown like --idle-check; the private bytes by owner after the settle
     b32 bench_latency;    // --bench-latency: posted keys, from arrival to the screen
+    b32 startup_capture;  // --startup-capture: what the screen shows of the window from the start
+    struct StartupCapture *capture;
     struct LatencyBench *latency;
     b32 clipboard_check;  // --clipboard-check: the real clipboard through the app, saved and put back
     String8 dpi_check;    // --dpi-check <dir>: WM_DPICHANGED to 125% and back, a screenshot at each step
@@ -1282,6 +1287,7 @@ static void win32_dev_memory_report(Platform *p);
 static void win32_dev_latency_key(Platform *p, i32 key);
 static void win32_dev_latency_frame(Platform *p);
 static void win32_dev_latency_finish(Platform *p);
+static void win32_dev_capture_finish(Platform *p);
 #endif
 
 // Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it; a tree watch is not re-armed (it
@@ -1402,6 +1408,49 @@ b32 os_dev_unsaved_files(void) {
     return g_platform && g_platform->unsaved;
 }
 #endif
+
+#if RONIN_DEV
+// --startup-capture: topmost, inside the work area (nothing such as the taskbar over it), never activated.
+static void win32_dev_capture_place(Platform *p) {
+    MONITORINFO mi = { .cbSize = sizeof(mi) };
+    GetMonitorInfoW(MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    SetWindowPos(p->hwnd, HWND_TOPMOST, mi.rcWork.left + 16, mi.rcWork.top + 16, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+}
+#endif
+
+void os_show_window_early(u32 rgb) {
+    Platform *p = g_platform;
+    if (!p || !p->hwnd || p->shown_early || p->frame_count) return;
+    p->early_brush = CreateSolidBrush(RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+    os_set_caption_color(rgb); // the title bar as the first frame will leave it
+    BOOL no_transitions = TRUE; // no fade-in: the window appears at once, opaque, as the cloaked start shows it
+    win32_dwm_attribute(p, DWMWA_TRANSITIONS_FORCEDISABLED, &no_transitions, sizeof(no_transitions));
+    p->shown_early = 1;
+    // Shown cloaked and painted (WM_PAINT reaches a cloaked window), then uncloaked: the first composition that shows
+    // the window shows it painted.
+    BOOL cloak = TRUE;
+    win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
+#if RONIN_DEV
+    if (p->startup_capture) { // never activated, above everything for the screen capture
+        win32_dev_capture_place(p);
+        ShowWindow(p->hwnd, SW_SHOWNOACTIVATE);
+    } else
+#endif
+    if (p->no_activate) {
+        ShowWindow(p->hwnd, SW_SHOWNOACTIVATE);
+    } else {
+        ShowWindow(p->hwnd, SW_SHOW);
+        SetForegroundWindow(p->hwnd);
+    }
+    UpdateWindow(p->hwnd); // painted now: until the device is ready the main thread handles only sent messages
+    GdiFlush();
+    if (p->dwm_flush) p->dwm_flush(); // one composition with the paint before uncloaking (the main thread waits for the device anyway)
+    cloak = FALSE;
+    win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
+#if RONIN_DEV
+    os_dev_stage("shown early, painted");
+#endif
+}
 
 void os_set_caption_color(u32 rgb) {
     Platform *p = g_platform;
@@ -1589,6 +1638,7 @@ static void win32_dwm_attribute(Platform *p, DWORD attribute, const void *value,
     if (!p->dwm_set_attribute) {
         HMODULE dwm = LoadLibraryW(L"dwmapi.dll"); // kept until the process ends
         p->dwm_set_attribute = dwm ? (HRESULT (WINAPI *)(HWND, DWORD, LPCVOID, DWORD))(void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
+        p->dwm_flush = dwm ? (HRESULT (WINAPI *)(void))(void *)GetProcAddress(dwm, "DwmFlush") : NULL;
         if (!p->dwm_set_attribute) return;
     }
     p->dwm_set_attribute(p->hwnd, attribute, value, size);
@@ -1822,11 +1872,16 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         win32_dev_latency_finish(p);
         p->quit = 1;
         return 0;
+    case WM_APP + 6: // --startup-capture: the screen has stood still
+        win32_dev_capture_finish(p);
+        p->quit = 1;
+        return 0;
 #endif
 
     case WM_PAINT: {
         PAINTSTRUCT ps;
-        BeginPaint(hwnd, &ps);
+        HDC dc = BeginPaint(hwnd, &ps);
+        if (p->early_brush && p->frame_count == 0) FillRect(dc, &ps.rcPaint, p->early_brush); // early_window, no device yet
         EndPaint(hwnd, &ps);
         p->redraw = 1;
         if (p->in_size_move) win32_frame(p);
@@ -1848,6 +1903,13 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (p->renderer) r_resize(p->renderer, w, h);
+        if (p->early_brush && p->frame_count == 0) { // early_window before the device: the new size painted at once
+            HDC dc = GetDC(hwnd);
+            RECT client;
+            GetClientRect(hwnd, &client);
+            FillRect(dc, &client, p->early_brush);
+            ReleaseDC(hwnd, dc);
+        }
         if (w != p->width || h != p->height) {
             p->width = w;
             p->height = h;
@@ -4294,6 +4356,204 @@ static void win32_dev_idle_check_mark(Platform *p, b32 end) {
     p->quit = 1;
 }
 
+// --startup-capture: what the screen shows of the window from the process's start on. A thread started at the top of
+// WinMain waits for every DWM composition (DwmFlush) and copies the window's client area and its title bar from the
+// screen (the window is placed topmost, never activated); for each composition: the time since process creation,
+// whether the window is shown, whether its client area is one color (and which), a hash of the client area and
+// one of the title bar. It stops once the same client image has stood for 20 compositions (or after 600). The main
+// thread reads them: when the window was first visible, when the first frame appeared, and any client image that
+// was neither the background nor the final frame (a flash), with the share of its pixels that are the background or
+// the final frame's. No image is written: until the window is opaque, what the screen shows there is other windows'.
+// Exit 9 on a flash. Run it with a --config that sets early_window, and with one that does not.
+#define CAPTURE_MAX 600
+#define CAPTURE_STABLE 20
+#define CAPTURE_IMAGES 8
+
+typedef struct StartupCapture {
+    i32 count;
+    u64 us[CAPTURE_MAX];
+    b32 shown[CAPTURE_MAX];
+    b32 uniform[CAPTURE_MAX];
+    u32 color[CAPTURE_MAX];      // the uniform color, 0xRRGGBB
+    u64 hash[CAPTURE_MAX];       // the client area
+    u64 title_hash[CAPTURE_MAX]; // the title bar
+    // The first copy of each distinct client image (up to CAPTURE_IMAGES) and the last one, kept in memory only.
+    u8 *final;
+    i32 final_w, final_h;
+    i32 image_count;
+    u64 image_us[CAPTURE_IMAGES];
+    u64 image_hash[CAPTURE_IMAGES];
+    i32 image_w[CAPTURE_IMAGES], image_h[CAPTURE_IMAGES];
+    u8 *image[CAPTURE_IMAGES];
+} StartupCapture;
+
+static u64 win32_capture_hash(u8 *px, i64 n) {
+    u64 h = 1469598103934665603ull;
+    for (i64 i = 0; i < n; i += 4) h = (h ^ (u64)(*(u32 *)(px + i) & 0xFFFFFF)) * 1099511628211ull;
+    return h;
+}
+
+static DWORD WINAPI win32_dev_capture_thread(void *param) {
+    Platform *p = param;
+    StartupCapture *c = p->capture;
+    FILETIME created, exited, kernel, user;
+    GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+    u64 created_us = win32_filetime_u64(created) / 10;
+    HMODULE dwm = LoadLibraryW(L"dwmapi.dll"); // not an import (win32_dwm_attribute)
+    HRESULT (WINAPI *dwm_flush)(void) = dwm ? (HRESULT (WINAPI *)(void))(void *)GetProcAddress(dwm, "DwmFlush") : NULL;
+    HRESULT (WINAPI *dwm_get)(HWND, DWORD, PVOID, DWORD) =
+        dwm ? (HRESULT (WINAPI *)(HWND, DWORD, PVOID, DWORD))(void *)GetProcAddress(dwm, "DwmGetWindowAttribute") : NULL;
+    if (!dwm_flush || !dwm_get) return 0;
+    HDC screen = GetDC(NULL), mem = CreateCompatibleDC(screen);
+    HBITMAP dib = NULL;
+    u8 *bits = NULL;
+    i32 dib_w = 0, dib_h = 0, stable = 0;
+    while (c->count < CAPTURE_MAX && stable < CAPTURE_STABLE) {
+        dwm_flush();
+        FILETIME now;
+        GetSystemTimePreciseAsFileTime(&now);
+        i32 k = c->count++;
+        c->us[k] = win32_filetime_u64(now) / 10 - created_us;
+        HWND hwnd = *(HWND volatile *)&p->hwnd;
+        BOOL cloaked = 0;
+        if (hwnd) dwm_get(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+        if (!hwnd || !IsWindowVisible(hwnd) || cloaked) continue;
+        RECT wr, cr;
+        GetWindowRect(hwnd, &wr);
+        GetClientRect(hwnd, &cr);
+        POINT origin = { 0, 0 };
+        ClientToScreen(hwnd, &origin);
+        i32 w = cr.right, h = cr.bottom, title_h = MAX((i32)(origin.y - wr.top), 1), full_w = wr.right - wr.left;
+        if (w <= 0 || h <= 0) continue;
+        i32 need_w = MAX(w, full_w), need_h = h + title_h;
+        if (need_w != dib_w || need_h != dib_h) {
+            if (dib) DeleteObject(dib);
+            BITMAPINFO bi = { .bmiHeader = { .biSize = sizeof(BITMAPINFOHEADER), .biWidth = need_w, .biHeight = -need_h, .biPlanes = 1,
+                                             .biBitCount = 32, .biCompression = BI_RGB } };
+            dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+            if (!dib) break;
+            SelectObject(mem, dib);
+            dib_w = need_w;
+            dib_h = need_h;
+        }
+        BitBlt(mem, 0, 0, w, h, screen, origin.x, origin.y, SRCCOPY);                         // the client area at the top
+        BitBlt(mem, 0, h, full_w, title_h, screen, wr.left, wr.top, SRCCOPY);               // the title bar below it
+        GdiFlush();
+        c->shown[k] = 1;
+        // The client area's rows are dib_w wide: hash row by row over w.
+        u64 hash = 1469598103934665603ull;
+        u32 first = *(u32 *)bits & 0xFFFFFF;
+        b32 uniform = 1;
+        for (i32 y = 0; y < h; y++) {
+            u8 *row = bits + (i64)y * dib_w * 4;
+            hash ^= win32_capture_hash(row, (i64)w * 4);
+            hash *= 1099511628211ull;
+            for (i32 x = 0; x < w && uniform; x += 7) {
+                b32 corner = y >= h - 16 && (x < 16 || x >= w - 16); // Windows 11 rounds the window's bottom corners
+                uniform = corner || (*(u32 *)(row + x * 4) & 0xFFFFFF) == first;
+            }
+        }
+        c->hash[k] = hash;
+        c->uniform[k] = uniform;
+        c->color[k] = first;
+        u64 th = 0;
+        for (i32 y = h; y < h + title_h; y++) th = th * 31 + win32_capture_hash(bits + (i64)y * dib_w * 4, (i64)full_w * 4);
+        c->title_hash[k] = th;
+        stable = k > 0 && c->shown[k - 1] && c->hash[k - 1] == hash ? stable + 1 : 0;
+        b32 seen = 0;
+        for (i32 i = 0; i < c->image_count && !seen; i++) seen = c->image_hash[i] == hash;
+        if (!seen && c->image_count < CAPTURE_IMAGES) {
+            i32 i = c->image_count++;
+            c->image_hash[i] = hash;
+            c->image_us[i] = c->us[k];
+            c->image_w[i] = w;
+            c->image_h[i] = h;
+            c->image[i] = VirtualAlloc(NULL, (SIZE_T)w * h * 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            if (c->image[i]) for (i32 y = 0; y < h; y++) memcpy(c->image[i] + (i64)y * w * 4, bits + (i64)y * dib_w * 4, (size_t)w * 4);
+        }
+    }
+    if (bits && dib_w) { // the last image: the final frame
+        i32 w = dib_w, h = dib_h;
+        for (i32 i = 0; i < c->image_count; i++) if (c->image_hash[i] == c->hash[c->count - 1]) w = c->image_w[i], h = c->image_h[i];
+        c->final = VirtualAlloc(NULL, (SIZE_T)w * h * 4, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (c->final) {
+            for (i32 y = 0; y < h; y++) memcpy(c->final + (i64)y * w * 4, bits + (i64)y * dib_w * 4, (size_t)w * 4);
+            c->final_w = w;
+            c->final_h = h;
+        }
+    }
+    if (dib) DeleteObject(dib);
+    DeleteDC(mem);
+    ReleaseDC(NULL, screen);
+    HWND hwnd = *(HWND volatile *)&p->hwnd;
+    if (hwnd) PostMessageW(hwnd, WM_APP + 6, 0, 0);
+    return 0;
+}
+
+static void win32_dev_capture_finish(Platform *p) {
+    StartupCapture *c = p->capture;
+    u32 bg = p->app ? p->app->config->theme.background : 0;
+    i32 n = c->count, visible = -1, first_frame = -1, flashes = 0, titles = 0;
+    u64 final_hash = n ? c->hash[n - 1] : 0, last_title = 0;
+    for (i32 k = 0; k < n; k++) {
+        if (!c->shown[k]) continue;
+        if (visible < 0) visible = k;
+        if (first_frame < 0 && c->hash[k] == final_hash) first_frame = k;
+        b32 background = c->uniform[k] && c->color[k] == bg;
+        if (c->hash[k] != final_hash && !(background && first_frame < 0)) flashes++;
+        if (c->title_hash[k] != last_title) titles++;
+        last_title = c->title_hash[k];
+    }
+    i32 between = visible >= 0 && first_frame >= 0 ? first_frame - visible : -1;
+    LOG("startup-capture: %d compositions; early_window %d; the window first visible %U.%U ms after process creation (%s), the "
+        "first frame on screen %U.%U ms; %d composition(s) between; %d composition(s) showing something else (a flash); title bar "
+        "images %d", n, p->app ? p->app->config->settings.early_window : -1, visible >= 0 ? c->us[visible] / 1000 : 0,
+        visible >= 0 ? c->us[visible] / 100 % 10 : 0, visible >= 0 && c->uniform[visible] ? (c->color[visible] == bg ? "the background" : "one other color") : "a frame",
+        first_frame >= 0 ? c->us[first_frame] / 1000 : 0, first_frame >= 0 ? c->us[first_frame] / 100 % 10 : 0, between, flashes, titles);
+    for (i32 i = 0; i < c->image_count; i++) {
+        b32 background = 0;
+        for (i32 k = 0; k < n; k++) {
+            if (c->shown[k] && c->hash[k] == c->image_hash[i]) background = c->uniform[k] && c->color[k] == bg;
+        }
+        if (c->image_hash[i] == final_hash || background || !c->image[i]) continue;
+        i64 bg_px = 0, final_px = 0, total = (i64)c->image_w[i] * c->image_h[i];
+        i32 x0 = c->image_w[i], y0 = c->image_h[i], x1 = -1, y1 = -1;
+        u32 other = 0;
+        b32 same_size = c->final && c->final_w == c->image_w[i] && c->final_h == c->image_h[i];
+        for (i64 k = 0; k < total; k++) {
+            u32 px = ((u32 *)c->image[i])[k] & 0xFFFFFF;
+            bg_px += px == bg;
+            final_px += same_size && px == (((u32 *)c->final)[k] & 0xFFFFFF);
+            if (px != bg) { // where the rest is
+                i32 x = (i32)(k % c->image_w[i]), y = (i32)(k / c->image_w[i]);
+                x0 = MIN(x0, x), y0 = MIN(y0, y), x1 = MAX(x1, x), y1 = MAX(y1, y);
+                other = px;
+            }
+        }
+        // Where the other pixels are, on a 16 x 10 grid: a digit per cell, 0 none, 9 all (no image is kept).
+        u8 grid[10 * 17 + 1];
+        i32 gn = 0;
+        for (i32 gy = 0; gy < 10; gy++) {
+            for (i32 gx = 0; gx < 16; gx++) {
+                i32 cx0 = gx * c->image_w[i] / 16, cx1 = (gx + 1) * c->image_w[i] / 16, cy0 = gy * c->image_h[i] / 10, cy1 = (gy + 1) * c->image_h[i] / 10;
+                i64 cell = 0, cell_total = MAX((i64)(cx1 - cx0) * (cy1 - cy0), 1);
+                for (i32 y = cy0; y < cy1; y++) {
+                    for (i32 x = cx0; x < cx1; x++) cell += (((u32 *)c->image[i])[(i64)y * c->image_w[i] + x] & 0xFFFFFF) != bg;
+                }
+                grid[gn++] = (u8)('0' + (cell ? 1 + cell * 8 / cell_total : 0));
+            }
+            grid[gn++] = '/';
+        }
+        LOG("startup-capture:   not the background, by area: %S", str8(grid, gn - 1));
+        LOG("startup-capture: a flash at %U.%U ms: %D%% of its pixels the background, %D%% the final frame's; the others within "
+            "(%d,%d)-(%d,%d) of %dx%d, one of them #%06x", c->image_us[i] / 1000, c->image_us[i] / 100 % 10, bg_px * 100 / MAX(total, 1),
+            final_px * 100 / MAX(total, 1), x0, y0, x1, y1, c->image_w[i], c->image_h[i], other);
+    }
+    for (i32 i = 0; i < c->image_count; i++) if (c->image[i]) VirtualFree(c->image[i], 0, MEM_RELEASE);
+    if (c->final) VirtualFree(c->final, 0, MEM_RELEASE);
+    p->exit_code = flashes || first_frame < 0 ? EXIT_TEST : EXIT_OK;
+}
+
 // --bench-latency: typing as the screen sees it. The window is shown without activation (as --idle-check); after
 // the settle a thread posts BENCH_LATENCY_KEYS key presses to it (WM_KEYDOWN / WM_KEYUP through the normal pump,
 // TranslateMessage making the WM_CHAR), 25-55 ms apart so they land anywhere in the refresh. For each key: its
@@ -4821,7 +5081,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 }
 
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    return p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
            p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -5108,6 +5368,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--memory-report"))) { p->memory_report = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-latency"))) { p->bench_latency = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--startup-capture"))) { p->startup_capture = 1; continue; }
         if (str8_equal(a, STR8_LIT("--type-ahead-check"))) { p->type_ahead_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--clipboard-check"))) { p->clipboard_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--dpi-check")) && has_value) { p->dpi_check = args[++i]; continue; }
@@ -5123,6 +5384,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         bad_arg = a;
     }
     win32_files_done(p, goto_line, goto_col);
+#if RONIN_DEV
+    if (p->startup_capture) { // from as early as possible: the window may be shown before the device exists
+        p->capture = PUSH_STRUCT(&p->perm, StartupCapture);
+        HANDLE thread = CreateThread(NULL, 0, win32_dev_capture_thread, p, 0, NULL);
+        if (thread) CloseHandle(thread);
+    }
+#endif
 #if !RONIN_DEV
     if (bad_arg.len) return EXIT_USAGE;
 #else
@@ -5309,9 +5577,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
-    show_early = show_early && !(p->smoke || p->idle_check || p->memory_report || p->bench_latency || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+    show_early = show_early && !(p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
-    if (show_early) {
+    if (show_early && !p->shown_early) {
         BOOL cloak = TRUE;
         win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
         ShowWindow(p->hwnd, SW_SHOW);
@@ -5377,11 +5645,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
     if (!p->quit) {
         BOOL cloak = TRUE;
-        if (!show_early) { // the smoke, --idle-check, the benches, --no-activate: shown cloaked, never activated
+        if (!show_early && !p->shown_early) { // the smoke, --idle-check, the benches, --no-activate: shown cloaked, never activated
             win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
+#if RONIN_DEV
+            if (p->startup_capture) win32_dev_capture_place(p);
+#endif
             ShowWindow(p->hwnd, SW_SHOWNA);
         }
         if (p->frame_count == 0) win32_frame(p);
+        if (p->early_brush) { // the first frame replaced the early window's paint
+            DeleteObject(p->early_brush);
+            p->early_brush = NULL;
+        }
         cloak = FALSE;
         win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if RONIN_DEV
