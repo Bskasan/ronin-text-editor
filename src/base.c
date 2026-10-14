@@ -386,7 +386,7 @@ i64 fmt_v(u8 *out, i64 cap, const char *fmt, va_list args) {
         } break;
         case '%': fmt_put(out, cap, &n, '%'); break;
         default: // unsupported specifier
-#if TEAL_DEV
+#if RONIN_DEV
             __debugbreak();
 #endif
             if (!*p) return n;
@@ -425,7 +425,7 @@ i64 fmt_buf(u8 *out, i64 cap, const char *fmt, ...) {
 // ---------------------------------------------------------------------------
 // Dev log
 
-#if TEAL_DEV
+#if RONIN_DEV
 void assert_log(const char *file, int line, const char *expr) {
     log_fmt("ASSERT failed: %s(%d): %s", file, (i32)line, expr);
 }

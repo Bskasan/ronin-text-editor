@@ -66,7 +66,7 @@ i32   font_shutdown(Font *f); // backend references still held, 0 = clean
 void  font_frame_begin(Font *f, Renderer *r, f32 dpi_scale); // DPI change, atlas (re)binding
 i32   font_draw_text(Font *f, Renderer *r, i32 x, i32 y, String8 text, Color color); // returns x after the last cell
 
-#if TEAL_DEV
+#if RONIN_DEV
 b32   font_dev_atlas_has_coverage(Font *f);
 #endif
 

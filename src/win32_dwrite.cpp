@@ -1,6 +1,6 @@
 // win32_dwrite.cpp — DirectWrite glyph rasterization behind font_backend.h.
 //
-// The only C++ file in teal, because the SDK's dwrite.h cannot be consumed from C.
+// The only C++ file in ronin, because the SDK's dwrite.h cannot be consumed from C.
 // Written in C style: no exceptions (/EH off), no RTTI (/GR-), no STL, no new/delete,
 // no classes of our own, no static objects with constructors, no CRT calls.
 // Nothing but DirectWrite (and the few GDI calls needed to reach the DIB).

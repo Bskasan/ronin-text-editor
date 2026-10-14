@@ -18,7 +18,7 @@ void config_init(Config *c) {
 // ---------------------------------------------------------------------------
 // Diagnostics
 
-// The state of one parse. Files in the config format other than teal.conf (.teal-project) use the
+// The state of one parse. Files in the config format other than ronin.conf (.ronin-project) use the
 // lines, the diagnostics and the helpers below with their own sections (config == NULL).
 typedef struct ConfigParser {
     Config *config;
@@ -438,7 +438,7 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
     config_init(c);
     config_parse(c, arena, config_default_text(), STR8_LIT("<built-in>"));
     // Dev: the built-in config parses cleanly, so every command it names exists.
-#if TEAL_DEV
+#if RONIN_DEV
     for (ConfigDiag *d = c->diags.first; d; d = d->next) LOG("config: built-in: %S", d->text);
 #endif
     ASSERT(c->diags.errors == 0 && c->diags.warnings == 0);

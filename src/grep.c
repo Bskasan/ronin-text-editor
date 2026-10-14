@@ -546,7 +546,7 @@ void grep_cancel(GrepSearch *s) {
     for (i32 i = 0; i < s->worker_count; i++) if (s->workers[i].started) os_event_set(s->workers[i].event);
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 void grep_dev_release(GrepSearch *s) {
     os_atomic_set(&s->dev_hold, 0);
     os_atomic_set(&s->dev_stuck, 0);
@@ -637,7 +637,7 @@ void grep_free(GrepSearch *s) {
     os_release(s->arena.base); // the struct itself lives there
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 u64 grep_memory(GrepSearch *s) {
     u64 m = s->arena.committed + s->path_arena.committed + s->offset_arena.committed;
     for (i32 i = 0; i < GREP_WORKERS_MAX; i++) m += s->workers[i].arena.committed;

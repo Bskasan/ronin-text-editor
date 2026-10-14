@@ -411,7 +411,7 @@ static void results_record(void *data, const GrepRecord *rec) {
 
 // The claim window and the held records' limit (tests lower them).
 static i32 results_ahead(App *app) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (app->dev_claim_ahead) return app->dev_claim_ahead;
 #endif
     (void)app;
@@ -419,7 +419,7 @@ static i32 results_ahead(App *app) {
 }
 
 static u64 results_held_max(App *app) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (app->dev_held_max) return app->dev_held_max;
 #endif
     (void)app;
@@ -552,7 +552,7 @@ static b32 results_compile_work(App *app, Results *r, u64 deadline, i64 budget);
 // searched, a build's lines. True while some of it can go on at once (another frame).
 static b32 results_work(App *app, u64 deadline, i64 budget) {
     b32 pending = 0;
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     for (i32 i = 0; i < RESULTS_MAX; i++) {
@@ -568,7 +568,7 @@ static b32 results_work(App *app, u64 deadline, i64 budget) {
         // held records are over their limit.
         if (r->grep && r->running) {
             if (r->held_live <= results_held_max(app)) grep_set_claim_limit(r->grep, r->emit_next + results_ahead(app));
-#if TEAL_DEV
+#if RONIN_DEV
             else r->dev_held_back++;
 #endif
         }
@@ -576,7 +576,7 @@ static b32 results_work(App *app, u64 deadline, i64 budget) {
         results_progress(app, r);
         if (r->follow && r->source && r->source->files.base && r->fed < r->source->file_count) pending = 1;
     }
-#if TEAL_DEV
+#if RONIN_DEV
     u64 took = os_time_us() - t0;
     app->dev_results_max_us = MAX(app->dev_results_max_us, took);
 #endif
@@ -600,7 +600,7 @@ static b32 results_wake(App *app) {
             }
         }
         if (r->grep && grep_drain(r->grep, results_record, r)) frame = 1;
-#if TEAL_DEV
+#if RONIN_DEV
         if (r->grep) r->dev_max_ahead = MAX(r->dev_max_ahead, os_atomic_get(&r->grep->claimed) - r->emit_next);
 #endif
         if (r->follow && r->source && r->source->files.base && r->fed < r->source->file_count) frame = 1;
@@ -665,7 +665,7 @@ static void results_shutdown(App *app, u64 deadline) {
                 if (!s->workers[k].started || s->workers[k].ended) continue;
                 LOG("search: a worker of the search under %S did not end within %d ms of the exit: left to the process exit (abandoned)",
                     s->root, PROJECT_SHUTDOWN_MS);
-#if TEAL_DEV
+#if RONIN_DEV
                 app->dev_grep_abandoned++;
                 os_dev_thread_abandoned();
 #endif
@@ -684,7 +684,7 @@ static void results_shutdown(App *app, u64 deadline) {
         } else {
             LOG("compile: the build worker of '%S' did not end within %d ms of the exit: left to the process exit (abandoned)", c->command,
                 PROJECT_SHUTDOWN_MS);
-#if TEAL_DEV
+#if RONIN_DEV
             app->dev_compile_abandoned++;
             os_dev_thread_abandoned();
 #endif
@@ -739,7 +739,7 @@ static Results *results_project_search(CommandContext *ctx, String8 root, String
     GrepSearch *s = grep_create(root, query, fold, st->search_max_results, workers);
     grep_skip(s, skip, r->cand_count);
     grep_set_claim_limit(s, results_ahead(app));
-#if TEAL_DEV
+#if RONIN_DEV
     if (app->dev_grep_hold_after) {
         s->dev_hold = 1;
         s->dev_hold_after = app->dev_grep_hold_after;
@@ -1488,7 +1488,7 @@ static void cmd_kill_compilation(CommandContext *ctx) {
     }
     compile_cancel(r->run); // its last batch writes "Compilation killed"
 }
-#if TEAL_DEV
+#if RONIN_DEV
 // The state of every search (a test or a bench that waited too long).
 void app_dev_results_log(App *app, const char *why) {
     for (i32 i = 0; i < RESULTS_MAX; i++) {

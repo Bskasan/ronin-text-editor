@@ -23,12 +23,12 @@ typedef double   f64;
 
 #define I64_MAX INT64_MAX
 
-#ifndef TEAL_DEV
-#define TEAL_DEV 0
+#ifndef RONIN_DEV
+#define RONIN_DEV 0
 #endif
 // The D3D11 debug layer; off in the optimized dev build (build.bat bench) so it does not skew timings.
-#ifndef TEAL_D3D_DEBUG
-#define TEAL_D3D_DEBUG TEAL_DEV
+#ifndef RONIN_D3D_DEBUG
+#define RONIN_D3D_DEBUG RONIN_DEV
 #endif
 
 #define ARRAY_COUNT(a) ((i64)(sizeof(a) / sizeof((a)[0])))
@@ -40,7 +40,7 @@ typedef double   f64;
 #define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : (x) > (hi) ? (hi) : (x))
 #define ALIGN_UP_POW2(x, a) (((x) + (a) - 1) & ~((u64)(a) - 1))
 
-#if TEAL_DEV
+#if RONIN_DEV
 // Logs the failed condition before breaking: without a debugger the break ends the process.
 void assert_log(const char *file, int line, const char *expr);
 #define ASSERT(c) do { if (!(c)) { assert_log(__FILE__, __LINE__, #c); __debugbreak(); } } while (0)
@@ -133,9 +133,9 @@ String8 str8_fmt(Arena *arena, const char *fmt, ...);
 i64     fmt_buf(u8 *out, i64 cap, const char *fmt, ...); // into a fixed buffer, truncated; returns the length written
 
 // ---------------------------------------------------------------------------
-// Dev-only log: OutputDebugString + build\teal.log.
+// Dev-only log: OutputDebugString + build\ronin.log.
 
-#if TEAL_DEV
+#if RONIN_DEV
 void log_fmt(const char *fmt, ...);
 #define LOG(...) log_fmt(__VA_ARGS__)
 #else

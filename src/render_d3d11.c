@@ -9,7 +9,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_3.h>
-#if TEAL_DEV
+#if RONIN_DEV
 #include <dxgidebug.h>
 #endif
 
@@ -70,7 +70,7 @@ struct Renderer {
     ID3D11ShaderResourceView *atlas_srv;
     i32 dirty_x0, dirty_y0, dirty_x1, dirty_y1; // empty when x0 >= x1
 
-#if TEAL_DEV
+#if RONIN_DEV
     ID3D11InfoQueue *info_queue;
     u32 message_count;
     b32 capture_requested;
@@ -85,7 +85,7 @@ struct Renderer {
 // ---------------------------------------------------------------------------
 // Dev: debug-layer messages
 
-#if TEAL_DEV
+#if RONIN_DEV
 static void r_drain_messages(Renderer *r) {
     if (!r->info_queue) return;
     UINT64 count = ID3D11InfoQueue_GetNumStoredMessages(r->info_queue);
@@ -131,7 +131,7 @@ b32 r_create_device(Renderer *r) {
     r->create_warp = 0;
     r->debug_layer = 0;
 
-#if TEAL_D3D_DEBUG
+#if RONIN_D3D_DEBUG
     hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags | D3D11_CREATE_DEVICE_DEBUG,
                            levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     r->create_hr_debug = hr;
@@ -148,7 +148,7 @@ b32 r_create_device(Renderer *r) {
     }
     r->create_hr = hr;
 
-#if TEAL_DEV
+#if RONIN_DEV
     if (r->debug_layer &&
         SUCCEEDED(ID3D11Device_QueryInterface(r->device, &IID_ID3D11InfoQueue, (void **)&r->info_queue))) {
         // Breaking without a debugger attached would just crash the process and lose the
@@ -167,7 +167,7 @@ b32 r_create_device(Renderer *r) {
 }
 
 static void r_log_device_result(Renderer *r) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (FAILED(r->create_hr_debug)) {
         LOG("d3d11: debug device creation failed (0x%x), retried without debug layer", (u32)r->create_hr_debug);
     }
@@ -326,7 +326,7 @@ static void r_release_resources(Renderer *r) {
         ID3D11DeviceContext_ClearState(r->context);
         ID3D11DeviceContext_Flush(r->context);
     }
-#if TEAL_DEV
+#if RONIN_DEV
     R_RELEASE(r->capture_texture);
 #endif
     R_RELEASE(r->atlas_srv);
@@ -346,7 +346,7 @@ static void r_release_resources(Renderer *r) {
 // Returns the device's reference count after our final Release (0 = nothing leaked).
 static ULONG r_release_all(Renderer *r) {
     r_release_resources(r);
-#if TEAL_DEV
+#if RONIN_DEV
     r_drain_messages(r);
     R_RELEASE(r->info_queue);
 #endif
@@ -361,7 +361,7 @@ static ULONG r_release_all(Renderer *r) {
 u32 r_shutdown(Renderer *r) {
     ULONG device_refs = r_release_all(r);
     u32 leaks = (u32)device_refs;
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("d3d11: device refcount after final release: %u", (u32)device_refs);
     // Everything is released now, so any object DXGI still tracks is a leak.
     IDXGIDebug1 *dxgi_debug = NULL;
@@ -438,7 +438,7 @@ void r_atlas_mark_dirty(Renderer *r, i32 x0, i32 y0, i32 x1, i32 y1) {
 static void r_upload_atlas(Renderer *r) {
     if (r->dirty_x0 >= r->dirty_x1 || !r->atlas_texture) return;
     D3D11_BOX box = { (UINT)r->dirty_x0, (UINT)r->dirty_y0, 0, (UINT)r->dirty_x1, (UINT)r->dirty_y1, 1 };
-#if TEAL_DEV
+#if RONIN_DEV
     r->stats.upload_bytes += (u64)(r->dirty_x1 - r->dirty_x0) * (u64)(r->dirty_y1 - r->dirty_y0) * 4;
 #endif
     u8 *src = r->atlas_pixels + ((i64)r->dirty_y0 * r->atlas_w + r->dirty_x0) * 4;
@@ -564,17 +564,17 @@ void r_push_glyph(Renderer *r, Rect dst, Rect atlas_texels, Color color) {
 
 void r_end_frame(Renderer *r) {
     if (!r->in_frame) return;
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     r_flush(r);
     r->in_frame = 0;
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t1 = os_time_us();
     os_dev_stage("frame: flushed (atlas upload, draw calls)");
 #endif
 
-#if TEAL_DEV
+#if RONIN_DEV
     // FLIP_DISCARD leaves the back buffer undefined after Present, so copy it now.
     if (r->capture_requested) {
         r->capture_requested = 0;
@@ -603,7 +603,7 @@ void r_end_frame(Renderer *r) {
 #endif
 
     HRESULT hr = IDXGISwapChain1_Present(r->swap_chain, r->present_interval, 0);
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t2 = os_time_us();
     os_dev_stage("frame: presented");
     r->stats.flush_us = t1 - t0;
@@ -616,7 +616,7 @@ void r_end_frame(Renderer *r) {
         r->occluded = (hr == DXGI_STATUS_OCCLUDED);
     }
 
-#if TEAL_DEV
+#if RONIN_DEV
     r_drain_messages(r);
 #endif
 }
@@ -624,7 +624,7 @@ void r_end_frame(Renderer *r) {
 // ---------------------------------------------------------------------------
 // Dev
 
-#if TEAL_DEV
+#if RONIN_DEV
 void r_request_capture(Renderer *r) {
     r->capture_requested = 1;
 }

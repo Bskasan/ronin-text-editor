@@ -150,7 +150,7 @@ void compile_give_back(CompileRun *c, CompileBatch *b);
 // Joins the worker until the deadline (os_time_us): false when it is still running.
 b32  compile_join(CompileRun *c, u64 deadline_us);
 void compile_free(CompileRun *c); // only once it ended (or was joined)
-#if TEAL_DEV
+#if RONIN_DEV
 u64  compile_memory(CompileRun *c);
 #endif
 

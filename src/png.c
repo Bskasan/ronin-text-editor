@@ -1,7 +1,7 @@
 // png.c — dev-only PNG encoder. 8-bit RGB, filter 0, zlib stream made of stored
 // (uncompressed) deflate blocks. Correct, not small or fast.
 
-#if TEAL_DEV
+#if RONIN_DEV
 
 static u32 png_crc_table[256];
 
@@ -113,4 +113,4 @@ String8 png_encode_bgra(Arena *arena, u8 *bgra, i32 width, i32 height, i64 strid
     return str8(out, total);
 }
 
-#endif // TEAL_DEV
+#endif // RONIN_DEV

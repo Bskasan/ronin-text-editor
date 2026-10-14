@@ -410,7 +410,7 @@ static void buffer_batch_add(Buffer *buf, i64 start, i64 end, i64 len) {
             last->removed = end - start;
             last->inserted = len + x;
             if (n > 1) buf->batch_dir = 1;
-#if TEAL_DEV
+#if RONIN_DEV
             buf->dev_batch_joins++;
 #endif
             return;
@@ -422,7 +422,7 @@ static void buffer_batch_add(Buffer *buf, i64 start, i64 end, i64 len) {
         i32 dir = buf->batch_dir; // 0: undecided, every pair so far fits both orders (an insertion where a deletion was)
         if (dir > 0 ? !asc : dir < 0 ? !desc : !asc && !desc) {
             buffer_batch_apply(buf, 0);
-#if TEAL_DEV
+#if RONIN_DEV
             buf->dev_batch_flushes++;
 #endif
             n = 0;
@@ -438,7 +438,7 @@ static void buffer_batch_add(Buffer *buf, i64 start, i64 end, i64 len) {
         if (grown <= bytes || !os_commit((u8 *)buf->batch_edits + bytes, grown - bytes)) {
             if (!n) os_fatal(STR8_LIT("Out of memory (batch)."));
             buffer_batch_apply(buf, 0); // full: what it holds goes to the markers
-#if TEAL_DEV
+#if RONIN_DEV
             buf->dev_batch_flushes++;
 #endif
             n = 0;
@@ -862,7 +862,7 @@ b32 buffer_replace(Buffer *buf, i64 start, i64 end, String8 text) {
         buf->modified = 1;
     }
     buf->edit_count++;
-#if TEAL_DEV
+#if RONIN_DEV
     if (buf->dev_edits && buf->dev_edit_count < buf->dev_edit_cap) {
         buf->dev_edits[buf->dev_edit_count++] = (BufferBatchEdit){ start, end - start, text.len, 0 };
     }
@@ -1341,7 +1341,7 @@ OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
         }
     }
     arena_pop_to(&buf->meta, mark_full);
-#if TEAL_DEV
+#if RONIN_DEV
     buf->dev_saved_by_swap = done;
 #endif
     if (status != OS_FILE_OK) {

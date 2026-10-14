@@ -57,7 +57,7 @@ struct App {
     Config *config;              // in config_arenas[config_slot]
     Arena config_arenas[2];      // a load parses into the other arena, then switches
     i32 config_slot;
-    String8 config_path;         // the user's teal.conf; empty = built-in defaults only
+    String8 config_path;         // the user's ronin.conf; empty = built-in defaults only
     ConfigSource config_source;  // when to read it again
     OsWatch config_watch;        // its directory
     i32 forced_render_mode;      // dev --render-mode, -1 = from the config
@@ -93,7 +93,7 @@ struct App {
     Arena compile_next_arena;    // a start waiting for its prompt and questions (reset by each)
     String8 compile_next_key, compile_next_command, compile_next_dir, compile_next_root;
     b32 results_pending;         // results work can go on at once: another frame
-#if TEAL_DEV
+#if RONIN_DEV
     i32 dev_grep_hold_after;     // --grep-hold N: every search's workers stand still after N files until released
     b32 dev_grep_stuck_next;     // the next search's workers are stuck in the "file system" (shutdown tests)
     GrepSearch *dev_last_grep;
@@ -103,7 +103,7 @@ struct App {
     u64 dev_held_max;            // tests: the held records' limit instead of RESULTS_HELD_MAX (0 = it)
     u64 dev_results_max_us;      // benches: the longest results_work of a frame since it was last read
 #endif
-#if TEAL_DEV
+#if RONIN_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
     u64 dev_build_us; // last frame: time from the start of the frame to r_end_frame
     i64 dev_work_budget; // search positions per frame instead of the clock (deterministic tests); 0 = the clock
@@ -230,7 +230,7 @@ static void app_layout_views(App *app, FrameInput *in, AppLayout *l) {
 }
 
 static b32 app_has_focus(App *app) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (app->force_focus >= 0) return app->force_focus;
 #endif
     return app->focused;
@@ -802,10 +802,10 @@ static void app_draw_isearch_line(App *app, Renderer *r, AppLayout *l, FrameInpu
 // ---------------------------------------------------------------------------
 // Config
 
-// teal.conf next to the exe if it exists (portable), else %APPDATA%\teal\teal.conf. Nothing is
+// ronin.conf next to the exe if it exists (portable), else %APPDATA%\ronin\ronin.conf. Nothing is
 // created here. Empty: built-in defaults only.
 static String8 app_config_path(Arena *perm, AppArgs *args) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (args->config_path.len) {
         String8 full = os_full_path(perm, args->config_path);
         return full.len ? full : args->config_path;
@@ -814,12 +814,12 @@ static String8 app_config_path(Arena *perm, AppArgs *args) {
 #else
     (void)args;
 #endif
-    String8 portable = str8_fmt(perm, "%S\\teal.conf", os_exe_dir(perm));
+    String8 portable = str8_fmt(perm, "%S\\ronin.conf", os_exe_dir(perm));
     OsFileInfo info;
     if (os_file_info(portable, &info) == OS_FILE_OK && !info.is_dir) return portable;
     String8 appdata = os_get_env(perm, STR8_LIT("APPDATA"));
     if (!appdata.len) return str8(NULL, 0);
-    return str8_fmt(perm, "%S\\teal\\teal.conf", appdata);
+    return str8_fmt(perm, "%S\\ronin\\ronin.conf", appdata);
 }
 
 // The font the config asks for, with the session's text scale (1.2 per step, as in Emacs).
@@ -840,7 +840,7 @@ static FontParams app_font_params(App *app) {
 // Polls the config source (config_poll): a read parses into the other arena, and the app switches
 // to it when it loaded (at startup also with the defaults alone, while a retry is pending).
 static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     i32 slot = app->config_slot ^ 1;
@@ -857,7 +857,7 @@ static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
         buffer_status_text(app->config_source.status),
         result == CONFIG_POLL_LOADED ? "loaded" : result == CONFIG_POLL_RETRY ? "retry" : "failed",
         app->config_source.size, os_time_us() - t0, c->diags.errors, c->diags.warnings);
-#if TEAL_DEV
+#if RONIN_DEV
     if (result == CONFIG_POLL_LOADED) for (ConfigDiag *d = c->diags.first; d; d = d->next) LOG("config: %S", d->text);
 #endif
     return result;
@@ -875,7 +875,7 @@ static void app_watch_config(App *app) {
 // Reports a load: every diagnostic goes to *Messages*; the echo area shows the first error and
 // how many more, a failed read, or "Reloaded". Nothing while a retry is pending.
 static void app_report_config(App *app, ConfigPoll result, b32 reload) {
-    String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("teal.conf");
+    String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("ronin.conf");
     if (result == CONFIG_POLL_FAILED) {
         echo_message(&app->echo, "Cannot read %S: %s", name, buffer_status_text(app->config_source.status));
         return;
@@ -976,7 +976,7 @@ static Buffer *app_find_file(App *app, String8 path) {
         app_record_visit(app, open);
         return open;
     }
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     OsFileStatus status = buffer_load_file(buf, path);
@@ -1033,7 +1033,7 @@ static u32  files_wait_ms(App *app);
 // Startup
 
 // The config is read before the font, so the font is set up exactly once, as configured.
-#if TEAL_DEV
+#if RONIN_DEV
 #define APP_STAGE(what) os_dev_stage(what)
 #else
 #define APP_STAGE(what) ((void)0)
@@ -1067,7 +1067,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     ConfigPoll config_result = app_poll_config(app, 1, 1);
     APP_STAGE("app: config read and parsed");
     FontParams fp = app_font_params(app);
-#if TEAL_DEV
+#if RONIN_DEV
     if (!args->headless)
 #endif
     {
@@ -1093,7 +1093,7 @@ App *app_create(Arena *perm, AppArgs *args) {
             scratch_goto = f;
             continue;
         }
-        // teal <directory>: that directory is the project (without a marker too), nothing is opened.
+        // ronin <directory>: that directory is the project (without a marker too), nothing is opened.
         OsFileInfo info;
         if (os_file_info(f->path, &info) == OS_FILE_OK && info.is_dir) {
             String8 dir = os_full_path(perm, f->path);
@@ -1138,7 +1138,7 @@ App *app_create(Arena *perm, AppArgs *args) {
         if (b->path.len) minibuffer_history_add(&app->mini, MINI_HISTORY_VISITED, b->path);
     }
     finder_init(app);
-#if TEAL_DEV
+#if RONIN_DEV
     app->finder.dev_hold_after = args->scan_hold;
     app->dev_grep_hold_after = args->grep_hold;
 #endif
@@ -1164,7 +1164,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     if (app->font && app->font->used_fallback) {
         echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
     }
-#if TEAL_DEV
+#if RONIN_DEV
     app->force_focus = -1;
 #endif
     return app;
@@ -1346,9 +1346,9 @@ static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
     app->ctx.last_command = NULL;
 }
 
-// "<buffer name> - teal" for the active view; the platform is called only when it changes.
+// "<buffer name> - ronin" for the active view; the platform is called only when it changes.
 static void app_update_title(App *app, Arena *scratch) {
-    String8 title = str8_fmt(scratch, "%S - teal", app_selected_view(app)->buffer->name);
+    String8 title = str8_fmt(scratch, "%S - ronin", app_selected_view(app)->buffer->name);
     title.len = MIN(title.len, (i64)sizeof(app->title));
     if (str8_equal(title, str8(app->title, app->title_len))) return;
     memcpy(app->title, title.data, (size_t)title.len);
@@ -1388,13 +1388,13 @@ static void app_cycle_buffer(CommandContext *ctx, i32 dir) {
 static void cmd_next_buffer(CommandContext *ctx) { app_cycle_buffer(ctx, 1); }
 static void cmd_previous_buffer(CommandContext *ctx) { app_cycle_buffer(ctx, -1); }
 
-// Visits the user's teal.conf, creating it from the built-in defaults when it does not exist.
+// Visits the user's ronin.conf, creating it from the built-in defaults when it does not exist.
 static void cmd_open_config(CommandContext *ctx) {
     App *app = ctx->app;
     if (!app_can_switch(ctx)) return;
     String8 path = app->config_path;
     if (!path.len) {
-        echo_message(ctx->echo, "No place for teal.conf: APPDATA is not set");
+        echo_message(ctx->echo, "No place for ronin.conf: APPDATA is not set");
         return;
     }
     OsFileInfo info;
@@ -1760,7 +1760,7 @@ static u32 app_replace_answer(KeyResult *k) {
     return a == 'y' || a == 'n' || a == 'q' || a == ' ' || a == '!' || a == '.' ? a : 0;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 // --log-keys: what the keymap made of a key or text event, numbered as the platform's line for it.
 static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 replacing) {
     u8 ev[64], seq[KEY_SEQ_TEXT_CAP];
@@ -1888,7 +1888,7 @@ static void app_key_event(App *app, Event *e) {
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);
     if (k.kind != KEY_RESULT_IGNORED && k.kind != KEY_RESULT_DROPPED) app->landing_buffer = NULL; // the landing highlight: until this key
-#if TEAL_DEV
+#if RONIN_DEV
     if (app->dev_log_keys) app_dev_log_key(app, e, &k, isearch, replacing);
 #endif
     b32 ended = 0; // the key ended a search session: its message ("Mark saved ...") stays while the key runs
@@ -1963,7 +1963,7 @@ static void app_search_work(App *app, Arena *scratch, u64 deadline) {
     i64 used = 0;
     while (isearch_pending(&app->isearch) || replace_pending(&app->replace) || cursor_job_pending(&app->cursor_job)) {
         i64 slice = SEARCH_SLICE_BYTES;
-#if TEAL_DEV
+#if RONIN_DEV
         if (app->dev_work_budget) { // tests: a fixed number of positions per frame instead of the clock
             if (used >= app->dev_work_budget) break;
             slice = MIN(slice, app->dev_work_budget - used);
@@ -2065,7 +2065,7 @@ static b32 app_update(App *app, FrameInput *in) {
     u64 deadline = os_time_us() + SYNTAX_FRAME_BUDGET_US;
     app_search_work(app, in->scratch, deadline);
     i64 rank_budget = 0;
-#if TEAL_DEV
+#if RONIN_DEV
     rank_budget = app->dev_work_budget;
 #endif
     app->rank_pending = app->mini.matcher_pending && minibuffer_work(&app->mini, rank_budget ? 0 : deadline, rank_budget);
@@ -2122,7 +2122,7 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
 }
 
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     app->renderer = r;
@@ -2132,7 +2132,7 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     app->renderer = NULL;
     if (!running) return 0;
     app_render(app, in, r);
-#if TEAL_DEV
+#if RONIN_DEV
     app->dev_build_us = os_time_us() - t0;
     os_dev_stage("frame: built");
 #endif
@@ -2140,7 +2140,7 @@ b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {
     return 1;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 // Smoke, syntax frames: *scratch* holds a known text in `language`, point on the '(' of line 2, focus
 // forced on (a filled cursor). The same text in every language:
 //   line 0: "// a comment line"

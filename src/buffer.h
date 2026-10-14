@@ -206,7 +206,7 @@ typedef struct Buffer {
     i64 batch_pinned;    // the run's edit count when a marker was last set in it (a join keeps that edit as it is)
     BufferBatchEdit *batch_edits;
     i64 batch_count, batch_committed; // entries
-#if TEAL_DEV
+#if RONIN_DEV
     u64 dev_batch_flushes; // runs applied before their batch ended (an edit out of order, or a full list)
     u64 dev_batch_joins;   // edits joined to the insertion before them (buffer.c)
     BufferBatchEdit *dev_edits; // tests: every successful edit appended here (NULL: off), dev_edit_cap at most
@@ -232,7 +232,7 @@ typedef struct Buffer {
     // The buffer's own keymap, placed before the global one in the keymap stack (BUFFER_KEYMAP_*; the app
     // owns the keymaps, buffer.c never reads this).
     i32 keymap;
-#if TEAL_DEV
+#if RONIN_DEV
     b32 dev_saved_by_swap; // the last save went through the temp file and ReplaceFileW / MoveFileExW (not in place)
 #endif
 } Buffer;

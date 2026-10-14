@@ -13,7 +13,7 @@
 // core.excludesFile and the global gitignore.
 //
 // Evaluation is one ordered list in which the last matching pattern decides: the built-in
-// project_ignore, the .gitignore files from the root down, .teal-project's [ignore], then its [allow]
+// project_ignore, the .gitignore files from the root down, .ronin-project's [ignore], then its [allow]
 // as negations. An ignored directory is never entered, so nothing below it can be included again
 // (as in git).
 
@@ -44,19 +44,19 @@ void ignore_parse_lines(Arena *arena, IgnoreScope *scope, String8 text, b32 nega
 void ignore_parse_words(Arena *arena, IgnoreScope *scope, String8 words);
 // The scope's own decision for a path relative to the root: 1 ignored, 0 included, -1 no pattern matched.
 i32  ignore_scope_decide(const IgnoreScope *scope, String8 rel, b32 is_dir);
-// The whole order: `top` (.teal-project), then the directory's chain (innermost first), then `builtin`.
+// The whole order: `top` (.ronin-project), then the directory's chain (innermost first), then `builtin`.
 b32  ignore_path(const IgnoreScope *top, const IgnoreScope *chain, const IgnoreScope *builtin, String8 rel, b32 is_dir);
 b32  ignore_glob(String8 glob, String8 s); // '*', '?', "**" over a lowercased path (exposed for tests)
 
 // ---------------------------------------------------------------------------
 // Roots. A project needs no setup: its root is the nearest directory at or above the buffer's file
-// that holds a marker (project_markers: .git, .hg, .svn, .teal-project; a file or a directory). A
+// that holds a marker (project_markers: .git, .hg, .svn, .ronin-project; a file or a directory). A
 // marker at a drive or share root does not count. A directory given on the command line is a root
 // itself: for the files inside it (unless a marker below it is nearer; the search stops there) and for
 // buffers without a file. The current directory never becomes a root by itself. Paths are full Windows
 // paths; roots have no trailing separator.
 
-#define PROJECT_NOT_IN_PROJECT "Not in a project (no .git found; start teal with a directory, or add a .teal-project file)"
+#define PROJECT_NOT_IN_PROJECT "Not in a project (no .git found; start ronin with a directory, or add a .ronin-project file)"
 #define PROJECT_ROOT_CACHE 256
 
 typedef b32 ProjectExistsFn(void *data, String8 path); // a file or directory exists at path
@@ -85,12 +85,12 @@ String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_
                          void *data);
 
 // ---------------------------------------------------------------------------
-// .teal-project at a root: the config format with [ignore] and [allow] sections, one pattern per line
+// .ronin-project at a root: the config format with [ignore] and [allow] sections, one pattern per line
 // (a pattern cannot start with '[': such a line is a section header), and a [build] section of
 // "name = value" lines: command (what C-x p c offers; never run without being shown) and directory
 // (where it runs, relative to the root).
 
-#define PROJECT_FILE_NAME ".teal-project"
+#define PROJECT_FILE_NAME ".ronin-project"
 
 typedef struct ProjectFile {
     String8 ignore, allow; // the patterns, one per line
@@ -99,7 +99,7 @@ typedef struct ProjectFile {
 } ProjectFile;
 
 void project_file_parse(Arena *arena, String8 text, String8 file_name, ProjectFile *out);
-// Reads and parses root\.teal-project (OS_FILE_NOT_FOUND: none, `out` empty).
+// Reads and parses root\.ronin-project (OS_FILE_NOT_FOUND: none, `out` empty).
 OsFileStatus project_file_read(Arena *arena, String8 root, ProjectFile *out);
 
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ typedef struct ProjectScan {
     // The request: set before project_scan_start, read-only while the worker runs.
     String8 root;          // full path, no trailing separator
     String8 builtin;       // project_ignore: blank-separated patterns
-    String8 ignore, allow; // .teal-project's patterns, one per line
+    String8 ignore, allow; // .ronin-project's patterns, one per line
     i64 max_files;
     // Shared.
     OsLock lock;           // guards the two lists

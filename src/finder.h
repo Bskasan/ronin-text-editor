@@ -29,7 +29,7 @@ typedef struct Finder {
     i32 dying_count;
     ProjectRootCache roots;
     u8 cmdline_buf[PROJECT_PATH_MAX];
-    String8 cmdline_dir;     // teal <directory>: the only root without a marker
+    String8 cmdline_dir;     // ronin <directory>: the only root without a marker
     // The prompt.
     Project *open;           // the project it lists
     FuzzyRank rank;
@@ -40,7 +40,7 @@ typedef struct Finder {
     u32 empty_rows[FUZZY_TOP];
     i32 empty_count;
     i64 empty_scanned;       // how far the index was looked at for them
-#if TEAL_DEV
+#if RONIN_DEV
     i32 dev_hold_after;      // --scan-hold: every scan stands still after this many batches until released
     b32 dev_stuck_next;      // the next scan's worker is stuck in the "file system" (shutdown tests)
     ProjectScan *dev_last_scan;

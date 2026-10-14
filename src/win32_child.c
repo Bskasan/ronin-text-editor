@@ -1,6 +1,6 @@
 // win32_child.c — dev builds only: --child <script>, the scripted program the build tests run. It reads one
 // command per line and writes to the stdout and stderr it was given (the build's pipe), with no window and
-// no log (the run that started it writes build\teal.log):
+// no log (the run that started it writes build\ronin.log):
 //
 //   out TEXT, err TEXT        TEXT and CRLF to stdout / stderr
 //   raw TEXT, rawerr TEXT     exactly TEXT (escapes \r \n \t \e \\ \xHH)
@@ -14,7 +14,7 @@
 //
 // An unknown line ends it with exit code 98.
 
-#if TEAL_DEV
+#if RONIN_DEV
 
 static void win32_child_write(DWORD which, const u8 *data, i64 n) {
     HANDLE h = GetStdHandle(which);

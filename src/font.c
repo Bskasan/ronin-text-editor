@@ -112,7 +112,7 @@ static b32 font_setup(Font *f) {
     f->pixel_size = f->size_pt * 96.0f / 72.0f * f->dpi_scale;
     f->setup_count++;
 
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     // The family as NUL-terminated UTF-16 (FONT_FAMILY_CAP bytes never need more units than that).
@@ -138,7 +138,7 @@ static b32 font_setup(Font *f) {
         LOG("font: fb_open failed");
         return 0;
     }
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t1 = os_time_us();
 #endif
 
@@ -166,7 +166,7 @@ static b32 font_setup(Font *f) {
     font_reset_cache(f, NULL);
     f->needs_bind = 1;
 
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t2 = os_time_us();
     LOG("font: %S%s %d px (scale %d%%, mode %d): cell %dx%d, baseline %d, atlas %dx%d, %u hash slots",
         str8(f->family, f->family_len), f->used_fallback ? " (not found, fallback)" : "", (i32)(f->pixel_size + 0.5f), (i32)(f->dpi_scale * 100.0f + 0.5f), (i32)f->mode,
@@ -301,7 +301,7 @@ i32 font_draw_text(Font *f, Renderer *r, i32 x, i32 y, String8 text, Color color
 // ---------------------------------------------------------------------------
 // Dev
 
-#if TEAL_DEV
+#if RONIN_DEV
 b32 font_dev_atlas_has_coverage(Font *f) {
     i64 n = (i64)f->atlas_size * f->atlas_size * 4;
     for (i64 i = 0; i < n; i += 4) {

@@ -813,7 +813,7 @@ void compile_free(CompileRun *c) {
     os_release(c->arena.base); // the struct itself lives there
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 u64 compile_memory(CompileRun *c) {
     return c->arena.committed + c->temp.committed;
 }
