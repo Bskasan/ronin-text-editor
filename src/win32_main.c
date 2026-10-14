@@ -88,6 +88,7 @@ typedef struct Platform {
     u64 dev_writes_refused;
     u64 soak_events;            // --soak N
     String8 map_report;         // --map-report MAP
+    String8 check_exe, check_list; // --check-imports EXE LIST
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
     b32 bench_text;
@@ -4411,6 +4412,98 @@ static void win32_dev_latency_finish(Platform *p) {
     p->exit_code = n[2] == BENCH_LATENCY_KEYS ? EXIT_OK : EXIT_TEST;
 }
 
+// --check-imports EXE LIST: the DLLs EXE imports (its PE import directory, read here: no dumpbin) must be exactly
+// those of LIST (one name a line, '#' comments, case ignored), and never a CRT DLL (ucrtbase, vcruntime*,
+// api-ms-win-crt-*). Logs every DLL with its function count. Exit 9 on any difference.
+static u32 win32_dev_rva_offset(u8 *file, i64 size, IMAGE_NT_HEADERS64 *nt, u32 rva) {
+    IMAGE_SECTION_HEADER *s = IMAGE_FIRST_SECTION(nt);
+    for (u32 i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (rva >= s[i].VirtualAddress && rva < s[i].VirtualAddress + MAX(s[i].Misc.VirtualSize, s[i].SizeOfRawData)) {
+            u32 off = rva - s[i].VirtualAddress + s[i].PointerToRawData;
+            return off < (u64)size ? off : 0;
+        }
+    }
+    (void)file;
+    return 0;
+}
+
+static b32 win32_dev_name_is(String8 a, String8 b) { // ASCII, case ignored
+    if (a.len != b.len) return 0;
+    for (i64 i = 0; i < a.len; i++) {
+        u8 x = a.data[i], y = b.data[i];
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+    }
+    return 1;
+}
+
+static i32 win32_dev_check_imports(Platform *p, String8 exe, String8 list_path) {
+    Arena *a = &p->scratch;
+    String8 file, list;
+    if (os_read_small_file(a, exe, MB(64), &file) != OS_FILE_OK || os_read_small_file(a, list_path, MB(1), &list) != OS_FILE_OK) {
+        LOG("check-imports: FAIL: cannot read %S or %S", exe, list_path);
+        return EXIT_TEST;
+    }
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)file.data;
+    if (file.len < (i64)sizeof(*dos) || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew + (i64)sizeof(IMAGE_NT_HEADERS64) > file.len) {
+        LOG("check-imports: FAIL: %S is not a PE file", exe);
+        return EXIT_TEST;
+    }
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(file.data + dos->e_lfanew);
+    IMAGE_DATA_DIRECTORY dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    String8 found[64];
+    i32 found_count = 0, functions = 0;
+    b32 ok = 1;
+    for (u32 off = win32_dev_rva_offset(file.data, file.len, nt, dir.VirtualAddress); off && off + sizeof(IMAGE_IMPORT_DESCRIPTOR) <= (u64)file.len;
+         off += sizeof(IMAGE_IMPORT_DESCRIPTOR)) {
+        IMAGE_IMPORT_DESCRIPTOR *d = (IMAGE_IMPORT_DESCRIPTOR *)(file.data + off);
+        if (!d->Name) break;
+        u32 name_off = win32_dev_rva_offset(file.data, file.len, nt, d->Name);
+        String8 name = str8_cstr((const char *)file.data + name_off);
+        i32 count = 0;
+        for (u32 t = win32_dev_rva_offset(file.data, file.len, nt, d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk);
+             t && t + 8 <= (u64)file.len && *(u64 *)(file.data + t); t += 8) {
+            count++;
+        }
+        functions += count;
+        LOG("check-imports: %S: %d function(s)", name, count);
+        if (found_count < (i32)ARRAY_COUNT(found)) found[found_count++] = name;
+        String8 lower = str8_copy(a, name);
+        for (i64 i = 0; i < lower.len; i++) if (lower.data[i] >= 'A' && lower.data[i] <= 'Z') lower.data[i] += 32;
+        if (str8_starts_with(lower, STR8_LIT("ucrtbase")) || str8_starts_with(lower, STR8_LIT("vcruntime")) ||
+            str8_starts_with(lower, STR8_LIT("api-ms-win-crt-"))) {
+            LOG("check-imports: FAIL: %S is a CRT DLL", name);
+            ok = 0;
+        }
+    }
+    // The expected list, one name a line.
+    i32 expected = 0;
+    for (i64 i = 0; i < list.len;) {
+        i64 end = i;
+        while (end < list.len && list.data[end] != '\n') end++;
+        i64 s = i, e = end;
+        while (s < e && (list.data[s] == ' ' || list.data[s] == '\t')) s++;
+        while (e > s && (list.data[e - 1] == ' ' || list.data[e - 1] == '\t' || list.data[e - 1] == '\r')) e--;
+        i = end + 1;
+        if (e == s || list.data[s] == '#') continue;
+        String8 want = str8(list.data + s, e - s);
+        expected++;
+        b32 there = 0;
+        for (i32 k = 0; k < found_count && !there; k++) there = win32_dev_name_is(found[k], want);
+        if (!there) {
+            LOG("check-imports: FAIL: %S is in %S but not imported", want, list_path);
+            ok = 0;
+        }
+    }
+    if (found_count != expected) {
+        LOG("check-imports: FAIL: %d DLLs imported, %d listed", found_count, expected);
+        ok = 0;
+    }
+    LOG("check-imports: %s: %S imports %d DLLs, %d functions", ok ? "PASS" : "FAIL", exe, found_count, functions);
+    return ok ? EXIT_OK : EXIT_TEST;
+}
+
 // --memory-report: shown like --idle-check, then after the settle the committed memory that counts as private
 // bytes, by owner: our arenas (every os_reserve range), the process heaps (Windows, DirectWrite, the D3D runtime,
 // the CRT), thread stacks (allocations with a guard page), writable image pages, writable mapped views, and the
@@ -4945,6 +5038,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             if (p->fuzz_count) continue;
         }
         if (str8_equal(a, STR8_LIT("--map-report")) && has_value) { p->map_report = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--check-imports")) && i + 2 < arg_count) {
+            p->check_exe = args[++i];
+            p->check_list = args[++i];
+            continue;
+        }
         if (str8_equal(a, STR8_LIT("--soak")) && has_value) {
             p->soak_events = win32_parse_u64(args[++i]);
             if (p->soak_events) continue;
@@ -5020,7 +5118,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->map_report.len ? "map-report" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->map_report.len ? "map-report" : p->check_exe.len ? "check-imports" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
@@ -5030,6 +5128,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
     if (p->clipboard_check) { // headless, the real clipboard
         i32 code = win32_dev_clipboard_check(p);
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return code;
+    }
+    if (p->check_exe.len) { // the release exe's DLLs against the committed list
+        i32 code = win32_dev_check_imports(p, p->check_exe, p->check_list);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return code;
     }
