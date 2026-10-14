@@ -709,7 +709,7 @@ its startup from the Phase 1 notes):
 - [x] 12. Project-wide search
 - [x] 13. Build + jump to error
 - [x] 14. Multiple cursors
-- [ ] 15. Performance and size pass (including an optional CRT-free build)
+- [x] 15. Performance and size pass (including an optional CRT-free build)
 
 ## Decisions
 
