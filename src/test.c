@@ -3800,6 +3800,40 @@ static b32 test_match_case(Test *t, BufferLanguage language, const char *what, S
     return 1;
 }
 
+// The glyph atlas grows its rows on demand: it starts at FONT_ATLAS_ROWS, ASCII inside them, and the glyphs that
+// do not fit make it taller (up to its width) without a reset; every glyph lies inside the rows and is drawn there.
+static b32 test_font_atlas(Test *t) {
+    FontParams params = { STR8_LIT("Consolas"), 12.0f, 100, FB_RENDER_NATURAL_SYMMETRIC };
+    Font *f = font_create(&t->arena, &params, 1.0f);
+    TEST_CHECK(t, f, "font atlas: font_create failed");
+    i32 first = f->atlas_h;
+    u32 resets = f->reset_count;
+    TEST_CHECK(t, first == MIN(FONT_ATLAS_ROWS, f->atlas_size) && f->atlas_size >= first, "font atlas: %d rows of %d at first", first,
+               f->atlas_size);
+    i32 drawn = 0;
+    FontGlyph last = { 0 };
+    for (u32 cp = 0x100; cp < 0x530 && f->atlas_h == first; cp++) { // Latin Extended, IPA, Greek, Cyrillic
+        FontGlyph g = font_lookup(f, NULL, cp);
+        if (g.w && (g.u != f->missing.u || g.v != f->missing.v)) {
+            drawn++;
+            last = g;
+            TEST_CHECK(t, g.v + g.h <= f->atlas_h, "font atlas: U+%x at row %d, height %d, outside %d rows", cp, (i32)g.v, (i32)g.h, f->atlas_h);
+        }
+    }
+    TEST_CHECK(t, f->atlas_h > first && f->atlas_h <= f->atlas_size && f->needs_bind && f->reset_count == resets,
+                  "font atlas: %d glyphs, %d rows (from %d), needs_bind %d, resets %u", drawn, f->atlas_h, first, f->needs_bind,
+                  f->reset_count - resets);
+    b32 inked = 0;
+    for (i32 y = last.v; y < last.v + last.h && !inked; y++) {
+        for (i32 x = last.u; x < last.u + last.w && !inked; x++) inked = f->atlas[((i64)y * f->atlas_size + x) * 4] != 0;
+    }
+    TEST_CHECK(t, inked, "font atlas: the last glyph (row %d) has no coverage", (i32)last.v);
+    i32 refs = font_shutdown(f);
+    TEST_CHECK(t, refs == 0, "font atlas: %d DirectWrite references left", refs);
+    LOG("test: ok: font atlas (%d rows at first, %d after %d glyphs, no reset, the last glyph inked)", first, f->atlas_h, drawn);
+    return 1;
+}
+
 static b32 test_match(Test *t) {
     static const struct { BufferLanguage language; const char *what, *marked; } cases[] = {
         { BUFFER_LANG_C, "nested", "f\x01(a(b[1]), {c}\x02)" },
@@ -11628,6 +11662,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_syntax(&t, seed);
     arena_reset(&t.arena);
     test_match(&t);
+    arena_reset(&t.arena);
+    test_font_atlas(&t);
     arena_reset(&t.arena);
     test_show_paren(&t);
     arena_reset(&t.arena);

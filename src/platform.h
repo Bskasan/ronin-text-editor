@@ -406,7 +406,7 @@ void app_dev_smoke_click_point(App *app, FrameInput *input, i32 *x, i32 *y); // 
 void app_dev_force_focus(App *app, i32 focused); // -1: follow focus events
 b32  app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b); // show_paren_mode's pair in the active view
 b32  app_dev_atlas_has_coverage(App *app);
-u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
+u8  *app_dev_atlas(App *app, i32 *size, i32 *rows); // RGBA8, size wide, rows high
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
 i32  test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir); // --fuzz-seeds: the seeded groups over seeds
 i32  test_soak(u64 events, u64 seed, String8 tmp_dir); // --soak N: random key and mouse events through the headless app

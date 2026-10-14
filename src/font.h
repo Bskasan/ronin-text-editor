@@ -43,9 +43,12 @@ typedef struct Font {
     i32 line_h;
     i32 baseline; // from the top of the line
 
-    // Atlas: square, RGBA8 (R, G, B = ClearType coverage), shelf-packed.
+    // Atlas: atlas_size wide, RGBA8 (R, G, B = ClearType coverage), shelf-packed. Its rows are committed as the shelves
+    // reach them: atlas_h rows now (FONT_ATLAS_ROWS at first, doubled when full), at most atlas_size.
+    Arena atlas_arena;
     u8 *atlas;
     i32 atlas_size;
+    i32 atlas_h;
     i32 shelf_x, shelf_y, shelf_h;
     b32 needs_bind; // the renderer has not seen this atlas allocation yet
 
