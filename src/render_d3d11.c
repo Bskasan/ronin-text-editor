@@ -16,7 +16,7 @@
 #include "quad_vs.h" // build\gen, from shaders\quad.hlsl
 #include "quad_ps.h"
 
-#define R_MAX_INSTANCES 65536
+#define R_MAX_INSTANCES 16384
 
 typedef struct RInstance {
     f32 rect[4];
