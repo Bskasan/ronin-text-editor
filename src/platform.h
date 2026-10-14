@@ -407,6 +407,7 @@ u8  *app_dev_atlas(App *app, i32 *size); // RGBA8, size x size
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
 i32  test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir); // --fuzz-seeds: the seeded groups over seeds
 i32  test_soak(u64 events, u64 seed, String8 tmp_dir); // --soak N: random key and mouse events through the headless app
+i32  test_map_report(String8 map_path, String8 src_dir); // --map-report: the release exe's bytes by module (the log)
 void app_dev_goto_line(App *app, i64 line); // point to the start of line (< 0: the last line), recentered
 i32  app_dev_key_events(App *app, String8 keys, Event *out, i32 cap); // --keys: tokens to events (bad tokens logged, skipped)
 b32  app_dev_feed_events(App *app, Event *events, i32 count, Arena *scratch); // headless: events through the app, false = quit
