@@ -1523,7 +1523,9 @@ void os_show_window_early(u32 rgb) {
     Platform *p = g_platform;
     if (!p || !p->hwnd || p->shown_early || p->frame_count) return;
 #if RONIN_DEV
-    if (win32_dev_batch_mode(p) && !p->startup_capture) return; // the smoke, benches and screenshots: never early, whatever the config
+    // The smoke, benches and screenshots: never early, whatever the config. --startup-capture measures the early window
+    // and --type-ahead-check the activated start with it.
+    if (win32_dev_batch_mode(p) && !p->startup_capture && !p->type_ahead_check) return;
 #endif
     p->early_brush = CreateSolidBrush(RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
     os_set_caption_color(rgb); // the title bar as the first frame will leave it
