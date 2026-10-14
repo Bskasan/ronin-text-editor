@@ -636,11 +636,3 @@ void grep_free(GrepSearch *s) {
     os_release(s->offset_arena.base);
     os_release(s->arena.base); // the struct itself lives there
 }
-
-#if RONIN_DEV
-u64 grep_memory(GrepSearch *s) {
-    u64 m = s->arena.committed + s->path_arena.committed + s->offset_arena.committed;
-    for (i32 i = 0; i < GREP_WORKERS_MAX; i++) m += s->workers[i].arena.committed;
-    return m;
-}
-#endif
