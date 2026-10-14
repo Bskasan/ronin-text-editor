@@ -11703,4 +11703,43 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     return t.failures;
 }
 
+// --fuzz-seeds (one worker process's share): every group that takes the seed, for the seeds first, first +
+// step, ... below end (not the scanner and the project search: their seed only shapes trees on disk). Stops
+// at the first seed that fails.
+i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
+    static const struct { const char *name; b32 (*run)(Test *, u64); } groups[] = {
+        { "buffer fuzz", test_fuzz }, { "markers", test_markers }, { "marker batch", test_marker_batch },
+        { "line states", test_line_states }, { "columns", test_columns }, { "mc undo", test_mc_undo },
+        { "mc fuzz", test_mc_fuzz }, { "view fuzz", test_view_fuzz }, { "window tree", test_window_tree },
+        { "undo buffer", test_undo_buffer }, { "undo commands", test_undo_commands }, { "syntax", test_syntax },
+        { "search", test_search }, { "undo fuzz", test_undo_fuzz }, { "kbd", test_kbd }, { "config", test_config },
+        { "fuzzy", test_fuzzy }, { "grep file", test_grep_file },
+    };
+    Test t = { 0 };
+    t.arena = arena_create(GB(4));
+    t.tmp_dir = tmp_dir;
+    syntax_init();
+    u64 group_us[ARRAY_COUNT(groups)] = { 0 };
+    u64 t0 = os_time_us(), done = 0, last = first;
+    LOG("fuzz-seeds: seeds %U, %U, ... below %U", first, first + step, end);
+    for (u64 seed = first; seed < end && !t.failures; seed += step) {
+        for (i32 g = 0; g < (i32)ARRAY_COUNT(groups) && !t.failures; g++) {
+            u64 g0 = os_time_us();
+            groups[g].run(&t, seed);
+            arena_reset(&t.arena);
+            group_us[g] += os_time_us() - g0;
+            if (t.failures) LOG("fuzz-seeds: FAIL at seed %U (0x%X) in %s", seed, seed, groups[g].name);
+        }
+        if (!t.failures) done++;
+        last = seed;
+    }
+    for (i32 g = 0; g < (i32)ARRAY_COUNT(groups); g++) {
+        LOG("fuzz-seeds: %s: %U ms in all, %U ms a seed", groups[g].name, group_us[g] / 1000, done ? group_us[g] / 1000 / done : 0);
+    }
+    LOG("fuzz-seeds: %s, %U seeds passed (%U to %U, step %U), %U ms", t.failures ? "FAIL" : "PASS", done, first, last, step,
+        (os_time_us() - t0) / 1000);
+    os_release(t.arena.base);
+    return t.failures;
+}
+
 #endif // RONIN_DEV
