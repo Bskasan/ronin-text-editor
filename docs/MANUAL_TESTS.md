@@ -9,27 +9,27 @@ Every step a person would check by hand. Each step has one status:
 - **HUMAN**: only a person can judge it (visual quality, the real clipboard, Task Manager, a DPI
   change, Windows logoff, real focus). The row says why. The steps are under "HUMAN steps" at the end.
 
-"Note" marks a place where the step's wording and what teal does differ by design (Emacs
+"Note" marks a place where the step's wording and what ronin does differ by design (Emacs
 behavior); nothing there is a bug.
 
 Every phase appends its own steps here, with the same statuses (see CLAUDE.md).
 
-Paths under `build/` (screenshots in build/shots, build\teal.log, build\tmp) are local output of the
+Paths under `build/` (screenshots in build/shots, build\ronin.log, build\tmp) are local output of the
 dev builds; they are not part of the repository.
 
 ## Where the evidence is
 
 | Name used below | What it is |
 |---|---|
-| `--test` | `build/teal_debug.exe --test` (or teal_bench.exe): src/test.c, then `win32_dev_test_mods`, `win32_dev_test_keys` and the input harness. Each group logs a `test: ok: ...` line to build\teal.log. |
+| `--test` | `build/ronin_debug.exe --test` (or ronin_bench.exe): src/test.c, then `win32_dev_test_mods`, `win32_dev_test_keys` and the input harness. Each group logs a `test: ok: ...` line to build\ronin.log. |
 | harness | src/win32_input_test.c, inside `--test`: real key messages (scan codes, flags, AltGr, TranslateMessage, ToUnicodeEx) to a window that is never shown, using the real window procedure, on US, United Kingdom, Turkish Q and Finnish layouts loaded for the test thread only. Log: `test: ok: input <layout> ...`. |
-| smoke | `build/teal_debug.exe --smoke`: pixel probes on rendered frames. Log: `smoke: ok: ...`. |
+| smoke | `build/ronin_debug.exe --smoke`: pixel probes on rendered frames. Log: `smoke: ok: ...`. |
 | manual tests | test.c `test_manual_*`: the steps of this list through the headless app. Log: `test: ok: manual <ids> ...`. |
 | `--idle-check` | Shows the window without focus. After 1 s it measures 5 s of idle: CPU time, frames, private bytes. |
 | `--dpi-check <dir>` | WM_DPICHANGED to 125% and back, with a screenshot at each step. Checks the scaling, the font set-ups, and that the frame after coming back is identical to the first. |
 | `--clipboard-check` | The real clipboard, only when it holds plain text or nothing. It saves the text, puts it back, and keeps everything out of clipboard history. |
-| `--log-keys` | Every keyboard message, what teal read from it, and the command it ran. |
-| `--type-ahead-check` | Real input (SendInput, letters and Shift only), run on demand only: types five keys while teal starts and checks they arrived in order before the first frame. |
+| `--log-keys` | Every keyboard message, what ronin read from it, and the command it ran. |
+| `--type-ahead-check` | Real input (SendInput, letters and Shift only), run on demand only: types five keys while ronin starts and checks they arrived in order before the first frame. |
 | `--bench-windows` | Frames with one and four windows, typing with one and two windows, on the 100 MB file. |
 | `--bench-project` | Fuzzy ranking on 10,000 / 100,000 / 1,000,000 synthetic paths (frames, the longest frame, RET's whole ranking), scans of the generated tree and of `C:\Windows`, typing with and without a scan running. Never takes the focus. |
 | `--bench-grep` | The project search on ~100 MB in 3,000 generated files with 1, 2, 4 and 8 workers (first result, total, MB/s, the longest frame and its results work, memory), typing while 8 workers search, the workers' priority. Never takes the focus. |
@@ -39,15 +39,15 @@ dev builds; they are not part of the repository.
 | build tests | The `--test` groups logged as "test: ok: processes", "compile matchers", "compile path resolution", "build settings and colors", "compile cleaning", "builds", "build kills", "builds in the app" and "the landing highlight" (Phase 13). |
 | `--bench-cursors` | Typing (self-insert, DEL, RET) at 1, 10, 100, 1,000 and 10,000 cursors on the 100 MB file (consecutive lines and spread) and on src/app.c; the language-aware classes on a C file at 1,000 and 10,000 cursors with the batch flushes per command; the undo of a 10,000-cursor edit; mark-all-like-this on a million occurrences and over the whole 100 MB file; the memory of 10,000 and 100,000 cursors. Never takes the focus. |
 | cursor tests | The `--test` groups logged as "test: ok: marker batches", "the multiple-cursor driver", "multiple cursors collapsing", "multiple-cursor undo", "multiple-cursor kills and yanks", "multiple-cursor commands", "multiple-cursor commands in the app", "multiple cursors and the mouse" and "multiple-cursor differential fuzz" (Phase 14). |
-| project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".teal-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
+| project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".ronin-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
 ## A. Startup and window
 
 | Step | What | Status | Evidence |
 |---|---|---|---|
-| A1 | Start from Explorer: no white flash; title "*scratch* - teal" | HUMAN | The title is AUTOMATED: smoke `win32_smoke_check_title` ("window title '*scratch* - teal', set 1 time(s)"). The flash needs eyes: the window is shown cloaked until the first Present. |
-| A2 | Type as soon as the window is visible: characters go to teal | AUTOMATED-NEW | `--type-ahead-check` (Phase 10, on demand): keys typed while teal starts, even before its window is visible, arrive in order. |
+| A1 | Start from Explorer: no white flash; title "*scratch* - ronin" | HUMAN | The title is AUTOMATED: smoke `win32_smoke_check_title` ("window title '*scratch* - ronin', set 1 time(s)"). The flash needs eyes: the window is shown cloaked until the first Present. |
+| A2 | Type as soon as the window is visible: characters go to ronin | AUTOMATED-NEW | `--type-ahead-check` (Phase 10, on demand): keys typed while ronin starts, even before its window is visible, arrive in order. |
 | A3 | Same from a terminal and from the taskbar | HUMAN | Needs the shell. |
 | A4 | Idle with the mouse outside: 0% CPU | AUTOMATED-NEW | `--idle-check`: "PASS: 5000 ms idle: CPU 0 us (0.00% of one core), 0 frame(s), 0 main loop pass(es)". Run on demand. |
 | A5 | Drag-resize: crisp, no stretching, no black areas | HUMAN | Visual, during the modal size loop. |
@@ -55,7 +55,7 @@ dev builds; they are not part of the repository.
 | A7 | Alt alone, F10, Alt+Space: no system menu, no beep | AUTOMATED-NEW | harness, every layout: "Alt alone, F10, Alt + Space": 0 messages left to DefWindowProc (the only source of the menu and the beep), 0 SC_KEYMENU. F10 describes as `<f10>`, Alt+Space as `M-SPC`. |
 | A8 | Another app: hollow cursor; back: filled | HUMAN | Real focus. The drawing is AUTOMATED: smoke stage 0 "buffer: hollow cursor", stage 1 "buffer: filled cursor". |
 | A9 | Display scale 125% and back: crisp at both | AUTOMATED-NEW | `--dpi-check build/shots/dpi`: "PASS: 96 -> 120 -> 96 dpi: client 1280x800 -> 1604x1010 -> 1280x800, font set up again at each change, the frame after coming back equals the first". The 100% and 125% screenshots were inspected: crisp. A real monitor change is still worth one look. |
-| A10 | Alt+F4 with nothing modified: exits without asking | AUTOMATED-NEW | harness: Alt+F4's key is the one message teal leaves to DefWindowProc, and SC_CLOSE makes the unmodified app quit. Windows only turns a *posted* Alt+F4 into SC_CLOSE for an active window, so the harness sends SC_CLOSE itself. |
+| A10 | Alt+F4 with nothing modified: exits without asking | AUTOMATED-NEW | harness: Alt+F4's key is the one message ronin leaves to DefWindowProc, and SC_CLOSE makes the unmodified app quit. Windows only turns a *posted* Alt+F4 into SC_CLOSE for an active window, so the harness sends SC_CLOSE itself. |
 
 ## B. Keyboard and text
 
@@ -76,13 +76,13 @@ dev builds; they are not part of the repository.
 | Step | What | Status | Evidence |
 |---|---|---|---|
 | C1 | Mode line: name, percent, L1 C0, (C), encoding, line endings | AUTOMATED-NEW | manual tests C1: " -:---  m.c ... Top   L1 C0    (C)    UTF-8 CRLF", and a percent after M-g g 150. **Note:** at the top the position reads "Top" (and "Bot" / "All"), not a percent (Emacs). |
-| C2 | teal +120:8 file: line 120 centered, L120 C7 | AUTOMATED-NEW | manual tests C2: "L120 C7", the top line within 1 of 119 − rows/2. |
+| C2 | ronin +120:8 file: line 120 centered, L120 C7 | AUTOMATED-NEW | manual tests C2: "L120 C7", the top line within 1 of 119 − rows/2. |
 | C3 | Nonexistent path: empty buffer, "(New file)" | AUTOMATED-NEW | manual tests C3 (from the command line). find-file is AUTOMATED: `test_find_write` "(New file)". |
-| C4 | Directory path: error message, *scratch* stays | AUTOMATED-NEW | manual tests C4. **Note (Phase 11):** a directory on the command line is now the project (`teal <directory>`), so there is no error message; *scratch* stays and starts there (the test checks exactly that; step M13). |
+| C4 | Directory path: error message, *scratch* stays | AUTOMATED-NEW | manual tests C4. **Note (Phase 11):** a directory on the command line is now the project (`ronin <directory>`), so there is no error message; *scratch* stays and starts there (the test checks exactly that; step M13). |
 | C5 | Edit: "**"; C-x C-s: "Wrote ...", "**" gone | AUTOMATED-NEW | manual tests C5. |
 | C6 | CRLF file: edit one line, save: still CRLF, only that line differs | AUTOMATED | `test_edits` edit_crlf.txt (whole-file byte compare); "test: ok: load, edit, save, reload". |
 | C7 | Windows-1254 file: boxes; insert ASCII, save: other bytes unchanged | AUTOMATED-NEW | manual tests C7 (the bytes FE FD F0 DE DD D0 kept byte for byte, CRLF kept). Boxes inspected on build/shots/c7.png. |
-| C8 | Read-only file: "%%"; typing: "Buffer is read-only", no sound | AUTOMATED-NEW | manual tests C8. **Note:** the message is "Buffer is read-only: ro.txt" (with the buffer name, as Emacs). No sound: teal never calls MessageBeep, and nothing it gets reaches DefWindowProc's beep (A7). |
+| C8 | Read-only file: "%%"; typing: "Buffer is read-only", no sound | AUTOMATED-NEW | manual tests C8. **Note:** the message is "Buffer is read-only: ro.txt" (with the buffer name, as Emacs). No sound: ronin never calls MessageBeep, and nothing it gets reaches DefWindowProc's beep (A7). |
 | C9 | 100 MB file opens at once; M-> immediate; wheel smooth | HUMAN | The smoothness is a feel. Measured: `--bench-buffer` "load: 31 ms for 104857642 bytes"; `--bench-view` "end-of-buffer (C-End): build avg 13 us, worst 46 us". |
 
 ## D. Movement
@@ -120,7 +120,7 @@ dev builds; they are not part of the repository.
 | E12 | M-d, M-DEL, C-w, M-w, C-y | AUTOMATED | `test_kill`. |
 | E13 | C-y then M-y cycles | AUTOMATED | `test_kill` yank-pop. |
 | E14 | M-w lines, paste in Notepad: line breaks right | HUMAN | Needs Notepad. Most of it: `--clipboard-check` (kill-ring-save of two lines puts CRLF lines on the real clipboard). It is skipped while the clipboard holds anything but plain text. |
-| E15 | Copy in a browser, C-y in teal | HUMAN | Needs a browser. Most of it: `--clipboard-check` (CRLF text put there as by another program yanks as LF lines); fake clipboard: `test_kill` "clipboard: yanked with LF". |
+| E15 | Copy in a browser, C-y in ronin | HUMAN | Needs a browser. Most of it: `--clipboard-check` (CRLF text put there as by another program yanks as LF lines); fake clipboard: `test_kill` "clipboard: yanked with LF". |
 | E16 | Type, C-x u / C-/ repeatedly: undone step by step | AUTOMATED | `test_undo_commands`. **Note:** typing is undone in runs of up to 20 characters (Emacs), not word by word. |
 | E17 | After undoing, an arrow, then C-x u: the text returns | AUTOMATED | `test_undo_commands` "after another command undo undoes the undos". |
 | E18 | Type, C-x u, C-?: redone | AUTOMATED | `test_undo_commands` undo-redo; C-? reachable: harness. |
@@ -182,14 +182,14 @@ dev builds; they are not part of the repository.
 
 | Step | What | Status | Evidence |
 |---|---|---|---|
-| I1 | C-c , opens teal.conf (created under %APPDATA%\teal) | AUTOMATED-NEW | manual tests I1: open-config creates the file from the defaults ("Created <path> from the built-in defaults"), visits it, and watches its new directory. The %APPDATA%\teal location is `app_config_path`. **Note:** a teal.conf next to teal.exe wins (portable). |
-| I2 | background = #202020, save: applied, "Reloaded teal.conf" | AUTOMATED-NEW | manual tests I2 (a directory notification, then the settle: "Reloaded teal.conf", background 202020); pixels: smoke "background after loading a config with background = #102030". |
+| I1 | C-c , opens ronin.conf (created under %APPDATA%\ronin) | AUTOMATED-NEW | manual tests I1: open-config creates the file from the defaults ("Created <path> from the built-in defaults"), visits it, and watches its new directory. The %APPDATA%\ronin location is `app_config_path`. **Note:** a ronin.conf next to ronin.exe wins (portable). |
+| I2 | background = #202020, save: applied, "Reloaded ronin.conf" | AUTOMATED-NEW | manual tests I2 (a directory notification, then the settle: "Reloaded ronin.conf", background 202020); pixels: smoke "background after loading a config with background = #102030". |
 | I3 | font_size = 14: applied | AUTOMATED-NEW | smoke "font_size = 14 in the config: 10x22, 1 more set-up". |
 | I4 | render_mode classic / natural / symmetric: visibly different | HUMAN | "Visibly" needs eyes. The three screenshots differ (build/shots/mode_*.png, different MD5s); the differences are subtle at this size. |
 | I5 | tab_width = 8 | AUTOMATED-NEW | manual tests I5 (column 8 after a tab, after a reload). |
 | I6 | "C-z undo" works | AUTOMATED-NEW | manual tests I6. |
-| I7 | Unknown command: "teal.conf:N: unknown command ...", editing goes on | AUTOMATED-NEW | manual tests I7 ("teal.conf:2: unknown command 'no-such-command'", then typing). |
-| I8 | Save teal.conf from Notepad: applied; no default-theme flash | HUMAN | Notepad. Mechanism AUTOMATED: `test_hot_reload` (save by rename, truncate-then-write read once after the 50 ms settle, a locked file retried). **Note:** a live reload that cannot read the file keeps the old config; only at startup is a locked config replaced by the defaults until the retry. |
+| I7 | Unknown command: "ronin.conf:N: unknown command ...", editing goes on | AUTOMATED-NEW | manual tests I7 ("ronin.conf:2: unknown command 'no-such-command'", then typing). |
+| I8 | Save ronin.conf from Notepad: applied; no default-theme flash | HUMAN | Notepad. Mechanism AUTOMATED: `test_hot_reload` (save by rename, truncate-then-write read once after the 50 ms settle, a locked file retried). **Note:** a live reload that cannot read the file keeps the old config; only at startup is a locked config replaced by the defaults until the retry. |
 
 ## J. Outside changes
 
@@ -203,7 +203,7 @@ dev builds; they are not part of the repository.
 | J6 | Then C-x C-s: "Save anyway?" | AUTOMATED | `test_disk` "... Save anyway? (yes or no) ". |
 | J7 | Deleted outside: "deleted on disk"; buffer stays | AUTOMATED | `test_disk`. |
 | J8 | revert-buffer on modified asks; yes reloads | AUTOMATED | `test_revert`. |
-| J9 | Logoff with an unsaved file: blocked, "Unsaved changes in teal" | HUMAN | A real logoff. Everything teal does in it is AUTOMATED-NEW in the smoke: WM_QUERYENDSESSION refused, the reason reads exactly "Unsaved changes in teal", the save question, a repeated query, an abort, a cancel, and allowed once saved. |
+| J9 | Logoff with an unsaved file: blocked, "Unsaved changes in ronin" | HUMAN | A real logoff. Everything ronin does in it is AUTOMATED-NEW in the smoke: WM_QUERYENDSESSION refused, the reason reads exactly "Unsaved changes in ronin", the save question, a repeated query, an abort, a cancel, and allowed once saved. |
 
 ## K. Search and replace
 
@@ -253,7 +253,7 @@ files".
 | L14 | Two windows on one file: each keeps its own point and scroll; typing in one moves the other's text correctly; killing the buffer replaces it in both | AUTOMATED-NEW | two windows on one buffer. |
 | L15 | Switching buffers back and forth in one window returns to its place and leaves the other window alone | AUTOMATED-NEW | two windows on one buffer "C-x b back and forth"; buffer list test "each view remembers its own place". |
 | L16 | M-x, goto-line and isearch from a window other than the first: that window stays selected (RET and C-g) | AUTOMATED-NEW | the minibuffer and isearch from the second of three windows. |
-| L17 | Window commands in the minibuffer refuse with a message (C-M-v scrolls the window it was called from) | AUTOMATED-NEW | window tests "in the minibuffer". Note: Emacs' C-x o would leave the minibuffer; teal says "Cannot select another window from the minibuffer" (Later). |
+| L17 | Window commands in the minibuffer refuse with a message (C-M-v scrolls the window it was called from) | AUTOMATED-NEW | window tests "in the minibuffer". Note: Emacs' C-x o would leave the minibuffer; ronin says "Cannot select another window from the minibuffer" (Later). |
 | L18 | C-x o during an isearch ends it | AUTOMATED-NEW | window tests "C-x o ends the isearch". |
 | L19 | A click selects the window under the pointer and puts point there | AUTOMATED-NEW | mouse in windows "a click selects the window and sets point". |
 | L20 | The wheel scrolls the window under the pointer, not the selected one | AUTOMATED-NEW | mouse in windows "the wheel over a window that is not selected". |
@@ -261,15 +261,15 @@ files".
 | L22 | The drag follows the pointer smoothly | HUMAN | How it feels needs a hand on the mouse. |
 | L23 | The pointer turns into the resize cursor over a divider and over a mode line with a window below; the arrow elsewhere | AUTOMATED-NEW + HUMAN | Which cursor: mouse in windows (app_mouse_cursor at the divider, a mode line, the bottom mode line, text, with the minibuffer reading, in a tiny frame); harness: a mouse move and WM_SETCURSOR request no frame. That Windows shows that cursor: HUMAN. |
 | L24 | A drag selection that leaves its window stays in it | AUTOMATED-NEW | mouse in windows "a drag selection stays in its window". |
-| L25 | Dividers and inactive mode lines look right at 100% and 150% | HUMAN | Visual. Smoke stage 6 checks the exact colors at 100%; dev helper for 150%: `teal_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`. |
+| L25 | Dividers and inactive mode lines look right at 100% and 150% | HUMAN | Visual. Smoke stage 6 checks the exact colors at 100%; dev helper for 150%: `ronin_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`. |
 | L26 | A long line in the left window never draws into the right one | AUTOMATED-NEW | smoke stage 6: the divider exactly window_divider next to the line, the right window's first column exactly background. |
-| L27 | window_divider, mode_line_inactive_background, mode_line_inactive_text in teal.conf | AUTOMATED-NEW | config test "window settings and colors", "derived inactive mode line colors"; applying live is the hot reload's (AUTOMATED). |
+| L27 | window_divider, mode_line_inactive_background, mode_line_inactive_text in ronin.conf | AUTOMATED-NEW | config test "window settings and colors", "derived inactive mode line colors"; applying live is the hot reload's (AUTOMATED). |
 | L28 | startup_windows = 2 with two files: side by side, each file at its +LINE | AUTOMATED-NEW | startup_windows = 2 test. Screenshot build/shots/p10_5_startup_windows_2.png. |
 | L29 | Several files on the command line, each with its own +LINE[:COLUMN] | AUTOMATED-NEW | command line files (6 cases); startup_windows = 2 test. |
 | L30 | The OS window dragged to its smallest with several windows, then back: nothing breaks, the windows come back as they were | AUTOMATED-NEW + HUMAN | a frame too small for its windows (8 windows at 40x30, 1x0, 8x16 ...: identical rects, scroll positions and points afterwards). How it looks while small: HUMAN. |
-| L31 | Typing right after starting teal (before its window appears) lands in teal, in order | AUTOMATED-NEW | `--type-ahead-check` (on demand: real input): keys sent 20-83 ms after WinMain, first Present at 160 ms, "abCde". Keys typed in the first ~35-50 ms, before the window exists, still go to the launcher. |
+| L31 | Typing right after starting ronin (before its window appears) lands in ronin, in order | AUTOMATED-NEW | `--type-ahead-check` (on demand: real input): keys sent 20-83 ms after WinMain, first Present at 160 ms, "abCde". Keys typed in the first ~35-50 ms, before the window exists, still go to the launcher. |
 | L32 | Startup is not slower | AUTOMATED | `--startup-ms`, release, 15 runs in rotating order: 170 ms median against 169 for Phase 9. |
-| L33 | A teal name that a Windows header defines as a macro breaks the build | AUTOMATED-NEW | build.bat's check (src/check_macros.c); the old MOD_ALT, KillRing.small and a test's near each fail it. |
+| L33 | A ronin name that a Windows header defines as a macro breaks the build | AUTOMATED-NEW | build.bat's check (src/check_macros.c); the old MOD_ALT, KillRing.small and a test's near each fail it. |
 | L34 | Typing with two windows on one buffer stays fast | AUTOMATED-NEW | `--bench-windows`: 15-22 us a keystroke with two windows, 8-10 us with one. |
 
 ## M. Projects and fuzzy file open (Phase 11)
@@ -286,19 +286,19 @@ named as in the evidence table.
 | M5 | Typing a name and RET at once (typed ahead) visits the best match | AUTOMATED-NEW | finder tests: one candidate a frame, "app.c" RET visits app.c; "map RET" in the same frame visits map_app.c. |
 | M6 | A large project: the finder opens at once during the scan, says it is scanning, and fills in | AUTOMATED-NEW + HUMAN | finder tests (a scan held after its first batch: "scanning: N files", a partial list, RET on what is known; released, all 10,000). Screenshot p11_3_scanning.png. How it feels on a big real repository: HUMAN. |
 | M7 | Files and directories in .gitignore are not listed; nested .gitignore files; '!' includes again | AUTOMATED-NEW | ignore rules (30 cases, every supported feature); scanner (the exact set on a generated tree, 7 ignored). |
-| M8 | build/, out/, bin/ and obj/ directories are listed unless .gitignore or .teal-project leaves them out | AUTOMATED-NEW | project roots (the built-in project_ignore on build, src/bin, out, obj, target, dist: not ignored); scanner (bin/tool.c listed). |
-| M9 | .teal-project: [ignore] hides, [allow] shows what .gitignore hides; its mistakes are reported with line numbers | AUTOMATED-NEW | .teal-project (diagnostics with file:line); scanner (docs/draft ignored, vendor/ allowed). |
+| M8 | build/, out/, bin/ and obj/ directories are listed unless .gitignore or .ronin-project leaves them out | AUTOMATED-NEW | project roots (the built-in project_ignore on build, src/bin, out, obj, target, dist: not ignored); scanner (bin/tool.c listed). |
+| M9 | .ronin-project: [ignore] hides, [allow] shows what .gitignore hides; its mistakes are reported with line numbers | AUTOMATED-NEW | .ronin-project (diagnostics with file:line); scanner (docs/draft ignored, vendor/ allowed). |
 | M10 | A junction or symlink pointing back into the tree does not make the scan endless | AUTOMATED-NEW | scanner (src/loop, a junction to the root, not entered). |
-| M11 | A file added outside teal shows up in the finder | AUTOMATED-NEW | finder tests (the tree watch marks the index stale; C-x p f shows the old list with "rescanning", then the new file). **Note:** it appears once the rescan that C-x p f starts has ended, not while the finder is closed. |
+| M11 | A file added outside ronin shows up in the finder | AUTOMATED-NEW | finder tests (the tree watch marks the index stale; C-x p f shows the old list with "rescanning", then the new file). **Note:** it appears once the rescan that C-x p f starts has ended, not while the finder is closed. |
 | M12 | M-x project-refresh scans again and says how many files and how many were ignored | AUTOMATED-NEW | finder tests ("Scanning <root>/...", then "<N> files in <root>/ (<M> ignored)"). |
-| M13 | `teal <directory>`: that directory is the project; *scratch* and C-x C-f start there | AUTOMATED-NEW | finder tests (*scratch*, no message, C-x C-f's input, C-x p f lists it); manual C4. |
+| M13 | `ronin <directory>`: that directory is the project; *scratch* and C-x C-f start there | AUTOMATED-NEW | finder tests (*scratch*, no message, C-x C-f's input, C-x p f lists it); manual C4. |
 | M14 | *scratch* started without a directory: C-x p f says how to get a project | AUTOMATED-NEW | finder tests (the exact message). Screenshot p11_4_not_in_project.png. |
 | M15 | M-x project-find-file-other-window shows the file in another window | AUTOMATED-NEW | finder tests (two windows, readme.md in the selected one). |
 | M16 | A path too long for the list is cut on the left, the file name kept | HUMAN | Visual. Screenshot build/shots/p11_5_long_path.png inspected: the row starts with "…", ends with the file name, the matched part highlighted. Dev helper: see HUMAN step 17. |
 | M17 | Typing in a buffer stays as fast while a big project is scanned | AUTOMATED-NEW | `--bench-project`: 9-19 us a keystroke during a scan of C:\Windows, 9-20 us without. |
 | M18 | Ranking a million files never holds a frame beyond the budget | AUTOMATED-NEW | `--bench-project`: longest frame 2,097 us, none over 2,100 us. |
-| M19 | After the scan teal is idle: 0% CPU | AUTOMATED-NEW | `teal_debug.exe src\app.c --keys "C-x p f a p C-g" --idle-check`: 0 frames, 0 main loop passes. |
-| M20 | Closing teal during a scan exits at once, also when a network path hangs | AUTOMATED-NEW | finder tests: shutdown with a scan running well under 1 s; a worker stuck in the "file system" is left after 1,000 ms and the process exits. A real dead network path: not tried. |
+| M19 | After the scan ronin is idle: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe src\app.c --keys "C-x p f a p C-g" --idle-check`: 0 frames, 0 main loop passes. |
+| M20 | Closing ronin during a scan exits at once, also when a network path hangs | AUTOMATED-NEW | finder tests: shutdown with a scan running well under 1 s; a worker stuck in the "file system" is left after 1,000 ms and the process exits. A real dead network path: not tried. |
 | M21 | A huge tree stops at project_max_files and says so | AUTOMATED-NEW | finder tests (project_max_files = 1000: "Project has more than 1000 files; listed the first 1000", "stopped at 1000 files"). |
 | M22 | Only the selected window shows its active region | AUTOMATED-NEW | the region in windows (C-x o and back, while the minibuffer reads); smoke stage 6 (the other window's region not drawn). |
 | M23 | Typing in another window while `--test` runs does not make it fail | AUTOMATED-NEW + HUMAN | shield self-test (every decision); the cases check that their key state held. Real typing meanwhile: HUMAN step 18. |
@@ -312,7 +312,7 @@ named as in the evidence table.
 | Step | What | Status | Evidence |
 |---|---|---|---|
 | N1 | C-x p g in a file of a project asks "Search project for: ", offering the symbol at point (or the region) as the default | AUTOMATED-NEW | results tests: the prompt "Search project for (default foo): " with point on foo, "(default int foo;)" with a region; RET on the empty input searches the default. harness: C-x p g among the default bindings on every layout. |
-| N2 | RET: *search* opens in another window, selected, with a header, one line per match ("path:line:col: text") and a summary line | AUTOMATED-NEW | results tests: the exact text of *search* (header, lines, "7 matches in 5 files; 6 files searched, 1 binary skipped"), shown in another window and selected, point on the first match. Screenshot p12_1_search_teal.png ("search_begin" in teal's tree: 16 matches in 6 files, 0.02 s). |
+| N2 | RET: *search* opens in another window, selected, with a header, one line per match ("path:line:col: text") and a summary line | AUTOMATED-NEW | results tests: the exact text of *search* (header, lines, "7 matches in 5 files; 6 files searched, 1 binary skipped"), shown in another window and selected, point on the first match. Screenshot p12_1_search_ronin.png ("search_begin" in ronin's tree: 16 matches in 6 files, 0.02 s). |
 | N3 | File names and line numbers in their own colors, the matched text highlighted | AUTOMATED-NEW | smoke stage 8: the file name exactly search_file, "line:col" exactly search_line_number, the match on lazy_highlight with its text in the text color, the rest of the line on the background. Screenshots p12_1 and p12_3 inspected: white file names, teal line numbers, tan text, the matches highlighted. |
 | N4 | RET on a match visits it in the other window and selects that window | AUTOMATED-NEW | results tests (RET visits a.c at 1:5, two windows, a.c selected); screenshot p12_3_visited.png (n n RET: src/isearch.c:87:5 in the upper window, selected, the cursor on the match). |
 | N5 | n and p show the next and previous match in the other window; the results window stays selected | AUTOMATED-NEW | results tests (n: *search* stays selected on the next line, the other window shows a.c at 2:1; p back; p before the first: "No more matches"). |
@@ -321,17 +321,17 @@ named as in the evidence table.
 | N8 | The same search gives the same list in the same order every time | AUTOMATED-NEW | results tests (the exact text and the next-error order with 1, 2, 4 and 8 workers and 5 reruns, a large file early in the list so later files finish first); grep tests (the same matches with 1-8 workers). |
 | N9 | A big project: the list fills in while the search runs, the last line counts files and matches; typing stays fast | AUTOMATED-NEW + HUMAN | `--bench-grep` (100 MB in 3,000 files: first result after ~2 ms, all in 23-139 ms with 8 to 1 workers; a key's frame 36-38 us while 8 workers search, 28-39 us without); results tests (the progress line "Searching... N/M files, K matches" of a held search); screenshot p12_2_running.png ("Searching... 8/71 files, 9 matches"). On a big real repository: HUMAN step 19. |
 | N10 | Binary files are skipped (and counted); UTF-16 files are found | AUTOMATED-NEW | grep tests (a NUL in the first 8 KB: binary; after it: searched; UTF-16 LE and BE with a BOM; a UTF-8 BOM skipped); results tests (bin.dat skipped and counted, u16.txt found). |
-| N11 | A file with unsaved changes is searched as it is in teal, not as on disk; a new file not saved yet too | AUTOMATED-NEW | results tests (b/c.txt edited in teal: its disk text "foo on disk" not listed; a modified file the ignore rules leave out and a new file after the list, in path order; an empty new buffer and *scratch* not searched; "3 from unsaved buffers"). |
+| N11 | A file with unsaved changes is searched as it is in ronin, not as on disk; a new file not saved yet too | AUTOMATED-NEW | results tests (b/c.txt edited in ronin: its disk text "foo on disk" not listed; a modified file the ignore rules leave out and a new file after the list, in path order; an empty new buffer and *scratch* not searched; "3 from unsaved buffers"). |
 | N12 | At 10,000 matches the search stops and says so | AUTOMATED-NEW | results tests (search_max_results = 2: exactly the first two matches in list order, "Stopped at 2 matches (search_max_results) in 1 file"); `--bench-grep` (10,000 at the default cap, stopped). |
-| N13 | Saving a file, a build or git while a search runs: nothing fails because of teal | AUTOMATED-NEW | grep sharing (two files held open by the workers: one saved through the temp file and ReplaceFileW, one renamed and deleted; all succeed). A real build or git command during a search: not tried by hand. |
+| N13 | Saving a file, a build or git while a search runs: nothing fails because of ronin | AUTOMATED-NEW | grep sharing (two files held open by the workers: one saved through the temp file and ReplaceFileW, one renamed and deleted; all succeed). A real build or git command during a search: not tried by hand. |
 | N14 | A new search, or killing *search*, stops the running one | AUTOMATED-NEW | results tests (C-x k on a held search: the buffer goes, the workers end); grep tests (300 start / cancel rounds, each ending within 250 ms). |
-| N15 | Closing teal during a search exits at once, also with a stuck file system | AUTOMATED-NEW | results tests (shutdown with a search running: well under 1 s; a stuck worker left after the shared 1,000 ms bound). |
+| N15 | Closing ronin during a search exits at once, also with a stuck file system | AUTOMATED-NEW | results tests (shutdown with a search running: well under 1 s; a stuck worker left after the shared 1,000 ms bound). |
 | N16 | C-x p g outside a project says how to get one | AUTOMATED-NEW | results tests (*scratch*: "Not in a project ..."). |
 | N17 | M-s o (occur) lists the matching lines of the current buffer, unsaved text included, with the same keys | AUTOMATED-NEW | occur tests (the exact *occur* text, n, RET, next-error past the end, g after an edit, 10,000 lines over many frames, the buffer killed meanwhile); screenshot p12_4_occur.png. |
 | N18 | The results keys can be rebound in [keys search-results], and they work only in results buffers | AUTOMATED-NEW | results tests (z bound to next-error-no-select; n types n in *scratch* and in the window next to *search*; describe-key in *search*); buffer keymap test. |
-| N19 | After a search teal is idle: 0% CPU | AUTOMATED-NEW | `teal_debug.exe . --keys "C-x p g s e a r c h _ b e g i n RET" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
+| N19 | After a search ronin is idle: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe . --keys "C-x p g s e a r c h _ b e g i n RET" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
 | N20 | A very long line shows a part around the match with "…" at each cut | AUTOMATED-NEW | grep tests (a long line cut on character boundaries with an ellipsis at each end, an invalid byte at the cut). |
-| N21 | `teal --no-activate` shows the window without taking the focus | HUMAN | Real focus. Checked during this phase with a PowerShell script around the memory measurements: GetForegroundWindow before and after each of 12 starts, unchanged; the command-line test covers the flag in every build. Typing elsewhere meanwhile: HUMAN step 20. |
+| N21 | `ronin --no-activate` shows the window without taking the focus | HUMAN | Real focus. Checked during this phase with a PowerShell script around the memory measurements: GetForegroundWindow before and after each of 12 starts, unchanged; the command-line test covers the flag in every build. Typing elsewhere meanwhile: HUMAN step 20. |
 
 ## O. Build and jump to error (Phase 13)
 
@@ -340,8 +340,8 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 
 | Step | What | Status | Evidence |
 |---|---|---|---|
-| O1 | C-x p c in a project asks "Compile command: " with .teal-project's [build] command filled in, ready to edit; nothing runs before RET | AUTOMATED-NEW | builds in the app (the prompt and its input; no *compilation* and no process before RET; an empty command: "No compile command"). harness: C-x p c among the default bindings on every layout. |
-| O2 | The command offered next time is the one last used in that project | AUTOMATED-NEW | builds in the app (an edited command is offered over .teal-project's on the next C-x p c). |
+| O1 | C-x p c in a project asks "Compile command: " with .ronin-project's [build] command filled in, ready to edit; nothing runs before RET | AUTOMATED-NEW | builds in the app (the prompt and its input; no *compilation* and no process before RET; an empty command: "No compile command"). harness: C-x p c among the default bindings on every layout. |
+| O2 | The command offered next time is the one last used in that project | AUTOMATED-NEW | builds in the app (an edited command is offered over .ronin-project's on the next C-x p c). |
 | O3 | RET: *compilation* opens in another window without being selected: "Command:", "Directory:", a blank line, the output as it arrives, then a blank line and how it ended | AUTOMATED-NEW | builds in the app (the exact text, a.c still selected, two windows); screenshots p13_jai.png, p13_selfbuild.png, p13_running.png. |
 | O4 | The last line says "Compilation finished in 1.24 s", "Compilation exited abnormally with code N in ...", or "Compilation killed"; the echo area sums up errors and warnings | AUTOMATED-NEW | builds in the app ("Compilation exited abnormally with code 2: 2 errors, 1 warning", "Compilation killed", the link case with code 1120); screenshot p13_selfbuild.png ("Compilation finished in 2.39 s", "0 errors, 0 warnings"). |
 | O5 | The mode line shows running, then exit [0] or exit [N] (killed when killed) | AUTOMATED-NEW | builds in the app (Compilation:running, :exit [2], :killed, and :failed when it cannot start); smoke stage 9 (the state's cells drawn); screenshots p13_running.png and p13_jai.png. |
@@ -353,7 +353,7 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 | O11 | C-x p c while a build runs asks "A compilation process is running; kill it? (yes or no)": no keeps it, yes starts the new one | AUTOMATED-NEW | builds in the app (no: the same build runs on; yes: a new build, the old tree gone). |
 | O12 | Unsaved files before a build: asked one by one (y, n, q) by default, or all saved, or left, by compilation_save_buffers | AUTOMATED-NEW | builds in the app (ask with y / n / q, all, none: asked or not, saved or not, the build started each time). |
 | O13 | The *compilation* window follows the output until the first error (or always, or never, by compilation_scroll_output) | AUTOMATED-NEW | builds in the app (first-error: point on the first error's line; true: at the end; false: at the start); screenshot p13_running.png (point following the output). |
-| O14 | Exiting teal while a build runs asks "A compilation is running; kill it and exit? (yes or no)"; yes ends the whole tree | AUTOMATED-NEW | builds in the app (C-x C-c: the question; no stays; yes quits; the grandchild gone after the shutdown); app_shutdown with a build running and no question (the path of WM_ENDSESSION): the tree gone. |
+| O14 | Exiting ronin while a build runs asks "A compilation is running; kill it and exit? (yes or no)"; yes ends the whole tree | AUTOMATED-NEW | builds in the app (C-x C-c: the question; no stays; yes quits; the grandchild gone after the shutdown); app_shutdown with a build running and no question (the path of WM_ENDSESSION): the tree gone. |
 | O15 | Paths with drive letters, spaces and parentheses parse; times, URLs and version numbers never become errors | AUTOMATED-NEW | compile matchers (34 lines: cl with /FC, "Program Files (x86)", a path with spaces, csc, tsc, MSBuild's "1>", GCC / Clang, includes, Jai; "12:30:45", "Build started 12:30:45.", URLs, "version 1.2.3", the compiler banner). |
 | O16 | Linker errors without a file position are still errors: colored and counted, never "0 errors" | AUTOMATED-NEW | compile matchers (LNK1104, LNK2019, D9025, "error:", "ld: error:", MSB4019; "0 errors", "0 Error(s)", "-Werror", "errors: 3" not counted); builds in the app (a link-only failure: "2 errors, 0 warnings", both words marked, next-error and RET skip them). |
 | O17 | A relative path in an error line opens the right file (the build directory, beside MSBuild's project, the project root) | AUTOMATED-NEW | compile path resolution (each step, the order, the cache); builds (a .bat that changes directory: here.c in the build directory, sub/x.c under the root, x.c beside the bracketed project, one found nowhere counted without a location). |
@@ -361,9 +361,9 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 | O19 | Output with colors (ANSI) and in the console's code page shows as text | AUTOMATED-NEW | compile cleaning (CSI, OSC, a lone ESC; 0x81 0x82 from the OEM code page as ü é; valid UTF-8 kept; random read slicing); builds (the same bytes from a real child process). |
 | O20 | A build that prints a lot: *compilation* keeps 16 MB and says "[output truncated]"; the build is never blocked, typing stays fast | AUTOMATED-NEW + HUMAN | builds (a 100,000-byte cap: one mark, all 2,000,000 bytes read, exit 0); `--bench-compile` (100 MB in 0.33 s, no frame over 0.3 ms; a key's frame at line 1,000,000 14-18 us avg, worst 217-237 us while builds print, 13-21 us avg, worst 243 us without, after one 5.8 ms first insert); a real build: HUMAN step 22. |
 | O21 | A command that does not exist, a directory that does not exist | AUTOMATED-NEW | builds (cmd's own message and exit 1; the directory: no start, nothing left open); builds in the app (a [build] directory that does not exist: "Compilation could not start: ...", mode Compilation:failed); processes (the same through the platform layer). |
-| O22 | .teal-project's [build] directory and its mistakes | AUTOMATED-NEW | .teal-project tests ([build] command and directory, unknown names, a backslash in a command); builds in the app (the build runs in root\sub; the diagnostic in *Messages*). |
-| O23 | Building teal itself from teal: a clean build, then one with an error | AUTOMATED-NEW + HUMAN | screenshots p13_selfbuild.png (teal_bench.exe on the repository, C-x p c RET: .\build.bat, 2.39 s, exit [0]) and p13_selfbuild_error.png / p13_selfbuild_next_error.png (a copy with an error and a warning in edit.c: both listed and colored, M-g n on edit.c line 866). Looking at a real failing build: HUMAN step 21. |
-| O24 | After a build teal is idle again: 0% CPU | AUTOMATED-NEW | `teal_debug.exe build\tmp\demo_build\particles.jai --keys "C-x p c RET" --compile-wait 10000 --idle-check`: 0 frames, 0 us of CPU in 5 s (and the same with no build). The build's worker waits in the kernel; nothing polls. |
+| O22 | .ronin-project's [build] directory and its mistakes | AUTOMATED-NEW | .ronin-project tests ([build] command and directory, unknown names, a backslash in a command); builds in the app (the build runs in root\sub; the diagnostic in *Messages*). |
+| O23 | Building ronin itself from ronin: a clean build, then one with an error | AUTOMATED-NEW + HUMAN | screenshots p13_selfbuild.png (ronin_bench.exe on the repository, C-x p c RET: .\build.bat, 2.39 s, exit [0]) and p13_selfbuild_error.png / p13_selfbuild_next_error.png (a copy with an error and a warning in edit.c: both listed and colored, M-g n on edit.c line 866). Looking at a real failing build: HUMAN step 21. |
+| O24 | After a build ronin is idle again: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe build\tmp\demo_build\particles.jai --keys "C-x p c RET" --compile-wait 10000 --idle-check`: 0 frames, 0 us of CPU in 5 s (and the same with no build). The build's worker waits in the kernel; nothing polls. |
 
 ## P. Multiple cursors (Phase 14)
 
@@ -392,17 +392,17 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | P18 | max_cursors (10000) stops every adding command with "Cursor limit reached" | AUTOMATED-NEW | multiple-cursor commands (the cap at 5 for mark-all, mark-next, mark-previous and edit-lines); the multiple-cursor driver (the default, the range, the warning); `--bench-cursors` (100,000). |
 | P19 | Two windows on one buffer: each keeps its own cursors, which follow the other window's edits | AUTOMATED-NEW | multiple cursors and the mouse (three cursors in one window, one in the other, typing in each). |
 | P20 | Typing at 1,000 and 10,000 cursors stays fast, on a 100 MB file too | AUTOMATED-NEW + HUMAN | `--bench-cursors` (a self-insert at 1,000 cursors 0.2-0.3 ms, at 10,000 1.7-2.4 ms, command plus frame, in several runs); the feel: HUMAN step 27. |
-| P21 | Idle with 10,000 cursors: 0% CPU | AUTOMATED-NEW | `teal_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
+| P21 | Idle with 10,000 cursors: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
 | P22 | C-> and C-< are Ctrl+Shift+. and Ctrl+Shift+, on a US keyboard | AUTOMATED-NEW | harness: every default binding on US and United Kingdom; on Turkish Q and Finnish they are listed as US keys landing elsewhere (the keys with > and < run them there). |
 | P23 | A tool's summary line ("1 error generated.", "0 Error(s)", "Compilation failed (1 error)") is colored and not counted | AUTOMATED-NEW | compile matchers (19 summaries and traps); builds (a summary not counted); builds in the app (both count words of an MSBuild line marked, the echo's counts unchanged). |
 | P24 | An error printed with an absolute path under the project root shows the path relative to the root; visiting it still works | AUTOMATED-NEW | compile path resolution (10 shown-path cases); builds in the app (on and off: under the root, outside it, relative; next-error to the file). |
 
 ## HUMAN steps
 
-In this order, with `build\teal.exe` (or teal_debug.exe):
+In this order, with `build\ronin.exe` (or ronin_debug.exe):
 
-1. **A1, A3**: Start teal from Explorer, then from a terminal, then from a pinned taskbar icon. There
-   must be no white flash, and the title must read "*scratch* - teal".
+1. **A1, A3**: Start ronin from Explorer, then from a terminal, then from a pinned taskbar icon. There
+   must be no white flash, and the title must read "*scratch* - ronin".
 2. **A2**: Covered by `--type-ahead-check` since Phase 10; nothing to do by hand.
 3. **A5, A6**: Drag a window corner around. The text stays crisp, nothing is stretched, and no black
    areas appear. Then minimize, restore and maximize.
@@ -410,12 +410,12 @@ In this order, with `build\teal.exe` (or teal_debug.exe):
 5. **B4**: Hold a letter key. The repeat must be smooth.
 6. **C9**: Open a 100 MB file (`build\tmp\bench_100mb.txt`), press M->, and scroll with the wheel.
 7. **G11**: Same file renamed to .c: M->, the colors appear within about a second, and typing is never blocked.
-8. **E14**: Select two lines in teal, M-w, paste in Notepad: two lines.
-9. **E15**: Copy text from a browser, C-y in teal.
-10. **I4**: Set `render_mode = classic`, then natural, then symmetric in teal.conf. Each looks different.
-11. **I8**: Edit teal.conf in Notepad and save. The change applies; the default theme never flashes.
+8. **E14**: Select two lines in ronin, M-w, paste in Notepad: two lines.
+9. **E15**: Copy text from a browser, C-y in ronin.
+10. **I4**: Set `render_mode = classic`, then natural, then symmetric in ronin.conf. Each looks different.
+11. **I8**: Edit ronin.conf in Notepad and save. The change applies; the default theme never flashes.
 12. **J9**: Leave a modified file and sign out of Windows. The sign-out is blocked with "Unsaved
-    changes in teal", and teal asks to save.
+    changes in ronin", and ronin asks to save.
 
 Phase 10, with two or three windows (C-x 3, C-x 2):
 
@@ -423,31 +423,31 @@ Phase 10, with two or three windows (C-x 3, C-x 2):
     follows the pointer without jumping; over the line and the mode line the pointer is the left-right /
     up-down resize cursor, the arrow over text and over the bottom mode line.
 14. **L25**: Look at the dividers and the inactive mode lines at 100% and at 150% display scale (dev
-    helper: `teal_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`).
-15. **L30**: With four windows, drag the teal window to its smallest size, then back. Nothing looks
+    helper: `ronin_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`).
+15. **L30**: With four windows, drag the ronin window to its smallest size, then back. Nothing looks
     broken while it is small, and every window comes back as it was.
 
 Phase 11, projects:
 
-16. **M6**: Start teal on a big real tree (a large repository, or `teal C:\Windows`), C-x p f, and type at
+16. **M6**: Start ronin on a big real tree (a large repository, or `ronin C:\Windows`), C-x p f, and type at
     once. The list fills in while "scanning: N files" counts up, and the typing is never held up.
-17. **M16**: `teal_debug.exe build\tmp\p11long\short.c --keys "C-x p f t h e f i l e" --screenshot
+17. **M16**: `ronin_debug.exe build\tmp\p11long\short.c --keys "C-x p f t h e f i l e" --screenshot
     build\shots\m16.png` (any file deep in a project works): the long row starts with "…" and keeps the file
     name; with the window narrowed by hand, the same.
-18. **M23, M24**: Type in Notepad while `teal_debug.exe --test` and `teal_bench.exe --bench-project` run.
-    Notepad keeps every key and the focus; `--test` passes (lines "test: inconclusive: ..." in build\teal.log
+18. **M23, M24**: Type in Notepad while `ronin_debug.exe --test` and `ronin_bench.exe --bench-project` run.
+    Notepad keeps every key and the focus; `--test` passes (lines "test: inconclusive: ..." in build\ronin.log
     are allowed, a FAIL is not).
 
 Phase 12, project-wide search:
 
 19. **N9**: In a big real repository, C-x p g a common word and type in another window at once. The list
     fills in from the top, the last line counts up, and the typing is never held up.
-20. **N21**: While typing in Notepad, start `build\teal.exe --no-activate` from a terminal. Notepad keeps
-    the focus and every key; teal's window appears behind it.
+20. **N21**: While typing in Notepad, start `build\ronin.exe --no-activate` from a terminal. Notepad keeps
+    the focus and every key; ronin's window appears behind it.
 
 Phase 13, builds:
 
-21. **O23**: In teal's repository put an error in a source file (say `int x = y;` in src/edit.c), C-x p c RET
+21. **O23**: In ronin's repository put an error in a source file (say `int x = y;` in src/edit.c), C-x p c RET
     (`.\build.bat`). Look at *compilation*: the error in red with its file and line, M-g n opens the file at
     that line with the line highlighted. Undo the error and C-x p c RET again: "Compilation finished".
 22. **O20**: Start `build.bat release` with C-x p c and type in another window at once. The typing is never
@@ -455,7 +455,7 @@ Phase 13, builds:
 23. **N13**: While a C-x p g search runs on a big repository, run a build (C-x p c) and `git status` /
     `git checkout -- <file>` in a terminal. Both succeed; nothing complains that a file is in use.
 24. **O10**: M-x compile with `ping -t localhost`, wait a few lines, C-c C-k. *compilation* says
-    "Compilation killed"; Task Manager shows no ping.exe and no cmd.exe started by teal.
+    "Compilation killed"; Task Manager shows no ping.exe and no cmd.exe started by ronin.
 
 Phase 14, multiple cursors:
 
@@ -463,9 +463,9 @@ Phase 14, multiple cursors:
     them again: it goes. A plain click: one cursor.
 26. **P8**: With three cursors on three lines, C-k, then paste in Notepad: three lines, the killed texts in order.
 27. **P20**: Open a long file, C-x h C-S-c C-S-c (10,000 cursors), type a word, DEL, RET RET. Nothing lags (dev
-    helper for the look: `teal_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --screenshot
+    helper for the look: `ronin_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --screenshot
     build\shots\p14_many.png`).
 
-Dev helpers that take most of the work out of the others: `teal_debug.exe --idle-check` (A4, Z1),
-`teal_debug.exe --dpi-check build\shots\dpi` (A9), and `teal_debug.exe --clipboard-check` (E14,
+Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
+`ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
 E15; copy some plain text, e.g. from Notepad, first).

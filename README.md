@@ -1,6 +1,6 @@
-# teal
+# ronin
 
-teal is a small native code editor for Windows, written in C. It follows the look and the model of
+ronin is a small, fast text editor for Windows, written in C, made for code. It follows the look and the model of
 Emacs as Jonathan Blow uses it: no tabs, scroll bars, menus or toolbars; windows side by side, an
 inverse-video mode line, a minibuffer, a block cursor, point and mark, a kill ring, incremental
 search and M-x, with Emacs' default keys. It borrows ideas from the Focus and 4coder editors. The
@@ -12,7 +12,7 @@ changed.
 
 ## Status
 
-Early and experimental: teal is a learning project (see [How this project is
+Early and experimental: ronin is a learning project (see [How this project is
 made](#how-this-project-is-made)). It is built in 15 phases (the roadmap is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)).
 Phases 1 to 14 are done: window and renderer, font, text buffer, views, commands and the config file,
 editing, the minibuffer, syntax highlighting, isearch and query-replace, window splitting, projects
@@ -75,7 +75,7 @@ Only what exists today.
   lists the matches in `*search*` as `path:line:column: text`, file names and line numbers in their
   own colors, the matched text highlighted. The list fills in while the search runs, always in the
   same order (the project's file order), whatever the number of threads; buffers with unsaved changes
-  are searched as they are in teal; binary files are skipped; it stops at 10,000 matches and says so.
+  are searched as they are in ronin; binary files are skipped; it stops at 10,000 matches and says so.
   A search opens each file only while it reads it, and shares it meanwhile, so saving, building or git
   are never blocked by it.
 - M-s o (occur) lists the matches of the current buffer in `*occur*` the same way.
@@ -85,7 +85,7 @@ Only what exists today.
 
 **Building**
 - C-x p c asks for a build command, with the one last used in the project (else the `[build]` command
-  of `.teal-project`) filled in to edit, and runs it through cmd.exe in the project's root (or the
+  of `.ronin-project`) filled in to edit, and runs it through cmd.exe in the project's root (or the
   `[build]` directory): no console window, stdin empty, stdout and stderr together. Nothing runs before
   RET. M-x compile does the same in the current buffer's directory.
 - The output fills `*compilation*` in another window (not selected) as it arrives, read on a background
@@ -99,7 +99,7 @@ Only what exists today.
 - The mode line shows running, exit [0] or exit [N]; the last line and the echo area say how it ended
   ("Compilation finished: 2 errors, 3 warnings"). next-error and previous-error walk the errors (notes are
   skipped); in `*compilation*` RET, n, p and q work as in `*search*`, g runs the command again and C-c C-k
-  kills it with every process it started (a job object), as does exiting teal (it asks first).
+  kills it with every process it started (a job object), as does exiting ronin (it asks first).
 - Before a build, buffers with unsaved changes are asked about (or all saved, or left:
   `compilation_save_buffers`); when it ends, buffers whose files it rewrote are reloaded at once (or
   flagged, when they have unsaved changes). The output kept is capped at 16 MB
@@ -110,9 +110,9 @@ Only what exists today.
 ![isearch with the current match and the other matches](docs/images/isearch.png)
 
 **Projects**
-- A project is the nearest directory above a file that holds `.git`, `.hg`, `.svn` or `.teal-project`,
+- A project is the nearest directory above a file that holds `.git`, `.hg`, `.svn` or `.ronin-project`,
   or a directory given on the command line. It is scanned on a background thread; `.gitignore` files
-  (a subset of the syntax) and `.teal-project` decide what is listed.
+  (a subset of the syntax) and `.ronin-project` decide what is listed.
 - C-x p f finds a file by fuzzy matching its path; the list fills in while the scan runs. After files
   are added or removed, the project is scanned again the next time the finder needs it.
 
@@ -149,7 +149,7 @@ window.
 | searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without | Phase 12 |
 | a build printing 100 MB as fast as it can | read into `*compilation*` in 0.33 s, no frame over 0.3 ms; typing meanwhile as fast as without | Phase 13 |
 
-The typing figure is CPU time inside teal; the time from a key press to the screen (input to
+The typing figure is CPU time inside ronin; the time from a key press to the screen (input to
 photon) has not been measured.
 
 ## Building
@@ -174,17 +174,17 @@ cmd //c ".\build.bat release"
 
 | command | output | build |
 |---|---|---|
-| `build.bat` | `build\teal_debug.exe` | debug, with the dev flags and the D3D11 debug layer |
-| `build.bat release` | `build\teal.exe` | optimized, no dev code |
-| `build.bat bench` | `build\teal_bench.exe` | optimized, with the dev flags (tests and benchmarks) |
+| `build.bat` | `build\ronin_debug.exe` | debug, with the dev flags and the D3D11 debug layer |
+| `build.bat release` | `build\ronin.exe` | optimized, no dev code |
+| `build.bat bench` | `build\ronin_bench.exe` | optimized, with the dev flags (tests and benchmarks) |
 
-The build is a single unity translation unit (`src/teal.c`) plus one C++ file for DirectWrite.
+The build is a single unity translation unit (`src/ronin.c`) plus one C++ file for DirectWrite.
 
 ## Usage
 
 ```
-teal [[+LINE[:COLUMN]] file ...]
-teal <directory> [[+LINE[:COLUMN]] file ...]
+ronin [[+LINE[:COLUMN]] file ...]
+ronin <directory> [[+LINE[:COLUMN]] file ...]
 ```
 
 - Every file named is opened; the first one is shown. `+LINE[:COLUMN]` (1-based, as in Emacs) puts
@@ -192,7 +192,7 @@ teal <directory> [[+LINE[:COLUMN]] file ...]
 - A directory is opened as the project: `*scratch*` and C-x C-f start there and C-x p f lists its
   files.
 - A file that does not exist is opened as an empty buffer and created when saved.
-- An unknown argument starting with `--` makes teal exit at once with code 10.
+- An unknown argument starting with `--` makes ronin exit at once with code 10.
 
 The test and benchmark flags of the dev builds are listed in [CLAUDE.md](CLAUDE.md).
 
@@ -251,10 +251,10 @@ off or change it in the Windows settings if it gets in the way.
 
 ## Configuration
 
-teal reads `teal.conf` next to `teal.exe` if that file exists (a portable install), otherwise
-`%APPDATA%\teal\teal.conf`. `C-c ,` opens it, creating it from the built-in defaults the first
-time; the created file documents every setting, color and binding. teal reloads the file whenever
-it is saved, from teal or from any other program (`C-c r` reloads it by hand). A file needs to
+ronin reads `ronin.conf` next to `ronin.exe` if that file exists (a portable install), otherwise
+`%APPDATA%\ronin\ronin.conf`. `C-c ,` opens it, creating it from the built-in defaults the first
+time; the created file documents every setting, color and binding. ronin reloads the file whenever
+it is saved, from ronin or from any other program (`C-c r` reloads it by hand). A file needs to
 contain only what it changes; a bad line is skipped and reported in the echo area and in
 `*Messages*`, and the rest still applies.
 
@@ -278,7 +278,7 @@ again with one key:
 F5          recompile
 ```
 
-A project's build command goes into `.teal-project` at its root (C-x p c offers it; it never runs on
+A project's build command goes into `.ronin-project` at its root (C-x p c offers it; it never runs on
 its own):
 
 ```
@@ -317,7 +317,7 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
   and saved as raw bytes. Files over 1 GB are refused.
 - At most 8 windows. While the minibuffer is active, C-x o cannot leave it.
 - `.gitignore` support is a subset: no character classes (`[a-z]`), no backslash escapes, no
-  `.git/info/exclude` or global excludes file. In `.teal-project` a pattern cannot start with `[`
+  `.git/info/exclude` or global excludes file. In `.ronin-project` a pattern cannot start with `[`
   (that line is a section header).
 - Listing a directory on a slow network share in C-x C-f blocks the window until it is done.
 
@@ -354,15 +354,15 @@ every manual test step and what covers it is in [docs/MANUAL_TESTS.md](docs/MANU
 
 ## Credits
 
-teal is inspired by Jonathan Blow's Emacs setup, whose colors are the default theme, and by the
+ronin is inspired by Jonathan Blow's Emacs setup, whose colors are the default theme, and by the
 Focus and 4coder editors and GNU Emacs (the editing model, the default keys, the command names and
 many messages). The naysayer-theme for Emacs and the Witness color scheme served as references for
-the colors. The fuzzy file finder's scoring weights follow fzf's. teal is not affiliated with or
+the colors. The fuzzy file finder's scoring weights follow fzf's. ronin is not affiliated with or
 endorsed by any of these projects or their authors.
 
 ## How this project is made
 
-teal is a learning project. I am building it to learn how a text editor works, from the renderer
+ronin is a learning project. I am building it to learn how a text editor works, from the renderer
 and the text buffer to the keymap and the search, and it was developed with the support of AI: the
 code was written with Claude Code under my direction, one phase at a time. I review the source code
 day by day and improve it as I come to understand each part of it. It is an experimental project,

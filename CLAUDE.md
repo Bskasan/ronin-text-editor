@@ -1,4 +1,4 @@
-# teal
+# ronin
 
 Minimal native Windows code editor in the spirit of Jonathan Blow's Emacs setup, borrowing
 ideas from Focus and 4coder. Emacs look and model (no tabs, scrollbars, menus or toolbars;
@@ -17,11 +17,11 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   no RTTI (/GR-), no STL, no new/delete, no classes, no static constructors, no CRT calls,
   nothing but DirectWrite calls behind the extern "C" API in src/font_backend.h.
 - No third-party code or libraries. System DLLs only.
-- One build.bat, unity build: src/teal.c includes the other .c files (win32_dwrite.cpp is
+- One build.bat, unity build: src/ronin.c includes the other .c files (win32_dwrite.cpp is
   the only second translation unit). No CMake, no .sln.
-- No teal identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
+- No ronin identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
   rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/check_macros.c with
-  /Zs (every system header, then teal.c, syntax only) and fails on a collision. Fix by renaming,
+  /Zs (every system header, then ronin.c, syntax only) and fails on a collision. Fix by renaming,
   never by #undef.
 - /W4 /WX clean, always.
 - Write as if there were no C runtime: no stdio, no malloc/free, no str* functions, no CRT
@@ -92,14 +92,14 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 From Git Bash (this environment sets `NoDefaultCurrentDirectoryInExePath=1`, so cmd needs
 the explicit `.\`):
 
-    cmd //c ".\build.bat"            # build\teal_debug.exe  (/Od /Zi /MTd, TEAL_DEV=1)
-    cmd //c ".\build.bat release"    # build\teal.exe        (/O2 /GL ..., TEAL_DEV=0)
-    cmd //c ".\build.bat bench"      # build\teal_bench.exe  (/O2 /MT, TEAL_DEV=1, no D3D debug layer)
+    cmd //c ".\build.bat"            # build\ronin_debug.exe  (/Od /Zi /MTd, RONIN_DEV=1)
+    cmd //c ".\build.bat release"    # build\ronin.exe        (/O2 /GL ..., RONIN_DEV=0)
+    cmd //c ".\build.bat bench"      # build\ronin_bench.exe  (/O2 /MT, RONIN_DEV=1, no D3D debug layer)
 
     cmd //c ".\verify.bat"           # the gate: three builds, smoke (debug), test (bench), one PASS / FAIL line
     cmd //c ".\verify.bat phase"     # ... plus the full --test on the debug build (once per phase)
 
-Report benchmark numbers from teal_bench.exe (dev flags, optimized code). Its smoke run skips
+Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
 
 build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
@@ -107,70 +107,70 @@ src/shaders/*.hlsl with fxc into build\gen\*.h, runs the macro-collision check
 (src/check_macros.c, /Zs, ~0.3 s), compiles win32_dwrite.cpp, then the unity build, and prints
 the exe size.
 
-Command line, every build: `teal [[+LINE[:COLUMN]] file ...]` (1-based, as in Emacs): every file
+Command line, every build: `ronin [[+LINE[:COLUMN]] file ...]` (1-based, as in Emacs): every file
 is opened, each at the +LINE[:COLUMN] before it (one with no file after it: the file before it, or
 *scratch*); the first is shown, and with startup_windows = 2 the second window shows the second.
-A directory instead of a file is opened as the project (`teal <directory>`): nothing is visited for it,
+A directory instead of a file is opened as the project (`ronin <directory>`): nothing is visited for it,
 *scratch* and C-x C-f start there, C-x p f lists it. Any unrecognized argument starting with `--` (or a flag missing its value) exits at once with
 code 10, before a window exists.
 
 `--startup-ms` works in both builds: it exits right after the first Present with exit code =
 ms since process creation. Git Bash `$?` truncates exit codes to 8 bits, so read it from
-PowerShell: `(Start-Process build\teal.exe -ArgumentList --startup-ms -PassThru -Wait).ExitCode`.
+PowerShell: `(Start-Process build\ronin.exe -ArgumentList --startup-ms -PassThru -Wait).ExitCode`.
 
 `--no-activate` works in both builds: the window is shown (cloaked for the first frame, as the benches
 show it) without taking the foreground. The memory table is measured with it: release build, private
 bytes (`Get-Process`) after the window settled, closed with CloseMainWindow; it may run without asking.
 
-Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
+Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
 
-    build/teal_debug.exe --test [--seed N]                # headless buffer/file/view tests, exit 0 = pass
-    build/teal_debug.exe --smoke                          # exit 0 = pass
-    build/teal_debug.exe --screenshot build/shots/x.png   # window hidden, one frame
-    build/teal_debug.exe +LINE:COL <file> --screenshot .. # open a file at a position (cursor drawn focused)
-    build/teal_debug.exe --dump-atlas build/shots/a.png   # the CPU glyph atlas
-    build/teal_debug.exe --render-mode classic|natural|symmetric   (overrides the config)
-    build/teal_debug.exe --config build/tmp/x.conf        # this file instead of the user's teal.conf
-    build/teal_debug.exe <file> --keys "M-> RET h i C-x C-s"   # input after startup, kbd notation:
+    build/ronin_debug.exe --test [--seed N]               # headless buffer/file/view tests, exit 0 = pass
+    build/ronin_debug.exe --smoke                         # exit 0 = pass
+    build/ronin_debug.exe --screenshot build/shots/x.png  # window hidden, one frame
+    build/ronin_debug.exe +LINE:COL <file> --screenshot .. # open a file at a position (cursor drawn focused)
+    build/ronin_debug.exe --dump-atlas build/shots/a.png  # the CPU glyph atlas
+    build/ronin_debug.exe --render-mode classic|natural|symmetric   (overrides the config)
+    build/ronin_debug.exe --config build/tmp/x.conf       # this file instead of the user's ronin.conf
+    build/ronin_debug.exe <file> --keys "M-> RET h i C-x C-s"  # input after startup, kbd notation:
                                                           # a chord is a KEY_DOWN, a single character
                                                           # (or SPC) is typed; with --screenshot the
                                                           # frame is taken after the keys
-    build/teal_debug.exe --scale 150                      # force the DPI scale (percent)
-    build/teal_debug.exe --bench-text                     # 300 frames, Present(0, 0)
-    build/teal_bench.exe --bench-buffer                   # 100 MB file (build\tmp): load, inserts,
+    build/ronin_debug.exe --scale 150                     # force the DPI scale (percent)
+    build/ronin_debug.exe --bench-text                    # 300 frames, Present(0, 0)
+    build/ronin_bench.exe --bench-buffer                  # 100 MB file (build\tmp): load, inserts,
                                                           # lookups, save, frames at top/middle/end
-    build/teal_bench.exe --bench-view                     # same file, key/text events through the app:
+    build/ronin_bench.exe --bench-view                    # same file, key/text events through the app:
                                                           # next-line, PageDown, C-End/C-Home, typing
-    build/teal_bench.exe --bench-edit                     # same file: typing with undo, kill / yank /
+    build/ronin_bench.exe --bench-edit                    # same file: typing with undo, kill / yank /
                                                           # undo of 50 MB, undo log, kill ring, memory
                                                           # per extra buffer
-    build/teal_bench.exe --bench-complete                 # filter and rank 10,000 / 100,000 candidates
+    build/ronin_bench.exe --bench-complete                # filter and rank 10,000 / 100,000 candidates
                                                           # per keystroke (avg, worst)
-    build/teal_bench.exe --bench-syntax                   # lexing MB/s per language; 100 MB C file: "/*" on
+    build/ronin_bench.exe --bench-syntax                  # lexing MB/s per language; 100 MB C file: "/*" on
                                                           # line 1 then M-> (frames until colored), typing
-    build/teal_bench.exe --bench-search                   # 100 MB file: isearch for a needle at the end and
+    build/ronin_bench.exe --bench-search                  # 100 MB file: isearch for a needle at the end and
                                                           # a missing one (folded / exact, typed / pasted):
                                                           # time, frames, longest frame; isearch keystrokes
                                                           # on src/app.c; replace-string x 1,000,000, its
                                                           # undo and undo-redo; replace-string on the
                                                           # 100 MB file, its progress, C-g, one C-x u
                                                           # (exit 9 if wrong)
-    build/teal_debug.exe <file> --keys ".." --touch <file> --screenshot ..   # rewrite the file after the
+    build/ronin_debug.exe <file> --keys ".." --touch <file> --screenshot ..  # rewrite the file after the
                                                           # keys and activate the app (changed on disk)
-    build/teal_debug.exe --log-keys                       # every keyboard message: bits, keys down, teal's
+    build/ronin_debug.exe --log-keys                      # every keyboard message: bits, keys down, ronin's
                                                           # modifiers and AltGr, ToUnicodeEx, the layout,
                                                           # the event, the chord and command (or why none);
                                                           # the key table of each loaded layout
-    build/teal_debug.exe --idle-check                     # shown without focus; 5 s idle after 1 s: CPU
+    build/ronin_debug.exe --idle-check                    # shown without focus; 5 s idle after 1 s: CPU
                                                           # time, frames (must be 0), private bytes, the
                                                           # messages that reached the window meanwhile
                                                           # (it opens under the mouse: don't touch it)
-    build/teal_debug.exe <file> --dpi-check build/shots/dpi   # WM_DPICHANGED to 125% and back, three
+    build/ronin_debug.exe <file> --dpi-check build/shots/dpi  # WM_DPICHANGED to 125% and back, three
                                                           # screenshots, the frame after coming back equal
-    build/teal_debug.exe --clipboard-check                # the REAL clipboard (only when it holds plain
+    build/ronin_debug.exe --clipboard-check               # the REAL clipboard (only when it holds plain
                                                           # text or nothing; saved, put back, kept out of
                                                           # clipboard history): CRLF out, LF in
-    build/teal_debug.exe --type-ahead-check               # REAL input: once teal's window is the foreground
+    build/ronin_debug.exe --type-ahead-check              # REAL input: once ronin's window is the foreground
                                                           # one, a thread types a b S-c d e with SendInput
                                                           # (letters and Shift only, one SendInput call per
                                                           # key, the foreground checked before each) while
@@ -180,18 +180,18 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # foreground), 9 fail; "inconclusive" when other
                                                           # input arrived. Only ever run by this flag: never
                                                           # from --test, the smoke, a bench or the build.
-    build/teal_bench.exe --bench-windows                  # 100 MB file: frames with one window and with four
+    build/ronin_bench.exe --bench-windows                 # 100 MB file: frames with one window and with four
                                                           # (top, middle, line 1,000,000, end); typing at
                                                           # line 1,000,000 with one window and with two
-    build/teal_bench.exe --bench-project                  # fuzzy ranking on 10,000 / 100,000 / 1,000,000
+    build/ronin_bench.exe --bench-project                 # fuzzy ranking on 10,000 / 100,000 / 1,000,000
                                                           # synthetic paths (each keystroke's frame, frames
                                                           # until ranked, the longest frame, RET's whole
                                                           # ranking); scans of build\tmp\p11big and of
                                                           # %SystemRoot% (read only); typing at line
                                                           # 1,000,000 with and without a scan running
-    build/teal_debug.exe <dir> --scan-hold N --keys "C-x p f ..." --screenshot ..   # project scans stand
+    build/ronin_debug.exe <dir> --scan-hold N --keys "C-x p f ..." --screenshot ..  # project scans stand
                                                           # still after N batches (the finder while scanning)
-    build/teal_bench.exe --bench-grep                     # build\tmp\p12bench (~100 MB, 3,000 files, made
+    build/ronin_bench.exe --bench-grep                    # build\tmp\p12bench (~100 MB, 3,000 files, made
                                                           # once): a common and a missing word with 1, 2, 4
                                                           # and 8 workers (first result, total, MB/s, the
                                                           # longest frame and its results work, memory);
@@ -200,22 +200,22 @@ Dev-build flags (TEAL_DEV=1 only); everything is logged to build\teal.log:
                                                           # frames and the frames between keys) against a
                                                           # finished *search* shown; the workers' priority
                                                           # below normal against normal, alternated
-    build/teal_debug.exe <dir> --keys "C-x p g ..." --keys-after "n RET" --screenshot ..   # keys once the
+    build/ronin_debug.exe <dir> --keys "C-x p g ..." --keys-after "n RET" --screenshot ..  # keys once the
                                                           # workers' results of --keys are in
-    build/teal_debug.exe <dir> --grep-hold N --keys "C-x p g ..." --screenshot ..   # a search's workers stand
+    build/ronin_debug.exe <dir> --grep-hold N --keys "C-x p g ..." --screenshot ..  # a search's workers stand
                                                           # still after N files each (a search still running)
-    build/teal_debug.exe --child <script>                 # the tests' scripted program (no window, no log):
+    build/ronin_debug.exe --child <script>                # the tests' scripted program (no window, no log):
                                                           # out / err TEXT, raw / rawerr TEXT (escapes \r \n
                                                           # \t \e \xHH), sleep MS, exit N, hang (120 s at
                                                           # most), spawn FILE (a grandchild), flood BYTES,
                                                           # cwd, write PATH TEXT
-    build/teal_bench.exe --bench-compile                  # a --child program printing 100 MB into *compilation*
+    build/ronin_bench.exe --bench-compile                 # a --child program printing 100 MB into *compilation*
                                                           # (cap 128 MB and the default 16 MB): time, frames,
                                                           # the longest frame, memory; typing at line
                                                           # 1,000,000 while builds print, against none
-    build/teal_debug.exe <dir> --keys "C-x p c RET" --compile-wait MS --screenshot ..   # waits up to MS for
+    build/ronin_debug.exe <dir> --keys "C-x p c RET" --compile-wait MS --screenshot ..  # waits up to MS for
                                                           # running builds to end (also before --keys-after)
-    build/teal_bench.exe --bench-cursors                  # self-insert, DEL and RET at 1 to 10,000 cursors (the
+    build/ronin_bench.exe --bench-cursors                 # self-insert, DEL and RET at 1 to 10,000 cursors (the
                                                           # 100 MB file: consecutive lines and spread; src/app.c)
                                                           # with the batch flushes per command; the classes that
                                                           # reindent on a generated C file at 1,000 / 10,000; the undo
@@ -228,14 +228,14 @@ screenshot runs take the workers' results (project scans, searches, builds' outp
 300 ms, or with --compile-wait until the builds ended) before their frame.
 
 The smoke and the benches read only the built-in config (deterministic) unless --config is
-given; every other run reads the user's teal.conf as usual. Use --config build\tmp\... for
-checks, so open-config never touches the real %APPDATA%\teal\teal.conf. The benches report
+given; every other run reads the user's ronin.conf as usual. Use --config build\tmp\... for
+checks, so open-config never touches the real %APPDATA%\ronin\ronin.conf. The benches report
 the final flush and the Present separately, the Presents that waited a vertical blank (>= 5 ms)
 and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait
 one refresh interval with two buffers; that is not CPU work of ours. --test, the smoke, the
 benches and screenshot runs use an in-memory fake clipboard: they never touch the real one
 (interactive dev runs and --clipboard-check do). Dev builds log the private bytes at the startup stages
-("memory:" lines in build\teal.log) and the startup timeline: each stage in ms since process
+("memory:" lines in build\ronin.log) and the startup timeline: each stage in ms since process
 creation ("startup:" lines, recorded by os_dev_stage, logged once after the first frame).
 
 `--smoke` shows the window without activating it and renders 2 frames. Then *scratch* gets a
@@ -280,7 +280,7 @@ compilation_warning, the mode line's "exit [2]" in its cells; then the window an
 with regions (stage 10): on lines 0-2 of *scratch*, focus on, each filled cursor cell, each region in the selection
 color, the cells after the lines in the background, "mc:3" drawn in the mode line; then one cursor again. Every
 syntax frame also has a number pixel in its color. The window
-title must be "*scratch* - teal",
+title must be "*scratch* - ronin",
 set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
@@ -288,7 +288,7 @@ killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line)
 pixel probed, and the font must not have been set up again. C-x C-+, C-x C-0, C-x C-- and Ctrl +
 wheel, then a config with font_size = 14, each set up the font again with a larger or smaller cell
 (C-x C-0 and the wheel back to the same one). WM_QUERYENDSESSION is sent to its own
-window with an unsaved file (refused, the block reason "Unsaved changes in teal", the save question; a repeated query
+window with an unsaved file (refused, the block reason "Unsaved changes in ronin", the save question; a repeated query
 keeps that chain; C-g keeps the reason; WM_ENDSESSION(FALSE) removes it) and again once it is
 saved (allowed). It also requires a non-empty atlas,
 the D3D11 debug layer active with zero WARNING+ messages, and no leaks (device refcount 0, empty
@@ -374,12 +374,12 @@ hold (passed or failed) is logged as "test: inconclusive: ..." with the reason a
 attempts, then "key state unstable"); a case whose state held and whose result is wrong fails at once; a
 self-test drives those decisions with fakes. Phase 11: threads (a lock under contention, events, the wake), a tree watch (500 files: one
 wake-up until re-armed), junctions and small reads; ignore rules (globs and 30 decisions); project roots (a
-fake file system table, real directories, the cache, the built-in settings); .teal-project; the scanner
+fake file system table, real directories, the cache, the built-in settings); .ronin-project; the scanner
 on generated trees in build\tmp\p11scan and p11big (the exact set, a junction loop, the file limit, a
 cancel, 300 start / cancel rounds each ending within 250 ms, a stuck worker's bounded join); fuzzy
 ranking (goldens, spans, sliced and narrowed equal to full scoring on 20,000 paths); the project finder
 through the headless app (build\tmp\p11find: query and RET, the empty query, RET with one candidate a
-frame, a stale index, the other window, project-refresh, teal <directory>, a held scan, the file limit,
+frame, a stale index, the other window, project-refresh, ronin <directory>, a held scan, the file limit,
 not in a project, shutdown with a scan running and with a stuck worker); the region in windows. Phase 12:
 the search core on plain bytes and the second-byte filter against the reference (in the search fuzz);
 atomics and a file read on a worker, a background worker's priority; grep_file against a whole-text
@@ -413,7 +413,7 @@ two steps, max_cursors); collapsing through the keys; undo with several cursors 
 random commands); kill pieces and yanks; the new commands on tricky input and through the headless app (their keys,
 mark-all over frames, C-g, the minibuffer's refusals); the mouse and two windows on one buffer; a differential fuzz
 of 20,000 commands against the one-cursor commands applied cursor by cursor to a flat text. A failed
-dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\teal.log.
+dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
 check exact colors with an independent decoder, e.g. PowerShell `System.Drawing.Bitmap`.
