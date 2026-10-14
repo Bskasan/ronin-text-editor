@@ -529,6 +529,68 @@ over several runs.
   no frame wanted with 10,000 and 100,000 cursors.
 - Release exe 482,304 bytes (453,632 after Phase 13); the same six DLLs and the same 195 imported functions.
 
+## Measurements (Phase 15)
+
+Same machine (AMD Ryzen 7 7700X, NVIDIA GPU, 2560x1440 at 144 Hz), 1280x800 client. The "before" builds are Phase 14
+(e12cc29) built from a clean copy into build\base\, run alternately with the new ones.
+
+### Baseline (before the Phase 15 changes)
+
+**Size.** Release exe 482,304 bytes, the same as Phase 14 (the rename changed no size). By module from the linker map
+(`ronin_debug.exe --map-report build\ronin.map`; 477,324 bytes in sections, the rest is headers and alignment; a
+function inlined under /LTCG counts toward its caller):
+
+| module | bytes | | module | bytes |
+|---|---|---|---|---|
+| static CRT (code 48,284, tables 31,428, data 2,768) | 82,612 | | compile.c | 15,808 |
+| win32_main.c | 43,312 | | files.c | 13,456 |
+| unwind tables (.pdata / .xdata, ours and the CRT's) | 38,224 | | minibuffer.c | 12,104 |
+| app.c | 34,952 | | project.c, config.c | 10,368, 10,304 |
+| results.c | 24,496 | | finder.c, isearch.c | 9,432, 9,392 |
+| view.c | 19,632 | | grep.c, cursors.c | 7,728, 7,184 |
+| config_default.h (the built-in config text) | 19,128 | | fuzzy.c, font.c, search.c | 4,736, 4,592, 4,400 |
+| buffer.c | 18,976 | | imports (thunks and tables) | 4,148 |
+| edit.c | 18,136 | | render_d3d11.c, base.c, lex_js.c | 3,904, 3,856, 3,488 |
+| string literals | 17,296 | | keymap.c, window.c, the shaders | 2,960, 2,800, 2,136 |
+| syntax.c | 17,072 | | win32_dwrite.cpp, resources (manifest), command.c | 1,680, 1,448, 1,184 |
+
+The largest data: the built-in config text (19,128), the CRT's locale tables (2 x 3,648) and log tables (3 x ~2,070),
+the vertex shader (1,264), the command table (1,024). No dev code: the map holds no test, bench, png, child or
+input-test symbol, and the exe no such string.
+
+**Startup.** Release `--startup-ms --no-activate`, 15 runs alternating: 167 ms median (163-178), Phase 14 169 ms (164-185).
+The stages (bench build, ms since process creation): WinMain 13.9; arguments and the device thread 14.5; the hidden
+window 18.9; the app 21.4 (DirectWrite and the font 2.0 ms of it); waiting for the device thread until 167.9 (146 ms);
+swap chain, pipeline and atlas texture 172.0; the first frame 173.9-176.1 (update 0.26, build 0.06, flush 0.70, Present
+1.09); uncloaked 176.2.
+
+**Memory.** Release, private bytes 3 s after the start with `--no-activate`: 76.4-76.9 MB (Phase 14 76.1-77.1).
+By owner (`ronin_bench.exe --memory-report`, 78 MB in the dev build):
+
+| owner | MB |
+|---|---|
+| the NVIDIA user-mode driver's DLL data (nvwgf2umx 25.0, nvppex 3.7, nvgpucomp64 3.3: copy-on-write image pages) | 33.1 |
+| other private allocations: the driver and the D3D runtime (21 regions, the largest 17.5 MB) | 27.9 |
+| our arenas: the font's (atlas, glyph table) 4.1, the permanent one 2.8, the frame scratch 1.3 | 8.3 |
+| process heaps (Windows, DirectWrite, the D3D runtime, the CRT) | 6.0 |
+| thread stacks (59, nearly all the driver's) | 1.3 |
+| mapped views (the GDI DIB of the rasterizer, shared sections) | 0.9 |
+
+Ours is ~9 MB (arenas and DirectWrite's share of the heaps); the graphics stack ~67 MB.
+
+**Typing.** `--bench-view`, self-insert at line 1,000,000 of the 100 MB file, command + frame build: 9-10 us avg (worst
+5-7 ms: the first insert moving the gap). New, `--bench-latency` (500 keys posted to the shown window, Present(1, 0)):
+
+| from the key's arrival to | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| its dequeue | 0.09 ms | 0.17 ms | 0.36-0.87 ms | 1.3 ms |
+| command + frame build | 0.02-0.03 ms | 0.03 ms | 0.04-0.06 ms | 0.1-0.2 ms |
+| Present returned | 0.41-0.49 ms | 0.7-0.96 ms | 2.0-4.5 ms | 3.4-6.2 ms |
+| the vertical blank that showed it, composed by DWM (the first ~100 keys) | 16.8-17.4 ms | 20.2-20.4 ms | 21.4-40 ms | 40 ms |
+| the vertical blank that showed it, overlay (DWM promotes the window after a while) | 4.0-4.4 ms | 6.9-7.2 ms | 9.9-11.6 ms | 14-15 ms |
+
+One refresh is 6.9 ms: composed frames reach the screen ~2.5 refreshes after the key, overlay ones within one.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
