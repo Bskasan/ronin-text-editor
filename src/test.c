@@ -2830,12 +2830,15 @@ static b32 test_undo_replay(Test *t, const TestUndoOp *ops, i32 count, char *why
         const TestUndoOp *op = &ops[k - 1];
         test_view_run(&tv, test_undo_motions[op->motion]);
         i64 size = buffer_size(tv.buf);
+        String8 before = buffer_text(tv.buf, &t->arena, 0, size);
         switch (op->action) {
         case 0: test_view_run(&tv, &CMD_NEWLINE); break;
         case 1: test_type_char(&tv, op->ch); break;
         case 2: test_view_run(&tv, size > 4 ? &CMD_DELETE_BACKWARD_CHAR : &CMD_NEWLINE); break;
         }
-        if (buffer_size(tv.buf) == size && test_cstr_equal(test_view_marked(t, &tv), texts[k - 1])) { // a refused delete
+        // A refused delete (at the start of the buffer) changed nothing: the text decides, not the marked
+        // text, since the motion may have moved point (seeds 22 and 33 counted such a step as an edit).
+        if (buffer_size(tv.buf) == size && str8_equal(buffer_text(tv.buf, &t->arena, 0, size), before)) {
             test_view_run(&tv, &CMD_NEWLINE);
         }
         texts[k] = test_view_marked(t, &tv);
@@ -2934,6 +2937,26 @@ static b32 test_undo_commands(Test *t, u64 seed) {
     // K commands then N undos gives the text after command K - N. A failing sequence is reduced to a
     // smallest one that still fails (ddmin), which the failure message shows.
     enum { K = 30 };
+    // Seeds 22 and 33 reduced: the last backward-word reaches the start of the buffer, where the delete is
+    // refused ("Beginning of buffer") and nothing changes; one undo then undoes the second newline.
+    {
+        if (!test_view_open(t, &tv, "one two\nthree |four\nfive", 10, 40)) return 0;
+        test_view_run(&tv, &CMD_BACKWARD_WORD);
+        test_view_run(&tv, &CMD_NEWLINE);
+        test_view_run(&tv, &CMD_BACKWARD_WORD);
+        test_view_run(&tv, &CMD_NEWLINE);
+        test_view_run(&tv, &CMD_BACKWARD_WORD);
+        test_view_run(&tv, &CMD_DELETE_BACKWARD_CHAR);
+        TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "|one \ntwo\n\nthree four\nfive") && test_echo_is(&tv, "Beginning of buffer"),
+                   "undo: seeds 22 / 33: the refused delete changed something (%s)", test_view_marked(t, &tv));
+        test_view_run(&tv, &CMD_UNDO);
+        TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("one two\n\nthree four\nfive")), "undo: seeds 22 / 33: one undo is not the second newline");
+        test_view_run(&tv, &CMD_UNDO);
+        TEST_CHECK(t, test_text_is(t, tv.buf, STR8_LIT("one two\nthree four\nfive")) && !tv.buf->modified, "undo: seeds 22 / 33: two undos");
+        if (!test_view_close(t, &tv)) return 0;
+        static const TestUndoOp reduced[] = { { 1, 0, 0 }, { 1, 0, 0 }, { 1, 2, 0 } };
+        TEST_CHECK(t, !test_undo_replay(t, reduced, ARRAY_COUNT(reduced), NULL), "undo: seeds 22 / 33: the reduced steps fail");
+    }
     TestUndoOp ops[K];
     t->rng = seed ^ 0x1d0;
     for (i32 k = 0; k < K; k++) {
