@@ -1054,6 +1054,7 @@ static void app_view_at_entry(App *app, View *v) {
 }
 
 static View *app_view_new(App *app, Buffer *buf);
+static void app_update_title(App *app, Arena *scratch);
 
 App *app_create(Arena *perm, AppArgs *args) {
     App *app = PUSH_STRUCT(perm, App);
@@ -1130,6 +1131,16 @@ App *app_create(Arena *perm, AppArgs *args) {
     }
     buffer_list_touch(&app->buffers, shown[0]);
     APP_STAGE("app: buffers and the view");
+    // early_window: shown now, with the title the first frame will keep, in the background color.
+#if RONIN_DEV
+    if (!args->headless)
+#endif
+    if (app->config->settings.early_window) {
+        u64 mark = arena_pos(perm);
+        app_update_title(app, perm);
+        arena_pop_to(perm, mark);
+        os_show_window_early(app->config->theme.background);
+    }
     Buffer *mini = buffer_create(STR8_LIT(" *Minibuf-1*")); // not listed, as in Emacs
     if (!mini) os_fatal(STR8_LIT("Out of address space (buffer reserve failed)."));
     minibuffer_init(&app->mini, perm, mini);
