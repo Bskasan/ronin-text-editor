@@ -107,6 +107,7 @@ typedef struct Platform {
     b32 bench_grep;
     b32 bench_compile;
     b32 bench_cursors;
+    b32 bench_longline;
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -3525,6 +3526,47 @@ u64 os_dev_private_bytes(void) {
 
 // Runs one key token (or several) through the app, one frame, and returns the frame's command +
 // build time.
+// --bench-longline: one line of 5 MB of minified JavaScript (build\tmp\longline.js, made once). Typing at its end
+// and in its middle, moving in its middle (columns, the view scrolled far right): command + frame build per key.
+#define BENCH_LONGLINE_SIZE MB(5)
+
+static String8 win32_bench_longline_file(Platform *p) {
+    String8 path = str8_fmt(&p->perm, "%S\\tmp\\longline.js", p->exe_dir);
+    OsFileInfo info;
+    if (os_file_info(path, &info) == OS_FILE_OK && info.size >= BENCH_LONGLINE_SIZE) return path;
+    u8 *text = PUSH_ARRAY(&p->perm, u8, BENCH_LONGLINE_SIZE + 128);
+    i64 n = 0;
+    for (i32 i = 0; n < BENCH_LONGLINE_SIZE; i++) n += fmt_buf(text + n, 128, "var a%d=b(%d,\"s%d\")+c[%d];", i, i, i % 97, i % 13);
+    text[n++] = '\n';
+    if (!os_write_file(path, str8(text, n))) LOG("bench-longline: cannot write %S", path);
+    return path;
+}
+
+static u64 win32_bench_keys(Platform *p, const char *keys);
+
+static void win32_bench_longline(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    i64 size = app_dev_buffer_size(p->app);
+    LOG("bench-longline: %D bytes on one line; build = command + frame build", size);
+    Event type = { .kind = EVENT_TEXT, .codepoint = 'x' };
+    Event right = { .kind = EVENT_KEY_DOWN, .key = KEY_RIGHT };
+    Event left = { .kind = EVENT_KEY_DOWN, .key = KEY_LEFT };
+    for (i32 round = 0; round < 2; round++) {
+        BenchStat end = { 0 }, mid = { 0 }, move = { 0 };
+        win32_bench_keys(p, "C-e");
+        for (i32 i = 0; i < 200; i++) win32_bench_view_step(p, type, &end);
+        app_dev_select(p->app, size / 2, size / 2);
+        win32_bench_keys(p, "C-g");
+        for (i32 i = 0; i < 200; i++) win32_bench_view_step(p, type, &mid);
+        for (i32 i = 0; i < 200; i++) win32_bench_view_step(p, i % 2 ? left : right, &move);
+        win32_bench_log(p, "bench-longline", "typing at the end of the line", &end);
+        win32_bench_log(p, "bench-longline", "typing in the middle of the line (the view scrolled right)", &mid);
+        win32_bench_log(p, "bench-longline", "right / left in the middle of the line", &move);
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 static u64 win32_bench_keys(Platform *p, const char *keys) {
     Event events[64];
     i32 n = app_dev_key_events(p->app, str8_cstr(keys), events, ARRAY_COUNT(events));
@@ -5081,7 +5123,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 }
 
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    return p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
            p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -5347,6 +5389,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-longline"))) { p->bench_longline = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-search"))) { p->bench_search = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-windows"))) { p->bench_windows = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-cursors"))) { p->bench_cursors = 1; continue; }
@@ -5415,7 +5458,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->map_report.len ? "map-report" : p->check_exe.len ? "check-imports" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
-                                   : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
+                                   : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_longline ? "bench-longline" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
                                    : p->bench_cursors ? "bench-cursors"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
@@ -5467,6 +5510,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->bench_buffer || p->bench_view || p->bench_edit || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
         p->bench_compile || p->bench_cursors) { // generated before the app opens it; measured after startup
         p->files[0] = (AppFileArg){ test_bench_buffer_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
+        p->file_count = 1;
+    }
+    if (p->bench_longline) {
+        p->files[0] = (AppFileArg){ win32_bench_longline_file(p), 0, 0 };
         p->file_count = 1;
     }
     if (p->bench_syntax) {
@@ -5575,7 +5622,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // --no-activate (every build) shows it as the benches do: for measurements that must not take the focus.
     b32 show_early = !p->no_activate;
 #if RONIN_DEV
-    b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
     show_early = show_early && !(p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
@@ -5703,6 +5750,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_syntax && !p->quit) {
         win32_bench_syntax(p);
+        p->quit = 1;
+    }
+    if (p->bench_longline && !p->quit) {
+        win32_bench_longline(p);
         p->quit = 1;
     }
     if (p->bench_search && !p->quit) {
