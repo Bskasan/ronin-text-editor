@@ -50,7 +50,7 @@ if "%MODE%"=="release" (
     set NAME=ronin
     set OPT=/O2 /GL /Gw /Gy /GS- /MT
     set DEFS=/DRONIN_DEV=0
-    set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
+    set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP:build\ronin.map
 ) else if "%MODE%"=="bench" (
     set NAME=ronin_bench
     set OPT=/O2 /Zi /MT
