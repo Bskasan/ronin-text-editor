@@ -1,7 +1,7 @@
 @echo off
 rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), runs --smoke on the
-rem                     debug build and --test on the bench build
+rem                     debug and the bench build, --test on the bench build, and checks the release exe's imports
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
 rem                     bench build and the soak (--soak 1000000) on both (once per phase, before its last commit)
 rem From Git Bash: cmd //c ".\verify.bat" [phase]
@@ -36,6 +36,8 @@ if "!DEBUG_OK!"=="1" (
     call :fail "smoke skipped (no exe)"
 )
 if "!BENCH_OK!"=="1" (
+    rem The bench build is CRT-free as the release one is: the smoke runs on it too (without the debug layer).
+    call :run smoke-bench build\ronin_bench.exe --smoke
     call :run test-bench build\ronin_bench.exe --test
 ) else (
     call :fail "test on bench skipped (no exe)"

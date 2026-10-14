@@ -4991,6 +4991,19 @@ static i32 win32_dev_test_args(Platform *p) {
 }
 #endif
 
+#if RONIN_NO_CRT
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line, int show_cmd);
+
+int __isa_available_init(void); // the compiler's support library: which instruction sets memcpy and memset may use
+
+// The CRT-free build's entry point (/ENTRY): what the CRT's startup did for us is choosing the copy routines'
+// instruction sets, calling wWinMain and ending the process with its code.
+void win32_entry(void) {
+    __isa_available_init();
+    ExitProcess((UINT)wWinMain(GetModuleHandleW(NULL), NULL, GetCommandLineW(), SW_SHOWDEFAULT));
+}
+#endif
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line, int show_cmd) {
     (void)prev_instance;
     (void)cmd_line;

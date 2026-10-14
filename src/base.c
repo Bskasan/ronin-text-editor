@@ -1,5 +1,14 @@
 // base.c — see base.h.
 
+#if RONIN_NO_CRT
+// ---------------------------------------------------------------------------
+// The CRT-free build (release and bench, build.bat): no C runtime, no CRT startup. The compiler's own support
+// library (libvcruntime.lib) still provides the stack probe (__chkstk) and memcpy / memset / memmove, linked
+// statically; this is the one mark the C runtime would define.
+
+int _fltused = 0; // floating point is used (the linker looks for it)
+#endif
+
 // ---------------------------------------------------------------------------
 // Arena
 
