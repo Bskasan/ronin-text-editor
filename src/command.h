@@ -61,6 +61,9 @@ struct CommandContext {
     b32 shift_translated;     // the key had Shift and was found without it (shift-select, Phase 6)
     const Command *this_command;
     const Command *last_command;
+#if RONIN_DEV
+    b32 dev_soak;             // the soak (--soak): commands that leave its directory or end the session do nothing
+#endif
 };
 
 const Command *command_find(String8 name); // NULL if there is no such command
