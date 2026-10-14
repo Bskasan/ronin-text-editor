@@ -5697,6 +5697,23 @@ static b32 test_mc_mouse(Test *t) {
                    wv->cursor_count, view_point(wv, view_primary(wv)));
         if (!test_app_destroy(t, w, "cursors wheel")) return 0;
     }
+    // view-echo-area-messages moves the point of the window that shows *Messages*, not of the command's own view:
+    // that window's cursors are ordered again too (the soak found them out of order).
+    {
+        App *ma = test_search_app(t, STR8_LIT("abc"), 0);
+        TEST_CHECK(t, ma, "cursors messages: no app");
+        app_dev_feed(ma, "C-g C-g C-g C-h e C-x o", &t->arena); // *Messages* in the other window, selected
+        View *mv = app_selected_view(ma);
+        TEST_CHECK(t, mv->buffer == ma->messages && buffer_line_count(mv->buffer) >= 3, "cursors messages: the setup");
+        app_dev_cursors(ma, 0, 1, 2); // lines 0 (the primary) and 1
+        app_dev_feed(ma, "C-x o C-h e", &t->arena); // from the other window: the primary goes to the end of *Messages*
+        i64 end = buffer_size(ma->messages);
+        TEST_CHECK(t, mv->cursor_count == 2 && view_point(mv, &mv->cursors[0]) < view_point(mv, &mv->cursors[1]) &&
+                          view_point(mv, view_primary(mv)) == end && view_primary(mv) == &mv->cursors[1],
+                   "cursors messages: %d cursors at %D, %D, the primary %d (end %D)", mv->cursor_count, view_point(mv, &mv->cursors[0]),
+                   view_point(mv, &mv->cursors[mv->cursor_count - 1]), mv->primary, end);
+        if (!test_app_destroy(t, ma, "cursors messages")) return 0;
+    }
     LOG("test: ok: multiple cursors and the mouse (Ctrl+Shift+click adding, removing, never the last; a plain click; refused on the "
         "minibuffer; the mode line's count; the wheel dragging the primary past and onto another cursor) and two windows on one "
         "buffer (independent cursors that follow each other's edits)");
