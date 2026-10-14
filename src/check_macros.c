@@ -1,7 +1,7 @@
 // check_macros.c — compiled by build.bat with /Zs (syntax only, no output), never linked.
-// Every system header teal uses comes first, then the whole unity build: a teal identifier that a
+// Every system header ronin uses comes first, then the whole unity build: a ronin identifier that a
 // system header defines as a macro (winuser.h's MOD_ALT, rpcndr.h's small, minwindef.h's near) is
-// replaced before the compiler sees it and fails the build, and a teal macro that redefines a
+// replaced before the compiler sees it and fails the build, and a ronin macro that redefines a
 // system one is a C4005 warning in our own code (an error with /WX), where /external:W0 cannot
 // hide it. The defines are the ones win32_main.c and render_d3d11.c use.
 
@@ -24,4 +24,4 @@
 #include <stdarg.h>
 #include <string.h>
 
-#include "teal.c"
+#include "ronin.c"

@@ -175,7 +175,7 @@ void minibuffer_add_candidate(Minibuffer *mb, String8 text, String8 annotation, 
 // Filters and ranks the candidates for the current input; the first match is selected. When the
 // input only grew (typing at its end) on the same candidates, only the previous matches are scored.
 static void minibuffer_filter(Minibuffer *mb) {
-#if TEAL_DEV
+#if RONIN_DEV
     u64 t0 = os_time_us();
 #endif
     arena_reset(&mb->match_arena);
@@ -205,7 +205,7 @@ static void minibuffer_filter(Minibuffer *mb) {
     mb->matches = PUSH_ARRAY(&mb->match_arena, i32, mb->cand_count);
     mb->match_count = match_rank(&mb->query, mb->cands, mb->cand_count, mb->matches, narrow);
     mb->match_total = mb->match_count;
-#if TEAL_DEV
+#if RONIN_DEV
     mb->dev_filter_us = os_time_us() - t0;
     mb->dev_filters++;
 #endif

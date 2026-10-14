@@ -41,7 +41,7 @@ b32  r_wants_redraw(Renderer *r); // true after device-loss recovery; cleared by
 void r_atlas_bind(Renderer *r, u8 *pixels, i32 width, i32 height);
 void r_atlas_mark_dirty(Renderer *r, i32 x0, i32 y0, i32 x1, i32 y1);
 
-#if TEAL_DEV
+#if RONIN_DEV
 void r_request_capture(Renderer *r); // the next r_end_frame copies the back buffer before Present
 u8  *r_read_capture(Renderer *r, Arena *arena, i32 *width, i32 *height); // tightly packed BGRA8
 b32  r_dev_debug_layer_active(Renderer *r);

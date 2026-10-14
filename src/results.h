@@ -141,7 +141,7 @@ typedef struct Results {
     Arena mark_arena;        // ResultsMark[]
     ResultsMark *marks;
     i64 mark_count;
-#if TEAL_DEV
+#if RONIN_DEV
     i32 dev_max_ahead;   // the most files claimed past emit_next seen
     i32 dev_held_back;   // times the claim limit was not raised (held records over the limit)
 #endif

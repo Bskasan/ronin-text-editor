@@ -1,5 +1,5 @@
 @echo off
-rem teal build.  "build.bat" -> build\teal_debug.exe   "build.bat release" -> build\teal.exe
+rem ronin build.  "build.bat" -> build\ronin_debug.exe   "build.bat release" -> build\ronin.exe
 rem From Git Bash: cmd //c ".\build.bat" [release]
 setlocal
 set "ROOT=%~dp0"
@@ -43,32 +43,32 @@ set COMMON=/nologo /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0
 set CFLAGS=%COMMON% /std:c11 /Ibuild\gen
 rem C-style C++: no exceptions (no /EH), no RTTI.
 set CPPFLAGS=%COMMON% /GR- /c
-set LFLAGS=/SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:res\teal.manifest
+set LFLAGS=/SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:res\ronin.manifest
 set LIBS=kernel32.lib user32.lib gdi32.lib d3d11.lib dxgi.lib dwmapi.lib dwrite.lib dxguid.lib
 
 if "%MODE%"=="release" (
-    set NAME=teal
+    set NAME=ronin
     set OPT=/O2 /GL /Gw /Gy /GS- /MT
-    set DEFS=/DTEAL_DEV=0
+    set DEFS=/DRONIN_DEV=0
     set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO
 ) else if "%MODE%"=="bench" (
-    set NAME=teal_bench
+    set NAME=ronin_bench
     set OPT=/O2 /Zi /MT
-    set DEFS=/DTEAL_DEV=1 /DTEAL_D3D_DEBUG=0
+    set DEFS=/DRONIN_DEV=1 /DRONIN_D3D_DEBUG=0
     set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO
 ) else (
-    set NAME=teal_debug
+    set NAME=ronin_debug
     set OPT=/Od /Zi /MTd
-    set DEFS=/DTEAL_DEV=1
+    set DEFS=/DRONIN_DEV=1
     set LINKOPT=/DEBUG /INCREMENTAL:NO
 )
-rem No teal identifier may collide with a system macro: every system header first, then the whole
+rem No ronin identifier may collide with a system macro: every system header first, then the whole
 rem unity build, syntax only (src\check_macros.c says why).
 cl %CFLAGS% %DEFS% /Zs src\check_macros.c
 if errorlevel 1 exit /b 1
 cl %CPPFLAGS% %OPT% %DEFS% src\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
 if errorlevel 1 exit /b 1
-cl %CFLAGS% %OPT% %DEFS% src\teal.c build\%NAME%_dwrite.obj /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
+cl %CFLAGS% %OPT% %DEFS% src\ronin.c build\%NAME%_dwrite.obj /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
 if errorlevel 1 exit /b 1
 
 for %%F in ("build\%NAME%.exe") do echo build\%NAME%.exe: %%~zF bytes

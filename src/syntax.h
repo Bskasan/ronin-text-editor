@@ -95,7 +95,7 @@ typedef struct SyntaxLine {
 void syntax_line_info(Buffer *buf, i64 line, Arena *scratch, SyntaxLine *info);
 b32  syntax_word_is(Buffer *buf, i64 start, i64 end, const char *word); // the text of [start, end) is `word`
 
-#if TEAL_DEV
+#if RONIN_DEV
 void syntax_dev_fake_clock(b32 on); // the clock is the number of bytes lexed (deterministic budget tests)
 u64  syntax_dev_lexed(void);        // bytes lexed by catch-up so far
 u64  syntax_dev_converged(void);    // catch-ups that stopped early because states converged

@@ -65,7 +65,7 @@ static Project *finder_project(App *app, String8 root) {
     return found;
 }
 
-// .teal-project's diagnostics: every one to *Messages*, the first error in the echo area.
+// .ronin-project's diagnostics: every one to *Messages*, the first error in the echo area.
 static void finder_report(App *app, ProjectFile *file) {
     for (ConfigDiag *d = file->diags.first; d; d = d->next) echo_log(&app->echo, d->text);
     for (ConfigDiag *d = file->diags.first; file->diags.errors && d; d = d->next) {
@@ -105,7 +105,7 @@ static void finder_scan(App *app, Project *p) {
     p->stale = 0;
     ProjectScan *scan = project_scan_create(p->root, str8(s->project_ignore, s->project_ignore_len), status == OS_FILE_OK ? &file : NULL,
                                             s->project_max_files);
-#if TEAL_DEV
+#if RONIN_DEV
     if (f->dev_hold_after) {
         scan->dev_hold = 1;
         scan->dev_hold_after = f->dev_hold_after;
@@ -213,7 +213,7 @@ static void finder_shutdown(App *app, u64 deadline) {
         } else {
             LOG("project: the scan of %S did not end within %d ms of the exit: left to the process exit (abandoned)", all[i]->root,
                 PROJECT_SHUTDOWN_MS);
-#if TEAL_DEV
+#if RONIN_DEV
             f->dev_abandoned++;
             os_dev_thread_abandoned();
 #endif
@@ -443,7 +443,7 @@ const Command CMD_PROJECT_FIND_FILE = { "project-find-file", cmd_project_find_fi
 const Command CMD_PROJECT_FIND_FILE_OTHER_WINDOW = { "project-find-file-other-window", cmd_project_find_file_other_window, COMMAND_ONCE };
 const Command CMD_PROJECT_REFRESH = { "project-refresh", cmd_project_refresh, COMMAND_ONCE };
 
-#if TEAL_DEV
+#if RONIN_DEV
 // Tests: waits for the workers' results until no scan runs (or the timeout); false on the timeout.
 static b32 finder_dev_wait(App *app, u32 timeout_ms) {
     u64 start = os_time_us();

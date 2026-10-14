@@ -207,7 +207,7 @@ void project_cache_destroy(ProjectRootCache *c) {
 String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_dir, String8 markers, ProjectExistsFn *exists,
                          void *data) {
     if (!file_dir.len) return cmdline_dir;
-    // Inside the command-line directory the search stops there: teal <directory> makes that directory the
+    // Inside the command-line directory the search stops there: ronin <directory> makes that directory the
     // project, unless a repository nested in it is nearer.
     String8 stop = cmdline_dir.len && project_path_inside(file_dir, cmdline_dir) ? cmdline_dir : str8(NULL, 0);
     String8 root = { 0 };
@@ -229,7 +229,7 @@ String8 project_root_for(ProjectRootCache *c, String8 file_dir, String8 cmdline_
 }
 
 // ---------------------------------------------------------------------------
-// .teal-project
+// .ronin-project
 
 typedef enum ProjectSection {
     PROJECT_SECTION_NONE,
@@ -580,7 +580,7 @@ static void project_scan_main(void *data) {
     ProjectWalk w = { .s = s };
     IgnoreScope *builtin = PUSH_STRUCT(&s->arena, IgnoreScope);
     ignore_parse_words(&s->arena, builtin, s->builtin);
-    // .teal-project as one scope: [ignore], then [allow] as negations after it (the later patterns win).
+    // .ronin-project as one scope: [ignore], then [allow] as negations after it (the later patterns win).
     IgnoreScope ign = { 0 }, all = { 0 };
     ignore_parse_lines(&s->arena, &ign, s->ignore, 0);
     ignore_parse_lines(&s->arena, &all, s->allow, 1);

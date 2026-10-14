@@ -1,7 +1,7 @@
 // test.c — dev-only tests (--test). Headless: buffers and files only, no window, no GPU.
-// Results go to build\teal.log; test_run returns the number of failures.
+// Results go to build\ronin.log; test_run returns the number of failures.
 
-#if TEAL_DEV
+#if RONIN_DEV
 
 #define TEST_FUZZ_OPS 100000
 #define TEST_FUZZ_CHECK_EVERY 50
@@ -924,7 +924,7 @@ static b32 test_round_trip(Test *t, const char *name, String8 bytes, i32 want_en
         if (!test_read_file(t, path, &written) || written.len != bytes.len || !test_equal(written.data, bytes.data, bytes.len)) {
             LOG("test: FAIL: %s: saving over the original changed its bytes", name);
             ok = 0;
-        } else if (!test_file_absent(str8_fmt(&t->arena, "%S.teal~1", path))) {
+        } else if (!test_file_absent(str8_fmt(&t->arena, "%S.ronin~1", path))) {
             LOG("test: FAIL: %s: a temp file was left behind", name);
             ok = 0;
         }
@@ -1133,7 +1133,7 @@ static b32 test_failures(Test *t) {
     TEST_CHECK(t, test_read_file(t, path, &now) && now.len == original.len && test_equal(now.data, original.data, now.len),
                "save failure: the read-only original changed");
     TEST_CHECK(t, buf->modified, "save failure: the buffer is no longer modified");
-    TEST_CHECK(t, test_file_absent(str8_fmt(&t->arena, "%S.teal~1", path)), "save failure: a temp file was left behind");
+    TEST_CHECK(t, test_file_absent(str8_fmt(&t->arena, "%S.ronin~1", path)), "save failure: a temp file was left behind");
 
     String8 old_path = buf->path;
     status = buffer_save_as(buf, str8_fmt(&t->arena, "%S\\no_such_dir\\x.txt", t->tmp_dir));
@@ -4619,8 +4619,8 @@ static b32 test_write(Test *t, String8 path, const char *text) {
 
 static b32 test_hot_reload(Test *t) {
     String8 dir = str8_fmt(&t->arena, "%S\\watch", t->tmp_dir);
-    String8 path = str8_fmt(&t->arena, "%S\\teal.conf", dir);
-    String8 temp = str8_fmt(&t->arena, "%S\\teal.conf.tmp", dir);
+    String8 path = str8_fmt(&t->arena, "%S\\ronin.conf", dir);
+    String8 temp = str8_fmt(&t->arena, "%S\\ronin.conf.tmp", dir);
     String8 other = str8_fmt(&t->arena, "%S\\other.txt", dir);
     TEST_CHECK(t, os_make_dir(dir), "reload: cannot create %S", dir);
     if (!test_write(t, path, "[settings]\ntab_width = 5\n")) return 0;
@@ -4977,7 +4977,7 @@ static b32 test_config(Test *t, u64 seed) {
     TEST_CHECK(t, config_load(c, &t->arena, missing, &info) == OS_FILE_NOT_FOUND && test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER &&
                   config_load(c, &t->arena, str8(NULL, 0), &info) == OS_FILE_NOT_FOUND && c->diags.errors == 0,
                "config: no user file gives the defaults");
-    TEST_CHECK(t, str8_equal(config_file_name(STR8_LIT("C:\\a\\b\\teal.conf")), STR8_LIT("teal.conf")), "config: file name");
+    TEST_CHECK(t, str8_equal(config_file_name(STR8_LIT("C:\\a\\b\\ronin.conf")), STR8_LIT("ronin.conf")), "config: file name");
 
     // Random bytes never crash the parser; diagnostics stay bounded.
     static const u8 alphabet[] = "[]=#\n\n\n \t\r-<>abcxyzCMS0123456789settingscolorskeysfont_size#rrggbb";
@@ -7307,7 +7307,7 @@ static b32 test_ignore_rules(Test *t) {
     ignore_parse_lines(&t->arena, &top, STR8_LIT("*.md\n"), 0);
     IgnoreScope allow = { 0 };
     ignore_parse_lines(&t->arena, &allow, STR8_LIT("gen/\nnode_modules/\n"), 1);
-    // .teal-project as one scope: [ignore] first, [allow] after it (negations win as the later patterns).
+    // .ronin-project as one scope: [ignore] first, [allow] after it (negations win as the later patterns).
     IgnoreScope project = { .base = str8(NULL, 0) };
     project.patterns = PUSH_ARRAY(&t->arena, IgnorePattern, top.count + allow.count);
     for (i32 i = 0; i < top.count; i++) project.patterns[project.count++] = top.patterns[i];
@@ -7340,7 +7340,7 @@ static b32 test_ignore_rules(Test *t) {
         { 3, "gen", 1, 0, "[allow] beats .gitignore" },
         { 3, "README.md", 0, 1, "[ignore] adds to the rest" },
         { 3, "a.exe", 0, 1, "the built-in list" },
-        { 4, "node_modules", 1, 1, "the built-in list without .teal-project" },
+        { 4, "node_modules", 1, 1, "the built-in list without .ronin-project" },
         { 4, "gen", 1, 1, ".gitignore over the built-in list" },
         { 4, "src/main.c", 0, 0, "nothing matches: included" },
     };
@@ -7362,7 +7362,7 @@ static b32 test_ignore_rules(Test *t) {
     TEST_CHECK(t, words.count == 3 && ignore_scope_decide(&words, STR8_LIT("a/.git"), 1) == 1 &&
                   ignore_scope_decide(&words, STR8_LIT("a.c"), 0) == -1, "ignore: a blank-separated list");
     LOG("test: ok: ignore rules (%d globs; comments, blanks, '!', anchors, directories only, '**' in three places, case, nested "
-        "files, the last match deciding, the built-in list, .teal-project [ignore] and [allow] on top: %d cases)",
+        "files, the last match deciding, the built-in list, .ronin-project [ignore] and [allow] on top: %d cases)",
         (i32)ARRAY_COUNT(globs), (i32)ARRAY_COUNT(cases));
     return 1;
 }
@@ -7389,17 +7389,17 @@ static b32 test_fake_exists(void *data, String8 path) {
 // file system.
 static b32 test_project_roots(Test *t) {
     static const char *const paths[] = {
-        "C:\\w\\repo\\.git", "C:\\w\\repo\\sub\\inner\\.hg", "C:\\w\\wt\\.git", "C:\\w\\tp\\.teal-project", "C:\\w\\svn\\.svn",
+        "C:\\w\\repo\\.git", "C:\\w\\repo\\sub\\inner\\.hg", "C:\\w\\wt\\.git", "C:\\w\\tp\\.ronin-project", "C:\\w\\svn\\.svn",
         "C:\\.git", "\\\\srv\\share\\.git",
     };
     TestFakeFs fs = { paths, (i32)ARRAY_COUNT(paths), 0 };
-    String8 markers = STR8_LIT(".git .hg .svn .teal-project");
+    String8 markers = STR8_LIT(".git .hg .svn .ronin-project");
     static const struct { const char *dir, *cmdline, *want, *what; } cases[] = {
         { "C:\\w\\repo\\src\\x", "", "C:\\w\\repo", ".git above the file" },
         { "C:\\w\\repo", "", "C:\\w\\repo", ".git in the file's own directory" },
         { "C:\\w\\repo\\sub\\inner\\deep", "", "C:\\w\\repo\\sub\\inner", "nested repositories: the inner one" },
         { "C:\\w\\wt\\a", "", "C:\\w\\wt", ".git as a file (a worktree)" },
-        { "C:\\w\\tp\\a\\b", "", "C:\\w\\tp", ".teal-project" },
+        { "C:\\w\\tp\\a\\b", "", "C:\\w\\tp", ".ronin-project" },
         { "C:\\w\\svn", "", "C:\\w\\svn", ".svn" },
         { "C:\\w\\none\\a", "", "", "no marker, no command-line directory: not in a project (a marker at C:\\ does not count)" },
         { "C:\\w\\none\\a", "C:\\w", "C:\\w", "no marker, inside the command-line directory" },
@@ -7433,7 +7433,7 @@ static b32 test_project_roots(Test *t) {
                   project_is_drive_root(STR8_LIT("\\\\srv\\share\\")) && !project_is_drive_root(STR8_LIT("\\\\srv\\share\\x")) &&
                   !project_is_drive_root(STR8_LIT("D:\\x")), "roots: drive and share roots");
 
-    // The real file system: build\tmp\p11roots\outer\.git (a directory) and outer\in\.teal-project (a file).
+    // The real file system: build\tmp\p11roots\outer\.git (a directory) and outer\in\.ronin-project (a file).
     String8 base = str8_fmt(&t->arena, "%S\\p11roots", t->tmp_dir);
     String8 outer = str8_fmt(&t->arena, "%S\\outer", base), in = str8_fmt(&t->arena, "%S\\in", outer);
     String8 deep = str8_fmt(&t->arena, "%S\\deep", in), plain = str8_fmt(&t->arena, "%S\\plain", base);
@@ -7443,13 +7443,13 @@ static b32 test_project_roots(Test *t) {
     os_make_dir(in);
     os_make_dir(deep);
     os_make_dir(plain);
-    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", in), STR8_LIT("[ignore]\n")), "roots: cannot write");
+    TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", in), STR8_LIT("[ignore]\n")), "roots: cannot write");
     project_cache_reset(&cache);
     String8 r1 = project_root_for(&cache, deep, str8(NULL, 0), markers, project_exists_fs, NULL);
     String8 r2 = project_root_for(&cache, str8_fmt(&t->arena, "%S\\.git", outer), str8(NULL, 0), markers, project_exists_fs, NULL);
     String8 r3 = project_root_for(&cache, plain, str8(NULL, 0), markers, project_exists_fs, NULL);
     String8 r4 = project_root_for(&cache, plain, base, markers, project_exists_fs, NULL);
-    b32 in_repo = r3.len != 0; // build\tmp may itself be inside a repository with a marker (teal's own .git)
+    b32 in_repo = r3.len != 0; // build\tmp may itself be inside a repository with a marker (ronin's own .git)
     TEST_CHECK(t, str8_equal(r1, in) && str8_equal(r2, outer) && (in_repo || (!r3.len && str8_equal(r4, base))),
                "roots: real directories: '%S', '%S', '%S', '%S'", r1, r2, r3, r4);
     project_cache_destroy(&cache);
@@ -7462,11 +7462,11 @@ static b32 test_project_roots(Test *t) {
     String8 ignore = str8(s->project_ignore, s->project_ignore_len);
     IgnoreScope builtin = { 0 };
     ignore_parse_words(&t->arena, &builtin, ignore);
-    TEST_CHECK(t, str8_equal(str8(s->project_markers, s->project_markers_len), STR8_LIT(".git .hg .svn .teal-project")) &&
+    TEST_CHECK(t, str8_equal(str8(s->project_markers, s->project_markers_len), STR8_LIT(".git .hg .svn .ronin-project")) &&
                   s->project_max_files == 1000000 && c->diags.errors == 0, "roots: the built-in project settings");
     static const struct { const char *path; b32 dir, want; } defaults[] = {
         { ".git", 1, 1 }, { "a/.hg", 1, 1 }, { ".svn", 1, 1 }, { ".vs", 1, 1 }, { "web/node_modules", 1, 1 }, { "x/__pycache__", 1, 1 },
-        { "teal.exe", 0, 1 }, { "a/b.pdb", 0, 1 }, { "img/logo.PNG", 0, 1 }, { "build", 1, 0 }, { "src/bin", 1, 0 }, { "out", 1, 0 },
+        { "ronin.exe", 0, 1 }, { "a/b.pdb", 0, 1 }, { "img/logo.PNG", 0, 1 }, { "build", 1, 0 }, { "src/bin", 1, 0 }, { "out", 1, 0 },
         { "obj", 1, 0 }, { "target", 1, 0 }, { "dist", 1, 0 }, { "src/app.c", 0, 0 }, { ".gitignore", 0, 0 },
     };
     for (i32 i = 0; i < ARRAY_COUNT(defaults); i++) {
@@ -7480,45 +7480,45 @@ static b32 test_project_roots(Test *t) {
     return 1;
 }
 
-// .teal-project: [ignore] and [allow] with their diagnostics.
+// .ronin-project: [ignore] and [allow] with their diagnostics.
 static b32 test_project_file(Test *t) {
     ProjectFile f;
     project_file_parse(&t->arena, STR8_LIT("# a comment\n[ignore]\nbuild/\n*.log\n\n[allow]\nbuild/keep/\n[bogus]\nx\n[ignore\nloose\n[ignore]\nsrc/[ab].c\n"),
-                       STR8_LIT(".teal-project"), &f);
+                       STR8_LIT(".ronin-project"), &f);
     TEST_CHECK(t, str8_equal(f.ignore, STR8_LIT("build/\n*.log\nsrc/[ab].c\n")) && str8_equal(f.allow, STR8_LIT("build/keep/\n")),
                "project file: patterns '%S' / '%S'", f.ignore, f.allow);
     static const char *const want[] = {
-        ".teal-project:8: unknown section [bogus] (expected [ignore], [allow] or [build])",
-        ".teal-project:10: bad section header (expected [ignore], [allow] or [build])",
-        ".teal-project:13: warning: 'src/[ab].c': character classes and backslash escapes are not supported (matched literally)",
+        ".ronin-project:8: unknown section [bogus] (expected [ignore], [allow] or [build])",
+        ".ronin-project:10: bad section header (expected [ignore], [allow] or [build])",
+        ".ronin-project:13: warning: 'src/[ab].c': character classes and backslash escapes are not supported (matched literally)",
     };
     i32 k = 0;
     for (ConfigDiag *d = f.diags.first; d; d = d->next, k++) {
         TEST_CHECK(t, k < ARRAY_COUNT(want) && str8_equal(d->text, str8_cstr(want[k])), "project file: diagnostic %d '%S'", k, d->text);
     }
     TEST_CHECK(t, k == ARRAY_COUNT(want) && f.diags.errors == 2 && f.diags.warnings == 1, "project file: %d diagnostics", k);
-    project_file_parse(&t->arena, STR8_LIT("stray\n"), STR8_LIT(".teal-project"), &f);
-    TEST_CHECK(t, f.diags.errors == 1 && str8_equal(f.diags.first->text, STR8_LIT(".teal-project:1: line outside a section ([ignore], [allow] or [build])")),
+    project_file_parse(&t->arena, STR8_LIT("stray\n"), STR8_LIT(".ronin-project"), &f);
+    TEST_CHECK(t, f.diags.errors == 1 && str8_equal(f.diags.first->text, STR8_LIT(".ronin-project:1: line outside a section ([ignore], [allow] or [build])")),
                "project file: a line before any section");
     // [build]: command and directory (blanks around '=' trimmed, the value kept whole), and its diagnostics.
     project_file_parse(&t->arena, STR8_LIT("[build]\ncommand =  build.bat release  \ndirectory=src/sub\nrun = x\njust words\ncommand =\n[ignore]\n*.o\n"),
-                       STR8_LIT(".teal-project"), &f);
+                       STR8_LIT(".ronin-project"), &f);
     TEST_CHECK(t, str8_equal(f.build_command, STR8_LIT("build.bat release")) && str8_equal(f.build_directory, STR8_LIT("src/sub")) &&
                       str8_equal(f.ignore, STR8_LIT("*.o\n")), "project file: [build] '%S' in '%S', ignore '%S'", f.build_command, f.build_directory, f.ignore);
     static const char *const want_build[] = {
-        ".teal-project:4: unknown name 'run' in [build] (expected command or directory)",
-        ".teal-project:5: expected name = value",
-        ".teal-project:6: expected name = value",
+        ".ronin-project:4: unknown name 'run' in [build] (expected command or directory)",
+        ".ronin-project:5: expected name = value",
+        ".ronin-project:6: expected name = value",
     };
     k = 0;
     for (ConfigDiag *d = f.diags.first; d; d = d->next, k++) {
         TEST_CHECK(t, k < ARRAY_COUNT(want_build) && str8_equal(d->text, str8_cstr(want_build[k])), "project file: [build] diagnostic %d '%S'", k, d->text);
     }
     TEST_CHECK(t, k == ARRAY_COUNT(want_build), "project file: [build] gave %d diagnostics", k);
-    project_file_parse(&t->arena, STR8_LIT("[build]\ncommand = cl /W4 a.c && .\\a.exe\n"), STR8_LIT(".teal-project"), &f);
+    project_file_parse(&t->arena, STR8_LIT("[build]\ncommand = cl /W4 a.c && .\\a.exe\n"), STR8_LIT(".ronin-project"), &f);
     TEST_CHECK(t, str8_equal(f.build_command, STR8_LIT("cl /W4 a.c && .\\a.exe")) && !f.diags.errors && !f.diags.warnings,
                "project file: a command with a backslash '%S' (%d warnings)", f.build_command, f.diags.warnings);
-    LOG("test: ok: .teal-project ([ignore], [allow], [build] with command and directory, unknown and bad sections and names, a line "
+    LOG("test: ok: .ronin-project ([ignore], [allow], [build] with command and directory, unknown and bad sections and names, a line "
         "outside a section, unsupported syntax, a backslash in a command)");
     return 1;
 }
@@ -7765,20 +7765,20 @@ static String8 test_big_tree(Test *t) {
 }
 
 // The scanner on a generated tree: the exact set (ignored directories, nested .gitignore, negation,
-// .teal-project, a junction looping back to the root), the ignored count, the file limit, a cancel in the
+// .ronin-project, a junction looping back to the root), the ignored count, the file limit, a cancel in the
 // middle, 300 rounds of start and cancel, a worker stuck in the file system.
 static b32 test_scanner(Test *t, u64 seed) {
     i32 threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
     String8 root = str8_fmt(&t->arena, "%S\\p11scan", t->tmp_dir);
     static const char *const files[] = {
-        ".git/HEAD", "main.c", "readme.md", "app.log", "keep.log", "teal.exe", "build/out.c", "node_modules/x.js",
+        ".git/HEAD", "main.c", "readme.md", "app.log", "keep.log", "ronin.exe", "build/out.c", "node_modules/x.js",
         "src/a.c", "src/b.h", "src/gen/g.c", "src/x.log", "src/deep/d1/d2/z.c", "docs/draft/w.txt", "docs/guide.txt",
         "vendor/lib.c", "bin/tool.c",
     };
     TEST_CHECK(t, test_make_tree(t, root, files, (i32)ARRAY_COUNT(files)), "scanner: cannot make the tree");
     TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S\\.gitignore", root), STR8_LIT("*.log\nbuild/\nvendor/\n!keep.log\n")) &&
                   os_write_file(str8_fmt(&t->arena, "%S\\src\\.gitignore", root), STR8_LIT("gen/\n!*.log\n")) &&
-                  os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), STR8_LIT("[ignore]\ndocs/draft/\n[allow]\nvendor/\n")),
+                  os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), STR8_LIT("[ignore]\ndocs/draft/\n[allow]\nvendor/\n")),
                "scanner: cannot write the rules");
     String8 loop = str8_fmt(&t->arena, "%S\\src\\loop", root);
     os_dev_remove_dir(loop);
@@ -7788,13 +7788,13 @@ static b32 test_scanner(Test *t, u64 seed) {
     ProjectScan *s = test_scan_make(t, root, 1000000);
     TEST_CHECK(t, project_scan_start(s) && test_scan_finish(s, &x, 10000), "scanner: the scan did not end");
     String8 got = test_index_paths(t, &x);
-    String8 want = STR8_LIT(".gitignore,.teal-project,bin/tool.c,docs/guide.txt,keep.log,main.c,readme.md,src/.gitignore,src/a.c,"
+    String8 want = STR8_LIT(".gitignore,.ronin-project,bin/tool.c,docs/guide.txt,keep.log,main.c,readme.md,src/.gitignore,src/a.c,"
                             "src/b.h,src/deep/d1/d2/z.c,src/x.log,vendor/lib.c");
     ProjectScanResult r = s->result;
     project_scan_free(s);
     TEST_CHECK(t, str8_equal(got, want), "scanner: listed '%S', expected '%S'", got, want);
-    // Ignored: .git (built-in), app.log, teal.exe (built-in), build (.gitignore), node_modules (built-in), src/gen (nested),
-    // docs/draft (.teal-project). The junction is not followed and not counted.
+    // Ignored: .git (built-in), app.log, ronin.exe (built-in), build (.gitignore), node_modules (built-in), src/gen (nested),
+    // docs/draft (.ronin-project). The junction is not followed and not counted.
     TEST_CHECK(t, r.files == 13 && r.ignored == 7 && !r.limit && !r.cancelled && r.errors == 0, "scanner: %D files, %D ignored, %D errors",
                r.files, r.ignored, r.errors);
     // Breadth first: the root's files come before anything in a subdirectory.
@@ -7886,7 +7886,7 @@ static b32 test_scanner(Test *t, u64 seed) {
     project_scan_free(s);
     project_index_destroy(&x);
     TEST_CHECK(t, os_dev_live_threads() == threads0 && os_dev_live_events() == events0, "scanner: threads or events left");
-    LOG("test: ok: scanner (the exact set: built-in, .gitignore, nested .gitignore with negation, .teal-project [ignore] and [allow], "
+    LOG("test: ok: scanner (the exact set: built-in, .gitignore, nested .gitignore with negation, .ronin-project [ignore] and [allow], "
         "a junction not followed; 7 ignored; breadth first; the file limit; a cancel after the first batch; 10,000 files; 300 "
         "start / cancel rounds, the slowest end %U us after its cancel; a stuck worker's join bounded; no threads or events left)", worst_us);
     return 1;
@@ -8021,7 +8021,7 @@ static b32 test_manual_files(Test *t) {
     TEST_CHECK(t, test_contains(mode, "%   L150 C0"), "manual C1: a percent in the middle: '%S'", mode);
     if (!test_app_destroy(t, app, "manual C1")) return 0;
 
-    // teal +120:8 file: line 120 centered, column 8 (1-based) is C7.
+    // ronin +120:8 file: line 120 centered, column 8 (1-based) is C7.
     app = test_manual_app(t, c_path, 120, 8, none);
     TEST_CHECK(t, app, "manual C2: app_create failed");
     View *v = app_selected_view(app);
@@ -8262,7 +8262,7 @@ static b32 test_manual_minibuffer(Test *t) {
     return 1;
 }
 
-// I1 I2 I5 I6 I7: open-config creates teal.conf; a saved change reloads it ("Reloaded"); tab_width,
+// I1 I2 I5 I6 I7: open-config creates ronin.conf; a saved change reloads it ("Reloaded"); tab_width,
 // a new binding, an unknown command.
 static b32 test_manual_reload(Test *t, App *app, String8 path, String8 text) {
     if (!os_write_file(path, text)) return 0;
@@ -8274,16 +8274,16 @@ static b32 test_manual_reload(Test *t, App *app, String8 path, String8 text) {
 }
 
 static b32 test_manual_config(Test *t) {
-    String8 dir = str8_fmt(&t->arena, "%S\\cfg", test_manual_dir(t)), conf = str8_fmt(&t->arena, "%S\\teal.conf", dir);
+    String8 dir = str8_fmt(&t->arena, "%S\\cfg", test_manual_dir(t)), conf = str8_fmt(&t->arena, "%S\\ronin.conf", dir);
     os_file_delete(conf);
     App *app = test_manual_app(t, str8(NULL, 0), 0, 0, conf);
     TEST_CHECK(t, app, "manual I1: app_create failed");
     app_dev_feed(app, "C-c ,", &t->arena);
     String8 created = str8_fmt(&t->arena, "Created %S from the built-in defaults", conf);
-    TEST_CHECK(t, str8_equal(test_echo(app), created) && test_current_is(app, "teal.conf") && test_file_is(t, conf, (const char *)config_default_text().data) &&
+    TEST_CHECK(t, str8_equal(test_echo(app), created) && test_current_is(app, "ronin.conf") && test_file_is(t, conf, (const char *)config_default_text().data) &&
                   app->config_watch, "manual I1: open-config: '%S'", test_echo(app));
 
-    TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[colors]\nbackground = #202020\n")) && test_echo_has(app, "Reloaded teal.conf") &&
+    TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[colors]\nbackground = #202020\n")) && test_echo_has(app, "Reloaded ronin.conf") &&
                   app->config->theme.background == 0x202020, "manual I2: echo '%S', background %06x", test_echo(app), app->config->theme.background);
 
     View *v = app_selected_view(app);
@@ -8299,11 +8299,11 @@ static b32 test_manual_config(Test *t) {
     TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("")), "manual I6: C-z undo");
 
     TEST_CHECK(t, test_manual_reload(t, app, conf, STR8_LIT("[keys]\nC-z no-such-command\n")) &&
-                  test_echo_has(app, "teal.conf:2: unknown command 'no-such-command'"), "manual I7: echo '%S'", test_echo(app));
+                  test_echo_has(app, "ronin.conf:2: unknown command 'no-such-command'"), "manual I7: echo '%S'", test_echo(app));
     app_dev_feed(app, "o k", &t->arena);
     TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("ok")), "manual I7: the editor keeps working");
     if (!test_app_destroy(t, app, "manual config")) return 0;
-    LOG("test: ok: manual I1 I2 I5 I6 I7 (open-config creates and visits teal.conf; a saved change reloads with 'Reloaded teal.conf'; "
+    LOG("test: ok: manual I1 I2 I5 I6 I7 (open-config creates and visits ronin.conf; a saved change reloads with 'Reloaded ronin.conf'; "
         "tab_width; C-z undo; an unknown command reported, editing goes on)");
     return 1;
 }
@@ -9153,12 +9153,12 @@ static b32 test_finder(Test *t) {
     TEST_CHECK(t, finder_dev_wait(app, 5000) && test_contains(test_echo(app), "files in "), "finder: project-refresh ended: '%S'", test_echo(app));
     if (!test_app_destroy(t, app, "finder")) return 0;
 
-    // teal <directory> (no marker in it): *scratch* and C-x C-f start there, C-x p f lists it. A scan held
+    // ronin <directory> (no marker in it): *scratch* and C-x C-f start there, C-x p f lists it. A scan held
     // after its first batch: the finder says it is scanning and lists what is known; RET takes the best of
     // that; released, the list fills in.
     String8 big = os_full_path(&t->arena, test_big_tree(t));
     app = test_manual_app(t, big, 0, 0, none);
-    TEST_CHECK(t, app && test_current_is(app, "*scratch*") && !test_echo(app).len, "finder: teal <directory>: '%S', echo '%S'",
+    TEST_CHECK(t, app && test_current_is(app, "*scratch*") && !test_echo(app).len, "finder: ronin <directory>: '%S', echo '%S'",
                app ? test_current(app)->name : none, app ? test_echo(app) : none);
     app_dev_feed(app, "C-x C-f", &t->arena);
     String8 initial = minibuffer_input(&app->mini, &t->arena);
@@ -9238,7 +9238,7 @@ static b32 test_finder(Test *t) {
                os_dev_live_threads() - threads0, os_dev_live_events() - events0);
     LOG("test: ok: project finder (the prompt at once, the end-of-scan message with the ignored count, the empty query with visited "
         "files first, a query and RET, RET with one candidate a frame and with the input in the same frame, a stale index shown "
-        "until its rescan ends, the other window, inside the minibuffer, project-refresh, teal <directory> with *scratch* and "
+        "until its rescan ends, the other window, inside the minibuffer, project-refresh, ronin <directory> with *scratch* and "
         "C-x C-f there, a held scan: status, partial list, RET, then filled; shutdown with a scan running in %U us; not in a project; "
         "a stuck worker abandoned after %d ms)", took, PROJECT_SHUTDOWN_MS);
     return 1;
@@ -9842,7 +9842,7 @@ static b32 test_results(Test *t) {
     os_make_dir(str8_fmt(&t->arena, "%S\\.git", root));
     os_make_dir(str8_fmt(&t->arena, "%S\\b", root));
     os_write_file(str8_fmt(&t->arena, "%S\\.git\\HEAD", root), STR8_LIT("ref\n"));
-    os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), STR8_LIT("[ignore]\nignored.c\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), STR8_LIT("[ignore]\nignored.c\n"));
     os_write_file(str8_fmt(&t->arena, "%S\\a.c", root), STR8_LIT("int foo;\nfoo(); foo\n"));
     os_write_file(str8_fmt(&t->arena, "%S\\bin.dat", root), str8((u8 *)"foo\0bar", 7));
     os_write_file(str8_fmt(&t->arena, "%S\\ignored.c", root), STR8_LIT("foo ignored\n"));
@@ -10386,8 +10386,8 @@ static b32 test_compile_match(Test *t) {
           "warning 55:9 [C:\\web-projects\\text-editor\\src\\app.c] ((55,9)) {warning}" },
         { "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt\\stdio.h(12): note: see declaration of 'printf'",
           "info 12:0 [C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt\\stdio.h] ((12)) {note}" },
-        { "src\\teal.c(3): fatal error C1083: Cannot open include file: 'nope.h': No such file or directory",
-          "error 3:0 [src\\teal.c] ((3)) {fatal error}" },
+        { "src\\ronin.c(3): fatal error C1083: Cannot open include file: 'nope.h': No such file or directory",
+          "error 3:0 [src\\ronin.c] ((3)) {fatal error}" },
         { "C:\\dir with spaces\\my file.c(7) : warning C4996: 'strcpy': This function or variable may be unsafe.",
           "warning 7:0 [C:\\dir with spaces\\my file.c] ((7)) {warning}" },
         { "C:\\x\\Program.cs(10,5): error CS1002: ; expected [C:\\x\\app\\app.csproj]",
@@ -10420,8 +10420,8 @@ static b32 test_compile_match(Test *t) {
         { "GET http://localhost:8080/index.html: 200", "-" },
         { "version 1.2.3", "-" },
         { "Microsoft (R) C/C++ Optimizing Compiler Version 19.40.33811 for x64", "-" },
-        { "LINK : fatal error LNK1104: cannot open file 'teal.exe'", "-" },
-        { "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main", "-" },
+        { "LINK : fatal error LNK1104: cannot open file 'ronin.exe'", "-" },
+        { "ronin.obj : error LNK2019: unresolved external symbol foo referenced in function main", "-" },
         { "C:\\Program Files (x86)\\x\\y.h", "-" },
         { "1 error generated.", "-" },
         { "", "-" },
@@ -10434,8 +10434,8 @@ static b32 test_compile_match(Test *t) {
                    located[i].want);
     }
     static const struct { const char *line, *want; } kinds[] = {
-        { "LINK : fatal error LNK1104: cannot open file 'teal.exe'", "error {fatal error}" },
-        { "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main", "error {error}" },
+        { "LINK : fatal error LNK1104: cannot open file 'ronin.exe'", "error {fatal error}" },
+        { "ronin.obj : error LNK2019: unresolved external symbol foo referenced in function main", "error {error}" },
         { "cl : command line warning D9025 : overriding '/W3' with '/W4'", "warning {warning}" },
         { "error: linker command failed with exit code 1 (use -v to see invocation)", "error {error}" },
         { "ld: error: undefined symbol: foo", "error {error}" },
@@ -10840,7 +10840,7 @@ static b32 test_compile_run(Test *t) {
                "build: the cap: ended %d, truncated %d, %d marks, %D bytes read, %D kept", b.ended, b.c->truncated, marks, b.c->bytes, b.text.len);
     test_build_free(&b);
     // A command that does not exist (cmd says so, exit 1); a directory that does not exist (no start).
-    test_build(t, STR8_LIT("no_such_command_teal_p13"), dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
+    test_build(t, STR8_LIT("no_such_command_ronin_p13"), dir, str8(NULL, 0), MB(16), NULL, 10000, &b);
     TEST_CHECK(t, b.ended && b.c->exit_code == 1 && b.lines >= 1, "build: a missing command: exit %u, %d lines", b.c->exit_code, b.lines);
     test_build_free(&b);
     test_build(t, STR8_LIT("echo x"), str8_fmt(&t->arena, "%S\\no_such_dir", dir), str8(NULL, 0), MB(16), NULL, 10000, &b);
@@ -11014,7 +11014,7 @@ static b32 test_compile_app(Test *t) {
                                                      "out a.c(4): error C2143: missing ';'\n"
                                                      "out done\n"
                                                      "exit 2\n"));
-    os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
+    os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
     String8 none = test_results_conf(t, "p13none.conf", "[settings]\ncompilation_save_buffers = none\n");
     String8 want_head = str8_fmt(&t->arena,
                                  "Command: %S\nDirectory: %S\n\nBuilding...\n"
@@ -11024,7 +11024,7 @@ static b32 test_compile_app(Test *t) {
                                  "a.c(4): error C2143: missing ';'\n"
                                  "done\n\nCompilation exited abnormally with code 2 in ", cmd, shown);
 
-    // The whole flow: the prompt with .teal-project's command, *compilation* in the other window (not
+    // The whole flow: the prompt with .ronin-project's command, *compilation* in the other window (not
     // selected), its exact text, the state, the summary, the locations; next-error with the landing
     // highlight; RET, n, p; a note skipped; g.
     {
@@ -11092,7 +11092,7 @@ static b32 test_compile_app(Test *t) {
         app_dev_feed(app, "C-x b a . c RET M-x r e c o m p i l e RET", &t->arena);
         TEST_CHECK(t, results_compile_running(app) && test_current(app) == ab, "compile app: M-x recompile");
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: recompile did not end");
-        // The prompt now offers the command last used here (over .teal-project's): an edited one.
+        // The prompt now offers the command last used here (over .ronin-project's): an edited one.
         app_dev_feed(app, "C-x p c C-e SPC e x t r a RET", &t->arena);
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the edited command did not end");
         app_dev_feed(app, "C-x p c", &t->arena);
@@ -11235,7 +11235,7 @@ static b32 test_compile_app(Test *t) {
 
     // A link-only failure: errors without a location, colored, counted, not visited.
     {
-        String8 link = test_child(t, "app_link", STR8_LIT("out teal.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
+        String8 link = test_child(t, "app_link", STR8_LIT("out ronin.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
                                                          "out LINK : fatal error LNK1120: 1 unresolved externals\n"
                                                          "out Build FAILED: 2 Error(s), 0 Warning(s)\n"
                                                          "exit 1120\n"));
@@ -11244,14 +11244,14 @@ static b32 test_compile_app(Test *t) {
         app_dev_feed(app, "C-x p c RET", &t->arena);
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the link build did not end");
         String8 want = str8_fmt(&t->arena, "Command: %S\nDirectory: %S\n\n"
-                                           "teal.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
+                                           "ronin.obj : error LNK2019: unresolved external symbol foo referenced in function main\n"
                                            "LINK : fatal error LNK1120: 1 unresolved externals\n"
                                            "Build FAILED: 2 Error(s), 0 Warning(s)\n\n"
                                            "Compilation exited abnormally with code 1120 in ", link, shown);
         String8 got = test_compile_text(t, app);
         Results *r = results_compilation(app);
         TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "compile app: the link text '%S'", got);
-        TEST_CHECK(t, r->count == 0 && r->mark_count == 4 && r->marks[0].row == 3 && r->marks[0].off == 11 && r->marks[0].len == 5 &&
+        TEST_CHECK(t, r->count == 0 && r->mark_count == 4 && r->marks[0].row == 3 && r->marks[0].off == 12 && r->marks[0].len == 5 &&
                           r->marks[1].off == 7 && r->marks[1].len == 11 && r->marks[1].kind == LOCATION_ERROR,
                    "compile app: the link marks (%D locations, %D marks)", r->count, r->mark_count);
         // The summary: both count words colored, neither counted (the echo below says 2 errors, 0 warnings).
@@ -11344,14 +11344,14 @@ static b32 test_compile_app(Test *t) {
         if (!test_app_destroy(t, app, "compile app")) return 0;
     }
 
-    // .teal-project: [build] directory, a diagnostic, the shutdown with a build running (no question).
+    // .ronin-project: [build] directory, a diagnostic, the shutdown with a build running (no question).
     {
         String8 cwd = test_child(t, "app_cwd", STR8_LIT("cwd\n"));
-        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\ndirectory = sub\nbogus = 1\n", cwd));
+        os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\ndirectory = sub\nbogus = 1\n", cwd));
         App *app = test_manual_app(t, a_c, 0, 0, none);
         app_dev_feed(app, "C-x p c", &t->arena);
         String8 log = buffer_text(app->messages, &t->arena, 0, buffer_size(app->messages));
-        TEST_CHECK(t, test_contains(log, ".teal-project:4: unknown name 'bogus' in [build]") && str8_equal(test_mini_input(t, app), cwd),
+        TEST_CHECK(t, test_contains(log, ".ronin-project:4: unknown name 'bogus' in [build]") && str8_equal(test_mini_input(t, app), cwd),
                    "compile app: [build] diagnostics in *Messages*, command '%S'", test_mini_input(t, app));
         app_dev_feed(app, "RET", &t->arena);
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the cwd build did not end");
@@ -11361,25 +11361,25 @@ static b32 test_compile_app(Test *t) {
         for (i64 i = 0; i + want_dir.len <= text.len && !found; i++) found = mem_equal(text.data + i, want_dir.data, want_dir.len);
         TEST_CHECK(t, found, "compile app: [build] directory: '%S'", text);
         // A [build] directory that does not exist: the build cannot start, and says so.
-        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\ndirectory = no_such_dir\n", cwd));
+        os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\ndirectory = no_such_dir\n", cwd));
         app_dev_feed(app, "C-x p c RET", &t->arena);
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the failed start did not end");
         TEST_CHECK(t, test_contains(test_compile_text(t, app), "\n\nCompilation could not start: ") &&
                           str8_equal(test_compile_mode(t, app), STR8_LIT("Compilation:failed")) && test_contains(test_echo(app), "Compilation could not start"),
                    "compile app: a missing [build] directory: mode '%S', echo '%S'", test_compile_mode(t, app), test_echo(app));
-        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
+        os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
         results_compile_remember(app, root, tree);
         app_dev_feed(app, "C-x p c RET", &t->arena);
         TEST_CHECK(t, test_compile_wait_text(t, app, "started", 10000), "compile app: the last tree did not start");
         u32 g = test_grandchild_pid(test_compile_text(t, app));
         if (!test_app_destroy(t, app, "compile app")) return 0;
         TEST_CHECK(t, test_pid_gone(g, 2000), "compile app: the shutdown left the grandchild %u", g);
-        os_write_file(str8_fmt(&t->arena, "%S\\.teal-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
+        os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
     }
     TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0,
                "compile app: counters back (%d processes, %d threads, %d events)", os_dev_live_processes(), os_dev_live_threads(),
                os_dev_live_events());
-    LOG("test: ok: builds in the app (the prompt with .teal-project's command, nothing run before RET, *compilation* beside and not "
+    LOG("test: ok: builds in the app (the prompt with .ronin-project's command, nothing run before RET, *compilation* beside and not "
         "selected, its exact text, the mode line's state, the summary, next-error with the landing highlight and a skipped note, RET, n, "
         "p, g, M-x recompile, the command last used here offered, an empty command, kill with none, recompile with none, compile's "
         "prompt; compilation_scroll_output first-error / true / false; compilation_save_buffers ask (y, n, q) / all / none; a second "
@@ -11604,4 +11604,4 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     return t.failures;
 }
 
-#endif // TEAL_DEV
+#endif // RONIN_DEV

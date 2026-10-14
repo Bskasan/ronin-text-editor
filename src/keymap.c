@@ -269,7 +269,7 @@ static const Command *key_lookup(Keymap **stack, i32 count, KeySeq *seq, b32 *pr
     return NULL;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 i32 key_dev_events(String8 token, Event out[2], const char **error) {
     KeyChord c;
     if (!key_chord_parse(token, &c, error)) return 0;

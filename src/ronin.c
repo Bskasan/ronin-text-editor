@@ -1,4 +1,4 @@
-// teal.c — the unity translation unit. (src/win32_dwrite.cpp is compiled separately: dwrite.h is C++ only.)
+// ronin.c — the unity translation unit. (src/win32_dwrite.cpp is compiled separately: dwrite.h is C++ only.)
 // Headers first, then the editor core, then the backends that touch Win32 / D3D.
 
 #include "base.h"
@@ -52,9 +52,9 @@
 #include "results.c"
 #include "cursors.c"
 #include "command.c"
-#include "test.c" // TEAL_DEV only
+#include "test.c" // RONIN_DEV only
 
 #include "render_d3d11.c"
 #include "win32_main.c"
-#include "win32_input_test.c" // TEAL_DEV only
-#include "win32_child.c"      // TEAL_DEV only
+#include "win32_input_test.c" // RONIN_DEV only
+#include "win32_child.c"      // RONIN_DEV only

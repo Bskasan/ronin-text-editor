@@ -6,7 +6,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <dwmapi.h>
-#if TEAL_DEV
+#if RONIN_DEV
 #define PSAPI_VERSION 2 // K32GetProcessMemoryInfo, exported by kernel32: no psapi.lib
 #include <psapi.h>
 #endif
@@ -35,7 +35,7 @@ typedef struct Platform {
     u8 watch_fired[WIN32_MAX_WATCHES]; // ... it fired: out of the wait until os_watch_rearm
     HANDLE wake;                       // os_wake_main: set by workers, part of the wait (auto-reset)
     HCURSOR cursors[MOUSE_CURSOR_COUNT]; // loaded once; app_mouse_cursor picks one
-#if TEAL_DEV
+#if RONIN_DEV
     volatile LONG live_threads;        // os_thread_start minus joined
     volatile LONG live_events;         // os_event_create minus destroyed
     volatile LONG live_processes;      // os_process_start minus os_process_close
@@ -76,7 +76,7 @@ typedef struct Platform {
     FbRenderMode render_mode;
     b32 unsaved;      // some file buffer has unsaved changes (os_set_unsaved_files)
     b32 block_reason; // a shutdown block reason is registered
-#if TEAL_DEV
+#if RONIN_DEV
     HANDLE log_file;
     b32 smoke;
     b32 test;
@@ -114,7 +114,7 @@ typedef struct Platform {
     b32 idle_check;       // --idle-check: shown without focus, idle; CPU time, frames and wakeups measured
     b32 clipboard_check;  // --clipboard-check: the real clipboard through the app, saved and put back
     String8 dpi_check;    // --dpi-check <dir>: WM_DPICHANGED to 125% and back, a screenshot at each step
-    b32 clip_no_history;  // what teal puts on the clipboard stays out of clipboard history (the check's text)
+    b32 clip_no_history;  // what ronin puts on the clipboard stays out of clipboard history (the check's text)
     u64 idle_wakeups;     // passes of the main loop
     u64 idle_start_cpu, idle_start_wakeups;
     b32 idle_measuring;   // between the two marks: the window procedure's messages are counted
@@ -412,7 +412,7 @@ OsFileStatus os_file_create_temp(String8 target, Arena *arena, OsFile *file, Str
     Arena *scratch = &g_platform->scratch;
     for (u32 n = 1; n < 100; n++) {
         u64 mark = arena_pos(scratch);
-        String8 name = str8_fmt(scratch, "%S.teal~%u", target, n);
+        String8 name = str8_fmt(scratch, "%S.ronin~%u", target, n);
         HANDLE h = CreateFileW(win32_path16(name), GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
         DWORD error = GetLastError();
         if (h != INVALID_HANDLE_VALUE) {
@@ -539,7 +539,7 @@ static b32 win32_open_clipboard(Platform *p) {
     return 0;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 // Stores UTF-16 units in the fake, growing its commit.
 static u16 *win32_fake_clip_space(Platform *p, i64 units) {
     if (!p->clip_text) p->clip_text = (u16 *)os_reserve(WIN32_CLIP_RESERVE);
@@ -565,7 +565,7 @@ void os_dev_clipboard_external(String8 text) {
 }
 #endif
 
-#if TEAL_DEV
+#if RONIN_DEV
 // With the clipboard open and text set: keeps it out of Windows' clipboard history and cloud
 // clipboard (--clipboard-check: its test text must not stay anywhere).
 static void win32_dev_clip_exclude(void) {
@@ -584,7 +584,7 @@ static void win32_dev_clip_exclude(void) {
 b32 os_clipboard_set(String8 text) {
     Platform *p = g_platform;
     i64 units = clip_utf16_len(text);
-#if TEAL_DEV
+#if RONIN_DEV
     if (p->clip_fake) {
         u16 *out = win32_fake_clip_space(p, units);
         if (!out) return 0;
@@ -603,7 +603,7 @@ b32 os_clipboard_set(String8 text) {
         GlobalUnlock(h);
         ok = SetClipboardData(CF_UNICODETEXT, h) != NULL;
     }
-#if TEAL_DEV
+#if RONIN_DEV
     if (ok && p->clip_no_history) win32_dev_clip_exclude();
 #endif
     if (h && !ok) GlobalFree(h);
@@ -614,7 +614,7 @@ b32 os_clipboard_set(String8 text) {
 b32 os_clipboard_get(Arena *arena, String8 *text) {
     Platform *p = g_platform;
     *text = str8(NULL, 0);
-#if TEAL_DEV
+#if RONIN_DEV
     if (p->clip_fake) {
         if (!p->clip_text) return 0;
         *text = clip_utf8_from_utf16(arena, p->clip_text, p->clip_len);
@@ -637,7 +637,7 @@ b32 os_clipboard_get(Arena *arena, String8 *text) {
 }
 
 u32 os_clipboard_seq(void) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (g_platform->clip_fake) return g_platform->clip_seq;
 #endif
     return (u32)GetClipboardSequenceNumber();
@@ -732,7 +732,7 @@ b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data, b32 background
     // Background workers one step below normal: when every core is busy, the main thread (input,
     // frames) wins.
     b32 lower = background;
-#if TEAL_DEV
+#if RONIN_DEV
     lower = lower && !g_platform->background_normal;
     InterlockedIncrement(&g_platform->live_threads);
 #endif
@@ -740,7 +740,7 @@ b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data, b32 background
     return 1;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 void os_dev_background_normal(b32 on) {
     g_platform->background_normal = on;
 }
@@ -754,7 +754,7 @@ b32 os_thread_join(OsThread thread, u32 timeout_ms) {
     if (!thread.handle) return 1;
     if (WaitForSingleObject(thread.handle, timeout_ms) != WAIT_OBJECT_0) return 0;
     CloseHandle(thread.handle);
-#if TEAL_DEV
+#if RONIN_DEV
     InterlockedDecrement(&g_platform->live_threads);
 #endif
     return 1;
@@ -772,7 +772,7 @@ void os_unlock(OsLock *lock) {
 
 b32 os_event_create(OsEvent *event) {
     event->handle = CreateEventW(NULL, FALSE, FALSE, NULL);
-#if TEAL_DEV
+#if RONIN_DEV
     if (event->handle) InterlockedIncrement(&g_platform->live_events);
 #endif
     return event->handle != NULL;
@@ -789,7 +789,7 @@ b32 os_event_wait(OsEvent event, u32 timeout_ms) {
 void os_event_destroy(OsEvent event) {
     if (!event.handle) return;
     CloseHandle(event.handle);
-#if TEAL_DEV
+#if RONIN_DEV
     InterlockedDecrement(&g_platform->live_events);
 #endif
 }
@@ -892,7 +892,7 @@ OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProc
     WCHAR name[96];
     {
         u8 name8[96];
-        i64 nn = fmt_buf(name8, sizeof(name8), "\\\\.\\pipe\\teal-%u-%u-%U", (u32)GetCurrentProcessId(),
+        i64 nn = fmt_buf(name8, sizeof(name8), "\\\\.\\pipe\\ronin-%u-%u-%U", (u32)GetCurrentProcessId(),
                          (u32)InterlockedIncrement(&pipe_counter), (u64)GetTickCount64());
         win32_utf8_to_wide_fixed(str8(name8, nn), (u16 *)name, ARRAY_COUNT(name));
     }
@@ -915,12 +915,12 @@ OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProc
         goto done;
     }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = { 0 };
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; // teal's exit (a crash too) ends the tree
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; // ronin's exit (a crash too) ends the tree
     if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
         status = win32_last_file_status();
         goto done;
     }
-    // Only the pipe's write end and NUL are inherited: no other handle of teal (another build's pipe
+    // Only the pipe's write end and NUL are inherited: no other handle of ronin (another build's pipe
     // included) reaches the child.
     SIZE_T list_size = 0;
     InitializeProcThreadAttributeList(NULL, 1, 0, &list_size);
@@ -965,7 +965,7 @@ OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProc
     p->pipe = server;
     p->io_event = io_event;
     job = server = io_event = NULL; // the process's now
-#if TEAL_DEV
+#if RONIN_DEV
     InterlockedIncrement(&g_platform->live_processes);
 #endif
 done:
@@ -1075,12 +1075,12 @@ void os_process_close(OsProcess *p, b32 kill_rest) {
     win32_close(&pipe);
     win32_close(&io_event);
     memset(p, 0, sizeof(*p));
-#if TEAL_DEV
+#if RONIN_DEV
     InterlockedDecrement(&g_platform->live_processes);
 #endif
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 b32 os_dev_wake_wait(u32 timeout_ms) {
     return WaitForSingleObject(g_platform->wake, timeout_ms) == WAIT_OBJECT_0;
 }
@@ -1135,7 +1135,7 @@ String8 os_dev_exe_path(Arena *arena) {
 
 // A directory junction (a mount point reparse point), as mklink /J makes it: no admin rights needed.
 // REPARSE_DATA_BUFFER is a driver-kit type, so its mount-point layout is spelled out here.
-#define TEAL_FSCTL_SET_REPARSE_POINT 0x000900A4
+#define RONIN_FSCTL_SET_REPARSE_POINT 0x000900A4
 b32 os_dev_make_junction(String8 link, String8 target) {
     Platform *p = g_platform;
     u64 mark = arena_pos(&p->scratch);
@@ -1162,7 +1162,7 @@ b32 os_dev_make_junction(String8 link, String8 target) {
             memcpy(buf + 16, substitute.data, sub_bytes + 2);
             memcpy(buf + 16 + print_off, print.data, print_bytes + 2);
             DWORD returned = 0;
-            ok = DeviceIoControl(h, TEAL_FSCTL_SET_REPARSE_POINT, buf, total, NULL, 0, &returned, NULL) != 0;
+            ok = DeviceIoControl(h, RONIN_FSCTL_SET_REPARSE_POINT, buf, total, NULL, 0, &returned, NULL) != 0;
             CloseHandle(h);
         }
         if (!ok) RemoveDirectoryW(link16);
@@ -1181,7 +1181,7 @@ b32 os_dev_remove_dir(String8 path) {
 #endif
 
 static void win32_push_event(Platform *p, Event e);
-#if TEAL_DEV
+#if RONIN_DEV
 static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
 static i32 win32_dev_child(Platform *p, String8 script); // win32_child.c
 static u64 win32_dev_hash(String8 s);
@@ -1209,7 +1209,7 @@ static DWORD win32_wait_handles(Platform *p, HANDLE *out) {
     return n;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 b32 os_dev_watch_wait(OsWatch watch, u32 timeout_ms) {
     Platform *p = g_platform;
     if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1]) return 0;
@@ -1258,7 +1258,7 @@ b32 os_dev_set_read_only(String8 path, b32 read_only) {
 }
 #endif
 
-#if TEAL_DEV
+#if RONIN_DEV
 b32 os_dev_hard_link(String8 existing, String8 link) {
     Arena *scratch = &g_platform->scratch;
     u64 mark = arena_pos(scratch);
@@ -1281,16 +1281,16 @@ void os_set_window_title(String8 title) {
     u64 mark = arena_pos(&p->scratch);
     SetWindowTextW(p->hwnd, (WCHAR *)str16_from_str8(&p->scratch, title).data);
     arena_pop_to(&p->scratch, mark);
-#if TEAL_DEV
+#if RONIN_DEV
     p->title_sets++;
 #endif
 }
 
-// While unsaved files remain after Windows asked to end the session, the shutdown screen lists teal
+// While unsaved files remain after Windows asked to end the session, the shutdown screen lists ronin
 // with this reason.
 static void win32_block_shutdown(Platform *p, b32 block) {
     if (block == p->block_reason || !p->hwnd) return;
-    if (block) p->block_reason = ShutdownBlockReasonCreate(p->hwnd, L"Unsaved changes in teal") != 0;
+    if (block) p->block_reason = ShutdownBlockReasonCreate(p->hwnd, L"Unsaved changes in ronin") != 0;
     else p->block_reason = !ShutdownBlockReasonDestroy(p->hwnd);
 }
 
@@ -1301,7 +1301,7 @@ void os_set_unsaved_files(b32 any) {
     if (!any) win32_block_shutdown(p, 0);
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 b32 os_dev_unsaved_files(void) {
     return g_platform && g_platform->unsaved;
 }
@@ -1351,7 +1351,7 @@ b32 os_make_dir(String8 path) {
 
 void os_fatal(String8 message) {
     b32 interactive = 1;
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("fatal: %S", message);
     if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
@@ -1362,12 +1362,12 @@ void os_fatal(String8 message) {
     if (interactive) {
         u16 text[1024];
         win32_utf8_to_wide_fixed(message, text, ARRAY_COUNT(text));
-        MessageBoxW(NULL, (WCHAR *)text, L"teal", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, (WCHAR *)text, L"ronin", MB_OK | MB_ICONERROR);
     }
     ExitProcess(1);
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 void os_log_write(String8 text) {
     u16 wide[4096];
     win32_utf8_to_wide_fixed(text, wide, ARRAY_COUNT(wide));
@@ -1488,7 +1488,7 @@ static void win32_frame(Platform *p) {
     if (p->in_frame || !p->renderer || !p->app) return;
     p->in_frame = 1;
 
-#if TEAL_DEV
+#if RONIN_DEV
     if (p->frame_count == 0) os_dev_stage("first frame: start");
 #endif
     FrameInput input = win32_frame_input(p);
@@ -1499,7 +1499,7 @@ static void win32_frame(Platform *p) {
     p->frame_count++;
 
     if (p->frame_count == 1) {
-#if TEAL_DEV
+#if RONIN_DEV
         QueryPerformanceCounter(&p->first_present);
 #endif
         FILETIME created, exited, kernel, user, now_ft;
@@ -1510,7 +1510,7 @@ static void win32_frame(Platform *p) {
             p->exit_code = (i32)((us_process + 500) / 1000);
             p->quit = 1;
         }
-#if TEAL_DEV
+#if RONIN_DEV
         LARGE_INTEGER now, freq;
         QueryPerformanceCounter(&now);
         QueryPerformanceFrequency(&freq);
@@ -1524,7 +1524,7 @@ static void win32_frame(Platform *p) {
 }
 
 static void win32_push_event(Platform *p, Event e) {
-#if TEAL_DEV
+#if RONIN_DEV
     if (e.kind == EVENT_KEY_DOWN || e.kind == EVENT_TEXT) {
         e.dev_seq = ++p->key_seq;
         p->last_key_event = e;
@@ -1693,7 +1693,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND:
         return 1;
 
-#if TEAL_DEV
+#if RONIN_DEV
     case WM_APP + 1: // --idle-check: the idle period starts
     case WM_APP + 2: // ... and ends
         win32_dev_idle_check_mark(p, msg == WM_APP + 2);
@@ -1765,7 +1765,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYUP:
     case WM_SYSKEYUP: {
         u32 vk = (u32)wp;
-#if TEAL_DEV
+#if RONIN_DEV
         if (p->type_ahead_check && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)) {
             if (GetMessageExtraInfo() != WIN32_TYPE_AHEAD_TAG) p->dev_foreign_keys++;
             else if (msg == WM_KEYDOWN) p->dev_keydowns++;
@@ -1789,7 +1789,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (vk == VK_MENU && extended && !down) p->altgr = 0;
 
         if (down) {
-            // Every key but the modifiers sends its KEY_DOWN, also one teal has no Key for (VK_OEM_8,
+            // Every key but the modifiers sends its KEY_DOWN, also one ronin has no Key for (VK_OEM_8,
             // the keypad's digits and operators, media keys): a chord if it types a character, and in
             // any case the end of the previous chord's text. The keypad makes no chords (Alt + keypad
             // digits enter a character code), nor do IME and injected characters.
@@ -1818,7 +1818,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // We handle WM_SYSKEYDOWN ourselves so Alt works as Meta; let only Alt+F4
             // through to DefWindowProc so it still closes the window.
             if (msg == WM_SYSKEYDOWN && vk == VK_F4 && !p->altgr) {
-#if TEAL_DEV
+#if RONIN_DEV
                 p->dev_menu_paths++;
 #endif
                 return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1852,7 +1852,7 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_SYSCOMMAND:
         if ((wp & 0xFFF0) == SC_KEYMENU) { // Alt / F10 never open the system menu
-#if TEAL_DEV
+#if RONIN_DEV
             p->dev_keymenu++;
 #endif
             return 0;
@@ -1917,16 +1917,16 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     }
-#if TEAL_DEV
+#if RONIN_DEV
     if (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP || msg == WM_SYSCHAR || msg == WM_SYSDEADCHAR ||
         (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_KEYMENU)) p->dev_menu_paths++;
 #endif
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 // ---------------------------------------------------------------------------
-// --log-keys: every keyboard message, the state teal reads with it, and what became of it. The app
+// --log-keys: every keyboard message, the state ronin reads with it, and what became of it. The app
 // logs, under the same event number, the chord and the command (app_dev_log_key).
 
 static b32 win32_dev_is_keyboard_message(UINT msg) {
@@ -2036,7 +2036,7 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
         return;
     }
 
-    // The keys down as the thread's key state has them, and teal's reading of them.
+    // The keys down as the thread's key state has them, and ronin's reading of them.
     u8 down[64];
     i64 dn = 0;
     static const struct { int vk; const char *name; } mod_keys[] = {
@@ -2055,7 +2055,7 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
     if (mods & KEYMOD_SHIFT) m[mn++] = 'S';
     if (mods & KEYMOD_ALTGR) m[mn++] = 'G';
     if (!mn) m[mn++] = '-';
-    String8 state = str8_fmt(a, "down %S, caps %d | teal mods %S, altgr %d%s | layout 0x%08X", str8(down, dn),
+    String8 state = str8_fmt(a, "down %S, caps %d | ronin mods %S, altgr %d%s | layout 0x%08X", str8(down, dn),
                              (GetKeyState(VK_CAPITAL) & 1) != 0, str8(m, mn), p->altgr,
                              altgr_before != p->altgr ? (p->altgr ? " (set now)" : " (cleared now)") : "", (u64)(uintptr_t)hkl);
     u32 scan = (u32)(HIWORD(lp) & 0xFF);
@@ -2097,7 +2097,7 @@ static void win32_dev_log_message(Platform *p, UINT msg, WPARAM wp, LPARAM lp, u
 }
 #endif
 
-#if TEAL_DEV
+#if RONIN_DEV
 // The tests that drive the real input path (the thread's key state, posted key messages) can be disturbed
 // by a person typing in another window meanwhile: Windows may synchronize the thread's key state with the
 // keyboard's. Each case first waits (bounded) until no physical modifier is down, and records the time of
@@ -2353,7 +2353,7 @@ static i32 win32_dev_test_mods(Platform *p) {
 }
 
 // --test: messages handed to the window procedure as the message loop would (TranslateMessage's
-// characters included), the events through a headless app. A key teal has no Key for, typed right
+// characters included), the events through a headless app. A key ronin has no Key for, typed right
 // after a chord: its text arrives.
 static i32 win32_dev_test_keys(Platform *p) {
     Arena arena = arena_create(MB(256));
@@ -2416,7 +2416,7 @@ static void win32_dev_log_layouts(Platform *p) {
 #endif
 
 static LRESULT CALLBACK win32_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-#if TEAL_DEV
+#if RONIN_DEV
     Platform *p = g_platform;
     if (p->idle_measuring && msg != WM_APP + 2) {
         if (msg == WM_MOUSEMOVE || msg == WM_SETCURSOR || msg == WM_NCHITTEST || msg == WM_NCMOUSEMOVE || msg == WM_MOUSELEAVE) {
@@ -2455,7 +2455,7 @@ enum {
 // ---------------------------------------------------------------------------
 // Dev tooling
 
-#if TEAL_DEV
+#if RONIN_DEV
 static u32 win32_pixel_rgb(u8 *bgra, i32 w, i32 x, i32 y) {
     u8 *px = bgra + ((i64)y * w + x) * 4;
     return ((u32)px[2] << 16) | ((u32)px[1] << 8) | px[0];
@@ -2661,7 +2661,7 @@ static i32 win32_smoke_end_session(Platform *p) {
     WCHAR reason_text[128];
     DWORD reason_len = ARRAY_COUNT(reason_text);
     b32 reason = ShutdownBlockReasonQuery(p->hwnd, reason_text, &reason_len) &&
-                 str8_equal(str8_from_str16(&p->scratch, (u16 *)reason_text, lstrlenW(reason_text)), STR8_LIT("Unsaved changes in teal"));
+                 str8_equal(str8_from_str16(&p->scratch, (u16 *)reason_text, lstrlenW(reason_text)), STR8_LIT("Unsaved changes in ronin"));
     win32_frame(p);
     String8 prompt = str8_copy(&p->perm, app_dev_prompt(p->app));
     b32 ok1 = !refused && reason && prompt.len > 10 && str8_starts_with(prompt, STR8_LIT("Save file "));
@@ -2676,7 +2676,7 @@ static i32 win32_smoke_end_session(Platform *p) {
     LRESULT allowed = SendMessageW(p->hwnd, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF);
     b32 ok5 = allowed && !win32_smoke_has_reason(p) && !app_dev_prompt(p->app).len;
     b32 ok = ok1 && ok2 && ok3 && ok4 && ok5;
-    LOG("smoke: %s: end of session: refused with the reason 'Unsaved changes in teal' and the save question '%S' %d, a repeated query keeps it %d, "
+    LOG("smoke: %s: end of session: refused with the reason 'Unsaved changes in ronin' and the save question '%S' %d, a repeated query keeps it %d, "
         "an abort keeps the reason %d, a cancelled shutdown removes it %d, allowed once saved %d", ok ? "ok" : "FAIL", prompt,
         ok1, ok2, ok3, ok4, ok5);
     return ok ? EXIT_OK : EXIT_TEST;
@@ -2757,8 +2757,8 @@ static i32 win32_smoke_check_title(Platform *p) {
     WCHAR text[256];
     i32 len = GetWindowTextW(p->hwnd, text, ARRAY_COUNT(text));
     String8 title = str8_from_str16(&p->scratch, (u16 *)text, len);
-    b32 ok = str8_equal(title, STR8_LIT("*scratch* - teal")) && p->title_sets == 1;
-    LOG("smoke: %s: window title '%S', set %d time(s); expected '*scratch* - teal', once", ok ? "ok" : "FAIL", title, p->title_sets);
+    b32 ok = str8_equal(title, STR8_LIT("*scratch* - ronin")) && p->title_sets == 1;
+    LOG("smoke: %s: window title '%S', set %d time(s); expected '*scratch* - ronin', once", ok ? "ok" : "FAIL", title, p->title_sets);
     arena_reset(&p->scratch);
     return ok ? EXIT_OK : EXIT_PIXEL_MISMATCH;
 }
@@ -2791,7 +2791,7 @@ static i32 win32_write_outputs(Platform *p) {
     win32_inject_keys(p);
     if (p->event_count) win32_frame(p);
     if (p->touch.len && !p->quit) { // a file changed outside: the app checks it when activated
-        os_write_file(p->touch, STR8_LIT("changed outside teal\n"));
+        os_write_file(p->touch, STR8_LIT("changed outside ronin\n"));
         Event off = { .kind = EVENT_FOCUS, .focused = 0 }, on = { .kind = EVENT_FOCUS, .focused = 1 };
         win32_push_event(p, off);
         win32_push_event(p, on);
@@ -2939,7 +2939,7 @@ static i32 win32_dev_type_ahead_finish(Platform *p) {
         (i32)(present_ms * 1000) % 1000, state == 3 ? "the window lost the foreground while typing"
                                          : before ? "all before it" : "not all before it");
     LOG("type-ahead: *scratch* holds '%S', typed '%S'%s", text, str8(want, sizeof(want)), caps ? " (Caps Lock on)" : "");
-    LOG("type-ahead: %d key(s) sent while teal had no focus window; received %d WM_KEYDOWN, %d WM_SYSKEYDOWN of its own, "
+    LOG("type-ahead: %d key(s) sent while ronin had no focus window; received %d WM_KEYDOWN, %d WM_SYSKEYDOWN of its own, "
         "%d key-down(s) of other input", p->type_ahead_focus_lost, p->dev_keydowns, p->dev_syskeydowns, p->dev_foreign_keys);
     b32 ok = before && arrived;
     if (!ok && (p->dev_foreign_keys || state == 3)) {
@@ -3761,7 +3761,7 @@ static void win32_bench_project(Platform *p) {
 
 // --bench-grep's tree: ~100 MB in 3,000 files (30 directories of 100), source-like lines; the common word
 // about once per 2 KB (one word in 340), the missing one nowhere; every 100th file binary (a NUL first), every 300th UTF-16.
-#define BENCH_GREP_COMMON "teal_grep_common"
+#define BENCH_GREP_COMMON "ronin_grep_common"
 #define BENCH_GREP_MISSING "zq_never_here"
 static String8 win32_bench_grep_tree(Platform *p) {
     String8 root = str8_fmt(&p->perm, "%S\\tmp\\p12bench", p->exe_dir), done = str8_fmt(&p->perm, "%S\\tmp\\p12bench.done", p->exe_dir);
@@ -3769,7 +3769,7 @@ static String8 win32_bench_grep_tree(Platform *p) {
     static const char *const words[] = { "static", "void", "buffer", "return", "if", "for", "while", "app", "view", "render", "search", "i64",
                                          "u8", "const", "struct", "line", "text", "count", "the", "index", "file", "path", "arena", "=" };
     os_make_dir(root);
-    os_write_file(str8_fmt(&p->perm, "%S\\.teal-project", root), STR8_LIT("[ignore]\n"));
+    os_write_file(str8_fmt(&p->perm, "%S\\.ronin-project", root), STR8_LIT("[ignore]\n"));
     u64 rng = 0x12AB;
     i64 cap = KB(40), total = 0;
     u8 *text = PUSH_ARRAY(&p->perm, u8, cap), *wide = PUSH_ARRAY(&p->perm, u8, cap * 2 + 2);
@@ -4220,9 +4220,9 @@ static b32 win32_dev_utf16_is(u16 *text, i64 len, const char *ascii) {
 }
 
 static i32 win32_dev_clipboard_check(Platform *p) {
-    WNDCLASSEXW wc = { .cbSize = sizeof(wc), .lpfnWndProc = DefWindowProcW, .hInstance = p->instance, .lpszClassName = L"teal_clip" };
+    WNDCLASSEXW wc = { .cbSize = sizeof(wc), .lpfnWndProc = DefWindowProcW, .hInstance = p->instance, .lpszClassName = L"ronin_clip" };
     RegisterClassExW(&wc);
-    p->hwnd = CreateWindowExW(0, L"teal_clip", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, p->instance, NULL); // a clipboard owner
+    p->hwnd = CreateWindowExW(0, L"ronin_clip", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, p->instance, NULL); // a clipboard owner
     if (!p->hwnd || !win32_open_clipboard(p)) {
         LOG("clipboard-check: FAIL: cannot open the clipboard");
         return EXIT_TEST;
@@ -4256,7 +4256,7 @@ static i32 win32_dev_clipboard_check(Platform *p) {
     i64 got_len = 0;
     if (app) {
         app_dev_feed_events(app, NULL, 0, &arena);
-        // E14: two lines copied in teal are CRLF lines on the clipboard (what Notepad reads).
+        // E14: two lines copied in ronin are CRLF lines on the clipboard (what Notepad reads).
         app_dev_show_scratch(app, STR8_LIT("line one\nline two\n"));
         app_dev_feed(app, "C-x h M-w", &arena);
         win32_dev_clip_read(p, &arena, &got, &got_len);
@@ -4378,7 +4378,7 @@ static b32 win32_parse_goto(String8 a, i64 *line, i64 *col) {
     return 1;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 // Decimal, or hexadecimal with 0x.
 static u64 win32_parse_u64(String8 s) {
     u64 v = 0;
@@ -4426,7 +4426,7 @@ static b32 win32_release_flag(Platform *p, String8 a) {
     return 1;
 }
 
-#if TEAL_DEV
+#if RONIN_DEV
 // --test: command lines through win32_file_arg / win32_files_done.
 static i32 win32_dev_test_args(Platform *p) {
     static const struct { const char *args[5]; const char *want; } cases[] = {
@@ -4494,11 +4494,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->qpc_start = qpc_start;
     p->render_mode = FB_RENDER_NATURAL_SYMMETRIC;
     p->wake = CreateEventW(NULL, FALSE, FALSE, NULL); // os_wake_main (auto-reset); none: workers' results wait for input
-#if TEAL_DEV
+#if RONIN_DEV
     p->seed = 0x7ea1;
 #endif
     g_platform = p;
-#if TEAL_DEV
+#if RONIN_DEV
     os_dev_stage("WinMain entered");
 #endif
 
@@ -4513,7 +4513,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         String8 a = args[i];
         if (win32_file_arg(p, a, &goto_line, &goto_col)) continue;
         if (win32_release_flag(p, a)) continue;
-#if TEAL_DEV
+#if RONIN_DEV
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) { p->smoke = 1; continue; }
         if (str8_equal(a, STR8_LIT("--test"))) { p->test = 1; continue; }
@@ -4559,7 +4559,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         bad_arg = a;
     }
     win32_files_done(p, goto_line, goto_col);
-#if !TEAL_DEV
+#if !RONIN_DEV
     if (bad_arg.len) return EXIT_USAGE;
 #else
     // The tests' scripted program: before the log is opened (the run that started it writes that log), no
@@ -4567,10 +4567,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->child_script.len) return bad_arg.len ? EXIT_USAGE : win32_dev_child(p, p->child_script);
 #endif
 
-#if TEAL_DEV
-    // Log next to the executable (build\teal.log), independent of the working directory.
+#if RONIN_DEV
+    // Log next to the executable (build\ronin.log), independent of the working directory.
     String8 exe_dir = os_exe_dir(&p->perm);
-    String8 log_path = str8_fmt(&p->perm, "%S\\teal.log", exe_dir);
+    String8 log_path = str8_fmt(&p->perm, "%S\\ronin.log", exe_dir);
     String16 log_path16 = str16_from_str8(&p->perm, log_path);
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -4580,7 +4580,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("teal dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
@@ -4617,7 +4617,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // Argument parsing above takes microseconds; the device thread starts right after it.
     Renderer *renderer = r_alloc(&p->perm); // allocated here, before the worker starts
     HANDLE device_thread = CreateThread(NULL, 0, win32_device_thread, renderer, 0, NULL);
-#if TEAL_DEV
+#if RONIN_DEV
     os_dev_stage("arguments parsed, device thread started");
 #endif
 
@@ -4630,7 +4630,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         .lpfnWndProc = win32_wndproc,
         .hInstance = instance,
         .hCursor = p->cursors[MOUSE_CURSOR_ARROW],
-        .lpszClassName = L"teal",
+        .lpszClassName = L"ronin",
     };
     if (!RegisterClassExW(&wc)) os_fatal(STR8_LIT("RegisterClassExW failed."));
 
@@ -4642,7 +4642,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     RECT work = monitor.rcWork;
 
     DWORD style = WS_OVERLAPPEDWINDOW;
-    p->hwnd = CreateWindowExW(0, L"teal", L"teal", style, work.left, work.top, 640, 400, NULL, NULL, instance, NULL);
+    p->hwnd = CreateWindowExW(0, L"ronin", L"ronin", style, work.left, work.top, 640, 400, NULL, NULL, instance, NULL);
     if (!p->hwnd) os_fatal(STR8_LIT("CreateWindowExW failed."));
     p->dpi = GetDpiForWindow(p->hwnd);
 
@@ -4663,7 +4663,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     GetClientRect(p->hwnd, &client);
     p->width = client.right - client.left;
     p->height = client.bottom - client.top;
-#if TEAL_DEV
+#if RONIN_DEV
     os_dev_stage("window created (hidden), sized for its DPI");
     p->main_thread_id = GetCurrentThreadId();
     if (p->type_ahead_check) p->type_ahead_thread = CreateThread(NULL, 0, win32_dev_type_ahead_thread, p, 0, NULL);
@@ -4671,7 +4671,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
     AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
                          .files = p->files, .file_count = p->file_count };
-#if TEAL_DEV
+#if RONIN_DEV
     app_args.config_path = p->config_path;
     app_args.scan_hold = p->scan_hold;
     app_args.grep_hold = p->grep_hold;
@@ -4679,14 +4679,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                              p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
                              p->bench_compile || p->bench_cursors || p->type_ahead_check); // defaults
 #endif
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
 #endif
     p->app = app_create(&p->perm, &app_args);
-#if TEAL_DEV
+#if RONIN_DEV
     os_dev_stage("app created");
 #endif
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("memory: private bytes with the app (config, font and atlas, buffers): %U KB", os_dev_private_bytes() / 1024);
     if (p->log_keys && p->app) {
         app_dev_log_keys(p->app, 1);
@@ -4694,7 +4694,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
 #endif
     if (!p->app) {
-#if TEAL_DEV
+#if RONIN_DEV
         if (win32_dev_batch_mode(p)) {
             LOG("font initialization failed");
             return EXIT_FONT;
@@ -4703,7 +4703,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         os_fatal(STR8_LIT("Could not open the font (Consolas or Courier New)."));
     }
 
-    // Shown and activated now, still cloaked (DWMWA_CLOAK): keys typed from here on queue for teal
+    // Shown and activated now, still cloaked (DWMWA_CLOAK): keys typed from here on queue for ronin
     // instead of going to whatever launched it, and the activation (the focus sets up the IME and text
     // services, ~15 ms) overlaps the device creation. Done after the app, not right after the window:
     // there it slowed the device thread down (first Present 174 ms median against 167; here 168). The
@@ -4713,7 +4713,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // the focus from whatever the user is typing in); screenshot runs and --dpi-check never show it.
     // --no-activate (every build) shows it as the benches do: for measurements that must not take the focus.
     b32 show_early = !p->no_activate;
-#if TEAL_DEV
+#if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
     show_early = show_early && !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
@@ -4723,16 +4723,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
         ShowWindow(p->hwnd, SW_SHOW);
         BOOL fg = SetForegroundWindow(p->hwnd);
-#if TEAL_DEV
+#if RONIN_DEV
         os_dev_stage("shown and activated (cloaked)");
-        LOG("startup: SetForegroundWindow %d, foreground %s, active %s, focus %s", fg, GetForegroundWindow() == p->hwnd ? "teal" : "other",
-            GetActiveWindow() == p->hwnd ? "teal" : "none", GetFocus() == p->hwnd ? "teal" : "none");
+        LOG("startup: SetForegroundWindow %d, foreground %s, active %s, focus %s", fg, GetForegroundWindow() == p->hwnd ? "ronin" : "other",
+            GetActiveWindow() == p->hwnd ? "ronin" : "none", GetFocus() == p->hwnd ? "ronin" : "none");
 #else
         (void)fg;
 #endif
     }
 
-#if TEAL_DEV
+#if RONIN_DEV
     u64 join_start = os_time_us();
 #endif
     if (device_thread) {
@@ -4746,16 +4746,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     } else {
         r_create_device(renderer); // no thread: create it here
     }
-#if TEAL_DEV
+#if RONIN_DEV
     os_dev_stage("device thread joined");
 #endif
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("startup: device thread %s, main thread waited %U us for it", device_thread ? "used" : "unavailable",
         os_time_us() - join_start);
     LOG("memory: private bytes with the D3D11 device: %U KB", os_dev_private_bytes() / 1024);
 #endif
     if (!r_finish_create(renderer, p->hwnd, p->width, p->height)) {
-#if TEAL_DEV
+#if RONIN_DEV
         if (win32_dev_batch_mode(p)) {
             LOG("renderer initialization failed");
             return EXIT_RENDERER_INIT;
@@ -4764,14 +4764,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         os_fatal(STR8_LIT("Could not initialize Direct3D 11."));
     }
     p->renderer = renderer; // from here on WM_SIZE / WM_PAINT may render
-#if TEAL_DEV
+#if RONIN_DEV
     os_dev_stage("swap chain, pipeline and atlas texture created");
 #endif
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("memory: private bytes with the swap chain, pipeline and atlas texture: %U KB", os_dev_private_bytes() / 1024);
 #endif
 
-#if TEAL_DEV
+#if RONIN_DEV
     if (p->screenshot_path.len || p->atlas_path.len) {
         p->exit_code = win32_write_outputs(p);
         p->quit = 1;
@@ -4791,7 +4791,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->frame_count == 0) win32_frame(p);
         cloak = FALSE;
         DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
-#if TEAL_DEV
+#if RONIN_DEV
         os_dev_stage("uncloaked");
         if (p->idle_check) win32_dev_idle_check_start(p);
         if (p->smoke) p->redraw = 1; // its second plain frame, at once (nothing else would wake the loop)
@@ -4805,7 +4805,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
     }
 
-#if TEAL_DEV
+#if RONIN_DEV
     if (p->bench_text && !p->quit) {
         win32_bench_text(p);
         p->quit = 1;
@@ -4873,7 +4873,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         win32_poll_watches(p);
         // Workers' results: the app takes them without a frame unless something shown changed.
         if (p->wake && WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0 && app_wake(p->app)) p->redraw = 1;
-#if TEAL_DEV
+#if RONIN_DEV
         p->idle_wakeups++;
 #endif
 
@@ -4892,7 +4892,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         }
         if (p->quit) break;
 
-#if TEAL_DEV
+#if RONIN_DEV
         if (p->smoke) {
             // Two plain frames, then one highlighted buffer per language (the first with the
             // rendering checks), a known buffer without focus, the same after a click (focus forced
@@ -4999,7 +4999,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     u32 leaks = r_shutdown(p->renderer);
     i32 font_refs = app_shutdown(p->app); // DirectWrite references + unreleased buffers
     DestroyWindow(p->hwnd);
-#if TEAL_DEV
+#if RONIN_DEV
     if (os_dev_watch_count()) {
         LOG("app: %d directory watch(es) still open after close", os_dev_watch_count());
         font_refs += os_dev_watch_count();
@@ -5014,11 +5014,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
 #endif
 
-#if TEAL_DEV
+#if RONIN_DEV
     LOG("app: resources still held after close (DirectWrite references, buffers): %d", font_refs);
     if (p->smoke) {
         i32 code = p->exit_code;
-#if TEAL_D3D_DEBUG
+#if RONIN_D3D_DEBUG
         if (code == EXIT_OK && !r_dev_debug_layer_active(p->renderer)) {
             LOG("smoke: FAIL: D3D11 debug layer is not active");
             code = EXIT_NO_DEBUG_LAYER;

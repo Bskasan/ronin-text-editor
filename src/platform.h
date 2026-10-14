@@ -23,7 +23,7 @@ String8 os_exe_dir(Arena *arena);                  // the directory of the execu
 String8 os_get_env(Arena *arena, String8 name);    // empty when not set
 b32   os_make_dir(String8 path);                   // true if it exists afterwards (the parent must exist)
 String8 os_key_name(Arena *arena, u32 scancode);  // the keyboard's name for a key (Event.scancode), empty if none
-#if TEAL_DEV
+#if RONIN_DEV
 void  os_log_write(String8 text);
 // Startup timeline: records the time of a stage (a static string) of the first startup; the
 // platform logs every stage once after the first frame. Recording costs a counter read.
@@ -86,7 +86,7 @@ void         os_file_close(OsFile file);
 // Swaps `temp` in as `target`, keeping the target's attributes; a plain move when target does not exist.
 OsFileStatus os_file_replace(String8 target, String8 temp);
 void         os_file_delete(String8 path);
-#if TEAL_DEV
+#if RONIN_DEV
 b32          os_dev_set_read_only(String8 path, b32 read_only);
 b32          os_dev_hard_link(String8 existing, String8 link);
 #endif
@@ -98,7 +98,7 @@ b32          os_dev_hard_link(String8 existing, String8 link);
 b32  os_clipboard_set(String8 text);
 b32  os_clipboard_get(Arena *arena, String8 *text); // false when it holds no text
 u32  os_clipboard_seq(void);                       // changes whenever any program sets it
-#if TEAL_DEV
+#if RONIN_DEV
 void os_dev_clipboard_fake(b32 on);
 void os_dev_clipboard_external(String8 text); // the fake: as if another program copied text
 #endif
@@ -117,7 +117,7 @@ OsWatch os_watch_dir(String8 dir); // 0 on failure (no such directory, too many 
 OsWatch os_watch_tree(String8 dir);
 b32     os_watch_rearm(OsWatch watch, String8 dir); // a tree watch: a fresh notification (earlier changes forgotten)
 void    os_unwatch(OsWatch watch);
-#if TEAL_DEV
+#if RONIN_DEV
 b32     os_dev_watch_wait(OsWatch watch, u32 timeout_ms); // true when it signalled (then re-armed)
 i32     os_dev_watch_count(void);                         // watches still open
 i32     os_dev_poll_watches(struct Event *out, i32 cap);  // the platform's watch poll once: its events (taken off the queue)
@@ -170,7 +170,7 @@ String8 os_oem_to_utf8(Arena *arena, String8 text);
 
 // Processes: a command run through cmd.exe /s /c in a directory, with no window, stdin from the NUL
 // device, stdout and stderr into one pipe, the whole tree inside a job object (killing the job ends every
-// process in it; so does teal's exit, a crash included). Only the pipe and NUL are inherited. Any thread;
+// process in it; so does ronin's exit, a crash included). Only the pipe and NUL are inherited. Any thread;
 // one OsProcess is used by one thread at a time (the build's reader worker: the main thread never touches
 // one).
 typedef struct OsProcess {
@@ -198,7 +198,7 @@ void os_process_kill(OsProcess *p);                 // every process of the job,
 // Every handle. kill_rest: processes still in the job end too; otherwise they are let go (build servers
 // that a finished build left running).
 void os_process_close(OsProcess *p, b32 kill_rest);
-#if TEAL_DEV
+#if RONIN_DEV
 b32  os_dev_wake_wait(u32 timeout_ms); // headless tests: the wake was set (and is consumed)
 i32  os_dev_live_threads(void);        // started and not joined (nor abandoned)
 void os_dev_thread_abandoned(void);    // a worker left to the process exit at shutdown: not a leak
@@ -267,7 +267,7 @@ typedef enum EventKind {
 typedef struct Event {
     EventKind kind;
     u32 mods;          // MOD_* (key, text, mouse)
-    Key key;           // EVENT_KEY_DOWN; KEY_NONE for a key teal has no Key for (keypad digits, VK_OEM_8, ...)
+    Key key;           // EVENT_KEY_DOWN; KEY_NONE for a key ronin has no Key for (keypad digits, VK_OEM_8, ...)
     u32 scancode;      // EVENT_KEY_DOWN, extended keys have bit 8 set
     b32 repeat;        // EVENT_KEY_DOWN
     // EVENT_TEXT: the character typed. EVENT_KEY_DOWN: the character the key produces with the
@@ -282,7 +282,7 @@ typedef struct Event {
     i32 width, height; // EVENT_RESIZE, client pixels
     b32 focused;       // EVENT_FOCUS
     OsWatch watch;     // EVENT_DIR_CHANGED
-#if TEAL_DEV
+#if RONIN_DEV
     u32 dev_seq;       // --log-keys: the number of a key or text event, shared by the platform's and the app's lines
 #endif
 } Event;
@@ -314,10 +314,10 @@ typedef struct AppArgs {
     FbRenderMode render_mode;
     AppFileArg *files; // in command-line order: all are opened, the first is shown (the second too with
     i32 file_count;    // startup_windows = 2); none: *scratch*
-#if TEAL_DEV
+#if RONIN_DEV
 
-    String8 config_path; // --config: this file instead of the user's teal.conf
-    b32 user_config;     // read the user's teal.conf (off in the smoke and the benches: defaults only)
+    String8 config_path; // --config: this file instead of the user's ronin.conf
+    b32 user_config;     // read the user's ronin.conf (off in the smoke and the benches: defaults only)
     b32 headless;        // --test: no font, no window; driven through app_dev_feed
     i32 scan_hold;       // --scan-hold N: project scans stand still after N batches (0 = never)
     i32 grep_hold;       // --grep-hold N: a search's workers stand still after N files each (0 = never)
@@ -341,7 +341,7 @@ b32  app_wants_frame(App *app); // another frame right away: highlighting is sti
 b32  app_wake(App *app);        // os_wake_main was called: take the workers' results; true = draw a frame
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
-#if TEAL_DEV
+#if RONIN_DEV
 typedef enum DevProbeKind {
     DEV_PROBE_PIXEL_EQ,       // pixel (x0, y0) == rgb
     DEV_PROBE_REGION_EQ,      // every pixel in [x0, x1) x [y0, y1) == rgb

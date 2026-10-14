@@ -7,7 +7,7 @@
 // session's layouts and the foreground window's layout are checked to be unchanged afterwards. No
 // SendInput: nothing reaches another window.
 
-#if TEAL_DEV
+#if RONIN_DEV
 
 enum {
     IT_LSHIFT = 1 << 0,
@@ -675,9 +675,9 @@ static DWORD WINAPI it_thread(void *param) {
     it_snapshot(before, &n_before, &fg_before);
     HKL thread_layout = GetKeyboardLayout(0);
 
-    WNDCLASSEXW wc = { .cbSize = sizeof(wc), .lpfnWndProc = win32_wndproc, .hInstance = p->instance, .lpszClassName = L"teal_input_test" };
+    WNDCLASSEXW wc = { .cbSize = sizeof(wc), .lpfnWndProc = win32_wndproc, .hInstance = p->instance, .lpszClassName = L"ronin_input_test" };
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, L"teal_input_test", L"", WS_OVERLAPPEDWINDOW, 0, 0, 200, 100, NULL, NULL, p->instance, NULL);
+    HWND hwnd = CreateWindowExW(0, L"ronin_input_test", L"", WS_OVERLAPPEDWINDOW, 0, 0, 200, 100, NULL, NULL, p->instance, NULL);
     if (!hwnd) {
         LOG("test: FAIL: input: no window");
         run->failures++;
@@ -718,7 +718,7 @@ static DWORD WINAPI it_thread(void *param) {
         it_cases(&t);
         it_bindings(&t);
 
-        // Alt + F4 last: its key is the one teal leaves to DefWindowProc, which makes it SC_CLOSE for an
+        // Alt + F4 last: its key is the one ronin leaves to DefWindowProc, which makes it SC_CLOSE for an
         // active window (not for this one, never activated: SC_CLOSE is sent here); the unmodified app quits.
         IT_CASE(&t, "Alt + F4") {
             i32 paths = p->dev_menu_paths;
@@ -750,7 +750,7 @@ static DWORD WINAPI it_thread(void *param) {
     for (i32 i = 0; i < n_before; i++) us_new &= before[i] != us;
     if (us_new) UnloadKeyboardLayout(us);
     DestroyWindow(hwnd);
-    UnregisterClassW(L"teal_input_test", p->instance);
+    UnregisterClassW(L"ronin_input_test", p->instance);
     p->event_count = 0;
 
     it_snapshot(after, &n_after, &fg_after);

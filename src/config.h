@@ -8,7 +8,7 @@
 
 #define CONFIG_FONT_CAP 128        // bytes of the font family name
 #define CONFIG_LIST_CAP 2048       // bytes of a blank-separated list setting (project_markers, project_ignore)
-#define CONFIG_MAX_FILE_SIZE MB(4) // a larger teal.conf is refused
+#define CONFIG_MAX_FILE_SIZE MB(4) // a larger ronin.conf is refused
 #define CONFIG_DIAG_CAP 1000       // diagnostics kept per load (all are counted)
 
 struct Settings {
@@ -67,10 +67,10 @@ typedef struct Theme { // 0xRRGGBB
 typedef struct ConfigDiag {
     struct ConfigDiag *next;
     b32 warning;  // otherwise an error: the line was skipped
-    String8 text; // "teal.conf:12: unknown command 'foo'", "teal.conf:3: warning: ..."
+    String8 text; // "ronin.conf:12: unknown command 'foo'", "ronin.conf:3: warning: ..."
 } ConfigDiag;
 
-// The diagnostics of one load, of teal.conf or of another file in the same format (.teal-project).
+// The diagnostics of one load, of ronin.conf or of another file in the same format (.ronin-project).
 typedef struct ConfigDiags {
     ConfigDiag *first, *last; // in the arena given to the parser, at most CONFIG_DIAG_CAP
     i32 errors, warnings;     // all of them
@@ -122,7 +122,7 @@ typedef enum ConfigPoll {
 } ConfigPoll;
 
 typedef struct ConfigSource {
-    String8 path;        // the user's teal.conf; empty = built-in defaults only
+    String8 path;        // the user's ronin.conf; empty = built-in defaults only
     b32 loaded_file;     // the version last loaded came from the file; its size and write time:
     i64 size;
     u64 write_time;

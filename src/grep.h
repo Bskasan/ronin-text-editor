@@ -170,7 +170,7 @@ i64  grep_drain(GrepSearch *s, GrepRecordFn *fn, void *data);
 b32  grep_join(GrepSearch *s, u64 deadline_us);
 void grep_free(GrepSearch *s); // only once it ended (or was joined)
 i32  grep_auto_workers(void);  // search_workers = 0: from the processor count
-#if TEAL_DEV
+#if RONIN_DEV
 u64  grep_memory(GrepSearch *s);      // committed bytes of the search and its workers
 void grep_dev_release(GrepSearch *s); // ends dev_hold and dev_stuck
 #endif

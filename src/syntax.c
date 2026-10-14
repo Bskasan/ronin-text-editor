@@ -216,7 +216,7 @@ u32 syntax_lex(BufferLanguage language, u32 state, String8 line, SyntaxTokens *o
 // ---------------------------------------------------------------------------
 // Line states
 
-#if TEAL_DEV
+#if RONIN_DEV
 static b32 syntax_fake_clock;
 static u64 syntax_lexed, syntax_converged;
 
@@ -261,7 +261,7 @@ b32 syntax_catch_up(Buffer *buf, i64 need_line, u64 budget_us, Arena *scratch) {
         String8 text = buffer_line(buf, scratch, line);
         u32 end = lex(state, text.data, text.len, NULL);
         arena_pop_to(scratch, mark);
-#if TEAL_DEV
+#if RONIN_DEV
         syntax_lexed += (u64)text.len + 1;
 #endif
         i64 next = line + 1;
@@ -270,7 +270,7 @@ b32 syntax_catch_up(Buffer *buf, i64 need_line, u64 budget_us, Arena *scratch) {
             // text that has not changed since.
             line = buf->state_known - 1;
             state = buffer_line_state(buf, line);
-#if TEAL_DEV
+#if RONIN_DEV
             syntax_converged++;
 #endif
         } else {

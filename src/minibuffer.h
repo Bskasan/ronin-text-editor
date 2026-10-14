@@ -198,7 +198,7 @@ struct Minibuffer {
 
     String8 cand_key;         // what the candidates were built for (find-file: the directory); in text_arena
 
-#if TEAL_DEV
+#if RONIN_DEV
     u64 dev_filter_us;        // the last filter (--bench-complete)
     u64 dev_filters;          // filters so far
 #endif
