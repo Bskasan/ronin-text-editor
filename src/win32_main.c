@@ -157,6 +157,9 @@ typedef struct Platform {
 } Platform;
 
 static void win32_dwm_attribute(Platform *p, DWORD attribute, const void *value, DWORD size);
+#if RONIN_DEV
+static b32 win32_dev_batch_mode(Platform *p);
+#endif
 
 // The window procedure has no user pointer before WM_NCCREATE; this is its only way in.
 static Platform *g_platform;
@@ -1422,6 +1425,9 @@ static void win32_dev_capture_place(Platform *p) {
 void os_show_window_early(u32 rgb) {
     Platform *p = g_platform;
     if (!p || !p->hwnd || p->shown_early || p->frame_count) return;
+#if RONIN_DEV
+    if (win32_dev_batch_mode(p) && !p->startup_capture) return; // the smoke, benches and screenshots: never early, whatever the config
+#endif
     p->early_brush = CreateSolidBrush(RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
     os_set_caption_color(rgb); // the title bar as the first frame will leave it
     BOOL no_transitions = TRUE; // no fade-in: the window appears at once, opaque, as the cloaked start shows it
