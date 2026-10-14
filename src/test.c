@@ -4076,7 +4076,26 @@ static b32 test_electric_labels(Test *t) {
                    "electric label: %s: one undo restores the line and point", cases[i].what);
         if (!test_view_close(t, &tv)) return 0;
     }
-    LOG("test: ok: electric labels, %d cases with their undo", (i32)ARRAY_COUNT(cases));
+    // Three cursors completing three labels: every line reindented after the insertions (Command.after), in one batch
+    // flush for the command instead of one a cursor; one undo for all of them.
+    {
+        TestView tv;
+        if (!test_view_open(t, &tv, "switch (x) {\n        case 1|\n        case 2|\n    a();\n        case 3|\n}", 10, 60)) return 0;
+        tv.buf->language = BUFFER_LANG_C;
+        test_view_run(&tv, &CMD_FORWARD_CHAR);
+        test_view_run(&tv, &CMD_BACKWARD_CHAR);
+        u64 flushes = tv.buf->dev_batch_flushes;
+        test_type_char(&tv, ':');
+        char *got = test_view_marked(t, &tv);
+        TEST_CHECK(t, test_cstr_equal(got, "switch (x) {\n    case 1:|\n    case 2:|\n    a();\n    case 3:|\n}") &&
+                          tv.buf->dev_batch_flushes - flushes == 1,
+                   "electric label: three cursors: got '%s', %U batch flushes", got, tv.buf->dev_batch_flushes - flushes);
+        test_view_run(&tv, &CMD_UNDO);
+        TEST_CHECK(t, test_cstr_equal(test_view_marked(t, &tv), "switch (x) {\n        case 1|\n        case 2|\n    a();\n        case 3|\n}"),
+                   "electric label: three cursors: one undo");
+        if (!test_view_close(t, &tv)) return 0;
+    }
+    LOG("test: ok: electric labels, %d cases with their undo; three cursors in one flush", (i32)ARRAY_COUNT(cases));
     return 1;
 }
 

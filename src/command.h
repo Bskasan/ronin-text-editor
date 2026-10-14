@@ -39,6 +39,10 @@ typedef struct Command {
     const char *name; // the Emacs name
     CommandFn *fn;
     u32 flags;
+    // Optional, run by the driver after fn at the same cursor; with several cursors, in a second ordered pass once
+    // fn ran at every cursor (an edit before the cursor's own, after the others' edits: one batch flush, not one a
+    // cursor).
+    CommandFn *after;
 } Command;
 
 // A command is written for one cursor; view_run_command (view.c) is the single place that loops
