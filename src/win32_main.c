@@ -3053,6 +3053,39 @@ static i32 win32_smoke_check_title(Platform *p) {
     return ok ? EXIT_OK : EXIT_PIXEL_MISMATCH;
 }
 
+// The window class's icons came from the resources (res\ronin.rc, drawn by tools\make_icon.c): the 16 px image drawn
+// into a DIB has a stem pixel in the text color, a pixel beside the "r" in the background color and a transparent
+// corner (the rounded square).
+static i32 win32_smoke_check_icon(Platform *p) {
+    HICON class_big = (HICON)GetClassLongPtrW(p->hwnd, GCLP_HICON), class_small = (HICON)GetClassLongPtrW(p->hwnd, GCLP_HICONSM);
+    HICON icon = LoadImageW(p->instance, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0);
+    u32 stem = 0, beside = 0, corner = 1;
+    if (icon) {
+        BITMAPINFO bi = { .bmiHeader = { .biSize = sizeof(BITMAPINFOHEADER), .biWidth = 16, .biHeight = -16, .biPlanes = 1, .biBitCount = 32 } };
+        void *bits = NULL;
+        HDC dc = CreateCompatibleDC(NULL);
+        HBITMAP dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+        if (dib && bits) {
+            HGDIOBJ old = SelectObject(dc, dib);
+            memset(bits, 0, 16 * 16 * 4);
+            DrawIconEx(dc, 0, 0, icon, 16, 16, 0, NULL, DI_NORMAL);
+            GdiFlush();
+            u32 *px = bits;
+            stem = px[8 * 16 + 4] & 0xFFFFFF;
+            beside = px[3 * 16 + 12] & 0xFFFFFF;
+            corner = px[0] & 0xFFFFFF;
+            SelectObject(dc, old);
+        }
+        if (dib) DeleteObject(dib);
+        DeleteDC(dc);
+        DestroyIcon(icon);
+    }
+    b32 ok = class_big && class_small && stem == 0xd3b58d && beside == 0x072626 && corner == 0;
+    LOG("smoke: %s: class icons %s / %s; the 16 px icon: stem #%06x (expected #d3b58d), beside #%06x (#072626), corner #%06x (none)",
+        ok ? "ok" : "FAIL", class_big ? "set" : "MISSING", class_small ? "set" : "MISSING", stem, beside, corner);
+    return ok ? EXIT_OK : EXIT_PIXEL_MISMATCH;
+}
+
 static b32 win32_write_png(Platform *p, String8 path, u8 *bgra, i32 w, i32 h) {
     String8 png = png_encode_bgra(&p->scratch, bgra, w, h, (i64)w * 4);
     if (!os_write_file(path, png)) {
@@ -5701,6 +5734,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         .hInstance = instance,
         .hCursor = p->cursors[MOUSE_CURSOR_ARROW],
         .lpszClassName = L"ronin",
+        // res\ronin.rc's icon (drawn by tools\make_icon.c) at the sizes of the title bar and of Alt+Tab.
+        .hIcon = LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0),
+        .hIconSm = LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0),
     };
     if (!RegisterClassExW(&wc)) os_fatal(STR8_LIT("RegisterClassExW failed."));
 
@@ -6073,6 +6109,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                     app_dev_smoke_cursors_end(p->app);
                 }
                 i32 code4 = win32_smoke_check_title(p);
+                if (code4 == EXIT_OK) code4 = win32_smoke_check_icon(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_text_scale(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);
