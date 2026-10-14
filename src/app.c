@@ -1708,12 +1708,23 @@ const Command CMD_SCROLL_OTHER_WINDOW           = { "scroll-other-window", cmd_s
 const Command CMD_SCROLL_OTHER_WINDOW_DOWN      = { "scroll-other-window-down", cmd_scroll_other_window_down, COMMAND_ONCE };
 const Command CMD_VIEW_ECHO_AREA_MESSAGES       = { "view-echo-area-messages", cmd_view_echo_area_messages, COMMAND_ONCE };
 
+// The driver orders and merges the cursors of the view a command ran in; a command (or the background work)
+// that moves the point of another window's view (view-echo-area-messages, next-error, a build's output
+// followed) leaves that to this pass over every window. One cursor: nothing to do.
+static void app_normalize_views(App *app, Arena *scratch) {
+    View *views[WINDOW_MAX];
+    for (i32 i = 0, n = app_views(app, views); i < n; i++) {
+        if (views[i]->cursor_count > 1) view_normalize_cursors(views[i], app->ctx.settings, scratch);
+    }
+}
+
 // Commands run in the minibuffer while it is active, otherwise in the active view.
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated) {
     app->ctx.view = app->mini.active ? app->mini.view : app_selected_view(app);
     app->ctx.codepoint = codepoint;
     app->ctx.shift_translated = shift_translated;
     view_run_command(&app->ctx, cmd);
+    app_normalize_views(app, app->ctx.scratch);
 }
 
 // While an isearch is active: a command of its own keymap runs inside it, a plain character extends
@@ -2080,6 +2091,7 @@ static b32 app_update(App *app, FrameInput *in) {
         input |= k == EVENT_KEY_DOWN || k == EVENT_TEXT || k == EVENT_MOUSE_DOWN || k == EVENT_MOUSE_WHEEL;
     }
     app->results_pending = input ? results_running(app) : results_work(app, deadline, rank_budget);
+    app_normalize_views(app, in->scratch); // the results' work may have moved the points of the windows that follow it
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
