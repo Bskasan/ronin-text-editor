@@ -85,8 +85,17 @@ extern "C" b32 fb_open(FontBackend *fb, const u16 *family, const u16 *fallback_f
     fb->pixel_size = pixel_size;
     fb->mode = mode;
 
+    // dwrite.dll is loaded here, on first use, not imported: the loader maps nothing for it before WinMain.
+    // Kept until the process ends.
+    typedef HRESULT(WINAPI * CreateFactoryFn)(DWRITE_FACTORY_TYPE, REFIID, IUnknown **);
+    static CreateFactoryFn create_factory = NULL;
+    if (!create_factory) {
+        HMODULE dwrite = LoadLibraryW(L"dwrite.dll");
+        create_factory = dwrite ? (CreateFactoryFn)(void *)GetProcAddress(dwrite, "DWriteCreateFactory") : NULL;
+        if (!create_factory) return 0;
+    }
     IDWriteFactory *factory = NULL;
-    if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown **)&factory))) return 0;
+    if (FAILED(create_factory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown **)&factory))) return 0;
     fb->live_refs++;
     fb->factory = factory;
 
