@@ -87,6 +87,7 @@ typedef struct Platform {
     String8 dev_write_root;     // the soak: writes outside this directory are refused (os_dev_write_root)
     u64 dev_writes_refused;
     u64 soak_events;            // --soak N
+    String8 map_report;         // --map-report MAP
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
     b32 bench_text;
@@ -117,6 +118,9 @@ typedef struct Platform {
     i32 dev_menu_paths;   // WM_SYSKEY*, WM_SYSCHAR, WM_SYSDEADCHAR, SC_KEYMENU left to DefWindowProc (menu, beep)
     i32 dev_keymenu;      // WM_SYSCOMMAND SC_KEYMENU received
     b32 idle_check;       // --idle-check: shown without focus, idle; CPU time, frames and wakeups measured
+    b32 memory_report;    // --memory-report: shown like --idle-check; the private bytes by owner after the settle
+    b32 bench_latency;    // --bench-latency: posted keys, from arrival to the screen
+    struct LatencyBench *latency;
     b32 clipboard_check;  // --clipboard-check: the real clipboard through the app, saved and put back
     String8 dpi_check;    // --dpi-check <dir>: WM_DPICHANGED to 125% and back, a screenshot at each step
     b32 clip_no_history;  // what ronin puts on the clipboard stays out of clipboard history (the check's text)
@@ -169,8 +173,28 @@ static void win32_utf8_to_wide_fixed(String8 s, u16 *out, i64 cap) {
     out[n] = 0;
 }
 
+#if RONIN_DEV
+// Every os_reserve range, for --memory-report (our arenas against everything else in the address space). Any
+// thread; dev only. The only global besides g_platform: the first reservations come before the Platform exists.
+typedef struct Win32DevReservations {
+    SRWLOCK lock;
+    void *base[16384];
+    i32 count;
+} Win32DevReservations;
+static Win32DevReservations win32_dev_reservations = { SRWLOCK_INIT };
+#endif
+
 void *os_reserve(u64 size) {
-    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE);
+    void *p = VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE);
+#if RONIN_DEV
+    Win32DevReservations *r = &win32_dev_reservations;
+    if (p) {
+        AcquireSRWLockExclusive(&r->lock);
+        if (r->count < (i32)ARRAY_COUNT(r->base)) r->base[r->count++] = p;
+        ReleaseSRWLockExclusive(&r->lock);
+    }
+#endif
+    return p;
 }
 
 b32 os_commit(void *ptr, u64 size) {
@@ -239,6 +263,17 @@ b32 os_write_file(String8 path, String8 data) {
 }
 
 b32 os_release(void *ptr) {
+#if RONIN_DEV
+    Win32DevReservations *r = &win32_dev_reservations;
+    AcquireSRWLockExclusive(&r->lock);
+    for (i32 i = 0; i < r->count; i++) {
+        if (r->base[i] == ptr) {
+            r->base[i] = r->base[--r->count];
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&r->lock);
+#endif
     return VirtualFree(ptr, 0, MEM_RELEASE) != 0;
 }
 
@@ -1239,6 +1274,10 @@ static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
 static i32 win32_dev_child(Platform *p, String8 script); // win32_child.c
 static u64 win32_dev_hash(String8 s);
 static void win32_dev_idle_check_mark(Platform *p, b32 end);
+static void win32_dev_memory_report(Platform *p);
+static void win32_dev_latency_key(Platform *p, i32 key);
+static void win32_dev_latency_frame(Platform *p);
+static void win32_dev_latency_finish(Platform *p);
 #endif
 
 // Queues EVENT_DIR_CHANGED for every signalled watch and re-arms it; a tree watch is not re-armed (it
@@ -1549,6 +1588,9 @@ static void win32_frame(Platform *p) {
 #endif
     FrameInput input = win32_frame_input(p);
     if (!app_update_and_render(p->app, &input, p->renderer)) p->quit = 1;
+#if RONIN_DEV
+    win32_dev_latency_frame(p);
+#endif
     p->event_count = 0;
     p->redraw = r_wants_redraw(p->renderer) || app_wants_frame(p->app);
     arena_reset(&p->scratch);
@@ -1753,6 +1795,17 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP + 1: // --idle-check: the idle period starts
     case WM_APP + 2: // ... and ends
         win32_dev_idle_check_mark(p, msg == WM_APP + 2);
+        return 0;
+    case WM_APP + 3: // --memory-report: the settle is over
+        win32_dev_memory_report(p);
+        p->quit = 1;
+        return 0;
+    case WM_APP + 4: // --bench-latency: a key follows
+        win32_dev_latency_key(p, (i32)wp);
+        return 0;
+    case WM_APP + 5: // ... and the last one has been shown
+        win32_dev_latency_finish(p);
+        p->quit = 1;
         return 0;
 #endif
 
@@ -4226,6 +4279,276 @@ static void win32_dev_idle_check_mark(Platform *p, b32 end) {
     p->quit = 1;
 }
 
+// --bench-latency: typing as the screen sees it. The window is shown without activation (as --idle-check); after
+// the settle a thread posts BENCH_LATENCY_KEYS key presses to it (WM_KEYDOWN / WM_KEYUP through the normal pump,
+// TranslateMessage making the WM_CHAR), 25-55 ms apart so they land anywhere in the refresh. For each key: its
+// arrival (just before PostMessage), the dequeue, command + frame build, Present returning, and the vertical blank
+// that showed its frame (DXGI frame statistics: an estimate, the scan-out of that refresh follows it).
+#define BENCH_LATENCY_KEYS 500
+
+typedef struct LatencyBench {
+    i64 post[BENCH_LATENCY_KEYS], dequeue[BENCH_LATENCY_KEYS], presented[BENCH_LATENCY_KEYS], shown[BENCH_LATENCY_KEYS];
+    u64 build_us[BENCH_LATENCY_KEYS];
+    u32 present_count[BENCH_LATENCY_KEYS];
+    const char *mode[BENCH_LATENCY_KEYS]; // how DWM showed it (r_dev_presentation_mode)
+    i32 current; // the key whose frame is due (-1: none)
+} LatencyBench;
+
+static DWORD WINAPI win32_dev_latency_thread(void *param) {
+    Platform *p = param;
+    LatencyBench *b = p->latency;
+    Sleep(1000);
+    u64 rng = 0x1a7e;
+    for (i32 i = 0; i < BENCH_LATENCY_KEYS; i++) {
+        rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+        Sleep(25 + (DWORD)((rng >> 33) % 31));
+        UINT vk = i % 40 == 39 ? VK_RETURN : 'A' + (UINT)(i % 26);
+        LPARAM lp = 1 | ((LPARAM)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) << 16);
+        LARGE_INTEGER t;
+        QueryPerformanceCounter(&t);
+        b->post[i] = t.QuadPart;
+        PostMessageW(p->hwnd, WM_APP + 4, (WPARAM)i, 0);
+        PostMessageW(p->hwnd, WM_KEYDOWN, vk, lp);
+        PostMessageW(p->hwnd, WM_KEYUP, vk, lp | ((LPARAM)1 << 30) | ((LPARAM)1 << 31));
+    }
+    Sleep(300);
+    PostMessageW(p->hwnd, WM_APP + 5, 0, 0);
+    return 0;
+}
+
+static void win32_dev_latency_shown(Platform *p, i32 key) {
+    LatencyBench *b = p->latency;
+    u32 count;
+    u64 qpc;
+    if (key >= 0 && b->present_count[key] && r_dev_frame_shown(p->renderer, &count, &qpc) && count == b->present_count[key]) {
+        b->shown[key] = (i64)qpc;
+        b->mode[key] = r_dev_presentation_mode(p->renderer);
+    }
+}
+
+static void win32_dev_latency_key(Platform *p, i32 key) {
+    LatencyBench *b = p->latency;
+    win32_dev_latency_shown(p, key - 1); // the key before: its frame is on screen by now
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    b->dequeue[key] = t.QuadPart;
+    b->current = key;
+}
+
+static void win32_dev_latency_frame(Platform *p) {
+    LatencyBench *b = p->latency;
+    if (!b || b->current < 0) return;
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    b->presented[b->current] = t.QuadPart;
+    b->build_us[b->current] = app_dev_build_us(p->app);
+    b->present_count[b->current] = r_dev_last_present_count(p->renderer);
+    b->current = -1;
+}
+
+static void win32_dev_latency_stat(Platform *p, const char *what, u64 *us, i32 n) {
+    for (i32 i = 1; i < n; i++) { // insertion sort: a few hundred values
+        u64 x = us[i];
+        i32 j = i;
+        while (j > 0 && us[j - 1] > x) {
+            us[j] = us[j - 1];
+            j--;
+        }
+        us[j] = x;
+    }
+    (void)p;
+    if (!n) {
+        LOG("bench-latency: %s: no samples", what);
+        return;
+    }
+    LOG("bench-latency: %s (%d keys): min %U us, p50 %U us, p90 %U us, p99 %U us, max %U us", what, n, us[0], us[n / 2], us[n * 9 / 10],
+        us[n * 99 / 100], us[n - 1]);
+}
+
+static void win32_dev_latency_finish(Platform *p) {
+    LatencyBench *b = p->latency;
+    win32_dev_latency_shown(p, BENCH_LATENCY_KEYS - 1);
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    u64 *v[5];
+    i32 n[5] = { 0 };
+    for (i32 k = 0; k < 5; k++) v[k] = PUSH_ARRAY(&p->scratch, u64, BENCH_LATENCY_KEYS);
+    for (i32 i = 0; i < BENCH_LATENCY_KEYS; i++) {
+        if (!b->presented[i] || !b->post[i]) continue;
+        v[0][n[0]++] = (u64)(b->dequeue[i] - b->post[i]) * 1000000 / (u64)f.QuadPart;
+        v[1][n[1]++] = b->build_us[i];
+        v[2][n[2]++] = (u64)(b->presented[i] - b->post[i]) * 1000000 / (u64)f.QuadPart;
+        if (b->shown[i] > b->presented[i]) {
+            v[3][n[3]++] = (u64)(b->shown[i] - b->presented[i]) * 1000000 / (u64)f.QuadPart;
+            v[4][n[4]++] = (u64)(b->shown[i] - b->post[i]) * 1000000 / (u64)f.QuadPart;
+        }
+    }
+    win32_bench_log_display(p);
+    LOG("bench-latency: presentation %s, Present(%u, 0)", r_dev_presentation_mode(p->renderer), p->renderer->present_interval);
+    win32_dev_latency_stat(p, "arrival to dequeue", v[0], n[0]);
+    win32_dev_latency_stat(p, "command + frame build", v[1], n[1]);
+    win32_dev_latency_stat(p, "arrival to Present returned", v[2], n[2]);
+    win32_dev_latency_stat(p, "Present returned to the vertical blank that showed it", v[3], n[3]);
+    win32_dev_latency_stat(p, "arrival to the vertical blank that showed it (on screen)", v[4], n[4]);
+    // The same by presentation mode: DWM composes the window at first and may promote it to an overlay plane later.
+    const char *modes[4] = { 0 };
+    i32 mode_count = 0;
+    for (i32 i = 0; i < BENCH_LATENCY_KEYS; i++) {
+        if (!b->mode[i]) continue;
+        i32 k = 0;
+        while (k < mode_count && modes[k] != b->mode[i]) k++;
+        if (k == mode_count && mode_count < 4) modes[mode_count++] = b->mode[i];
+    }
+    for (i32 k = 0; k < mode_count; k++) {
+        i32 m = 0;
+        for (i32 i = 0; i < BENCH_LATENCY_KEYS; i++) {
+            if (b->mode[i] == modes[k] && b->shown[i] > b->presented[i]) v[4][m++] = (u64)(b->shown[i] - b->post[i]) * 1000000 / (u64)f.QuadPart;
+        }
+        u8 label[96];
+        fmt_buf(label, sizeof(label), "on screen, %s%c", modes[k], 0);
+        win32_dev_latency_stat(p, (const char *)label, v[4], m);
+    }
+    p->exit_code = n[2] == BENCH_LATENCY_KEYS ? EXIT_OK : EXIT_TEST;
+}
+
+// --memory-report: shown like --idle-check, then after the settle the committed memory that counts as private
+// bytes, by owner: our arenas (every os_reserve range), the process heaps (Windows, DirectWrite, the D3D runtime,
+// the CRT), thread stacks (allocations with a guard page), writable image pages, writable mapped views, and the
+// other private allocations (the D3D11 user-mode driver and the runtime's own VirtualAllocs).
+#define MEMORY_SETTLE_MS 3000
+
+static DWORD WINAPI win32_dev_memory_thread(void *param) {
+    Sleep(MEMORY_SETTLE_MS);
+    PostMessageW((HWND)param, WM_APP + 3, 0, 0);
+    return 0;
+}
+
+typedef struct Win32DevRange {
+    u8 *start, *end;
+} Win32DevRange;
+
+static b32 win32_dev_in_ranges(Win32DevRange *ranges, i32 count, u8 *p) {
+    for (i32 i = 0; i < count; i++) if (p >= ranges[i].start && p < ranges[i].end) return 1;
+    return 0;
+}
+
+static void win32_dev_memory_report(Platform *p) {
+    Arena *scratch = &p->scratch;
+    u64 mark = arena_pos(scratch);
+    // Our reservations, as ranges.
+    Win32DevReservations *r = &win32_dev_reservations;
+    Win32DevRange *ours = PUSH_ARRAY(scratch, Win32DevRange, ARRAY_COUNT(r->base));
+    i32 our_count = 0;
+    AcquireSRWLockShared(&r->lock);
+    for (i32 i = 0; i < r->count; i++) {
+        MEMORY_BASIC_INFORMATION m;
+        u8 *base = r->base[i], *end = base;
+        while (VirtualQuery(end, &m, sizeof(m)) && m.AllocationBase == base) end = (u8 *)m.BaseAddress + m.RegionSize;
+        ours[our_count++] = (Win32DevRange){ base, end };
+    }
+    ReleaseSRWLockShared(&r->lock);
+    // The heaps' regions and their large blocks.
+    HANDLE heaps[256];
+    DWORD heap_count = GetProcessHeaps(ARRAY_COUNT(heaps), heaps);
+    Win32DevRange *heap = PUSH_ARRAY(scratch, Win32DevRange, 65536);
+    i32 heap_ranges = 0;
+    for (DWORD h = 0; h < MIN(heap_count, (DWORD)ARRAY_COUNT(heaps)); h++) {
+        if (!HeapLock(heaps[h])) continue;
+        PROCESS_HEAP_ENTRY e = { 0 };
+        while (HeapWalk(heaps[h], &e) && heap_ranges < 65536) {
+            if (e.wFlags & PROCESS_HEAP_REGION) {
+                heap[heap_ranges++] = (Win32DevRange){ (u8 *)e.lpData, (u8 *)e.Region.lpLastBlock };
+            } else if ((e.wFlags & PROCESS_HEAP_ENTRY_BUSY) && e.cbData >= KB(512)) { // a large block, VirtualAlloc'd by the heap
+                heap[heap_ranges++] = (Win32DevRange){ (u8 *)e.lpData, (u8 *)e.lpData + e.cbData };
+            }
+        }
+        HeapUnlock(heaps[h]);
+    }
+    // Allocations that hold a guard page: thread stacks.
+    void **stacks = PUSH_ARRAY(scratch, void *, 4096);
+    i32 stack_count = 0;
+    MEMORY_BASIC_INFORMATION m;
+    for (u8 *a = 0; VirtualQuery(a, &m, sizeof(m)); a = (u8 *)m.BaseAddress + m.RegionSize) {
+        if (m.State != MEM_COMMIT || !(m.Protect & PAGE_GUARD) || stack_count >= 4096) continue;
+        b32 seen = 0;
+        for (i32 s = 0; s < stack_count && !seen; s++) seen = stacks[s] == m.AllocationBase;
+        if (!seen) stacks[stack_count++] = m.AllocationBase;
+        if ((u8 *)m.BaseAddress + m.RegionSize < a) break;
+    }
+    u64 arenas = 0, heaps_b = 0, stack_b = 0, other = 0, image_w = 0, mapped_w = 0, other_regions = 0, other_largest = 0;
+    // The modules with the most writable image pages, and our reservations with the most committed.
+    struct { void *base; u64 bytes; } mods[64] = { 0 }, res[64] = { 0 };
+    i32 mod_count = 0, res_count = 0;
+    for (u8 *a = 0; VirtualQuery(a, &m, sizeof(m)); a = (u8 *)m.BaseAddress + m.RegionSize) {
+        if ((u8 *)m.BaseAddress + m.RegionSize < a) break;
+        if (m.State != MEM_COMMIT) continue;
+        b32 writable = (m.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        if (m.Type == MEM_IMAGE) {
+            if (!writable) continue;
+            image_w += m.RegionSize;
+            i32 k = 0;
+            while (k < mod_count && mods[k].base != m.AllocationBase) k++;
+            if (k == mod_count && mod_count < 64) mods[mod_count++].base = m.AllocationBase;
+            if (k < 64) mods[k].bytes += m.RegionSize;
+        } else if (m.Type == MEM_MAPPED) {
+            if (writable) mapped_w += m.RegionSize;
+        } else if (win32_dev_in_ranges(ours, our_count, (u8 *)m.BaseAddress)) {
+            arenas += m.RegionSize;
+            i32 k = 0;
+            while (k < res_count && res[k].base != m.AllocationBase) k++;
+            if (k == res_count && res_count < 64) res[res_count++].base = m.AllocationBase;
+            if (k < 64) res[k].bytes += m.RegionSize;
+        } else if (win32_dev_in_ranges(heap, heap_ranges, (u8 *)m.BaseAddress)) {
+            heaps_b += m.RegionSize;
+        } else {
+            b32 stack = 0;
+            for (i32 s = 0; s < stack_count && !stack; s++) stack = stacks[s] == m.AllocationBase;
+            if (stack) {
+                stack_b += m.RegionSize;
+            } else {
+                other += m.RegionSize;
+                other_regions++;
+                other_largest = MAX(other_largest, (u64)m.RegionSize);
+            }
+        }
+    }
+    u64 bytes = os_dev_private_bytes();
+    LOG("memory-report: private bytes %U KB (%U MB), %d threads alive of ours", bytes >> 10, bytes >> 20, os_dev_live_threads());
+    LOG("memory-report: | owner | KB |");
+    LOG("memory-report: | our arenas (%d reservations) | %U |", our_count, arenas >> 10);
+    LOG("memory-report: | process heaps (%u: Windows, DirectWrite, the D3D runtime, the CRT) | %U |", heap_count, heaps_b >> 10);
+    LOG("memory-report: | thread stacks (%d) | %U |", stack_count, stack_b >> 10);
+    LOG("memory-report: | other private allocations (the D3D11 driver and runtime; %U regions, the largest %U KB) | %U |", other_regions,
+        other_largest >> 10, other >> 10);
+    LOG("memory-report: | writable image pages (DLL and exe data; copy-on-write, charged in full) | %U |", image_w >> 10);
+    LOG("memory-report: | writable mapped views (shared sections, the GDI DIB) | %U |", mapped_w >> 10);
+    LOG("memory-report: sum of the rows %U KB against private bytes %U KB", (arenas + heaps_b + stack_b + other + image_w + mapped_w) >> 10,
+        bytes >> 10);
+    for (i32 pass = 0; pass < 2; pass++) { // the largest first, 8 of each
+        for (i32 shown = 0; shown < 8; shown++) {
+            i32 best = -1;
+            for (i32 k = 0; k < (pass ? res_count : mod_count); k++) {
+                u64 b = pass ? res[k].bytes : mods[k].bytes;
+                if (b && (best < 0 || b > (pass ? res[best].bytes : mods[best].bytes))) best = k;
+            }
+            if (best < 0) break;
+            if (pass) {
+                u64 reserved = 0;
+                for (i32 k = 0; k < our_count; k++) if (ours[k].start == res[best].base) reserved = (u64)(ours[k].end - ours[k].start);
+                LOG("memory-report:   our reservation at %X (%U MB reserved): %U KB committed", (u64)(uintptr_t)res[best].base, reserved >> 20,
+                    res[best].bytes >> 10);
+                res[best].bytes = 0;
+            } else {
+                WCHAR name[MAX_PATH];
+                DWORD n = GetModuleFileNameW((HMODULE)mods[best].base, name, MAX_PATH);
+                LOG("memory-report:   writable image pages of %S: %U KB", str8_from_str16(scratch, (u16 *)name, n), mods[best].bytes >> 10);
+                mods[best].bytes = 0;
+            }
+        }
+    }
+    arena_pop_to(scratch, mark);
+}
+
 // --clipboard-check: the real clipboard through the app. Only when the clipboard holds plain text or
 // nothing (what can be put back exactly); its text is saved first and put back afterwards. Everything
 // written carries the format that keeps it out of clipboard history. kill-ring-save of two lines must
@@ -4391,7 +4714,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 }
 
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->idle_check || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
+    return p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
            p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -4621,6 +4944,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             p->fuzz_count = win32_parse_u64(args[++i]);
             if (p->fuzz_count) continue;
         }
+        if (str8_equal(a, STR8_LIT("--map-report")) && has_value) { p->map_report = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--soak")) && has_value) {
             p->soak_events = win32_parse_u64(args[++i]);
             if (p->soak_events) continue;
@@ -4657,6 +4981,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--compile-wait")) && has_value) { p->compile_wait_ms = (u32)win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--memory-report"))) { p->memory_report = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-latency"))) { p->bench_latency = 1; continue; }
         if (str8_equal(a, STR8_LIT("--type-ahead-check"))) { p->type_ahead_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--clipboard-check"))) { p->clipboard_check = 1; continue; }
         if (str8_equal(a, STR8_LIT("--dpi-check")) && has_value) { p->dpi_check = args[++i]; continue; }
@@ -4694,7 +5020,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->map_report.len ? "map-report" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
@@ -4706,6 +5032,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         i32 code = win32_dev_clipboard_check(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return code;
+    }
+    if (p->map_report.len) { // the release exe's bytes by module, from its linker map
+        i32 failed = test_map_report(p->map_report, str8_fmt(&p->perm, "%S\\..\\src", exe_dir));
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return failed ? EXIT_TEST : EXIT_OK;
     }
     if (p->soak_events) { // headless: random key and mouse events through the app
         i32 failures = test_soak(p->soak_events, p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
@@ -4848,7 +5179,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
-    show_early = show_early && !(p->smoke || p->idle_check || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+    show_early = show_early && !(p->smoke || p->idle_check || p->memory_report || p->bench_latency || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early) {
         BOOL cloak = TRUE;
@@ -4926,6 +5257,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
         os_dev_stage("uncloaked");
         if (p->idle_check) win32_dev_idle_check_start(p);
+        if (p->memory_report) {
+            HANDLE thread = CreateThread(NULL, 0, win32_dev_memory_thread, p->hwnd, 0, NULL);
+            if (thread) CloseHandle(thread);
+        }
+        if (p->bench_latency) {
+            p->latency = PUSH_STRUCT(&p->perm, LatencyBench);
+            p->latency->current = -1;
+            HANDLE thread = CreateThread(NULL, 0, win32_dev_latency_thread, p, 0, NULL);
+            if (thread) CloseHandle(thread);
+        }
         if (p->smoke) p->redraw = 1; // its second plain frame, at once (nothing else would wake the loop)
         p->stages_logged = 1;
         win32_dev_log_stages(p);

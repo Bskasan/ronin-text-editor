@@ -12191,6 +12191,298 @@ i32 test_soak(u64 events, u64 seed, String8 tmp_dir) {
     return failures;
 }
 
+// ---------------------------------------------------------------------------
+// --map-report MAP SRC: the release exe's bytes by module, from the linker map (build.bat release writes
+// build\ronin.map). A symbol's size is the distance to the next symbol in its section part; a function
+// inlined under /LTCG counts toward its caller. Our symbols (ronin.obj) go to the source file that defines
+// them at file scope (the files in SRC scanned), string literals and constants to their own rows; the static
+// CRT's objects (libcmt, libvcruntime, libucrt) to "CRT"; import thunks and tables to "imports"; section
+// parts without symbols (unwind tables, imports, resources) by their name.
+
+typedef struct MapSym {
+    u32 sec;
+    u64 off;
+    String8 name, obj;
+} MapSym;
+
+typedef struct MapRow {
+    String8 module;
+    u64 code, rdata, data, bss, pdata;
+} MapRow;
+
+typedef struct MapIdent {
+    String8 name, file;
+} MapIdent;
+
+#define MAP_IDENTS 32768
+
+static u64 map_hash(String8 s) {
+    u64 h = 1469598103934665603ull;
+    for (i64 i = 0; i < s.len; i++) h = (h ^ s.data[i]) * 1099511628211ull;
+    return h;
+}
+
+static b32 map_ident_char(u8 c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// File-scope definitions and declarations start at column 0 in this code base: on such a line the identifier
+// right before the first '(', '=', '[' or ';' is what the line defines. A .c file wins over a header.
+static void map_index_file(Arena *arena, MapIdent *idents, String8 file, String8 text) {
+    b32 header = file.len > 2 && file.data[file.len - 1] == 'h' && file.data[file.len - 2] == '.';
+    for (i64 i = 0; i < text.len;) {
+        i64 end = i;
+        while (end < text.len && text.data[end] != '\n') end++;
+        u8 c = text.data[i];
+        if (end > i && (map_ident_char(c) && !(c >= '0' && c <= '9'))) {
+            i64 stop = i;
+            while (stop < end && text.data[stop] != '(' && text.data[stop] != '=' && text.data[stop] != '[' && text.data[stop] != ';') stop++;
+            i64 b = stop;
+            while (b > i && text.data[b - 1] == ' ') b--;
+            i64 a = b;
+            while (a > i && map_ident_char(text.data[a - 1])) a--;
+            if (stop < end && b > a) {
+                String8 name = str8(text.data + a, b - a);
+                u64 h = map_hash(name);
+                for (u64 k = 0; k < MAP_IDENTS; k++) {
+                    MapIdent *e = &idents[(h + k) % MAP_IDENTS];
+                    if (!e->name.len) {
+                        e->name = str8_copy(arena, name);
+                        e->file = file;
+                        break;
+                    }
+                    if (str8_equal(e->name, name)) {
+                        if (!header) e->file = file;
+                        break;
+                    }
+                }
+            }
+        }
+        i = end + 1;
+    }
+}
+
+static String8 map_lookup(MapIdent *idents, String8 name) {
+    u64 h = map_hash(name);
+    for (u64 k = 0; k < MAP_IDENTS; k++) {
+        MapIdent *e = &idents[(h + k) % MAP_IDENTS];
+        if (!e->name.len) return str8(NULL, 0);
+        if (str8_equal(e->name, name)) return e->file;
+    }
+    return str8(NULL, 0);
+}
+
+static String8 map_token(String8 line, i64 *at) {
+    i64 i = *at;
+    while (i < line.len && (line.data[i] == ' ' || line.data[i] == '\t' || line.data[i] == '\r')) i++;
+    i64 start = i;
+    while (i < line.len && line.data[i] != ' ' && line.data[i] != '\t' && line.data[i] != '\r') i++;
+    *at = i;
+    return str8(line.data + start, i - start);
+}
+
+static u64 map_hex(String8 s) {
+    u64 v = 0;
+    for (i64 i = 0; i < s.len; i++) {
+        u8 c = s.data[i];
+        u32 d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 16;
+        if (d == 16) break;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+static b32 map_contains(String8 s, const char *what) {
+    String8 w = str8_cstr(what);
+    for (i64 i = 0; i + w.len <= s.len; i++) if (mem_equal(s.data + i, w.data, w.len)) return 1;
+    return 0;
+}
+
+static MapRow *map_row(MapRow *rows, i32 *count, String8 module) {
+    for (i32 i = 0; i < *count; i++) if (str8_equal(rows[i].module, module)) return &rows[i];
+    rows[*count] = (MapRow){ .module = module };
+    return &rows[(*count)++];
+}
+
+static void map_add(MapRow *row, String8 part, u64 bytes) {
+    if (str8_starts_with(part, STR8_LIT(".text"))) row->code += bytes;
+    else if (str8_starts_with(part, STR8_LIT(".bss"))) row->bss += bytes;
+    else if (str8_starts_with(part, STR8_LIT(".data"))) row->data += bytes;
+    else if (str8_starts_with(part, STR8_LIT(".pdata")) || str8_starts_with(part, STR8_LIT(".xdata"))) row->pdata += bytes;
+    else row->rdata += bytes;
+}
+
+i32 test_map_report(String8 map_path, String8 src_dir) {
+    Arena arena = arena_create(GB(1));
+    String8 map;
+    if (os_read_small_file(&arena, map_path, MB(64), &map) != OS_FILE_OK) {
+        LOG("map-report: cannot read %S", map_path);
+        return 1;
+    }
+    // The source index.
+    MapIdent *idents = PUSH_ARRAY(&arena, MapIdent, MAP_IDENTS);
+    String8 dirs[2] = { src_dir, str8_fmt(&arena, "%S\\..\\build\\gen", src_dir) }; // the sources, the compiled shaders
+    for (i32 d = 0; d < 2; d++) {
+        OsDirEntry *entries;
+        i64 entry_count;
+        if (os_list_dir(&arena, dirs[d], &entries, &entry_count) != OS_FILE_OK) continue;
+        for (i32 pass = 0; pass < 2; pass++) { // headers first, so the .c files win
+            for (i64 i = 0; i < entry_count; i++) {
+                String8 n = entries[i].name;
+                b32 header = n.len > 2 && n.data[n.len - 1] == 'h' && n.data[n.len - 2] == '.';
+                b32 source = (n.len > 2 && n.data[n.len - 1] == 'c' && n.data[n.len - 2] == '.') ||
+                             (n.len > 4 && str8_equal(str8(n.data + n.len - 4, 4), STR8_LIT(".cpp")));
+                if (entries[i].is_dir || (pass == 0 ? !header : !source)) continue;
+                String8 text;
+                if (os_read_small_file(&arena, str8_fmt(&arena, "%S\\%S", dirs[d], n), MB(16), &text) == OS_FILE_OK) {
+                    map_index_file(&arena, idents, d ? str8_fmt(&arena, "shaders (%S)", n) : str8_copy(&arena, n), text);
+                }
+            }
+        }
+    }
+    // The section parts and the symbols.
+    typedef struct MapPart { u32 sec; u64 start, len; String8 name; } MapPart;
+    MapPart *parts = PUSH_ARRAY(&arena, MapPart, 256);
+    i32 part_count = 0;
+    MapSym *syms = PUSH_ARRAY(&arena, MapSym, 65536);
+    i64 sym_count = 0;
+    for (i64 i = 0; i < map.len;) {
+        i64 end = i;
+        while (end < map.len && map.data[end] != '\n') end++;
+        String8 line = str8(map.data + i, end - i);
+        i = end + 1;
+        i64 at = 0;
+        String8 addr = map_token(line, &at);
+        if (addr.len != 13 || addr.data[4] != ':') continue;
+        u32 sec = (u32)map_hex(str8(addr.data, 4));
+        u64 off = map_hex(str8(addr.data + 5, 8));
+        String8 second = map_token(line, &at);
+        if (second.len == 9 && second.data[8] == 'H') { // the section table: start, length, name, class
+            String8 name = map_token(line, &at);
+            if (part_count < 256) parts[part_count++] = (MapPart){ sec, off, map_hex(str8(second.data, 8)), name };
+            continue;
+        }
+        if (sec == 0 || !second.len || second.data[0] == '$') continue; // absolute symbols, local labels
+        String8 rest = map_token(line, &at), obj = rest;
+        for (String8 tok = map_token(line, &at); tok.len; tok = map_token(line, &at)) obj = tok;
+        if (sym_count < 65536) syms[sym_count++] = (MapSym){ sec, off, second, obj };
+    }
+    // Sorted by address (insertion sort over runs that are mostly in order: publics, then statics).
+    for (i64 i = 1; i < sym_count; i++) {
+        MapSym x = syms[i];
+        i64 j = i;
+        while (j > 0 && (syms[j - 1].sec > x.sec || (syms[j - 1].sec == x.sec && syms[j - 1].off > x.off))) {
+            syms[j] = syms[j - 1];
+            j--;
+        }
+        syms[j] = x;
+    }
+    MapRow *rows = PUSH_ARRAY(&arena, MapRow, 512);
+    i32 row_count = 0;
+    typedef struct MapBig { String8 name, module, part; u64 size; } MapBig;
+    MapBig big[24] = { 0 };
+    u64 unknown = 0;
+    for (i32 p = 0; p < part_count; p++) {
+        MapPart *part = &parts[p];
+        u64 covered_from = part->start + part->len; // the first symbol inside the part
+        for (i64 k = 0; k < sym_count; k++) {
+            MapSym *sym = &syms[k];
+            if (sym->sec != part->sec || sym->off < part->start || sym->off >= part->start + part->len) continue;
+            covered_from = MIN(covered_from, sym->off);
+            u64 next = part->start + part->len;
+            for (i64 j = k + 1; j < sym_count; j++) {
+                if (syms[j].sec != sym->sec) break;
+                if (syms[j].off > sym->off) {
+                    next = MIN(next, syms[j].off);
+                    break;
+                }
+            }
+            u64 size = next - sym->off;
+            if (k + 1 < sym_count && syms[k + 1].sec == sym->sec && syms[k + 1].off == sym->off) size = 0; // folded (ICF): counted once
+            String8 module;
+            if (map_contains(sym->obj, "libcmt") || map_contains(sym->obj, "libvcruntime") || map_contains(sym->obj, "libucrt") ||
+                map_contains(sym->obj, "LIBCMT")) {
+                module = STR8_LIT("CRT (static)");
+            } else if (map_contains(sym->obj, "dwrite.obj")) {
+                module = STR8_LIT("win32_dwrite.cpp");
+            } else if (map_contains(sym->obj, ".lib:") || str8_starts_with(sym->name, STR8_LIT("__imp_"))) {
+                module = STR8_LIT("imports");
+            } else if (str8_starts_with(sym->name, STR8_LIT("??_C@"))) {
+                module = STR8_LIT("string literals");
+            } else if (str8_starts_with(sym->name, STR8_LIT("__real@")) || str8_starts_with(sym->name, STR8_LIT("__xmm@")) ||
+                       str8_starts_with(sym->name, STR8_LIT("__ymm@"))) {
+                module = STR8_LIT("float and SSE constants");
+            } else if (map_contains(sym->obj, "ronin.obj")) {
+                String8 base = sym->name;
+                for (i64 c = 0; c < base.len; c++) {
+                    if (base.data[c] == '$' || base.data[c] == '.') {
+                        base.len = c;
+                        break;
+                    }
+                }
+                module = map_lookup(idents, base);
+                if (!module.len) {
+                    module = STR8_LIT("ronin.obj, not found in src");
+                    unknown += size;
+                }
+            } else {
+                module = STR8_LIT("linker");
+            }
+            map_add(map_row(rows, &row_count, module), part->name, size);
+            if (!str8_starts_with(part->name, STR8_LIT(".text")) && !str8_starts_with(part->name, STR8_LIT(".bss"))) {
+                for (i32 b = 0; b < (i32)ARRAY_COUNT(big); b++) {
+                    if (size <= big[b].size) continue;
+                    for (i32 m = (i32)ARRAY_COUNT(big) - 1; m > b; m--) big[m] = big[m - 1];
+                    big[b] = (MapBig){ sym->name, module, part->name, size };
+                    break;
+                }
+            }
+        }
+        if (covered_from > part->start) { // bytes before the first symbol: the part as a whole
+            String8 n = part->name;
+            String8 module = str8_starts_with(n, STR8_LIT(".pdata")) || str8_starts_with(n, STR8_LIT(".xdata")) ? STR8_LIT("unwind tables")
+                           : str8_starts_with(n, STR8_LIT(".idata")) ? STR8_LIT("imports")
+                           : str8_starts_with(n, STR8_LIT(".rsrc")) ? STR8_LIT("resources")
+                           : str8_starts_with(n, STR8_LIT(".CRT")) || str8_starts_with(n, STR8_LIT(".rtc")) || str8_starts_with(n, STR8_LIT(".00cfg")) ||
+                                     str8_starts_with(n, STR8_LIT(".tls")) || str8_starts_with(n, STR8_LIT(".fptable")) || str8_starts_with(n, STR8_LIT(".gfids"))
+                               ? STR8_LIT("CRT (static)")
+                           : str8_starts_with(n, STR8_LIT(".rdata$zzzdbg")) || str8_starts_with(n, STR8_LIT(".rdata$voltmd")) ||
+                                     str8_starts_with(n, STR8_LIT(".rdata$r")) || str8_starts_with(n, STR8_LIT(".edata"))
+                               ? STR8_LIT("linker (debug directory, metadata)")
+                               : str8_fmt(&arena, "section part %S", n);
+            map_add(map_row(rows, &row_count, module), n, covered_from - part->start);
+        }
+    }
+    // Largest first (code + read-only + initialized data: what takes room in the file).
+    for (i32 i = 1; i < row_count; i++) {
+        MapRow x = rows[i];
+        u64 xs = x.code + x.rdata + x.data + x.pdata;
+        i32 j = i;
+        while (j > 0 && rows[j - 1].code + rows[j - 1].rdata + rows[j - 1].data + rows[j - 1].pdata < xs) {
+            rows[j] = rows[j - 1];
+            j--;
+        }
+        rows[j] = x;
+    }
+    u64 total = 0;
+    for (i32 i = 0; i < row_count; i++) total += rows[i].code + rows[i].rdata + rows[i].data + rows[i].pdata;
+    LOG("map-report: %S: %d symbols, %d section parts; %U bytes in sections (code, read-only data, initialized data, unwind "
+        "tables; .bss takes no room in the file)", map_path, (i32)sym_count, part_count, total);
+    LOG("map-report: | module | total | code | read-only data | data | unwind | bss |");
+    for (i32 i = 0; i < row_count; i++) {
+        MapRow *r = &rows[i];
+        LOG("map-report: | %S | %U | %U | %U | %U | %U | %U |", r->module, r->code + r->rdata + r->data + r->pdata, r->code, r->rdata,
+            r->data, r->pdata, r->bss);
+    }
+    LOG("map-report: the largest data symbols:");
+    for (i32 b = 0; b < (i32)ARRAY_COUNT(big) && big[b].size; b++) {
+        LOG("map-report:   %U bytes %S (%S, %S)", big[b].size, big[b].name, big[b].module, big[b].part);
+    }
+    LOG("map-report: %U bytes in ronin.obj symbols not found in src", unknown);
+    os_release(arena.base);
+    return 0;
+}
+
 // --fuzz-seeds (one worker process's share): every group that takes the seed, for the seeds first, first +
 // step, ... below end (not the scanner and the project search: their seed only shapes trees on disk). Stops
 // at the first seed that fails.

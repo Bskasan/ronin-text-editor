@@ -677,6 +677,20 @@ const char *r_dev_presentation_mode(Renderer *r) {
     return "?";
 }
 
+u32 r_dev_last_present_count(Renderer *r) {
+    UINT count = 0;
+    if (r->swap_chain) IDXGISwapChain1_GetLastPresentCount(r->swap_chain, &count);
+    return count;
+}
+
+b32 r_dev_frame_shown(Renderer *r, u32 *present_count, u64 *sync_qpc) {
+    DXGI_FRAME_STATISTICS stats;
+    if (!r->swap_chain || FAILED(IDXGISwapChain1_GetFrameStatistics(r->swap_chain, &stats))) return 0;
+    *present_count = stats.PresentCount;
+    *sync_qpc = (u64)stats.SyncQPCTime.QuadPart;
+    return 1;
+}
+
 RDevFrameStats r_dev_take_frame_stats(Renderer *r) {
     RDevFrameStats s = r->stats;
     r->stats = (RDevFrameStats){ 0 };

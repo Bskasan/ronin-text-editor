@@ -54,6 +54,10 @@ typedef struct RDevFrameStats {
 } RDevFrameStats;
 RDevFrameStats r_dev_take_frame_stats(Renderer *r); // and resets the counters
 const char *r_dev_presentation_mode(Renderer *r);   // how DWM shows the swap chain now: "composed", "overlay", ...
+// The swap chain's count of Presents, and the last one shown on screen with the QPC time of the vertical
+// blank that showed it (false when DXGI has no statistics: occluded, or none yet).
+u32 r_dev_last_present_count(Renderer *r);
+b32 r_dev_frame_shown(Renderer *r, u32 *present_count, u64 *sync_qpc);
 #endif
 
 #endif // RENDER_H
