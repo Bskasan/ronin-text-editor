@@ -1342,6 +1342,9 @@ static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
     if (!lines || i < 0) return;
     View *v = app->windows.nodes[i].view;
     view_scroll_lines(v, -lines); // positive = away from the user = towards the top
+    // The primary point dragged into the window may pass other cursors or meet one: ordered and merged again,
+    // as after a command.
+    if (v->cursor_count > 1) view_normalize_cursors(v, app->ctx.settings, app->ctx.scratch);
     view_ensure_visible(v);
     app->ctx.last_command = NULL;
 }

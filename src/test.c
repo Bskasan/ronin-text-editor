@@ -5615,6 +5615,7 @@ static b32 test_mc_app(Test *t) {
 }
 
 static b32 test_mode_line_has(Test *t, App *app, const char *what);
+static void test_app_wheel(Test *t, App *app, i32 notches);
 
 // A left click at a text cell of the headless frame (8 x 16 cells, a 4 px pad), with modifiers.
 static void test_mc_click(Test *t, App *app, i32 col, i32 row, u32 mods) {
@@ -5673,8 +5674,32 @@ static b32 test_mc_mouse(Test *t) {
     TEST_CHECK(t, view_point(left, &left->cursors[0]) == 2 && view_point(left, &left->cursors[2]) == 16 && left->cursor_count == 3,
                "cursors windows: the left window's cursors followed (%D, %D)", view_point(left, &left->cursors[0]), view_point(left, &left->cursors[2]));
     if (!test_app_destroy(t, app, "cursors mouse")) return 0;
+
+    // The wheel drags the primary point into the window, past another cursor: the cursors are ordered again (the
+    // soak found them out of order), and a dragged primary that meets another cursor merges with it.
+    {
+        u8 lines[100 * 8];
+        i64 n = 0;
+        for (i32 i = 0; i < 100; i++) n += fmt_buf(lines + n, 8, "l%03d\n", i); // 5 bytes a line
+        App *w = test_search_app(t, str8(lines, n), 0);
+        TEST_CHECK(t, w, "cursors wheel: no app");
+        View *wv = app_selected_view(w);
+        app_dev_cursors(w, 2, 3, 2); // lines 2 (the primary) and 5
+        test_app_wheel(t, w, -4);    // 12 lines towards the end: the primary goes to line 12, the window's first
+        TEST_CHECK(t, wv->cursor_count == 2 && view_point(wv, &wv->cursors[0]) == 25 && view_point(wv, &wv->cursors[1]) == 60 &&
+                          view_primary(wv) == &wv->cursors[1],
+                   "cursors wheel: %d cursors at %D, %D, the primary %d", wv->cursor_count, view_point(wv, &wv->cursors[0]),
+                   view_point(wv, &wv->cursors[wv->cursor_count - 1]), wv->primary);
+        app_dev_cursors(w, 2, 10, 2); // lines 2 (the primary) and 12
+        view_set_top_line(wv, 0);
+        test_app_wheel(t, w, -4);     // the primary dragged onto the other cursor: one
+        TEST_CHECK(t, wv->cursor_count == 1 && view_point(wv, view_primary(wv)) == 60, "cursors wheel: the meeting cursors (%d, at %D)",
+                   wv->cursor_count, view_point(wv, view_primary(wv)));
+        if (!test_app_destroy(t, w, "cursors wheel")) return 0;
+    }
     LOG("test: ok: multiple cursors and the mouse (Ctrl+Shift+click adding, removing, never the last; a plain click; refused on the "
-        "minibuffer; the mode line's count) and two windows on one buffer (independent cursors that follow each other's edits)");
+        "minibuffer; the mode line's count; the wheel dragging the primary past and onto another cursor) and two windows on one "
+        "buffer (independent cursors that follow each other's edits)");
     return 1;
 }
 
