@@ -18,7 +18,9 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   nothing but DirectWrite calls behind the extern "C" API in src/font_backend.h.
 - No third-party code or libraries. System DLLs only.
 - One build.bat, unity build: src/ronin.c includes the other .c files (win32_dwrite.cpp is
-  the only second translation unit). No CMake, no .sln.
+  the only second translation unit). No CMake, no .sln. tools/ holds build-time generators
+  (tools/make_icon.c draws the icon into build\gen\ronin.ico on every build): compiled and run by
+  build.bat, never part of the exe, their output never committed; the same C rules apply to them.
 - No ronin identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
   rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/check_macros.c with
   /Zs (every system header, then ronin.c, syntax only) and fails on a collision. Fix by renaming,

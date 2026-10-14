@@ -38,7 +38,17 @@ if errorlevel 1 exit /b 1
 fxc /nologo /WX /O3 /T ps_4_0 /E ps_main /Vn quad_ps_bytes /Fh build\gen\quad_ps.h src\shaders\quad.hlsl >nul
 if errorlevel 1 exit /b 1
 
-rem --- the version resource ---
+rem --- the icon (drawn by tools\make_icon.c, never committed) and the version resource ---
+cl /nologo /W4 /WX /O2 tools\make_icon.c /Fobuild\make_icon.obj /Fdbuild\make_icon_cl.pdb /Febuild\make_icon.exe /link /INCREMENTAL:NO >nul
+if errorlevel 1 (
+    echo ERROR: tools\make_icon.c did not compile
+    exit /b 1
+)
+build\make_icon.exe build\gen\ronin.ico
+if errorlevel 1 (
+    echo ERROR: make_icon could not write build\gen\ronin.ico
+    exit /b 1
+)
 rc /nologo /Isrc /fo build\gen\ronin.res res\ronin.rc
 if errorlevel 1 exit /b 1
 
