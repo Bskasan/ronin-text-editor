@@ -23,6 +23,7 @@ _Static_assert(KEYMOD_CTRL == 1 << 0 && KEYMOD_ALT == 1 << 1 && KEYMOD_SHIFT == 
 typedef struct Platform {
     HINSTANCE instance;
     HWND hwnd;
+    HRESULT (WINAPI *dwm_set_attribute)(HWND, DWORD, LPCVOID, DWORD); // dwmapi.dll, loaded at the window's creation
     Arena perm;
     Arena scratch; // reset after every frame
     App *app;
@@ -148,6 +149,8 @@ typedef struct Platform {
     i32 dev_foreign_keys;              // key-downs that the check did not send (someone typing meanwhile)
 #endif
 } Platform;
+
+static void win32_dwm_attribute(Platform *p, DWORD attribute, const void *value, DWORD size);
 
 // The window procedure has no user pointer before WM_NCCREATE; this is its only way in.
 static Platform *g_platform;
@@ -1404,7 +1407,7 @@ void os_set_caption_color(u32 rgb) {
     Platform *p = g_platform;
     if (!p || !p->hwnd) return;
     COLORREF caption = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-    DwmSetWindowAttribute(p->hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption)); // fails before Windows 11
+    win32_dwm_attribute(p, DWMWA_CAPTION_COLOR, &caption, sizeof(caption)); // fails before Windows 11
 }
 
 String8 os_exe_dir(Arena *arena) {
@@ -1578,6 +1581,17 @@ static f32 win32_dpi_scale(Platform *p) {
 static FrameInput win32_frame_input(Platform *p) {
     FrameInput input = { p->events, p->event_count, p->width, p->height, win32_dpi_scale(p), &p->scratch };
     return input;
+}
+
+// DwmSetWindowAttribute through dwmapi.dll loaded on first use (not an import: the loader maps nothing for it
+// before WinMain). Nothing happens without it.
+static void win32_dwm_attribute(Platform *p, DWORD attribute, const void *value, DWORD size) {
+    if (!p->dwm_set_attribute) {
+        HMODULE dwm = LoadLibraryW(L"dwmapi.dll"); // kept until the process ends
+        p->dwm_set_attribute = dwm ? (HRESULT (WINAPI *)(HWND, DWORD, LPCVOID, DWORD))(void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
+        if (!p->dwm_set_attribute) return;
+    }
+    p->dwm_set_attribute(p->hwnd, attribute, value, size);
 }
 
 static void win32_frame(Platform *p) {
@@ -5236,7 +5250,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
     // Dark title bar. The app paints the caption in the background color (os_set_caption_color).
     BOOL dark = TRUE;
-    DwmSetWindowAttribute(p->hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    win32_dwm_attribute(p, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 
     RECT client;
     GetClientRect(p->hwnd, &client);
@@ -5299,7 +5313,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
     if (show_early) {
         BOOL cloak = TRUE;
-        DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+        win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
         ShowWindow(p->hwnd, SW_SHOW);
         BOOL fg = SetForegroundWindow(p->hwnd);
 #if RONIN_DEV
@@ -5364,12 +5378,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (!p->quit) {
         BOOL cloak = TRUE;
         if (!show_early) { // the smoke, --idle-check, the benches, --no-activate: shown cloaked, never activated
-            DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+            win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
             ShowWindow(p->hwnd, SW_SHOWNA);
         }
         if (p->frame_count == 0) win32_frame(p);
         cloak = FALSE;
-        DwmSetWindowAttribute(p->hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+        win32_dwm_attribute(p, DWMWA_CLOAK, &cloak, sizeof(cloak));
 #if RONIN_DEV
         os_dev_stage("uncloaked");
         if (p->idle_check) win32_dev_idle_check_start(p);

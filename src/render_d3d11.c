@@ -47,6 +47,9 @@ struct Renderer {
     b32 debug_layer;
     D3D_FEATURE_LEVEL feature_level;
     i64 create_us;
+    i64 load_us;   // LoadLibrary of d3d11.dll (and the DLLs it imports), part of create_us
+    HMODULE d3d11; // loaded by r_create_device on the device thread: not an import, so the loader does not
+                   // map it (and dxgi.dll and the rest it pulls in) before WinMain
 
     ID3D11Device *device;
     ID3D11DeviceContext *context;
@@ -130,20 +133,29 @@ b32 r_create_device(Renderer *r) {
     r->create_hr_debug = S_OK;
     r->create_warp = 0;
     r->debug_layer = 0;
+    if (!r->d3d11) r->d3d11 = LoadLibraryW(L"d3d11.dll"); // once (a lost device comes back here); kept until the process ends
+    PFN_D3D11_CREATE_DEVICE create_device = r->d3d11 ? (PFN_D3D11_CREATE_DEVICE)(void *)GetProcAddress(r->d3d11, "D3D11CreateDevice") : NULL;
+    LARGE_INTEGER tl;
+    QueryPerformanceCounter(&tl);
+    r->load_us = tl.QuadPart - t0.QuadPart; // in counts until the frequency below
+    if (!create_device) {
+        r->create_hr = E_FAIL;
+        return 0;
+    }
 
 #if RONIN_D3D_DEBUG
-    hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags | D3D11_CREATE_DEVICE_DEBUG,
+    hr = create_device(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags | D3D11_CREATE_DEVICE_DEBUG,
                            levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     r->create_hr_debug = hr;
     r->debug_layer = SUCCEEDED(hr);
 #endif
     if (FAILED(hr)) {
-        hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
+        hr = create_device(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
                                levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     }
     if (FAILED(hr)) {
         r->create_warp = 1;
-        hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_WARP, NULL, flags,
+        hr = create_device(NULL, D3D_DRIVER_TYPE_WARP, NULL, flags,
                                levels, ARRAY_COUNT(levels), D3D11_SDK_VERSION, &r->device, &r->feature_level, &r->context);
     }
     r->create_hr = hr;
@@ -163,6 +175,7 @@ b32 r_create_device(Renderer *r) {
     QueryPerformanceCounter(&t1);
     QueryPerformanceFrequency(&freq);
     r->create_us = (t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart;
+    r->load_us = r->load_us * 1000000 / freq.QuadPart;
     return SUCCEEDED(hr);
 }
 
@@ -175,8 +188,8 @@ static void r_log_device_result(Renderer *r) {
     if (FAILED(r->create_hr)) {
         LOG("d3d11: device creation failed (0x%x)", (u32)r->create_hr);
     } else {
-        LOG("d3d11: device created in %D us, feature level 0x%x, debug layer %s", r->create_us,
-            (u32)r->feature_level, r->debug_layer ? "on" : "off");
+        LOG("d3d11: device created in %D us (loading d3d11.dll %D us of it), feature level 0x%x, debug layer %s", r->create_us,
+            r->load_us, (u32)r->feature_level, r->debug_layer ? "on" : "off");
     }
 #else
     (void)r;

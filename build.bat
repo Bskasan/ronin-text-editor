@@ -44,7 +44,7 @@ set CFLAGS=%COMMON% /std:c11 /Ibuild\gen
 rem C-style C++: no exceptions (no /EH), no RTTI.
 set CPPFLAGS=%COMMON% /GR- /c
 set LFLAGS=/SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:res\ronin.manifest
-set LIBS=kernel32.lib user32.lib gdi32.lib d3d11.lib dxgi.lib dwmapi.lib dwrite.lib dxguid.lib
+set LIBS=kernel32.lib user32.lib gdi32.lib dxgi.lib dxguid.lib
 
 if "%MODE%"=="release" (
     set NAME=ronin
