@@ -3824,6 +3824,13 @@ static b32 test_match(Test *t) {
     for (i64 i = 2; i < n; i += 2) far_text[i] = 'x', far_text[i + 1] = '\n';
     far_text[n] = '}';
     if (!test_match_case(t, BUFFER_LANG_C, "too far", str8(far_text, n + 1))) return 0;
+    // A line longer than SYNTAX_MATCH_MAX: no match even for neighbours on it (answered without lexing the line).
+    u8 *long_line = PUSH_ARRAY(&t->arena, u8, n + 3);
+    long_line[0] = 1;
+    long_line[1] = '(';
+    long_line[2] = ')';
+    for (i64 i = 3; i < n + 3; i++) long_line[i] = 'x';
+    if (!test_match_case(t, BUFFER_LANG_C, "a line longer than the budget", str8(long_line, n + 3))) return 0;
     // The innermost opener that encloses a position.
     Buffer *buf = buffer_create(STR8_LIT("enclosing"));
     buf->language = BUFFER_LANG_C;

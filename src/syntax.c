@@ -425,9 +425,11 @@ i64 syntax_match_bracket(Buffer *buf, i64 pos, Arena *scratch) {
     if (pos < 0 || pos >= buffer_size(buf)) return -1;
     u8 c = buffer_byte(buf, pos);
     if (!syn_opener(c) && !syn_closer(c)) return -1;
-    // Only a bracket in code has a match.
-    u64 mark = arena_pos(scratch);
+    // Only a bracket in code has a match. A line longer than the walk's budget has none either (syn_walk stops before
+    // it): known without lexing it (a 5 MB minified line took ~6 ms a key with show_paren_mode).
     i64 line = buffer_line_of(buf, pos);
+    if (buffer_line_end(buf, line) - buffer_line_start(buf, line) + 1 > SYNTAX_MATCH_MAX) return -1;
+    u64 mark = arena_pos(scratch);
     SynLine l;
     syn_line(buf, line, syn_state_of(buf, line), scratch, &l);
     i32 k = 0;
