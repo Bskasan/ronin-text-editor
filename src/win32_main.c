@@ -1456,6 +1456,12 @@ String8 os_recovery_dir(void) {
     return g_platform ? g_platform->recovery_dir : str8(NULL, 0);
 }
 
+#if RONIN_DEV
+void os_dev_set_recovery_dir(String8 dir) {
+    if (g_platform) win32_recovery_init(g_platform, dir);
+}
+#endif
+
 OsFileStatus os_crash_create(String8 name, OsFile *file) {
     Platform *p = g_platform;
     file->handle = NULL;

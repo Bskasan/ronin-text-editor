@@ -224,6 +224,7 @@ b32  os_dev_process_alive(u32 pid);    // a process with this id is running
 void os_dev_kill_pid(u32 pid);         // tests: a leftover they made goes
 i32  os_dev_handle_count(void);        // the process's open kernel handles
 String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
+void    os_dev_set_recovery_dir(String8 dir); // tests: the recovery directory from here on
 #endif
 
 // ---------------------------------------------------------------------------
