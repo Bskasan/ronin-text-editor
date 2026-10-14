@@ -49,13 +49,13 @@ set LIBS=kernel32.lib user32.lib gdi32.lib d3d11.lib dxgi.lib dwmapi.lib dwrite.
 if "%MODE%"=="release" (
     set NAME=ronin
     set OPT=/O2 /GL /Gw /Gy /GS- /MT
-    set DEFS=/DRONIN_DEV=0
-    set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP:build\ronin.map
+    set DEFS=/DRONIN_DEV=0 /DRONIN_NO_CRT=1
+    set LINKOPT=/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP:build\ronin.map /NODEFAULTLIB /ENTRY:win32_entry libcmt.lib libvcruntime.lib
 ) else if "%MODE%"=="bench" (
     set NAME=ronin_bench
-    set OPT=/O2 /Zi /MT
-    set DEFS=/DRONIN_DEV=1 /DRONIN_D3D_DEBUG=0
-    set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO
+    set OPT=/O2 /Zi /GS- /MT
+    set DEFS=/DRONIN_DEV=1 /DRONIN_D3D_DEBUG=0 /DRONIN_NO_CRT=1
+    set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /NODEFAULTLIB /ENTRY:win32_entry libcmt.lib libvcruntime.lib
 ) else (
     set NAME=ronin_debug
     set OPT=/Od /Zi /MTd
