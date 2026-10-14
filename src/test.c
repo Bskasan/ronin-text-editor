@@ -12121,8 +12121,21 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
 
     u64 t0 = os_time_us(), block_t0 = t0, peak = 0, first_us = 0, second_us = 0, last_us = 0, mem_after_first = 0, mem_last = 0;
     u64 done = 0;
+    struct { u64 us, event; char what[64]; } slow[5] = { 0 }; // the slowest events, to look for slow commands
     for (u64 e = 1; e <= events && !t.failures; e++) {
+        u64 e0 = os_time_us();
         soak_event(&s);
+        u64 took = os_time_us() - e0;
+        if (took > slow[4].us) {
+            i32 k = 4;
+            while (k > 0 && slow[k - 1].us < took) {
+                slow[k] = slow[k - 1];
+                k--;
+            }
+            slow[k].us = took;
+            slow[k].event = e;
+            memcpy(slow[k].what, s.recent[(s.recent_count - 1) % ARRAY_COUNT(s.recent)], sizeof(slow[k].what));
+        }
         if (e % SOAK_CHECK_EVERY == 0) while (os_dev_wake_wait(0)) app_wake(app); // the workers' results (project search, scans)
         if (e % every == 0 && !soak_check(&s, e)) {
             *failed_at = e;
@@ -12196,6 +12209,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
         LOG("test: FAIL: soak: %d leak(s) at shutdown", leaks);
         t.failures++;
     }
+    for (i32 k = 0; k < 5 && slow[k].us; k++) LOG("soak: slowest event %d: %U us at event %U: %s", k + 1, slow[k].us, slow[k].event, slow[k].what);
     LOG("soak: %s, %U events in %U ms (seed 0x%X), private bytes peak %U KB, at the end %U KB; writes refused outside the directory %U",
         t.failures ? "FAIL" : "PASS", done, (os_time_us() - t0) / 1000, seed, peak >> 10, os_dev_private_bytes() >> 10,
         refused);
