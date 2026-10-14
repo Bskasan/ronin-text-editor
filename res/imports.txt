@@ -1,0 +1,8 @@
+# The DLLs build\ronin.exe imports, checked by verify.bat (ronin_debug.exe --check-imports). A change that adds or
+# removes one updates this list in the same commit; a DLL loaded with LoadLibrary is named where it is loaded.
+KERNEL32.dll
+USER32.dll
+GDI32.dll
+d3d11.dll
+dwmapi.dll
+DWrite.dll

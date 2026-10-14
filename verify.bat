@@ -26,6 +26,12 @@ set BENCH_OK=!BUILD_OK!
 
 if "!DEBUG_OK!"=="1" (
     call :run smoke build\ronin_debug.exe --smoke
+    rem The release exe imports exactly the DLLs of res\imports.txt, and no CRT DLL.
+    if exist build\ronin.exe (
+        call :run check-imports build\ronin_debug.exe --check-imports build\ronin.exe res\imports.txt
+    ) else (
+        call :fail "import check skipped (no release exe)"
+    )
 ) else (
     call :fail "smoke skipped (no exe)"
 )
