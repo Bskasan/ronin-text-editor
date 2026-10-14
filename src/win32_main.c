@@ -82,6 +82,8 @@ typedef struct Platform {
     b32 test;
 
     u64 seed;
+    u64 fuzz_first, fuzz_count; // --fuzz-seeds FIRST COUNT
+    i32 fuzz_worker, fuzz_workers; // --fuzz-worker K W FIRST COUNT: worker K + 1 of W (0: not a worker)
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
     b32 bench_text;
@@ -4427,6 +4429,47 @@ static b32 win32_release_flag(Platform *p, String8 a) {
 }
 
 #if RONIN_DEV
+// --fuzz-seeds FIRST COUNT: the seeds spread over worker processes (one per two logical processors, at most 8,
+// below normal priority), worker k taking FIRST + k, FIRST + k + workers, ...; each logs to
+// build\fuzz\worker<k>.log and keeps its files in build\tmp\fuzz<k>. Exit 9 when any worker failed.
+static i32 win32_dev_fuzz_seeds(Platform *p) {
+    i32 workers = CLAMP((i32)(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) / 2), 1, 8);
+    if ((u64)workers > p->fuzz_count) workers = (i32)p->fuzz_count;
+    CreateDirectoryW((WCHAR *)str16_from_str8(&p->perm, str8_fmt(&p->perm, "%S\\fuzz", p->exe_dir)).data, NULL);
+    WCHAR exe[MAX_PATH];
+    DWORD exe_len = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    String8 exe8 = str8_from_str16(&p->perm, (u16 *)exe, exe_len);
+    HANDLE procs[8] = { 0 };
+    u64 t0 = os_time_us();
+    LOG("fuzz-seeds: seeds %U to %U over %d worker processes", p->fuzz_first, p->fuzz_first + p->fuzz_count - 1, workers);
+    for (i32 k = 0; k < workers; k++) {
+        String8 line = str8_fmt(&p->perm, "\"%S\" --fuzz-worker %d %d %U %U", exe8, k, workers, p->fuzz_first, p->fuzz_count);
+        String16 line16 = str16_from_str8(&p->perm, line);
+        STARTUPINFOW si = { .cb = sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
+        if (!CreateProcessW(exe, (WCHAR *)line16.data, NULL, NULL, FALSE, BELOW_NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi)) {
+            LOG("fuzz-seeds: worker %d did not start (error %u)", k, (u32)GetLastError());
+            continue;
+        }
+        CloseHandle(pi.hThread);
+        procs[k] = pi.hProcess;
+    }
+    i32 failed = 0;
+    for (i32 k = 0; k < workers; k++) {
+        DWORD code = 1;
+        if (procs[k]) {
+            WaitForSingleObject(procs[k], INFINITE);
+            GetExitCodeProcess(procs[k], &code);
+            CloseHandle(procs[k]);
+        }
+        if (code != 0) failed++;
+        LOG("fuzz-seeds: worker %d %s (exit %u), log build\\fuzz\\worker%d.log", k, code ? "FAILED" : "passed", (u32)code, k);
+    }
+    LOG("fuzz-seeds: %s, %U seeds (%U to %U), %d worker(s) failed, %U ms", failed ? "FAIL" : "PASS", p->fuzz_count, p->fuzz_first,
+        p->fuzz_first + p->fuzz_count - 1, failed, (os_time_us() - t0) / 1000);
+    return failed ? EXIT_TEST : EXIT_OK;
+}
+
 // --test: command lines through win32_file_arg / win32_files_done.
 static i32 win32_dev_test_args(Platform *p) {
     static const struct { const char *args[5]; const char *want; } cases[] = {
@@ -4519,6 +4562,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--test"))) { p->test = 1; continue; }
 
         if (str8_equal(a, STR8_LIT("--seed")) && has_value) { p->seed = win32_parse_u64(args[++i]); continue; }
+        if (str8_equal(a, STR8_LIT("--fuzz-seeds")) && i + 2 < arg_count) {
+            p->fuzz_first = win32_parse_u64(args[++i]);
+            p->fuzz_count = win32_parse_u64(args[++i]);
+            if (p->fuzz_count) continue;
+        }
+        if (str8_equal(a, STR8_LIT("--fuzz-worker")) && i + 4 < arg_count) {
+            p->fuzz_worker = win32_parse_i32(args[++i]) + 1;
+            p->fuzz_workers = win32_parse_i32(args[++i]);
+            p->fuzz_first = win32_parse_u64(args[++i]);
+            p->fuzz_count = win32_parse_u64(args[++i]);
+            if (p->fuzz_count && p->fuzz_workers > 0) continue;
+        }
         if (str8_equal(a, STR8_LIT("--bench-text"))) { p->bench_text = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-buffer"))) { p->bench_buffer = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-view"))) { p->bench_view = 1; continue; }
@@ -4570,7 +4625,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
     // Log next to the executable (build\ronin.log), independent of the working directory.
     String8 exe_dir = os_exe_dir(&p->perm);
-    String8 log_path = str8_fmt(&p->perm, "%S\\ronin.log", exe_dir);
+    String8 log_path = p->fuzz_worker ? str8_fmt(&p->perm, "%S\\fuzz\\worker%d.log", exe_dir, p->fuzz_worker - 1)
+                                      : str8_fmt(&p->perm, "%S\\ronin.log", exe_dir);
     String16 log_path16 = str16_from_str8(&p->perm, log_path);
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -4580,16 +4636,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("ronin dev build, mode: %s", p->test ? "test" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
                                    : p->bench_cursors ? "bench-cursors"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
-    if (p->test || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
+    if (p->test || p->fuzz_count || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
     if (p->clipboard_check) { // headless, the real clipboard
         i32 code = win32_dev_clipboard_check(p);
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return code;
+    }
+    if (p->fuzz_count) { // headless: the seeded groups of --test over a range of seeds, in worker processes
+        i32 code;
+        if (p->fuzz_worker) {
+            String8 tmp = str8_fmt(&p->perm, "%S\\tmp\\fuzz%d", exe_dir, p->fuzz_worker - 1);
+            CreateDirectoryW((WCHAR *)str16_from_str8(&p->perm, tmp).data, NULL);
+            code = test_fuzz_seeds(p->fuzz_first + (u64)(p->fuzz_worker - 1), p->fuzz_first + p->fuzz_count, (u64)p->fuzz_workers, tmp)
+                 ? EXIT_TEST : EXIT_OK;
+        } else {
+            code = win32_dev_fuzz_seeds(p);
+        }
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return code;
     }
