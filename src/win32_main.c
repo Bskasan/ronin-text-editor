@@ -3014,16 +3014,16 @@ static i32 win32_write_outputs(Platform *p) {
         if (!pixels || !win32_write_png(p, p->screenshot_path, pixels, w, h)) result = EXIT_OUTPUT_FILE;
     }
     if (p->atlas_path.len) {
-        i32 size;
-        u8 *rgba = app_dev_atlas(p->app, &size);
-        u8 *bgra = PUSH_ARRAY(&p->scratch, u8, (i64)size * size * 4);
-        for (i64 i = 0; i < (i64)size * size * 4; i += 4) {
+        i32 size, rows;
+        u8 *rgba = app_dev_atlas(p->app, &size, &rows);
+        u8 *bgra = PUSH_ARRAY(&p->scratch, u8, (i64)size * rows * 4);
+        for (i64 i = 0; i < (i64)size * rows * 4; i += 4) {
             bgra[i + 0] = rgba[i + 2];
             bgra[i + 1] = rgba[i + 1];
             bgra[i + 2] = rgba[i + 0];
             bgra[i + 3] = 255;
         }
-        if (!win32_write_png(p, p->atlas_path, bgra, size, size)) result = EXIT_OUTPUT_FILE;
+        if (!win32_write_png(p, p->atlas_path, bgra, size, rows)) result = EXIT_OUTPUT_FILE;
     }
     arena_reset(&p->scratch);
     return result;

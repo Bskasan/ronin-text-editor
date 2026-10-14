@@ -2834,8 +2834,9 @@ b32 app_dev_atlas_has_coverage(App *app) {
     return font_dev_atlas_has_coverage(app->font);
 }
 
-u8 *app_dev_atlas(App *app, i32 *size) {
+u8 *app_dev_atlas(App *app, i32 *size, i32 *rows) {
     *size = app->font->atlas_size;
+    *rows = app->font->atlas_h;
     return app->font->atlas;
 }
 

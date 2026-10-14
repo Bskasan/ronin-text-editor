@@ -4,19 +4,30 @@
 #define FONT_ATLAS_MIN_GLYPHS 2000
 #define FONT_ATLAS_MAX_SIZE 4096
 #define FONT_ARENA_RESERVE MB(128)
+#define FONT_ATLAS_ROWS 128 // the atlas's first height: ASCII and a few more shelves
 
 // ---------------------------------------------------------------------------
 // Atlas
 
 // Shelf packer with 1 px of empty padding to the right of and below every glyph
-// (and a 1 px border at the top-left of the atlas), so sampling never bleeds.
-static b32 font_pack(Font *f, i32 w, i32 h, i32 *u, i32 *v) {
+// (and a 1 px border at the top-left of the atlas), so sampling never bleeds. A shelf below the committed rows
+// doubles them (zeroed rows from the atlas's arena, contiguous: the width stays); with a renderer the texture is
+// made again at once, at the new height (its content uploaded with the next flush).
+static b32 font_pack(Font *f, Renderer *r, i32 w, i32 h, i32 *u, i32 *v) {
     if (f->shelf_x + w + 1 > f->atlas_size) {
         f->shelf_y += f->shelf_h;
         f->shelf_x = 1;
         f->shelf_h = 0;
     }
     if (w + 2 > f->atlas_size || f->shelf_y + h + 1 > f->atlas_size) return 0;
+    if (f->shelf_y + h + 1 > f->atlas_h) {
+        i32 rows = f->atlas_h;
+        while (rows < f->shelf_y + h + 1) rows = MIN(rows * 2, f->atlas_size);
+        PUSH_ARRAY(&f->atlas_arena, u8, (i64)(rows - f->atlas_h) * f->atlas_size * 4);
+        f->atlas_h = rows;
+        if (r) r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_h);
+        else f->needs_bind = 1;
+    }
     *u = f->shelf_x;
     *v = f->shelf_y;
     f->shelf_x += w + 1;
@@ -36,7 +47,7 @@ static b32 font_make_glyph(Font *f, Renderer *r, u16 index, FontGlyph *out) {
     if (w <= 0 || h <= 0) return 1; // empty glyph: no quad
 
     i32 u, v;
-    if (!font_pack(f, w, h, &u, &v)) return 0;
+    if (!font_pack(f, r, w, h, &u, &v)) return 0;
     for (i32 y = 0; y < h; y++) {
         const u8 *src = g.bgrx + y * g.stride;
         u8 *dst = f->atlas + ((i64)(v + y) * f->atlas_size + u) * 4;
@@ -69,7 +80,7 @@ static void font_make_missing(Font *f) {
     i32 h = MAX(f->baseline - top, 2 * t + 1);
     i32 u, v;
     memset(&f->missing, 0, sizeof(f->missing));
-    if (!font_pack(f, w, h, &u, &v)) return;
+    if (!font_pack(f, NULL, w, h, &u, &v)) return;
     for (i32 y = 0; y < h; y++) {
         for (i32 x = 0; x < w; x++) {
             if (x >= t && x < w - t && y >= t && y < h - t) continue;
@@ -89,7 +100,7 @@ static void font_make_missing(Font *f) {
 // With a renderer, pending quads are flushed first: they still reference the old atlas.
 static void font_reset_cache(Font *f, Renderer *r) {
     if (r) r_flush(r);
-    memset(f->atlas, 0, (size_t)f->atlas_size * f->atlas_size * 4);
+    memset(f->atlas, 0, (size_t)f->atlas_size * f->atlas_h * 4);
     memset(f->slots, 0xFF, sizeof(FontSlot) << f->slot_bits); // codepoint = FONT_SLOT_EMPTY
     f->slot_count = 0;
     f->shelf_x = f->shelf_y = 1;
@@ -103,7 +114,11 @@ static void font_reset_cache(Font *f, Renderer *r) {
         if (!index) f->ascii[c] = f->missing;
         else if (!font_make_glyph(f, NULL, index, &f->ascii[c])) f->ascii[c] = f->missing; // cannot happen at 2000-glyph capacity
     }
-    if (r) r_atlas_mark_dirty(r, 0, 0, f->atlas_size, f->atlas_size);
+    if (f->needs_bind && r) { // ASCII needed more rows: bound now, at the new height
+        r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_h);
+        f->needs_bind = 0;
+    }
+    if (r) r_atlas_mark_dirty(r, 0, 0, f->atlas_size, f->atlas_h);
 }
 
 // Opens the font at the current DPI scale and (re)allocates the atlas and cache.
@@ -154,7 +169,10 @@ static b32 font_setup(Font *f) {
     i32 size = 256;
     while ((u64)size * size < needed && size < FONT_ATLAS_MAX_SIZE) size *= 2;
     f->atlas_size = size;
-    f->atlas = PUSH_ARRAY(&f->arena, u8, (i64)size * size * 4);
+    if (!f->atlas_arena.base) f->atlas_arena = arena_create((u64)FONT_ATLAS_MAX_SIZE * FONT_ATLAS_MAX_SIZE * 4);
+    arena_reset(&f->atlas_arena);
+    f->atlas_h = MIN(FONT_ATLAS_ROWS, size);
+    f->atlas = PUSH_ARRAY(&f->atlas_arena, u8, (i64)size * f->atlas_h * 4);
 
     // Hash table: at least twice the number of glyphs the atlas can hold.
     u64 capacity = (u64)size * size / per_glyph * 2;
@@ -168,9 +186,9 @@ static b32 font_setup(Font *f) {
 
 #if RONIN_DEV
     u64 t2 = os_time_us();
-    LOG("font: %S%s %d px (scale %d%%, mode %d): cell %dx%d, baseline %d, atlas %dx%d, %u hash slots",
+    LOG("font: %S%s %d px (scale %d%%, mode %d): cell %dx%d, baseline %d, atlas %d wide, %d of its rows at first, %u hash slots",
         str8(f->family, f->family_len), f->used_fallback ? " (not found, fallback)" : "", (i32)(f->pixel_size + 0.5f), (i32)(f->dpi_scale * 100.0f + 0.5f), (i32)f->mode,
-        f->cell_w, f->line_h, f->baseline, size, size, 1u << f->slot_bits);
+        f->cell_w, f->line_h, f->baseline, size, f->atlas_h, 1u << f->slot_bits);
     LOG("font: DirectWrite init %D us, ASCII pre-rasterization %D us", (i64)(t1 - t0), (i64)(t2 - t1));
 #endif
     return 1;
@@ -211,7 +229,7 @@ b32 font_reconfigure(Font *f, Renderer *r, FontParams *params) {
         return 0;
     }
     if (r) {
-        r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_size);
+        r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_h);
         f->needs_bind = 0;
     }
     return 1;
@@ -228,7 +246,7 @@ void font_frame_begin(Font *f, Renderer *r, f32 dpi_scale) {
         if (!font_setup(f)) os_fatal(STR8_LIT("Could not open the font at the new DPI."));
     }
     if (f->needs_bind) {
-        r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_size);
+        r_atlas_bind(r, f->atlas, f->atlas_size, f->atlas_h);
         f->needs_bind = 0;
     }
 }
@@ -303,7 +321,7 @@ i32 font_draw_text(Font *f, Renderer *r, i32 x, i32 y, String8 text, Color color
 
 #if RONIN_DEV
 b32 font_dev_atlas_has_coverage(Font *f) {
-    i64 n = (i64)f->atlas_size * f->atlas_size * 4;
+    i64 n = (i64)f->atlas_size * f->atlas_h * 4;
     for (i64 i = 0; i < n; i += 4) {
         if (f->atlas[i] | f->atlas[i + 1] | f->atlas[i + 2]) return 1;
     }
