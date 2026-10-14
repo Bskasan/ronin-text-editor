@@ -702,6 +702,10 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
     ctx->kill_append = (cmd->flags & COMMAND_KILL) && ctx->last_command && (ctx->last_command->flags & COMMAND_KILL);
     if ((cmd->flags & COMMAND_ONCE) || v->cursor_count == 1) {
         view_run_for_cursor(ctx, cmd, view_primary(v));
+        if (cmd->after) {
+            ctx->cursor = view_primary(v);
+            cmd->after(ctx);
+        }
     } else {
         // Several cursors: in position order, so the gap moves one way, in one batch, so the markers are adjusted
         // once. A cursor that an earlier cursor's edit swallowed (it lay strictly inside removed text) is skipped,
@@ -729,6 +733,12 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
             }
             if (collect) kill_collect_next(ctx->kills);
             view_run_for_cursor(ctx, cmd, c);
+        }
+        for (i32 i = 0; cmd->after && i < n && i < v->cursor_count; i++) { // the second ordered pass
+            Cursor *c = &v->cursors[i];
+            if (buffer_marker_swallowed(buf, c->point)) continue;
+            ctx->cursor = c;
+            cmd->after(ctx);
         }
         buffer_batch_end(buf);
         if (collect) kill_collect_end(ctx->kills, ctx->kill_append, (cmd->flags & COMMAND_KILL_BACKWARD) != 0);
@@ -906,7 +916,7 @@ static void cmd_insert(CommandContext *ctx, String8 text) {
 }
 
 // A closing ) ] } typed as the first non-blank character of a line reindents the line, and so does the
-// character that completes a case or default label.
+// character that completes a case or default label (after the insertion at every cursor: Command.after).
 static void cmd_self_insert(CommandContext *ctx) {
     if (!ctx->codepoint) return; // bound to a key without a character
     u8 bytes[4];
@@ -914,7 +924,11 @@ static void cmd_self_insert(CommandContext *ctx) {
     cmd_insert(ctx, str8(bytes, n));
     u32 c = ctx->codepoint;
     if (c == ')' || c == ']' || c == '}') edit_electric_close(ctx);
-    else edit_electric_label(ctx);
+}
+
+static void cmd_self_insert_after(CommandContext *ctx) {
+    u32 c = ctx->codepoint;
+    if (c && c != ')' && c != ']' && c != '}') edit_electric_label(ctx);
 }
 
 static void cmd_delete_backward_char(CommandContext *ctx) {
@@ -1023,7 +1037,8 @@ const Command CMD_END_OF_BUFFER          = { "end-of-buffer", cmd_end_of_buffer,
 const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_command, COMMAND_ONCE | MOTION };
 const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE | MOTION };
 const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
-const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE };
+const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE,
+                                             cmd_self_insert_after };
 const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE | COMMAND_QUIT };
