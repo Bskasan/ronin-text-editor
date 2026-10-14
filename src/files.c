@@ -698,3 +698,36 @@ const Command CMD_KILL_BUFFER      = { "kill-buffer", cmd_kill_buffer, COMMAND_O
 const Command CMD_FIND_FILE_OTHER_WINDOW        = { "find-file-other-window", cmd_find_file_other_window, COMMAND_ONCE };
 const Command CMD_SWITCH_TO_BUFFER_OTHER_WINDOW = { "switch-to-buffer-other-window", cmd_switch_to_buffer_other_window, COMMAND_ONCE };
 const Command CMD_KILL_BUFFER_AND_WINDOW        = { "kill-buffer-and-window", cmd_kill_buffer_and_window, COMMAND_ONCE };
+
+// ---------------------------------------------------------------------------
+// Crash recovery (Phase 15). The platform's unhandled-exception filter calls app_crash_write for every buffer,
+// each under its own guard: a modified buffer that visits a file goes to the recovery directory as the bytes a
+// save would write ("<file name> <hash of its path> <YYYYMMDD-HHMMSS>.recovered"), with a sidecar ".path" naming
+// the file, the encoding and the line endings. No arena and no allocation: the buffer's own memory, stack buffers,
+// os_crash_create and os_file_write.
+
+i32 app_crash_buffer_count(App *app) {
+    return app->buffers.count;
+}
+
+void app_crash_write(App *app, i32 index) {
+    if (index < 0 || index >= app->buffers.count) return;
+    Buffer *buf = app->buffers.entries[index].buffer;
+    if (!buf || !buf->path.len || !buf->modified) return;
+    u32 hash = 2166136261u;
+    for (i64 i = 0; i < buf->path.len; i++) hash = (hash ^ buf->path.data[i]) * 16777619u;
+    u8 stamp[32];
+    i64 stamp_len = os_crash_stamp(stamp, sizeof(stamp));
+    u8 name[640], side[660], text[2400], chunk[KB(16)];
+    i64 n = fmt_buf(name, sizeof(name), "%S %08x %S.recovered", buffer_file_name(buf->path), hash, str8(stamp, stamp_len));
+    OsFile f;
+    if (os_crash_create(str8(name, n), &f) != OS_FILE_OK) return;
+    buffer_write_to(buf, f, chunk, sizeof(chunk));
+    os_file_close(f);
+    i64 sn = fmt_buf(side, sizeof(side), "%S.path", str8(name, n));
+    i64 tn = fmt_buf(text, sizeof(text), "%S\nencoding: %s\nline endings: %s\n", buf->path, app_encoding_name(buf->encoding),
+                     app_eol_name(buf->eol));
+    if (os_crash_create(str8(side, sn), &f) != OS_FILE_OK) return;
+    os_file_write(f, text, tn);
+    os_file_close(f);
+}
