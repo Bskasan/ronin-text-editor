@@ -71,6 +71,7 @@ typedef struct Platform {
     // Command-line options.
     b32 startup_ms;       // --startup-ms: exit after the first Present, exit code = ms since process creation
     b32 no_activate;      // --no-activate: shown without taking the foreground (memory measurements)
+    b32 version;          // --version: prints "ronin <version>" and exits
     f32 forced_scale;     // --scale <percent>, 0 = follow the monitor DPI
     AppFileArg *files;    // the arguments that are not flags, with the +LINE[:COLUMN] before each
     i32 file_count;
@@ -5320,10 +5321,32 @@ static void win32_files_done(Platform *p, i64 goto_line, i64 goto_col) {
     }
 }
 
+// --version: "ronin <version>" on the standard output when it is redirected, else on the console that started ronin
+// (a GUI program has none of its own); nothing when there is neither.
+static i32 win32_print_version(void) {
+    static const char text[] = "ronin " RONIN_VERSION "\r\n";
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    b32 attached = 0;
+    if (!out || out == INVALID_HANDLE_VALUE) {
+        attached = AttachConsole(ATTACH_PARENT_PROCESS);
+        out = attached ? CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL) : NULL;
+    }
+    if (out && out != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(out, text, sizeof(text) - 1, &written, NULL);
+    }
+    if (attached) {
+        if (out && out != INVALID_HANDLE_VALUE) CloseHandle(out);
+        FreeConsole();
+    }
+    return 0;
+}
+
 // The flags of every build: true when `a` is one (and sets it).
 static b32 win32_release_flag(Platform *p, String8 a) {
     if (str8_equal(a, STR8_LIT("--startup-ms"))) p->startup_ms = 1;
     else if (str8_equal(a, STR8_LIT("--no-activate"))) p->no_activate = 1;
+    else if (str8_equal(a, STR8_LIT("--version"))) p->version = 1;
     else return 0;
     return 1;
 }
@@ -5402,20 +5425,22 @@ static i32 win32_dev_test_args(Platform *p) {
     p->files = saved;
     p->file_count = saved_count;
     // The flags of every build.
-    b32 saved_startup = p->startup_ms, saved_no_activate = p->no_activate;
-    p->startup_ms = p->no_activate = 0;
+    b32 saved_startup = p->startup_ms, saved_no_activate = p->no_activate, saved_version = p->version;
+    p->startup_ms = p->no_activate = p->version = 0;
     b32 flags_ok = win32_release_flag(p, STR8_LIT("--no-activate")) && p->no_activate && !p->startup_ms &&
                    win32_release_flag(p, STR8_LIT("--startup-ms")) && p->startup_ms && !win32_release_flag(p, STR8_LIT("--no-activat")) &&
+                   !p->version && win32_release_flag(p, STR8_LIT("--version")) && p->version &&
                    !win32_release_flag(p, STR8_LIT("--smoke"));
     p->startup_ms = saved_startup;
     p->no_activate = saved_no_activate;
+    p->version = saved_version;
     if (!flags_ok) {
-        LOG("test: FAIL: command line: --no-activate / --startup-ms not recognized as flags of every build (or another one was)");
+        LOG("test: FAIL: command line: --no-activate / --startup-ms / --version not recognized as flags of every build (or another one was)");
         failures++;
     }
     if (!failures) {
         LOG("test: ok: command line files (+LINE[:COLUMN] before each file, a trailing one, *scratch*, flags between, not a number); "
-            "--no-activate and --startup-ms in every build");
+            "--no-activate, --startup-ms and --version in every build");
     }
     return failures;
 }
@@ -5556,6 +5581,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         bad_arg = a;
     }
     win32_files_done(p, goto_line, goto_col);
+    if (p->version && !bad_arg.len) return win32_print_version(); // before any window or thread
     String8 recovery_dir = { 0 };
 #if RONIN_DEV
     if (p->recovery_arg.len) recovery_dir = p->recovery_arg;

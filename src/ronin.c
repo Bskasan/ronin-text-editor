@@ -2,6 +2,7 @@
 // Headers first, then the editor core, then the backends that touch Win32 / D3D.
 
 #include "base.h"
+#include "version.h"
 #include "font_backend.h" // implemented by win32_dwrite.cpp, the second translation unit
 #include "platform.h"
 #include "render.h"

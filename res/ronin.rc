@@ -1,0 +1,32 @@
+// ronin's resources: the version.
+#include <winver.h>
+#include "version.h"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION RONIN_VERSION_MAJOR, RONIN_VERSION_MINOR, RONIN_VERSION_PATCH, 0
+PRODUCTVERSION RONIN_VERSION_MAJOR, RONIN_VERSION_MINOR, RONIN_VERSION_PATCH, 0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Bekir Kasan"
+            VALUE "FileDescription", "ronin text editor"
+            VALUE "FileVersion", RONIN_VERSION
+            VALUE "InternalName", "ronin"
+            VALUE "LegalCopyright", "Copyright (c) 2026 Bekir Kasan. MIT License."
+            VALUE "OriginalFilename", "ronin.exe"
+            VALUE "ProductName", "ronin"
+            VALUE "ProductVersion", RONIN_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
