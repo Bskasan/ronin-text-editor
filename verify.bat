@@ -2,7 +2,8 @@
 rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), runs --smoke on the
 rem                     debug build and --test on the bench build
-rem   verify.bat phase  the same, plus the full --test on the debug build (once per phase, before its last commit)
+rem   verify.bat phase  the same, plus the full --test on the debug build and the seed sweep (--fuzz-seeds 1 256)
+rem                     on the bench build (once per phase, before its last commit)
 rem From Git Bash: cmd //c ".\verify.bat" [phase]
 rem Every exit code is checked; the last line is "verify: PASS" or "verify: FAIL: <what failed>".
 rem build\ronin.log of each run is kept as build\verify\<step>.log.
@@ -38,6 +39,11 @@ if "%PHASE%"=="1" (
         call :run test-debug build\ronin_debug.exe --test
     ) else (
         call :fail "test on debug skipped (no exe)"
+    )
+    if "!BENCH_OK!"=="1" (
+        call :run fuzz-seeds build\ronin_bench.exe --fuzz-seeds 1 256
+    ) else (
+        call :fail "seed sweep skipped (no exe)"
     )
 )
 
