@@ -80,6 +80,9 @@ typedef struct Platform {
     b32 block_reason; // a shutdown block reason is registered
     b32 shown_early;  // early_window: shown in the background color before the device exists (os_show_window_early)
     HBRUSH early_brush; // ... painting the client area until the first frame
+    // Crash recovery: the directory (os_recovery_dir) and, for the exception filter, it and its parent in UTF-16.
+    String8 recovery_dir;
+    u16 recovery16[1024], recovery_parent16[1024];
 #if RONIN_DEV
     HANDLE log_file;
     b32 smoke;
@@ -108,6 +111,8 @@ typedef struct Platform {
     b32 bench_compile;
     b32 bench_cursors;
     b32 bench_longline;
+    b32 dev_crash;           // --crash: an access violation after --keys (the recovery files' test)
+    String8 recovery_arg;    // --recovery-dir DIR
     String8 screenshot_path;
     String8 atlas_path;
     String8 config_path;
@@ -157,6 +162,7 @@ typedef struct Platform {
 } Platform;
 
 static void win32_dwm_attribute(Platform *p, DWORD attribute, const void *value, DWORD size);
+static void win32_stack_guarantee(void);
 #if RONIN_DEV
 static b32 win32_dev_batch_mode(Platform *p);
 #endif
@@ -813,6 +819,7 @@ typedef struct Win32ThreadStart {
 static DWORD WINAPI win32_thread_main(void *param) {
     Win32ThreadStart start = *(Win32ThreadStart *)param;
     VirtualFree(param, 0, MEM_RELEASE);
+    win32_stack_guarantee();
     start.fn(start.data);
     return 0;
 }
@@ -1421,6 +1428,89 @@ static void win32_dev_capture_place(Platform *p) {
     SetWindowPos(p->hwnd, HWND_TOPMOST, mi.rcWork.left + 16, mi.rcWork.top + 16, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Crash recovery: the unhandled-exception filter gives every buffer to app_crash_write, each under its own guard,
+// then lets the crash go on (Windows Error Reporting as usual). Only the stack, the buffers' own memory and plain
+// file calls are used there: the arenas may be what broke.
+
+// The directory: --recovery-dir (dev), build\tmp\recovery for --test and the batch modes (dev), else
+// %LOCALAPPDATA%\ronin\recovery. Its parent is made too when a crash writes.
+static void win32_recovery_init(Platform *p, String8 dev_dir) {
+    String8 dir = { 0 };
+    if (dev_dir.len) {
+        dir = os_full_path(&p->perm, dev_dir);
+    } else {
+        WCHAR local[MAX_PATH];
+        DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        if (n && n < MAX_PATH) dir = str8_fmt(&p->perm, "%S\\ronin\\recovery", str8_from_str16(&p->perm, (u16 *)local, n));
+    }
+    p->recovery_dir = dir;
+    win32_utf8_to_wide_fixed(dir, p->recovery16, ARRAY_COUNT(p->recovery16));
+    i64 cut = dir.len;
+    while (cut > 0 && dir.data[cut - 1] != '\\') cut--;
+    win32_utf8_to_wide_fixed(str8(dir.data, cut > 0 ? cut - 1 : 0), p->recovery_parent16, ARRAY_COUNT(p->recovery_parent16));
+}
+
+String8 os_recovery_dir(void) {
+    return g_platform ? g_platform->recovery_dir : str8(NULL, 0);
+}
+
+OsFileStatus os_crash_create(String8 name, OsFile *file) {
+    Platform *p = g_platform;
+    file->handle = NULL;
+    if (!p || !p->recovery16[0]) return OS_FILE_NO_PATH;
+    CreateDirectoryW((WCHAR *)p->recovery_parent16, NULL);
+    CreateDirectoryW((WCHAR *)p->recovery16, NULL);
+    u16 path[2048];
+    i64 n = 0;
+    while (p->recovery16[n] && n < 1000) {
+        path[n] = p->recovery16[n];
+        n++;
+    }
+    path[n++] = '\\';
+    win32_utf8_to_wide_fixed(name, path + n, (i64)ARRAY_COUNT(path) - n);
+    HANDLE h = CreateFileW((WCHAR *)path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return win32_last_file_status();
+    file->handle = h;
+    return OS_FILE_OK;
+}
+
+i64 os_crash_stamp(u8 *out, i64 cap) {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    return fmt_buf(out, cap, "%04d%02d%02d-%02d%02d%02d", (i32)t.wYear, (i32)t.wMonth, (i32)t.wDay, (i32)t.wHour, (i32)t.wMinute,
+                   (i32)t.wSecond);
+}
+
+static LONG WINAPI win32_crash_filter(EXCEPTION_POINTERS *exception) {
+    (void)exception;
+    static volatile LONG entered;
+    if (InterlockedExchange(&entered, 1)) return EXCEPTION_CONTINUE_SEARCH; // a crash in here: no second round
+    App *app = g_platform ? g_platform->app : NULL;
+    if (app) {
+        i32 count = 0;
+        __try {
+            count = app_crash_buffer_count(app);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            count = 0;
+        }
+        for (i32 i = 0; i < count; i++) {
+            __try {
+                app_crash_write(app, i);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                // this buffer's memory is what broke: the others are still tried
+            }
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Room on the stack for the filter after a stack overflow (every thread of ours).
+static void win32_stack_guarantee(void) {
+    ULONG size = KB(64);
+    SetThreadStackGuarantee(&size);
+}
 
 void os_show_window_early(u32 rgb) {
     Platform *p = g_platform;
@@ -2976,6 +3066,18 @@ static void win32_inject_keys(Platform *p) {
     for (i32 i = 0; i < n && !p->quit; i++) win32_push_event(p, events[i]);
     p->keys = str8(NULL, 0);
     p->redraw = 1;
+}
+
+// --crash: after --keys and their frames, an access violation, Windows Error Reporting's dialog off; the filter writes
+// the recovery files as in a real crash. The window is never shown.
+static void win32_dev_crash(Platform *p) {
+    win32_inject_keys(p);
+    if (p->event_count) win32_frame(p);
+    for (i32 k = 0; k < 10000 && app_wants_frame(p->app); k++) win32_frame(p);
+    LOG("crash: on purpose, after the keys");
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    volatile int *nowhere = NULL;
+    *nowhere = 1;
 }
 
 // --screenshot and --dump-atlas: one frame with the window hidden (after --keys), then write the files.
@@ -5129,7 +5231,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
 }
 
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
+    return p->smoke || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
            p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -5318,10 +5420,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
 int __isa_available_init(void); // the compiler's support library: which instruction sets memcpy and memset may use
 
+// __try / __except need the C language's exception handler, which the C runtime's library has (and with it the C++
+// exception machinery); the system's own copy in ntdll.dll does the same work. Found once, before wWinMain.
+typedef EXCEPTION_DISPOSITION (*Win32CHandler)(struct _EXCEPTION_RECORD *, void *, struct _CONTEXT *, struct _DISPATCHER_CONTEXT *);
+static Win32CHandler win32_c_handler;
+
+EXCEPTION_DISPOSITION __C_specific_handler(struct _EXCEPTION_RECORD *record, void *frame, struct _CONTEXT *context,
+                                           struct _DISPATCHER_CONTEXT *dispatch) {
+    return win32_c_handler ? win32_c_handler(record, frame, context, dispatch) : ExceptionContinueSearch;
+}
+
 // The CRT-free build's entry point (/ENTRY): what the CRT's startup did for us is choosing the copy routines'
 // instruction sets, calling wWinMain and ending the process with its code.
 void win32_entry(void) {
     __isa_available_init();
+    win32_c_handler = (Win32CHandler)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "__C_specific_handler");
     ExitProcess((UINT)wWinMain(GetModuleHandleW(NULL), NULL, GetCommandLineW(), SW_SHOWDEFAULT));
 }
 #endif
@@ -5346,6 +5459,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->seed = 0x7ea1;
 #endif
     g_platform = p;
+    SetUnhandledExceptionFilter(win32_crash_filter); // modified files to the recovery directory, then the crash goes on
+    win32_stack_guarantee();
 #if RONIN_DEV
     os_dev_stage("WinMain entered");
 #endif
@@ -5396,6 +5511,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-longline"))) { p->bench_longline = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--crash"))) { p->dev_crash = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--recovery-dir")) && has_value) { p->recovery_arg = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--bench-search"))) { p->bench_search = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-windows"))) { p->bench_windows = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-cursors"))) { p->bench_cursors = 1; continue; }
@@ -5433,6 +5550,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         bad_arg = a;
     }
     win32_files_done(p, goto_line, goto_col);
+    String8 recovery_dir = { 0 };
+#if RONIN_DEV
+    if (p->recovery_arg.len) recovery_dir = p->recovery_arg;
+    else if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) recovery_dir = str8_fmt(&p->perm, "%S\\tmp\\recovery", os_exe_dir(&p->perm));
+#endif
+    win32_recovery_init(p, recovery_dir);
 #if RONIN_DEV
     if (p->startup_capture) { // from as early as possible: the window may be shown before the device exists
         p->capture = PUSH_STRUCT(&p->perm, StartupCapture);
@@ -5452,6 +5575,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // Log next to the executable (build\ronin.log), independent of the working directory.
     String8 exe_dir = os_exe_dir(&p->perm);
     String8 log_path = p->fuzz_worker ? str8_fmt(&p->perm, "%S\\fuzz\\worker%d.log", exe_dir, p->fuzz_worker - 1)
+                     : p->dev_crash ? str8_fmt(&p->perm, "%S\\crash.log", exe_dir) // the crash test's child: the parent's log stays
                                       : str8_fmt(&p->perm, "%S\\ronin.log", exe_dir);
     String16 log_path16 = str16_from_str8(&p->perm, log_path);
     p->log_file = CreateFileW((WCHAR *)log_path16.data, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
@@ -5630,7 +5754,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
-    show_early = show_early && !(p->smoke || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+    show_early = show_early && !(p->smoke || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early && !p->shown_early) {
         BOOL cloak = TRUE;
@@ -5686,6 +5810,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
 
 #if RONIN_DEV
+    if (p->dev_crash) win32_dev_crash(p);
     if (p->screenshot_path.len || p->atlas_path.len) {
         p->exit_code = win32_write_outputs(p);
         p->quit = 1;

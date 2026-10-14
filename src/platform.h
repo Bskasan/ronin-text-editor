@@ -89,6 +89,14 @@ void         os_file_close(OsFile file);
 // Swaps `temp` in as `target`, keeping the target's attributes; a plain move when target does not exist.
 OsFileStatus os_file_replace(String8 target, String8 temp);
 void         os_file_delete(String8 path);
+
+// Crash recovery (Phase 15): the directory of the recovery files (%LOCALAPPDATA%\ronin\recovery; --recovery-dir in dev
+// builds, and build\tmp\recovery for --test and the batch modes), made only when a crash writes into it.
+String8      os_recovery_dir(void);
+// For the unhandled-exception filter only (no arena, no allocation): a new file `name` in that directory (made with its
+// parent), and the local time as "YYYYMMDD-HHMMSS".
+OsFileStatus os_crash_create(String8 name, OsFile *file);
+i64          os_crash_stamp(u8 *out, i64 cap);
 #if RONIN_DEV
 b32          os_dev_set_read_only(String8 path, b32 read_only);
 b32          os_dev_hard_link(String8 existing, String8 link);
@@ -328,6 +336,10 @@ typedef struct AppArgs {
 } AppArgs;
 
 App *app_create(Arena *perm, AppArgs *args); // NULL on failure (logged)
+// The crash recovery's core side, for the platform's unhandled-exception filter: every buffer, each called under its
+// own guard; a modified file buffer is written to the recovery directory (no arena, no allocation).
+i32  app_crash_buffer_count(App *app);
+void app_crash_write(App *app, i32 index);
 b32  app_update_and_render(App *app, FrameInput *input, Renderer *r); // false = quit
 u32  app_wait_ms(App *app); // how long the platform may block before EVENT_WAKEUP; 0xFFFFFFFF = until an event
 // The mouse cursor for a point of the client area (WM_SETCURSOR): the resize cursors over what a press
