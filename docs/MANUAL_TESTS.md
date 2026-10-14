@@ -40,6 +40,10 @@ dev builds; they are not part of the repository.
 | `--bench-cursors` | Typing (self-insert, DEL, RET) at 1, 10, 100, 1,000 and 10,000 cursors on the 100 MB file (consecutive lines and spread) and on src/app.c; the language-aware classes on a C file at 1,000 and 10,000 cursors with the batch flushes per command; the undo of a 10,000-cursor edit; mark-all-like-this on a million occurrences and over the whole 100 MB file; the memory of 10,000 and 100,000 cursors. Never takes the focus. |
 | cursor tests | The `--test` groups logged as "test: ok: marker batches", "the multiple-cursor driver", "multiple cursors collapsing", "multiple-cursor undo", "multiple-cursor kills and yanks", "multiple-cursor commands", "multiple-cursor commands in the app", "multiple cursors and the mouse" and "multiple-cursor differential fuzz" (Phase 14). |
 | project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".ronin-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
+| `--fuzz-seeds` / `--soak` | Phase 15, in `verify.bat phase`: every seeded `--test` group for seeds 1-256 (worker processes); a million random events through the headless app with invariants, settled memory and a typing probe checked as it goes. |
+| crash test | The `--test` group logged as "test: ok: crash recovery" (Phase 15): a child crashing on purpose after edits (`--crash`), its recovery files against a save, the notice, recover-file. |
+| `--startup-capture` / `--bench-latency` / `--bench-longline` / `--memory-report` | Phase 15 measurements, never taking the focus: the early window on screen after each composition; key arrival to Present and to the vertical blank that showed it; a 5 MB line; private bytes by owner. |
+| verify checks | `verify.bat`'s steps "check-imports" (the release exe's DLLs equal res\imports.txt, no CRT DLL) and "version" (`ronin.exe --version` prints "ronin X.Y.Z"). |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
 ## A. Startup and window
@@ -397,6 +401,28 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | P23 | A tool's summary line ("1 error generated.", "0 Error(s)", "Compilation failed (1 error)") is colored and not counted | AUTOMATED-NEW | compile matchers (19 summaries and traps); builds (a summary not counted); builds in the app (both count words of an MSBuild line marked, the echo's counts unchanged). |
 | P24 | An error printed with an absolute path under the project root shows the path relative to the root; visiting it still works | AUTOMATED-NEW | compile path resolution (10 shown-path cases); builds in the app (on and off: under the root, outside it, relative; next-error to the file). |
 
+## Q. The last pass and the release (Phase 15)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| Q1 | Nothing says teal any more: the window title, the config file (`ronin.conf`, `%APPDATA%\ronin`), `.ronin-project`, messages, the log | AUTOMATED-NEW | smoke (the title "*scratch* - ronin"; the block reason "Unsaved changes in ronin"); the config and .ronin-project tests read the new names; `grep -rin teal` leaves N3's "teal line numbers" (a color), this step, the old-name notes in ARCHITECTURE.md (Phase 15 decisions) and CHANGELOG.md. |
+| Q2 | `ronin --version` prints "ronin 0.1.0" and exits 0, without a window | AUTOMATED-NEW + HUMAN | verify.bat "version" (redirected output, the release exe); the command line test (`--version` a flag of every build); in a console (Start-Process -NoNewWindow): "ronin 0.1.0". In a terminal by hand: HUMAN step 33. |
+| Q3 | ronin.exe's Properties show version 0.1.0, "ronin text editor", the copyright | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows FileVersion / ProductVersion 0.1.0, the description and the copyright; Explorer's Details tab: HUMAN step 29. |
+| Q4 | The icon in the title bar, the taskbar, Alt+Tab and Explorer | AUTOMATED-NEW + HUMAN | smoke "class icons set / set; the 16 px icon: stem #d3b58d, beside #072626, corner none" (shown to fail with the icon's text color changed by one); how it looks: HUMAN step 28. |
+| Q5 | After a crash, each modified file is in `%LOCALAPPDATA%\ronin\recovery` as a save would write it (encoding, BOM, line endings), with a .path file; unmodified files are not | AUTOMATED-NEW | crash test (CRLF UTF-8, UTF-16 LE with CRLF and an astral character, UTF-16 BE, UTF-8 BOM, mixed: byte for byte against a save; the sidecars; none for the unmodified file); shown to fail with the contents not written (a scratch copy). |
+| Q6 | The next start says how many recovery files there are and where; *Messages* lists each with its original; M-x recover-file shows the original and the copy side by side and overwrites nothing | AUTOMATED-NEW + HUMAN | crash test (the echo text, the *Messages* line, two windows, the original's bytes unchanged, the files kept; no notice without files). A crash in a real session: HUMAN step 32. |
+| Q7 | `early_window = true`: the window appears at once in the background color, then the text, with no white or black flash; typed keys still reach ronin | AUTOMATED-NEW + HUMAN | `--startup-capture` (15 runs on and off: visible after ~40 ms against ~181, no other image in 14 of 15; one corner pixel changed during a slow start); the look and the default: HUMAN step 30; type-ahead with it on: the one foreground request (`--type-ahead-check`). |
+| Q8 | Startup is not slower than Phase 14; idle is still 0% CPU | AUTOMATED-NEW | `--startup-ms --no-activate` 164 ms against 165 (15 runs alternating); `--idle-check`: 0 frames, 0 us in 5 s. |
+| Q9 | Minimize, wait, restore: the window comes back at once and looks right; memory drops while minimized | AUTOMATED-NEW + HUMAN | measured (bench, a minimize and restore that never activates the window): 60.5 -> 58.1 MB while minimized, the first frame after restoring 1.5-1.8 ms; the look: HUMAN step 31. |
+| Q10 | Typing the ':' of a case label at 10,000 cursors is fast | AUTOMATED-NEW | `--bench-cursors` (925 ms -> 28 ms at 10,000, one flush); the three-cursor case-label test (one flush, one undo). |
+| Q11 | A 5 MB minified line: moving and typing stay around 1 ms a key | AUTOMATED-NEW | `--bench-longline` (typing at the end 0.75-1.14 ms, in the middle 0.38-0.64, moving 0.47-0.74); the bracket test on a line longer than the budget. |
+| Q12 | Seeds 22 and 33 of the undo test pass | FIXED | `--test --seed 22` / `33` failed in test_undo_commands; fixed in 760277f (the test mistook a refused delete for an edit); the reduced case is a fixed test, and the sweep stops at seed 22 with the fix reverted. |
+| Q13 | The wheel and commands that move another window's point keep several cursors ordered | FIXED | found by the soak; fixed in 6e4ca11 and 18d6e94 with regressions in the multiple-cursor mouse test. |
+| Q14 | A million random events: no assert, no leak, no slowdown, flat memory | AUTOMATED-NEW | `--soak 1000000` on bench and debug in `verify.bat phase` (peak and final memory logged). |
+| Q15 | Every seeded test group passes for 256 seeds | AUTOMATED-NEW | `--fuzz-seeds 1 256` in `verify.bat phase`. |
+| Q16 | The release exe imports only kernel32, user32 and gdi32 and no C runtime DLL | AUTOMATED-NEW | verify.bat "check-imports" against res\imports.txt. |
+| Q17 | `dist.bat` makes `dist\ronin-0.1.0-windows-x64.zip` with ronin.exe, README.md and LICENSE | AUTOMATED-NEW | dist.bat runs verify.bat, checks each copy and tar's exit code, and prints the zip's size (224,440 bytes; `unzip -t`: no errors; the three files in ronin-0.1.0\). |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -465,6 +491,23 @@ Phase 14, multiple cursors:
 27. **P20**: Open a long file, C-x h C-S-c C-S-c (10,000 cursors), type a word, DEL, RET RET. Nothing lags (dev
     helper for the look: `ronin_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --screenshot
     build\shots\p14_many.png`).
+
+Phase 15, the release:
+
+28. **Q4**: Look at the icon in the title bar, the taskbar, Alt+Tab and Explorer (large icons view) at
+    100% and 150% display scale: an "r" with a green block cursor on a rounded square of the background color, crisp.
+29. **Q3**: Explorer, right-click build\ronin.exe, Properties, Details: version 0.1.0, "ronin text editor",
+    the copyright.
+30. **Q7**: Put `early_window = true` in ronin.conf (C-c ,) and start ronin from Explorer five times: the
+    window appears at once in the background color and the text follows; no white or black flash, no
+    jump. Then decide the default: say whether `early_window` should be on.
+31. **Q9**: Minimize ronin, wait a few seconds, restore it: it comes back at once with its text, nothing
+    garbled; Task Manager shows its memory lower while minimized.
+32. **Q6**: `build\ronin_debug.exe x.txt --keys "h i" --crash --recovery-dir "%LOCALAPPDATA%\ronin\recovery"`
+    (x.txt any scratch file), then start `build\ronin.exe`: the echo area says 1 recovery file;
+    M-x recover-file RET shows x.txt and the copy with "hi" side by side. Delete the files afterwards.
+33. **Q2**: In cmd and in PowerShell, `build\ronin.exe --version`: "ronin 0.1.0" appears (in cmd it may
+    come after the next prompt, as for any windowed program); no window opens.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

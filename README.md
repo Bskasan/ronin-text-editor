@@ -12,12 +12,13 @@ changed.
 
 ## Status
 
-Early and experimental: ronin is a learning project (see [How this project is
-made](#how-this-project-is-made)). It is built in 15 phases (the roadmap is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)).
-Phases 1 to 14 are done: window and renderer, font, text buffer, views, commands and the config file,
-editing, the minibuffer, syntax highlighting, isearch and query-replace, window splitting, projects
-and fuzzy file open, project-wide search, building and jumping to errors, multiple cursors. Still to
-come: 15 a performance and size pass.
+Version 0.1.0 ([CHANGELOG.md](CHANGELOG.md)). Early and experimental: ronin is a learning project (see
+[How this project is made](#how-this-project-is-made)). It was built in 15 phases (listed in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)), all done: window and renderer, font, text buffer,
+views, commands and the config file, editing, the minibuffer, syntax highlighting, isearch and
+query-replace, window splitting, projects and fuzzy file open, project-wide search, building and jumping
+to errors, multiple cursors, and a last pass over correctness, size, startup, latency and memory with a
+crash safety net. What may come next is under [Roadmap](#roadmap).
 
 Windows 10 or later, x64; developed and tested on Windows 11 only.
 
@@ -35,6 +36,11 @@ Only what exists today.
 - Files: UTF-8 (with or without BOM) and UTF-16 with BOM; LF, CRLF and mixed line endings are kept
   byte for byte; a 100 MB file loads in 35-40 ms. Saving writes a temporary file and swaps it in. Buffers whose file changed on disk are reloaded when they have no unsaved changes, and
   flagged otherwise. Quitting, and signing out of Windows, ask about unsaved buffers.
+- Crash recovery: if ronin crashes (an unhandled exception), every file buffer with unsaved changes is
+  written to `%LOCALAPPDATA%\ronin\recovery` first, as saving would write it (its encoding, BOM and line
+  endings), with a `.path` file naming the original. The next start says so in the echo area and lists the
+  files in `*Messages*`; M-x recover-file shows the original and the recovered copy side by side. Nothing
+  is overwritten and the files stay until you delete them. It is a best effort: see [Known limits](#known-limits).
 
 **Multiple cursors**
 - The commands of Emacs' multiple-cursors package (without its `mc/` prefix): `C->` adds a cursor at the
@@ -128,6 +134,9 @@ Only what exists today.
 **Configuration**
 - One text file for settings, colors and key bindings, reloaded as soon as it is saved. Every key
   can be rebound. The text size can be changed for the session (C-x C-+, C-x C--, Ctrl + wheel).
+- `early_window = true` shows the window in the background color about 40 ms after the start, before
+  the graphics device is ready (the first frame follows at ~180 ms); off by default, where the window
+  appears with its first frame.
 
 ![M-x with the candidates for "window" and their key bindings](docs/images/mx.png)
 
@@ -139,24 +148,25 @@ window.
 
 | what | value | where |
 |---|---|---|
-| executable size (release) | 482,304 bytes; imports only kernel32, user32, gdi32, d3d11, dwmapi and dwrite | Phase 14 |
-| startup to the first frame on screen | ~176-180 ms median, of which 125-150 ms is waiting for `D3D11CreateDevice` (the driver) | Phases 9, 10, 13 and 14 |
-| typing: one keystroke's command plus building its frame | 8-24 us average, at line 1,000,000 of a 100 MB file | Phases 11 and 14 |
+| executable size (release) | 397,312 bytes, the icon and the version resource included (Phase 14: 482,304); no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) | Phase 15 |
+| startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms | Phase 15 |
+| typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* | Phases 11, 14 and 15 |
+| typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) | Phase 15 |
 | typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms | Phase 14 |
-| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build and with 10,000 cursors | Phases 13 and 14 |
-| memory (private bytes, idle) | 76-77 MB with an empty buffer, ~67 MB of it Direct3D and the driver; 192-194 MB with a 100 MB file open | Phases 6 and 12 |
+| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build and with 10,000 cursors | Phases 13, 14 and 15 |
+| memory (private bytes, idle) | 57-59 MB with an empty buffer (Phase 14: 76-77), ~3 MB of it our arenas and the rest mostly Direct3D and the driver; 174-175 MB with a 100 MB file open | Phase 15 |
 | loading a 100 MB file | 35-40 ms | Phase 3 |
 | searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without | Phase 12 |
 | a build printing 100 MB as fast as it can | read into `*compilation*` in 0.33 s, no frame over 0.3 ms; typing meanwhile as fast as without | Phase 13 |
 
-The typing figure is CPU time inside ronin; the time from a key press to the screen (input to
-photon) has not been measured.
+The time to the screen is measured to the vertical blank that shows the frame (DXGI's frame statistics,
+`--bench-latency`); the display's own scan-out and response come after it.
 
 ## Building
 
 Requirements: Windows 10 or later, x64, and Visual Studio 2022 or later, or the Build Tools for
 Visual Studio, with the "Desktop development with C++" workload (the MSVC x64 tools and the Windows
-SDK, which provides `fxc`). `build.bat` finds MSVC through `vswhere` when `cl` is not on the PATH.
+SDK, which provides `fxc` and `rc`). `build.bat` finds MSVC through `vswhere` when `cl` is not on the PATH.
 
 From a command prompt in the repository:
 
@@ -178,7 +188,10 @@ cmd //c ".\build.bat release"
 | `build.bat release` | `build\ronin.exe` | optimized, no dev code |
 | `build.bat bench` | `build\ronin_bench.exe` | optimized, with the dev flags (tests and benchmarks) |
 
-The build is a single unity translation unit (`src/ronin.c`) plus one C++ file for DirectWrite.
+The build is a single unity translation unit (`src/ronin.c`) plus one C++ file for DirectWrite. The
+icon is drawn by a small program, `tools/make_icon.c`, that every build compiles and runs; with the
+version (`src/version.h`) it goes into the exe through `res/ronin.rc`. `dist.bat` runs `verify.bat`
+and packs `dist\ronin-0.1.0-windows-x64.zip` (ronin.exe, this README and the license).
 
 ## Usage
 
@@ -192,6 +205,7 @@ ronin <directory> [[+LINE[:COLUMN]] file ...]
 - A directory is opened as the project: `*scratch*` and C-x C-f start there and C-x p f lists its
   files.
 - A file that does not exist is opened as an empty buffer and created when saved.
+- `ronin --version` prints "ronin 0.1.0" and exits.
 - An unknown argument starting with `--` makes ronin exit at once with code 10.
 
 The test and benchmark flags of the dev builds are listed in [CLAUDE.md](CLAUDE.md).
@@ -305,14 +319,19 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
   dotted and dotless i.
 - Multiple cursors: one kill ring for all of them (a kill keeps a piece per cursor in one entry); M-x cannot
   run inside a prompt, so the commands without keys need a binding there; while a large mark-all runs, other
-  keys wait for it. Typing `:` after `case` at thousands of cursors is slow (~1 s at 10,000: the
-  reindent edits before point); cursors spread over a whole 100 MB file cost ~20 ms per key (the text
-  between them moves).
+  keys wait for it. Cursors spread over a whole 100 MB file cost ~20 ms per key (the text between them
+  moves); RET at thousands of cursors on lines with unbalanced braces far apart costs ~0.5 ms per cursor
+  (the indentation's bracket search).
+- A line of several megabytes (minified code) is slower to work on: ~0.4-1.1 ms a key to type or move
+  on a 5 MB line.
 - Builds: one at a time (`*compilation*`), no input to the process, one build command per project, no
   "Entering directory" tracking, and only the built-in error formats. A line shows when its newline
   arrives (a progress line without one waits). Error locations are the line and column as printed.
 - Emacs features that are missing: prefix arguments (`C-u`), the mark ring, rectangles, overwrite
-  mode, auto-save and crash recovery, `ESC` as Meta.
+  mode, auto-save, `ESC` as Meta.
+- Crash recovery is a best effort. It runs only for a crash inside ronin (an unhandled exception):
+  nothing is written when the process is ended from outside (Task Manager) or the machine loses power. A crash on a background thread is handled on that thread while the main thread
+  may still be editing, so a buffer can be caught mid-edit. Recovery files are never deleted by ronin.
 - Encodings: UTF-8 and UTF-16 with a BOM; anything else (Windows-1252, Windows-1254 ...) is shown
   and saved as raw bytes. Files over 1 GB are refused.
 - At most 8 windows. While the minibuffer is active, C-x o cannot leave it.
@@ -323,10 +342,32 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
 
 The full list is the "Later" section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later).
 
+## Roadmap
+
+The 15 phases are done; nothing more is scheduled. What would come next, from the "Later" list:
+
+Likely, in no fixed order:
+- Editing: auto-save, prefix arguments (`C-u`), the mark ring, rectangles, `ESC` as Meta.
+- Search: regular expressions, whole-word search, project-wide replace, a match count in isearch.
+- Text: legacy code pages and UTF-16 without a BOM, wide (East Asian) characters and emoji, a fallback
+  font for missing characters, line numbers.
+- Speed on extreme input: a column cache for multi-megabyte lines, a per-line bracket summary for RET
+  among unbalanced braces, processing cursors from the gap's side on a 100 MB file, saving on a
+  background thread (a save waits for ReplaceFileW: 5-7 ms, once 146 ms in a million soak events).
+- Projects and builds: an index kept current from change notifications, run and debug commands, several
+  build commands per project, user-defined error formats.
+- Windows: window configurations (undo of window changes).
+
+Not planned (by design): a language server or tree-sitter, proportional fonts, ligatures, bold and
+italic, tabs, menus, toolbars and scroll bars. Tried in Phase 15 and left out because they measured no
+better: a waitable swap chain and Present(0, 0) for input latency, other `D3D11CreateDevice` options for
+startup.
+
 ## How it is built
 
 C11 compiled with MSVC, plus one file of C-style C++ for DirectWrite (its headers cannot be used
-from C). No third-party code or libraries: only system DLLs. One `build.bat`, a unity build, no
+from C). No third-party code or libraries: only system DLLs. The release build links no C runtime (its
+own entry point; of the compiler's libraries only the copy routines and the stack probe). One `build.bat`, a unity build, no
 project files. Memory comes from arenas over VirtualAlloc, with nothing allocated per keystroke or
 frame; the program renders only when something changed and otherwise waits in
 MsgWaitForMultipleObjectsEx. The editor core is platform-independent C behind two small headers;
@@ -339,15 +380,19 @@ Testing is built into the dev builds:
   occur and builds); the search over files against a whole-text reference and on generated trees with 1 to 8
   threads; the error matchers' golden lines; builds of a scripted child program (output, exit codes,
   kills of the whole process tree, 100 start / kill rounds); a differential fuzz of multiple cursors against
-  the one-cursor commands applied cursor by cursor; file round trips; and a harness that posts
+  the one-cursor commands applied cursor by cursor; file round trips; a crashing child process whose
+  recovery files must equal a save byte for byte; and a harness that posts
   real key messages through the window procedure on US, UK, Turkish Q and Finnish keyboard layouts.
+- `--fuzz-seeds` runs every seeded test group for hundreds of seeds; `--soak` sends a million random keys,
+  clicks and resizes through the app, checking its invariants, its memory and its speed as it goes.
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
   the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors), the D3D11 debug layer and
   leaks (processes, threads and handles too).
 - Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans, the
   project-wide search, a build's output and typing at up to 10,000 cursors on a 100 MB file or tree.
-- `verify.bat` builds the three configurations, runs the smoke and the tests and prints one PASS or
-  FAIL line; it is the gate before every commit.
+- `verify.bat` builds the three configurations, runs the smoke and the tests, checks the release exe's
+  imported DLLs against a committed list and prints one PASS or FAIL line; it is the gate before every
+  commit. `verify.bat phase` adds the seed sweep and the soak.
 
 The design, the decisions and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
 every manual test step and what covers it is in [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).

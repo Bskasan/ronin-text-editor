@@ -27,8 +27,12 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   never by #undef.
 - /W4 /WX clean, always.
 - Write as if there were no C runtime: no stdio, no malloc/free, no str* functions, no CRT
-  float formatting. memcpy/memset/memmove are fine. (Static CRT linked for now; Phase 15 may
-  remove it.)
+  float formatting. memcpy/memset/memmove are fine. Release and bench link no C runtime
+  (/NODEFAULTLIB, entry point win32_entry; from the compiler's static libraries only the stack
+  probe, memcpy / memset / memmove and their CPU dispatch); the debug build keeps the static CRT
+  (/MTd, /GS). The release exe imports only KERNEL32, USER32 and GDI32 (res/imports.txt, checked
+  by verify.bat); d3d11, dwmapi and dwrite are loaded with LoadLibraryW where first used. A new
+  import or loaded DLL updates res/imports.txt and the import decision in docs/ARCHITECTURE.md.
 - Memory: arena allocators over VirtualAlloc (reserve large, commit on demand). One
   permanent arena, one per-frame scratch arena. No heap allocation per keystroke or frame.
 - Text: UTF-8 internally, `String8 { u8 *data; i64 len; }`, not NUL-terminated. Convert to
@@ -54,12 +58,14 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - Scope discipline: build only what the current phase asks for. No speculative
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
-  configurations (each with the macro check), runs `--smoke` on the debug build and `--test` on
-  the bench build (the optimized build runs the fuzz tests quickly), checks every exit code and
-  prints one last line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts:
-  never run the steps by hand and judge them by eye. `verify.bat phase` also runs the full
-  `--test` on the debug build: once per phase, before its final commit. Each run's log is kept
-  as build\verify\<step>.log. Take a screenshot after a visual change and look at it.
+  configurations (each with the macro check), runs `--smoke` on the debug and the bench build and
+  `--test` on the bench build (the optimized build runs the fuzz tests quickly), checks the release
+  exe's imports (`--check-imports`) and its `--version`, checks every exit code and prints one last
+  line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts: never run the steps
+  by hand and judge them by eye. `verify.bat phase` also runs the full `--test` on the debug build,
+  the seed sweep (`--fuzz-seeds 1 256`, bench) and the soak (`--soak 1000000`, bench and debug): once
+  per phase, before its final commit. Each run's log is kept as build\verify\<step>.log. Take a
+  screenshot after a visual change and look at it.
 - Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
   run without asking the user first, and then only once per request: they may be typing in another
   window. Everything else that is run must keep not taking the focus.
@@ -95,26 +101,31 @@ From Git Bash (this environment sets `NoDefaultCurrentDirectoryInExePath=1`, so 
 the explicit `.\`):
 
     cmd //c ".\build.bat"            # build\ronin_debug.exe  (/Od /Zi /MTd, RONIN_DEV=1)
-    cmd //c ".\build.bat release"    # build\ronin.exe        (/O2 /GL ..., RONIN_DEV=0)
-    cmd //c ".\build.bat bench"      # build\ronin_bench.exe  (/O2 /MT, RONIN_DEV=1, no D3D debug layer)
+    cmd //c ".\build.bat release"    # build\ronin.exe        (/O2 /GL ..., RONIN_DEV=0, no CRT)
+    cmd //c ".\build.bat bench"      # build\ronin_bench.exe  (/O2, RONIN_DEV=1, no CRT, no D3D debug layer)
 
-    cmd //c ".\verify.bat"           # the gate: three builds, smoke (debug), test (bench), one PASS / FAIL line
-    cmd //c ".\verify.bat phase"     # ... plus the full --test on the debug build (once per phase)
+    cmd //c ".\verify.bat"           # the gate: three builds, smoke (debug, bench), test (bench), imports,
+                                     # --version; one PASS / FAIL line
+    cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep and the soak (once per phase)
+    cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
+                                     # README.md, LICENSE); the version is src/version.h's
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
 
 build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
 src/shaders/*.hlsl with fxc into build\gen\*.h, runs the macro-collision check
-(src/check_macros.c, /Zs, ~0.3 s), compiles win32_dwrite.cpp, then the unity build, and prints
-the exe size.
+(src/check_macros.c, /Zs, ~0.3 s), compiles and runs tools/make_icon.c (build\gen\ronin.ico) and
+compiles res/ronin.rc (the icon and the version resource, ~0.26 s with the icon), compiles
+win32_dwrite.cpp, then the unity build, and prints the exe size.
 
 Command line, every build: `ronin [[+LINE[:COLUMN]] file ...]` (1-based, as in Emacs): every file
 is opened, each at the +LINE[:COLUMN] before it (one with no file after it: the file before it, or
 *scratch*); the first is shown, and with startup_windows = 2 the second window shows the second.
 A directory instead of a file is opened as the project (`ronin <directory>`): nothing is visited for it,
 *scratch* and C-x C-f start there, C-x p f lists it. Any unrecognized argument starting with `--` (or a flag missing its value) exits at once with
-code 10, before a window exists.
+code 10, before a window exists. `--version` prints "ronin 0.1.0" (through a redirected standard
+output, else the console that started it) and exits 0 before any window or thread.
 
 `--startup-ms` works in both builds: it exits right after the first Present with exit code =
 ms since process creation. Git Bash `$?` truncates exit codes to 8 bits, so read it from
@@ -224,6 +235,30 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # of a 10,000-cursor edit; mark-all on a million occurrences
                                                           # (max_cursors 10,000 and 100,000) and over the 100 MB file;
                                                           # the memory of 10,000 / 100,000 cursors (exit 9 if wrong)
+    build/ronin_bench.exe --fuzz-seeds FIRST COUNT        # every seeded --test group for seeds FIRST.. (worker
+                                                          # processes, at most 8, below normal priority; their logs
+                                                          # in build\fuzz\worker<k>.log); exit 9 names the seed
+    build/ronin_bench.exe --soak N [--seed S]             # N random events through the headless app (keys of every
+                                                          # keymap, typed code, mouse, focus, resizes) over the files of
+                                                          # build\tmp\soak, the only place it may write; invariants every
+                                                          # 1,000 events, settled memory and a typing probe every
+                                                          # 100,000; logs peak / final memory and the 5 slowest events
+    build/ronin_debug.exe --map-report build\ronin.map    # the release exe's bytes by module (its linker map; src\ scanned)
+    build/ronin_debug.exe --check-imports build\ronin.exe res\imports.txt   # its DLLs must equal the list, no CRT DLL
+    build/ronin_bench.exe --memory-report                 # shown without activation; private bytes by owner (our
+                                                          # arenas, heaps, stacks, the driver, image pages, views)
+    build/ronin_bench.exe --bench-latency                 # 500 keys posted to the shown, not activated window: arrival
+                                                          # to dequeue, command + build, Present, the vertical blank that
+                                                          # showed it (DXGI frame statistics), by presentation mode
+    build/ronin_bench.exe --startup-capture               # early_window measured: the window topmost, never activated;
+                                                          # a thread reads its screen area after every DWM composition:
+                                                          # visible, first frame, any other image (exit 9); no image
+                                                          # of the screen is written. Use --config with early_window
+    build/ronin_bench.exe --bench-longline                # a 5 MB one-line minified JavaScript file: typing at its end
+                                                          # and middle, moving in its middle
+    build/ronin_debug.exe <file> --keys ".." --crash [--recovery-dir DIR]   # an access violation after the keys:
+                                                          # the recovery files (default build\tmp\recovery in dev
+                                                          # batch runs), its log in build\crash.log
 
 The benches never take the focus (shown cloaked without activation, as the smoke and --idle-check);
 screenshot runs take the workers' results (project scans, searches, builds' output; until none came for
@@ -283,7 +318,8 @@ with regions (stage 10): on lines 0-2 of *scratch*, focus on, each filled cursor
 color, the cells after the lines in the background, "mc:3" drawn in the mode line; then one cursor again. Every
 syntax frame also has a number pixel in its color. The window
 title must be "*scratch* - ronin",
-set exactly once. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
+set exactly once, and the window class must have both icons, the 16 px one drawing a stem pixel in the
+text color, the background beside the "r" and a transparent corner. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
 killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the
@@ -414,7 +450,15 @@ multiple-cursor driver (swallowed cursors, line commands with two cursors on a l
 two steps, max_cursors); collapsing through the keys; undo with several cursors (merged typing, undo-redo, the chain,
 random commands); kill pieces and yanks; the new commands on tricky input and through the headless app (their keys,
 mark-all over frames, C-g, the minibuffer's refusals); the mouse and two windows on one buffer; a differential fuzz
-of 20,000 commands against the one-cursor commands applied cursor by cursor to a flat text. A failed
+of 20,000 commands against the one-cursor commands applied cursor by cursor to a flat text. Phase 15:
+the streaming encoder with the gap at every offset; the reduced undo case of seeds 22 / 33 (a failing
+random undo sequence is reduced with ddmin); the wheel and other windows keeping several cursors ordered;
+the atlas growing without a reset; a bracket on a line longer than the match budget; case labels
+completed at three cursors in one flush; a child (this executable) crashing after edits with --crash:
+its recovery files byte for byte against a save of the same buffers (CRLF UTF-8, UTF-16 LE with CRLF
+and an astral character, UTF-16 BE, a UTF-8 BOM, mixed endings), their sidecars, none for an unmodified
+file, then the startup notice, *Messages* and recover-file's two windows; --version among the flags of
+every build. A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);

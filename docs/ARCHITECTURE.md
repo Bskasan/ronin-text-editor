@@ -34,14 +34,18 @@
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report) and the `--bench-buffer` core |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield) |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
 | `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
+| `res/ronin.rc`, `src/version.h` | the icon (build\gen\ronin.ico) and the version resource; the version for the code (`--version`) |
+| `res/imports.txt` | the DLLs the release exe may import (checked by verify.bat with `--check-imports`) |
+| `tools/make_icon.c` | build-time tool, not part of the exe: draws the icon into build\gen\ronin.ico on every build |
+| `build.bat`, `verify.bat`, `dist.bat` | the build, the gate before every commit, the release zip |
 
 Core (`app.c`, `files.c`, `finder.c`, `results.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
 `fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
@@ -50,13 +54,15 @@ additionally calls `font_backend.h`. The scanner's worker (project.c), the searc
 
 ## Startup and frame loop
 
-1. `wWinMain` parses the command line (`--test` runs headless here and exits), then allocates
-   the Renderer and immediately starts a worker thread that runs only
+1. `wWinMain` (reached through `win32_entry` in the CRT-free builds) installs the crash filter, parses
+   the command line (`--version` prints and exits; `--test` runs headless here and exits), then allocates
+   the Renderer and immediately starts a worker thread that loads d3d11.dll and runs only
    `D3D11CreateDevice` (`r_create_device`: no logging, no arenas, results go into Renderer
    fields). Meanwhile the main thread creates the window hidden on the monitor under the
    mouse, sizes it for that monitor's DPI (clamped to the work area) and creates the app,
    which reads the config (built-in defaults, then the user's ronin.conf), opens DirectWrite
-   once with the configured font, pre-rasterizes ASCII and opens the files of the command line.
+   once with the configured font, pre-rasterizes ASCII and opens the files of the command line. With
+   `early_window` the window is shown here, painted in the background color, before the device exists.
 2. Shows the window cloaked (DWMWA_CLOAK) and activates it (SW_SHOW, SetForegroundWindow) right
    after the app is created: keys typed from then on queue for ronin, and the activation (the focus
    sets up the IME and text services, ~15 ms) overlaps the device creation. (Activating right after
@@ -84,11 +90,12 @@ additionally calls `font_backend.h`. The scanner's worker (project.c), the searc
    that carry input), then lexer states with what is left; while any is pending the app asks for another
    frame, otherwise none.
 4. `WM_SIZE` resizes the swap chain and renders immediately, so live resize stays crisp
-   inside the modal size loop. Minimized = frames are no-ops.
+   inside the modal size loop. Minimized = frames are no-ops, and the driver's temporary
+   allocations are trimmed (IDXGIDevice3::Trim).
 
 Renderer: one pipeline, instanced quads. VS builds the strip corners from `SV_VertexID`;
 the only vertex buffer is a dynamic per-instance buffer (rect, uv rect, RGBA8 color, kind;
-40 bytes, 65536 per flush). Kind 0 = solid, kind 1 = glyph: the PS fetches coverage with
+40 bytes, 16,384 per flush). Kind 0 = solid, kind 1 = glyph: the PS fetches coverage with
 `Texture2D.Load` (quads are 1:1 with texels, no sampler) and outputs color in SV_Target0 and
 per-channel weights in SV_Target1 (dual-source blending, SRC1_COLOR / INV_SRC1_COLOR). Each
 flush first uploads the atlas dirty rectangle. Pipeline state is rebound every frame because
@@ -97,7 +104,8 @@ the flip model unbinds the back buffer on Present.
 Text: `font_draw_text` walks UTF-8; a byte in 32..126 is a table lookup plus one instance
 write, anything else goes through an open-addressing hash keyed by codepoint and is
 rasterized on first use (DirectWrite, white on black, into a GDI DIB; copied as R, G, B
-coverage into the CPU atlas). When the atlas or the hash table (load factor > 70%) fills up,
+coverage into the CPU atlas, which commits 128 rows first and doubles them as shelves need, its
+texture made again at the new height). When the atlas or the hash table (load factor > 70%) fills up,
 pending quads are flushed, atlas and cache are cleared, ASCII is re-rasterized, drawing goes on.
 
 Input: modifiers come from `GetKeyState` at message time. The only tracked modifier state
@@ -591,6 +599,97 @@ Ours is ~9 MB (arenas and DirectWrite's share of the heaps); the graphics stack 
 
 One refresh is 6.9 ms: composed frames reach the screen ~2.5 refreshes after the key, overlay ones within one.
 
+### Changes and results
+
+Each "before" is the Phase 14 build (or the commit before the change), run alternately with the new one.
+
+**Correctness.** Seeds 22 and 33 failed `test_undo_commands`; a ddmin reducer took both to three steps
+(backward-word, newline twice, then backward-word to the buffer's start and a delete-backward-char that is
+refused). The test's bug: it took a refused delete as an edit when point had moved (760277f); undo was right.
+The seed sweep (`--fuzz-seeds 1 256`, 8 workers) takes ~160 s and passes; with the fix reverted in a scratch
+copy, the fixed case fails, and without that case the sweep stops at seed 22. The soak (1,000,000 events,
+~9-11 s on the bench build) found two real bugs, the wheel and other windows' commands leaving several cursors
+out of order (6e4ca11, 18d6e94); it now passes on both builds: peak ~13 MB of our memory, the settled memory
+without the undo logs 7.0 -> 7.9 MB, the typing probe flat, no leak. Its five slowest events are saves (5-7
+ms in ReplaceFileW, once 146 ms).
+
+**Size** (release; the map report attributes the rest):
+
+| step | bytes | |
+|---|---|---|
+| Phase 14 | 482,304 | six DLLs, 195 functions |
+| CRT-free (own entry point; chkstk, memcpy / memset / memmove and cpu_disp only) | 395,264 | KERNEL32 120 -> 69 functions |
+| config.c, files.c, finder.c, command.c, isearch.c, cursors.c at `optimize("s")` | 375,808 | their benches unchanged |
+| d3d11, dwmapi and dwrite loaded on first use | | KERNEL32, USER32, GDI32 only |
+| crash recovery, early_window, the long-line and cursor fixes, --version | 385,536 | |
+| the icon (9,230 bytes) and the version resource | 397,312 | .rsrc 12,288 raw; 3 DLLs, 133 functions |
+
+Left at /O2 because their benches got slower at "s": compile.c (100 MB of output 8-12% slower), results.c
+(2-5%), project.c (a scan 14 -> 16 ms). /O1 everywhere would give 286,208 bytes at the hot paths' cost.
+Dead code: two dev helpers nothing called (compile_memory, grep_memory); nothing else.
+
+**Startup** (release, `--startup-ms --no-activate`, 15 runs alternating): 167 ms median before the lazy DLL
+loads, 164-165 after (WinMain ~1 ms earlier); today 164 ms (162-181) against Phase 14's 165 (163-174), and 164
+with or without the icon. `D3D11CreateDevice` variants (the device creation's own time, medians, alternating): a first round
+of all five gave the default 154.8 ms, feature level 11_0 only 151.3, without BGRA_SUPPORT 151.8,
+PREVENT_INTERNAL_THREADING_OPTIMIZATIONS 152.9, an explicit adapter from EnumAdapters1 151.4; a second round of
+15 runs each of the first three gave 152.1, 152.1 and 151.9 ms: within the noise, none kept. `early_window` (bench,
+`--startup-capture`, 15 runs each, alternating): visible after 39.9 ms (36.4-61.8) with it on against 180.7 ms
+off; the first frame 185.2 against 180.7 ms; 14 of 15 runs with no other image between (one changed a corner
+pixel during a slow start). Default off until the HUMAN step decides.
+
+**Input latency** (`--bench-latency`, 3 runs each, alternating): Present(1, 0) (the baseline), Present(0, 0)
+for the key's frame and a waitable swap chain (max latency 1, waited on only while a frame is pending) gave
+the same: composed p50 16.2-17.8 ms, overlay p50 4.4-4.5 ms, arrival to Present returned 0.42-0.46 ms. None
+kept. Final run: arrival to Present p50 0.41 ms (p99 0.89), on screen composed p50 17.1 ms (p99 21.3), overlay
+p50 4.9 ms; command + frame build p50 23 us.
+
+**Hot spots.**
+- ':' completing a case label at many cursors (C file): 1,000 cursors 12.5 -> 3.1 ms, 10,000 925 -> 28 ms
+  (Command.after: the label reindent runs in a second ordered pass, one flush per command).
+- A bracket on a line longer than SYNTAX_MATCH_MAX with show_paren_mode (5 MB minified line, moving): 6.5 ms
+  (worst 16-19) -> 0.48 ms a key.
+- `--bench-longline` today (4 runs): typing at the end of the 5 MB line 0.75-1.14 ms avg (worst 1.3-1.65),
+  in its middle 0.38-0.64, moving right / left 0.47-0.74 ("Later": a column cache).
+- RET's bracket walk: pushing its 256 KB stack without zeroing measured no gain (reverted); the cost is
+  lexing up to 256 KB back, 17-57 us for one cursor on real code, ~0.4-0.6 ms a cursor on the brace-heavy
+  bench text ("Later").
+
+**Memory** (release, idle, private bytes, `--no-activate`, 3-4 runs alternating):
+
+| step | MB | Phase 14 |
+|---|---|---|
+| CRT-free | 75.3-75.7 | 76.3-77.4 |
+| the glyph atlas grows its rows on demand (128 rows first) | 65.0-66.6 | 77.0-77.6 |
+| 16,384 quad instances per flush instead of 65,536 | 57.3-58.1 | |
+| today (*scratch*) | 57.4-59.3 | 75.9-77.4 |
+| today, the 100 MB .txt open | 174.4-175.0 | 192.2-193.4 |
+
+By owner now (`--memory-report`, dev build, 60 MB): our arenas 3.0 MB (8.3 before), process heaps 6.4, thread
+stacks 1.4, the driver's other private allocations 15.1 (27.9), its DLLs' writable image pages 33.9, mapped
+views 1.1. Minimized: IDXGIDevice3::Trim after clearing the context, 60.5 -> 58.1 MB while minimized, the first
+frame after restoring 1.5-1.8 ms either way. Tried and left out: a 1 x 1 swap chain while minimized (no further
+gain, the restore 3.1 ms) and trimming on losing the focus (the next frame takes it all back).
+
+**Crash safety net.** The filter writes through `buffer_write_to` with a 16 KB stack chunk: the UTF-16 path
+reads across the gap without moving it, so the UTF-8 fallback the plan allowed was not needed. The test
+compares each recovery file with a save of the same edited buffer: CRLF UTF-8, UTF-16 LE with CRLF and an
+astral character, UTF-16 BE, a UTF-8 BOM, mixed endings; broken in a scratch copy (the contents not written),
+`--test` fails on it.
+
+**Against Phase 1 and Phase 14** (Phase 1 = 05a45e5, a window and a rectangle renderer, rebuilt for its size;
+its startup from the Phase 1 notes):
+
+| | Phase 1 | Phase 14 | Phase 15 |
+|---|---|---|---|
+| release exe | 112,128 bytes, static CRT | 482,304 bytes, static CRT | 397,312 bytes, no CRT, icon and version included |
+| imports | kernel32, user32, d3d11, dwmapi (97 functions) | six DLLs (195) | kernel32, user32, gdi32 (133); three loaded on first use |
+| startup to the first Present | ~170 ms (~160 ms D3D11CreateDevice) | 165-176 ms | 164 ms (~146 ms the device); window at ~40 ms with early_window |
+| idle CPU | 0 (blocked in MsgWaitForMultipleObjectsEx) | 0 frames, 0 us in 5 s | 0 frames, 0 us in 5 s |
+| typing, command + frame | (no editor) | 8-24 us | 8-24 us; arrival to screen p50 17 ms composed, 4.4-4.9 overlay |
+| idle memory | not measured | 76-77 MB | 57-59 MB |
+| allocation per keystroke or frame | none (rule) | none | none |
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -622,8 +721,10 @@ One refresh is 6.9 ms: composed frames reach the screen ~2.5 refreshes after the
   `src/check_macros.c` (every system header we use, then the whole unity build) with /Zs in every
   configuration, so such a collision, or a ronin macro redefining a system one, fails the build where
   /external:W0 would have hidden it. Fixes are renames (KEYMOD_*, never #undef).
-- Import list kept minimal for startup: kernel32, user32, gdi32, d3d11, dwmapi, dwrite (dxgi
-  only in dev builds; dxguid.lib is static). No shell32 (own command-line parser), no shcore.
+- Import list kept minimal for startup: kernel32, user32 and gdi32 since Phase 15 (res/imports.txt,
+  checked by verify.bat); d3d11 (on the device thread), dwmapi (the first window attribute) and dwrite
+  (the first font) are loaded with LoadLibraryW where first used; dxgi only in dev builds; dxguid.lib is
+  static. No shell32 (own command-line parser), no shcore.
 - No key events for lone modifier keys (Ctrl, Shift, Alt, Win, Caps Lock). Numpad: text events.
 - Mouse moves are queued but do not request a redraw by themselves.
 - Debug layer: break on CORRUPTION/ERROR only when a debugger is attached (otherwise a
@@ -1488,18 +1589,45 @@ One refresh is 6.9 ms: composed frames reach the screen ~2.5 refreshes after the
   The tests were shown to fail with the merge rule broken (touching regions merging: the fuzz) and with the
   cursor restore in undo broken (two undo tests), each in a scratch copy.
 
+### The last pass (Phase 15)
+
+- The name is ronin (teal until Phase 15); no migration code: a teal.conf is moved by hand.
+- Release and bench link no C runtime: `/NODEFAULTLIB`, entry point `win32_entry` (`__isa_available_init`,
+  wWinMain, ExitProcess); libcmt.lib and libvcruntime.lib are named on the link line only for the stack probe,
+  memcpy / memset / memmove and their CPU dispatch; base.c defines `_fltused`. `__try` needs
+  `__C_specific_handler`, which is forwarded to ntdll's export (found at startup) instead of pulling in the
+  CRT's exception machinery. The debug build keeps the static CRT for /GS and /MTd.
+- Cold modules (config, files, finder, command, isearch, cursors) are compiled for size with
+  `#pragma optimize("s", on)` in the unity file; a module stays at /O2 when its bench gets slower.
+- The glyph atlas commits 128 rows first and doubles them on demand up to its width, the texture made again
+  at once, so glyphs keep their coordinates. A flush holds 16,384 quad instances (a 1280x800 frame of text is
+  ~6,000); more flush more often.
+- On minimizing, the device context is cleared and IDXGIDevice3::Trim gives the driver's temporary
+  allocations back.
+- `Command.after`: an optional step the driver runs after fn, with several cursors in a second ordered pass
+  once fn ran at every cursor (self-insert's case-label reindent), so an edit before the cursor's own
+  insertion does not flush the marker batch once per cursor.
+- `early_window` (default off): the window is shown in the background color as soon as the config and the
+  buffers exist (cloaked, painted, one composition, uncloaked, DWM transitions off), activated as the
+  normal start; dev batch runs never show it early. The default is the user's call (HUMAN step).
+- Crash safety net: an unhandled-exception filter (and a 64 KB stack guarantee on each of our threads, so a
+  stack overflow can still run it; not tested) calls `app_crash_write` for every buffer, each inside its own
+  `__try`; a modified file buffer is written with `buffer_write_to` (the save's encoder) through a 16 KB
+  stack chunk to `%LOCALAPPDATA%\ronin\recovery`, plus a `.path` sidecar; no arena, no allocation, the gap
+  never moved. The filter returns EXCEPTION_CONTINUE_SEARCH: Windows Error Reporting runs as before.
+  Nothing deletes recovery files; recover-file opens the original and the copy side by side.
+- The version lives in src/version.h, for the code and res/ronin.rc. The icon is drawn by
+  tools/make_icon.c on every build (PNG images at 16-256 px with its own fixed-Huffman deflate, 9,230
+  bytes) into build\gen; the .ico is never committed.
+- Tried and not kept (numbers under "Measurements (Phase 15)"): a waitable swap chain and Present(0, 0)
+  for the key's frame, four `D3D11CreateDevice` variants, the walk's stack without zeroing, a 1 x 1 swap
+  chain while minimized, trimming on focus loss, /O1 or "s" for compile.c, results.c and project.c.
+
 ## Later
 
-- Waitable swap chain (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) folded into the
-  message wait, for lower input latency (Phase 15 candidate).
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
 - Window configurations (winner-mode undo of window changes, C-x r w / C-x r j).
 - Copying the window's remembered positions into the new window on a split (Emacs does).
-- Startup is ~175 ms, of which ~125-150 ms is waiting for `D3D11CreateDevice` (driver load) even
-  on its own thread; everything else of ours already overlaps it (Phase 9 measurements). Accepted.
-  To make the launch feel instant: show the window immediately with the background color painted
-  (GDI) until the first Present. The 12-15 ms before WinMain (the loader) could shrink by loading
-  d3d11.dll on the device thread (LoadLibrary) instead of as an import.
 - Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
 - ESC as the Meta prefix, as in Emacs (ESC is keyboard-quit for now).
 - *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
@@ -1514,24 +1642,28 @@ One refresh is 6.9 ms: composed frames reach the screen ~2.5 refreshes after the
   more layout).
 - Column cache for very long lines: point's column is found by scanning from the line start
   (each view_ensure_visible and the drawing scan it; printable ASCII 16 bytes at a time since
-  Phase 9, other text byte by byte).
+  Phase 9, other text byte by byte). On a 5 MB minified line typing costs 0.75-1.14 ms a key at its end
+  and 0.38-0.64 in its middle, moving 0.47-0.74 (`--bench-longline`, Phase 15). Resumable lexing inside
+  such a line would come after it, if the lexing still shows.
 - Prefix arguments (C-u), the mark ring, rectangle commands, overwrite mode.
 - Clipboard delayed rendering (a 50 MB kill is converted to UTF-16 at once).
 - Auto-scroll while dragging outside the window; after a double or triple click, a drag that
   extends by words or lines.
-- Multiple cursors: typing the ':' of a case label (or ';' in Jai) reindents before point after inserting at
-  it, which flushes the batch once per cursor: 11 ms at 1,000 cursors, 1.07 s at 10,000 (a C file). The join
-  of Phase 14 covers only a replacement ending where the insertion is; this one keeps text between them.
 - Multiple cursors spread over a whole 100 MB file cost ~20 ms per key (the gap travels through ~100 MB each
   command); processing the cursors from the gap's end when it is past the last cursor would halve it.
 - RET on lines with unbalanced braces far apart (the 100 MB bench text) costs ~0.4-0.6 ms per cursor, the
-  same as with one cursor there: the indentation's bracket match looks back up to SYNTAX_MATCH_MAX (256 KB)
-  and zeroes a 256 KB stack for each walk.
+  same as with one cursor there: the indentation's bracket match lexes back up to SYNTAX_MATCH_MAX (256 KB).
+  Not zeroing the walk's stack gained nothing (Phase 15); a per-line bracket summary (lines that are
+  balanced skipped whole) would.
 - A mark-all with 100,000 cursors (max_cursors at the top of its range) makes them all in one frame (~5.5
   ms); and keys typed while a long mark-all searches wait instead of being queued.
 - Per-cursor kill rings (the multiple-cursors package's mc/kill-ring); undo with one cursor still restores
   only its point, not its mark.
-- Auto-save and crash recovery.
+- Auto-save (the crash recovery of Phase 15 writes only on an unhandled exception inside ronin).
+- *Messages*: a message logged outside a command (an undefined key) moves its point without scrolling the
+  window that shows it until the next command (the soak's visibility check skips *Messages*).
+- Saving on a background thread: a save waits for ReplaceFileW, 5-7 ms, once 146 ms in a million soak
+  events (the file system).
 - Writing to a path another buffer visits (Emacs asks first; ronin then has two buffers on it).
 - Clicking a candidate in the list; dimming the shadowed part of a file name ("c:/a/~/b").
 - Candidates' bindings from the minibuffer keymap in M-x annotations (only global ones are shown).
@@ -1547,7 +1679,6 @@ One refresh is 6.9 ms: composed frames reach the screen ~2.5 refreshes after the
 - Revert: map positions through a line diff of the old and new text, so a marker in an unchanged
   line that moved keeps its place in it (now: line and column inside the replaced range).
 - JSX tags in JavaScript / TypeScript highlighting.
-- Resumable lexing inside very long lines (a 5 MB minified line costs ~10 ms per keystroke).
 - Regular-expression search (isearch-forward-regexp, query-replace-regexp, and in project-search and occur).
 - A total match count in isearch ("3/41").
 - Editing the search string in the minibuffer (M-e in isearch).
