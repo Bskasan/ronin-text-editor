@@ -731,3 +731,91 @@ void app_crash_write(App *app, i32 index) {
     os_file_write(f, text, tn);
     os_file_close(f);
 }
+
+// A recovery file's original: the first line of its sidecar (empty when there is none).
+static String8 files_recovery_original(Arena *arena, String8 dir, String8 name) {
+    String8 text;
+    if (os_read_small_file(arena, str8_fmt(arena, "%S\\%S.path", dir, name), KB(64), &text) != OS_FILE_OK) return str8(NULL, 0);
+    i64 end = 0;
+    while (end < text.len && text.data[end] != '\n') end++;
+    return str8(text.data, end);
+}
+
+static b32 files_is_recovery(OsDirEntry *e) {
+    String8 suffix = STR8_LIT(".recovered");
+    return !e->is_dir && e->name.len > suffix.len && str8_equal(str8(e->name.data + e->name.len - suffix.len, suffix.len), suffix);
+}
+
+// At startup: recovery files left by a crash are named in *Messages*, and the echo area says so.
+static void files_recovery_notice(App *app) {
+    String8 dir = os_recovery_dir();
+    if (!dir.len) return;
+    Arena *a = &app->files_arena;
+    u64 mark = arena_pos(a);
+    OsDirEntry *entries;
+    i64 count;
+    i32 found = 0;
+    if (os_list_dir(a, dir, &entries, &count) == OS_FILE_OK) {
+        for (i64 i = 0; i < count; i++) {
+            if (!files_is_recovery(&entries[i])) continue;
+            String8 original = files_recovery_original(a, dir, entries[i].name);
+            echo_log(&app->echo, str8_fmt(a, "Recovery file %S (of %S)", entries[i].name, original.len ? original : STR8_LIT("?")));
+            found++;
+        }
+    }
+    if (found) {
+        echo_message(&app->echo, "%d recovery file%s from a crash in %S (listed in *Messages*): M-x recover-file", found, found == 1 ? "" : "s",
+                     dir);
+    }
+    arena_pop_to(a, mark);
+}
+
+static i64 files_recovery_candidates(Minibuffer *mb, void *data, String8 input) {
+    (void)input;
+    if (mb->cand_count) return 0;
+    App *app = data;
+    String8 dir = os_recovery_dir();
+    Arena *a = &app->files_arena;
+    u64 mark = arena_pos(a);
+    OsDirEntry *entries;
+    i64 count;
+    if (dir.len && os_list_dir(a, dir, &entries, &count) == OS_FILE_OK) {
+        for (i64 i = 0; i < count; i++) {
+            if (files_is_recovery(&entries[i])) minibuffer_add_candidate(mb, entries[i].name, files_recovery_original(a, dir, entries[i].name), 0);
+        }
+    }
+    arena_pop_to(a, mark);
+    return 0;
+}
+
+// The original file in this window and the recovered copy in the other one, side by side; nothing is overwritten:
+// what to keep is copied by hand.
+static void files_recover_done(CommandContext *ctx, MiniResult *r) {
+    App *app = ctx->app;
+    if (!r->text.len) return;
+    String8 dir = os_recovery_dir();
+    Arena *a = &app->files_arena;
+    u64 mark = arena_pos(a);
+    String8 original = str8_copy(ctx->scratch, files_recovery_original(a, dir, r->text));
+    String8 copy = str8_copy(ctx->scratch, str8_fmt(a, "%S\\%S", dir, r->text));
+    arena_pop_to(a, mark);
+    if (!original.len) {
+        echo_message(ctx->echo, "No sidecar for %S: which file it belongs to is not known", r->text);
+        return;
+    }
+    Buffer *orig = app_find_file(app, original);
+    if (!orig) return; // the message says why
+    app_switch_buffer(app, ctx->view, orig);
+    Buffer *rec = app_find_file(app, copy);
+    if (rec) app_display_buffer(app, rec, 0);
+    ctx->cursor = view_primary(ctx->view);
+    echo_message(ctx->echo, "The recovered text is in the other window; %S itself is unchanged", orig->name);
+}
+
+static void cmd_recover_file(CommandContext *ctx) {
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Recover file: "), .done = files_recover_done,
+                        .candidates = files_recovery_candidates, .data = ctx->app, .require_match = 1 };
+    minibuffer_read(ctx, &req);
+}
+
+const Command CMD_RECOVER_FILE = { "recover-file", cmd_recover_file, COMMAND_ONCE };

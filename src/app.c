@@ -1028,6 +1028,7 @@ static void files_poll(App *app);
 static void files_update_watches(App *app);
 static void files_unwatch_all(App *app);
 static u32  files_wait_ms(App *app);
+static void files_recovery_notice(App *app);
 
 // ---------------------------------------------------------------------------
 // Startup
@@ -1175,6 +1176,7 @@ App *app_create(Arena *perm, AppArgs *args) {
     if (app->font && app->font->used_fallback) {
         echo_message(&app->echo, "Font '%S' not found, using Consolas", str8(app->font->family, app->font->family_len));
     }
+    files_recovery_notice(app);
 #if RONIN_DEV
     app->force_focus = -1;
 #endif
