@@ -1213,8 +1213,8 @@ OsFileStatus buffer_revert(Buffer *buf, i64 point) {
 typedef struct BufferWriter {
     OsFile file;
     OsFileStatus status;
-    i64 used;
-    u8 chunk[BUFFER_CHUNK];
+    i64 used, cap;
+    u8 *chunk; // the caller's
 } BufferWriter;
 
 static void buffer_writer_flush(BufferWriter *w) {
@@ -1223,8 +1223,8 @@ static void buffer_writer_flush(BufferWriter *w) {
 }
 
 static void buffer_writer_put(BufferWriter *w, u8 *data, i64 len) {
-    if (w->used + len > (i64)sizeof(w->chunk)) buffer_writer_flush(w);
-    if (len >= (i64)sizeof(w->chunk)) { // large runs go straight to the file
+    if (w->used + len > w->cap) buffer_writer_flush(w);
+    if (len >= w->cap) { // large runs go straight to the file
         if (w->status == OS_FILE_OK) w->status = os_file_write(w->file, data, len);
         return;
     }
@@ -1246,58 +1246,81 @@ static void buffer_writer_put_unit(BufferWriter *w, u32 unit, b32 big_endian) {
     buffer_writer_put(w, b, 2);
 }
 
-// Writes the text in the buffer's encoding and line-ending mode. Without conversion the two
-// segments go to the file as they are; otherwise everything streams through the fixed chunk.
-static OsFileStatus buffer_write_contents(Buffer *buf, OsFile file) {
-    BufferWriter *w = (BufferWriter *)os_reserve(sizeof(BufferWriter)); // 64 KB: too big for the stack
-    if (!w || !os_commit(w, sizeof(BufferWriter))) {
-        if (w) os_release(w);
-        return OS_FILE_OUT_OF_MEMORY;
+static void buffer_writer_put_utf16(BufferWriter *w, u32 cp, b32 big_endian, b32 crlf) {
+    if (cp == '\n' && crlf) buffer_writer_put_unit(w, '\r', big_endian);
+    if (cp >= 0x10000) {
+        cp -= 0x10000;
+        buffer_writer_put_unit(w, 0xD800 + (cp >> 10), big_endian);
+        buffer_writer_put_unit(w, 0xDC00 + (cp & 0x3FF), big_endian);
+    } else {
+        buffer_writer_put_unit(w, cp, big_endian);
     }
-    w->file = file;
-    w->status = OS_FILE_OK;
-    w->used = 0;
+}
+
+OsFileStatus buffer_write_to(Buffer *buf, OsFile file, u8 *chunk, i64 cap) {
+    BufferWriter w = { file, OS_FILE_OK, 0, cap, chunk };
     b32 crlf = buf->eol == BUFFER_EOL_CRLF;
     String8 seg[2];
-
+    buffer_segments(buf, &seg[0], &seg[1]);
     if (buf->encoding == BUFFER_UTF16LE || buf->encoding == BUFFER_UTF16BE) {
         b32 big = buf->encoding == BUFFER_UTF16BE;
-        buffer_move_gap(buf, buffer_size(buf)); // one contiguous run, so no character straddles the gap
-        u8 *t = buf->text;
-        i64 n = buf->gap_start;
-        buffer_writer_put_unit(w, 0xFEFF, big);
-        for (i64 i = 0; i < n && w->status == OS_FILE_OK;) {
-            i64 advance;
-            u32 cp = buffer_decode_unit(t + i, n - i, &advance);
-            i += advance;
-            if (cp == '\n' && crlf) buffer_writer_put_unit(w, '\r', big);
-            if (cp >= 0x10000) {
-                cp -= 0x10000;
-                buffer_writer_put_unit(w, 0xD800 + (cp >> 10), big);
-                buffer_writer_put_unit(w, 0xDC00 + (cp & 0x3FF), big);
-            } else {
-                buffer_writer_put_unit(w, cp, big);
+        buffer_writer_put_unit(&w, 0xFEFF, big);
+        i64 skip = 0; // bytes after the gap that a sequence begun before it took
+        for (i32 k = 0; k < 2 && w.status == OS_FILE_OK; k++) {
+            u8 *t = seg[k].data;
+            i64 n = seg[k].len;
+            for (i64 i = k ? skip : 0; i < n && w.status == OS_FILE_OK;) {
+                i64 advance;
+                u32 cp;
+                if (k == 0 && n - i < 4 && seg[1].len) {
+                    // The last bytes before the gap are read through a window with the first ones after it, so the
+                    // units are those of the contiguous text, the gap where it is (it is never moved here).
+                    u8 window[8];
+                    i64 have = n - i, more = MIN(seg[1].len, (i64)4);
+                    memcpy(window, t + i, (size_t)have);
+                    memcpy(window + have, seg[1].data, (size_t)more);
+                    cp = buffer_decode_unit(window, have + more, &advance);
+                    if (advance > have) {
+                        skip = advance - have;
+                        i = n;
+                    } else {
+                        i += advance;
+                    }
+                } else {
+                    cp = buffer_decode_unit(t + i, n - i, &advance);
+                    i += advance;
+                }
+                buffer_writer_put_utf16(&w, cp, big, crlf);
             }
         }
     } else {
-        if (buf->encoding == BUFFER_UTF8_BOM) buffer_writer_put(w, (u8 *)"\xEF\xBB\xBF", 3);
-        buffer_segments(buf, &seg[0], &seg[1]);
+        if (buf->encoding == BUFFER_UTF8_BOM) buffer_writer_put(&w, (u8 *)"\xEF\xBB\xBF", 3);
         for (i32 k = 0; k < 2; k++) {
             if (!crlf) {
-                buffer_writer_put(w, seg[k].data, seg[k].len);
+                buffer_writer_put(&w, seg[k].data, seg[k].len);
                 continue;
             }
-            for (i64 i = 0; i < seg[k].len && w->status == OS_FILE_OK;) {
+            for (i64 i = 0; i < seg[k].len && w.status == OS_FILE_OK;) {
                 i64 nl = buffer_find_newline(seg[k].data, i, seg[k].len);
-                buffer_writer_put(w, seg[k].data + i, nl - i);
-                if (nl < seg[k].len) buffer_writer_put(w, (u8 *)"\r\n", 2);
+                buffer_writer_put(&w, seg[k].data + i, nl - i);
+                if (nl < seg[k].len) buffer_writer_put(&w, (u8 *)"\r\n", 2);
                 i = nl + 1;
             }
         }
     }
-    buffer_writer_flush(w);
-    OsFileStatus status = w->status;
-    os_release(w);
+    buffer_writer_flush(&w);
+    return w.status;
+}
+
+// Saving: through a BUFFER_CHUNK reserved for the call (too big for the stack).
+static OsFileStatus buffer_write_contents(Buffer *buf, OsFile file) {
+    u8 *chunk = (u8 *)os_reserve(BUFFER_CHUNK);
+    if (!chunk || !os_commit(chunk, BUFFER_CHUNK)) {
+        if (chunk) os_release(chunk);
+        return OS_FILE_OUT_OF_MEMORY;
+    }
+    OsFileStatus status = buffer_write_to(buf, file, chunk, BUFFER_CHUNK);
+    os_release(chunk);
     return status;
 }
 

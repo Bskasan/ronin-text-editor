@@ -1101,6 +1101,49 @@ static b32 test_edit_save(Test *t, const char *name, String8 bytes, i64 at, Stri
     return 1;
 }
 
+// buffer_write_to (saving and the crash recovery) never moves the gap: with the gap at every byte offset of a text
+// with 2-, 3- and 4-byte characters, a WTF-8 surrogate, invalid bytes and newlines (inside sequences too), each
+// encoding and line-ending mode writes exactly the bytes it writes with the gap at the end.
+static b32 test_write_gap(Test *t) {
+    static const u8 text[] = "a\n\xc5\x9f\xe2\x82\xac\n\xf0\x9f\x98\x80x\xed\xa0\x80y\x80z\xc3\n\xe2\x82\nend";
+    i64 len = (i64)sizeof(text) - 1;
+    static const struct { BufferEncoding enc; BufferEol eol; } modes[] = {
+        { BUFFER_UTF16LE, BUFFER_EOL_CRLF }, { BUFFER_UTF16BE, BUFFER_EOL_LF }, { BUFFER_UTF16LE, BUFFER_EOL_LF },
+        { BUFFER_UTF8_BOM, BUFFER_EOL_CRLF }, { BUFFER_UTF8, BUFFER_EOL_MIXED },
+    };
+    String8 path = str8_fmt(&t->arena, "%S\\write_gap.bin", t->tmp_dir);
+    u8 chunk[64]; // small: the chunk boundaries fall everywhere too
+    i32 checked = 0;
+    for (i32 m = 0; m < (i32)ARRAY_COUNT(modes); m++) {
+        Buffer *buf = buffer_create(STR8_LIT("write_gap"));
+        TEST_CHECK(t, buf, "write gap: buffer_create failed");
+        buffer_replace(buf, 0, 0, str8((u8 *)text, len));
+        buf->encoding = modes[m].enc;
+        buf->eol = modes[m].eol;
+        String8 want = { 0 };
+        for (i64 gap = len; gap >= 0; gap--) {
+            buffer_move_gap(buf, gap);
+            OsFile f;
+            TEST_CHECK(t, os_file_open_overwrite(path, &f) == OS_FILE_OK, "write gap: cannot open %S", path);
+            OsFileStatus st = buffer_write_to(buf, f, chunk, sizeof(chunk));
+            os_file_close(f);
+            TEST_CHECK(t, st == OS_FILE_OK && buf->gap_start == gap, "write gap: mode %d, gap %D: status %d, the gap moved to %D", m, gap,
+                       st, buf->gap_start);
+            String8 got;
+            TEST_CHECK(t, test_read_file(t, path, &got), "write gap: cannot read %S", path);
+            if (gap == len) want = got; // the gap at the end: the contiguous text
+            TEST_CHECK(t, str8_equal(got, want), "write gap: mode %d, the gap at %D: %D bytes, %D with the gap at the end", m, gap, got.len,
+                       want.len);
+            checked++;
+        }
+        buffer_destroy(buf);
+    }
+    os_file_delete(path);
+    LOG("test: ok: write with the gap anywhere (%d writes: UTF-16 LE / BE, UTF-8 with BOM, CRLF, LF and mixed; the gap inside "
+        "sequences, chunks of 64 bytes)", checked);
+    return 1;
+}
+
 static void test_edits(Test *t) {
     i32 before = t->failures;
     test_edit_save(t, "edit_crlf.txt", TEST_BYTES("one\r\ntwo\r\n"), 4, TEST_BYTES("new\nline "),
@@ -11612,6 +11655,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_read_only(&t);
     arena_reset(&t.arena);
     test_files(&t);
+    arena_reset(&t.arena);
+    test_write_gap(&t);
     arena_reset(&t.arena);
     test_edits(&t);
     arena_reset(&t.arena);
