@@ -38,20 +38,35 @@
 #include "window.c"
 #include "edit.c"
 #include "keymap.c"
+// Cold code is compiled for size (optimize "s"): the config, the file commands, the finder's glue, the command
+// table, isearch's and the multiple-cursor commands. Measured against /O2 for speed (Phase 15); the modules
+// whose benches got slower that way (project.c's scanner, compile.c, results.c) stay at /O2.
+#pragma optimize("s", on)
 #include "config.c"
+#pragma optimize("", on)
 #include "project.c"
 #include "minibuffer.c"
 #include "fuzzy.c"
 #include "search.c"
 #include "grep.c"
 #include "compile.c"
+#pragma optimize("s", on)
 #include "isearch.c"
+#pragma optimize("", on)
 #include "app.c"
+#pragma optimize("s", on)
 #include "files.c"
+#pragma optimize("", on)
+#pragma optimize("s", on)
 #include "finder.c"
+#pragma optimize("", on)
 #include "results.c"
+#pragma optimize("s", on)
 #include "cursors.c"
+#pragma optimize("", on)
+#pragma optimize("s", on)
 #include "command.c"
+#pragma optimize("", on)
 #include "test.c" // RONIN_DEV only
 
 #include "render_d3d11.c"
