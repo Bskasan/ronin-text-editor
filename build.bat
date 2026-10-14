@@ -38,6 +38,10 @@ if errorlevel 1 exit /b 1
 fxc /nologo /WX /O3 /T ps_4_0 /E ps_main /Vn quad_ps_bytes /Fh build\gen\quad_ps.h src\shaders\quad.hlsl >nul
 if errorlevel 1 exit /b 1
 
+rem --- the version resource ---
+rc /nologo /Isrc /fo build\gen\ronin.res res\ronin.rc
+if errorlevel 1 exit /b 1
+
 rem --- C (unity build) + the one C++ file (DirectWrite: dwrite.h is C++ only) ---
 set COMMON=/nologo /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0
 set CFLAGS=%COMMON% /std:c11 /Ibuild\gen
@@ -68,7 +72,7 @@ cl %CFLAGS% %DEFS% /Zs src\check_macros.c
 if errorlevel 1 exit /b 1
 cl %CPPFLAGS% %OPT% %DEFS% src\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
 if errorlevel 1 exit /b 1
-cl %CFLAGS% %OPT% %DEFS% src\ronin.c build\%NAME%_dwrite.obj /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
+cl %CFLAGS% %OPT% %DEFS% src\ronin.c build\%NAME%_dwrite.obj build\gen\ronin.res /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
 if errorlevel 1 exit /b 1
 
 for %%F in ("build\%NAME%.exe") do echo build\%NAME%.exe: %%~zF bytes

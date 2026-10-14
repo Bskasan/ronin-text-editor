@@ -1,7 +1,7 @@
 @echo off
 rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), runs --smoke on the
-rem                     debug and the bench build, --test on the bench build, and checks the release exe's imports
+rem                     debug and the bench build, --test on the bench build, and checks the release exe's imports and --version
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
 rem                     bench build and the soak (--soak 1000000) on both (once per phase, before its last commit)
 rem From Git Bash: cmd //c ".\verify.bat" [phase]
@@ -29,6 +29,7 @@ if "!DEBUG_OK!"=="1" (
     rem The release exe imports exactly the DLLs of res\imports.txt, and no CRT DLL.
     if exist build\ronin.exe (
         call :run check-imports build\ronin_debug.exe --check-imports build\ronin.exe res\imports.txt
+        call :version
     ) else (
         call :fail "import check skipped (no release exe)"
     )
@@ -96,6 +97,19 @@ start "" /wait %1 %2 %3 %4 %5
 set CODE=!errorlevel!
 if exist build\ronin.log copy /y build\ronin.log "build\verify\%STEP%.log" >nul
 if not "!CODE!"=="0" call :fail "%STEP% (exit !CODE!)"
+exit /b 0
+
+rem --- version: the release exe's --version prints "ronin X.Y.Z" through a redirected standard output, exit 0 ---
+:version
+echo verify: version
+build\ronin.exe --version > build\verify\version.log 2>&1
+set CODE=!errorlevel!
+if not "!CODE!"=="0" (
+    call :fail "version (exit !CODE!)"
+    exit /b 0
+)
+findstr /r /x /c:"ronin [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\verify\version.log >nul
+if errorlevel 1 call :fail "version (printed something else)"
 exit /b 0
 
 :fail
