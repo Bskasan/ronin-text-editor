@@ -2808,6 +2808,98 @@ static b32 test_echo_is(TestView *tv, const char *expected) {
     return str8_equal(str8(tv->echo.text, tv->echo.len), str8_cstr(expected));
 }
 
+// One step of the random undo sequence: a motion, then an edit (newline, a typed character, or a
+// delete-backward-char; a refused delete is followed by a newline, so every step edits).
+typedef struct TestUndoOp {
+    u8 motion;
+    u8 action; // 0 newline, 1 self-insert ch, 2 delete-backward-char (a newline while the text has 4 bytes or fewer)
+    u8 ch;
+} TestUndoOp;
+
+static const Command *test_undo_motions[] = { &CMD_FORWARD_CHAR, &CMD_BACKWARD_WORD, &CMD_NEXT_LINE, &CMD_MOVE_END_OF_LINE };
+
+// Runs the steps, then as many undos: each must give the text after the step before it, and the last
+// one the unmodified start. 0 when it holds; otherwise 1, with the first difference in `why`.
+static b32 test_undo_replay(Test *t, const TestUndoOp *ops, i32 count, char *why) {
+    u64 mark = arena_pos(&t->arena);
+    TestView tv;
+    test_view_open(t, &tv, "one two\nthree |four\nfive", 10, 40);
+    char **texts = PUSH_ARRAY(&t->arena, char *, count + 1);
+    texts[0] = test_view_marked(t, &tv);
+    for (i32 k = 1; k <= count; k++) {
+        const TestUndoOp *op = &ops[k - 1];
+        test_view_run(&tv, test_undo_motions[op->motion]);
+        i64 size = buffer_size(tv.buf);
+        switch (op->action) {
+        case 0: test_view_run(&tv, &CMD_NEWLINE); break;
+        case 1: test_type_char(&tv, op->ch); break;
+        case 2: test_view_run(&tv, size > 4 ? &CMD_DELETE_BACKWARD_CHAR : &CMD_NEWLINE); break;
+        }
+        if (buffer_size(tv.buf) == size && test_cstr_equal(test_view_marked(t, &tv), texts[k - 1])) { // a refused delete
+            test_view_run(&tv, &CMD_NEWLINE);
+        }
+        texts[k] = test_view_marked(t, &tv);
+    }
+    b32 failed = 0;
+    for (i32 n = 1; n <= count && !failed; n++) {
+        test_view_run(&tv, &CMD_UNDO);
+        String8 text = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf));
+        String8 expected = str8_cstr(texts[count - n]);
+        // Compare the text only (point is where that command started, checked elsewhere).
+        u8 *plain = PUSH_ARRAY(&t->arena, u8, expected.len);
+        i64 m = 0;
+        for (i64 i = 0; i < expected.len; i++) if (expected.data[i] != '|') plain[m++] = expected.data[i];
+        if (!str8_equal(text, str8(plain, m))) {
+            failed = 1;
+            if (why) test_cstr(why, 256, "after %d undo(s) the text is '%S', not the text after step %d '%s' (after the steps '%s')", n,
+                               text, count - n, texts[count - n], texts[count]);
+        }
+    }
+    if (!failed && tv.buf->modified) {
+        failed = 1;
+        if (why) test_cstr(why, 256, "undoing everything leaves the buffer modified");
+    }
+    test_view_close(t, &tv);
+    arena_pop_to(&t->arena, mark);
+    return failed;
+}
+
+// ddmin over the steps: removes chunks while the sequence still fails, down to single steps. Returns
+// the new count; `ops` holds the reduced sequence.
+static i32 test_undo_reduce(Test *t, TestUndoOp *ops, i32 count) {
+    TestUndoOp trial[64];
+    ASSERT(count <= (i32)ARRAY_COUNT(trial));
+    for (i32 chunk = count / 2; chunk >= 1;) {
+        b32 removed = 0;
+        for (i32 start = 0; start + chunk <= count;) {
+            i32 n = 0;
+            for (i32 i = 0; i < count; i++) if (i < start || i >= start + chunk) trial[n++] = ops[i];
+            if (n > 0 && test_undo_replay(t, trial, n, NULL)) {
+                memcpy(ops, trial, sizeof(TestUndoOp) * (size_t)n);
+                count = n;
+                removed = 1;
+            } else {
+                start += chunk;
+            }
+        }
+        if (!removed) chunk /= 2;
+        else chunk = MIN(chunk, count / 2);
+    }
+    return count;
+}
+
+static const char *test_undo_ops_text(Test *t, const TestUndoOp *ops, i32 count) {
+    String8 s = { 0 };
+    for (i32 i = 0; i < count; i++) {
+        const TestUndoOp *op = &ops[i];
+        const char *edit = op->action == 0 ? "newline" : op->action == 1 ? "self-insert" : "delete-backward-char";
+        String8 step = op->action == 1 ? str8_fmt(&t->arena, "%s%s, %s %c", i ? "; " : "", test_undo_motions[op->motion]->name, edit, op->ch)
+                                       : str8_fmt(&t->arena, "%s%s, %s", i ? "; " : "", test_undo_motions[op->motion]->name, edit);
+        s = str8_fmt(&t->arena, "%S%S", s, step);
+    }
+    return (const char *)str8_fmt(&t->arena, "%S%c", s, 0).data;
+}
+
 static b32 test_undo_commands(Test *t, u64 seed) {
     TestView tv;
     // The Emacs chain: A, B, undo, undo, another command, undo, undo ends at the text after B.
@@ -2839,38 +2931,22 @@ static b32 test_undo_commands(Test *t, u64 seed) {
     TEST_CHECK(t, test_echo_is(&tv, "No further redo information"), "undo-redo: nothing further");
     if (!test_view_close(t, &tv)) return 0;
 
-    // K commands then N undos gives the text after command K - N.
+    // K commands then N undos gives the text after command K - N. A failing sequence is reduced to a
+    // smallest one that still fails (ddmin), which the failure message shows.
     enum { K = 30 };
-    if (!test_view_open(t, &tv, "one two\nthree |four\nfive", 10, 40)) return 0;
-    char *texts[K + 1];
-    texts[0] = test_view_marked(t, &tv);
-    static const Command *motions[] = { &CMD_FORWARD_CHAR, &CMD_BACKWARD_WORD, &CMD_NEXT_LINE, &CMD_MOVE_END_OF_LINE };
+    TestUndoOp ops[K];
     t->rng = seed ^ 0x1d0;
-    for (i32 k = 1; k <= K; k++) {
-        test_view_run(&tv, motions[test_below(t, ARRAY_COUNT(motions))]);
-        i64 size = buffer_size(tv.buf);
-        switch (test_below(t, 3)) {
-        case 0: test_view_run(&tv, &CMD_NEWLINE); break;
-        case 1: test_type_char(&tv, "abc\xc5\x9f"[test_below(t, 3)]); break;
-        case 2: test_view_run(&tv, size > 4 ? &CMD_DELETE_BACKWARD_CHAR : &CMD_NEWLINE); break;
-        }
-        if (buffer_size(tv.buf) == size && test_cstr_equal(test_view_marked(t, &tv), texts[k - 1])) { // a refused delete
-            test_view_run(&tv, &CMD_NEWLINE);
-        }
-        texts[k] = test_view_marked(t, &tv);
+    for (i32 k = 0; k < K; k++) {
+        ops[k].motion = (u8)test_below(t, ARRAY_COUNT(test_undo_motions));
+        ops[k].action = (u8)test_below(t, 3);
+        ops[k].ch = ops[k].action == 1 ? "abc"[test_below(t, 3)] : 0;
     }
-    for (i32 n = 1; n <= K; n++) {
-        test_view_run(&tv, &CMD_UNDO);
-        String8 text = buffer_text(tv.buf, &t->arena, 0, buffer_size(tv.buf));
-        String8 expected = str8_cstr(texts[K - n]);
-        // Compare the text only (point is where that command started, checked below).
-        u8 *plain = PUSH_ARRAY(&t->arena, u8, expected.len);
-        i64 m = 0;
-        for (i64 i = 0; i < expected.len; i++) if (expected.data[i] != '|') plain[m++] = expected.data[i];
-        TEST_CHECK(t, str8_equal(text, str8(plain, m)), "undo: after %d undos the text is not the text after command %d", n, K - n);
+    if (test_undo_replay(t, ops, K, NULL)) {
+        i32 n = test_undo_reduce(t, ops, K);
+        char why[256];
+        test_undo_replay(t, ops, n, why);
+        TEST_CHECK(t, 0, "undo: random commands (seed 0x%X), reduced to %d step(s): %s; %s", seed, n, test_undo_ops_text(t, ops, n), why);
     }
-    TEST_CHECK(t, !tv.buf->modified, "undo: undoing everything leaves the buffer unmodified");
-    if (!test_view_close(t, &tv)) return 0;
 
     // Merging: groups of exactly 20 self-inserts, and of 20 single deletes.
     if (!test_view_open(t, &tv, "|", 10, 40)) return 0;
