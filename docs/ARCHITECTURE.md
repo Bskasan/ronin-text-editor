@@ -1,11 +1,11 @@
-# teal architecture
+# ronin architecture
 
 ## Module map
 
 | file | role |
 |---|---|
-| `src/teal.c` | the unity translation unit; includes everything below except the .cpp, in order |
-| `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header teal uses, then `teal.c`, so a teal identifier that a system header defines as a macro fails the build |
+| `src/ronin.c` | the unity translation unit; includes everything below except the .cpp, in order |
+| `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header ronin uses, then `ronin.c`, so a ronin identifier that a system header defines as a macro fails the build |
 | `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
 | `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call); processes (a command through cmd.exe in a job object, one overlapped pipe) |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
@@ -21,9 +21,9 @@
 | `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link, a multiple-cursor kill's pieces), undo / undo-redo (every cursor back), kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
-| `src/config_default.h` | the built-in configuration (the same format as teal.conf), embedded as a C string |
+| `src/config_default.h` | the built-in configuration (the same format as ronin.conf), embedded as a C string |
 | `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, a prompt's own matcher (`MiniMatcher`: ranking across frames, rows, spans, a status), the minibuffer commands, M-x, goto-line |
-| `src/project.h/.c` | ignore rules (a .gitignore subset, scopes chained per directory), project roots (markers, the command-line directory, drive roots) and their cache, `.teal-project` (the config parser's lines and diagnostics), the file index (relative paths, 16 bytes a file, a character mask each), the scanner: a worker thread walking a root breadth first, its batches through one locked queue, cancel, join |
+| `src/project.h/.c` | ignore rules (a .gitignore subset, scopes chained per directory), project roots (markers, the command-line directory, drive roots) and their cache, `.ronin-project` (the config parser's lines and diagnostics), the file index (relative paths, 16 bytes a file, a character mask each), the scanner: a worker thread walking a root breadth first, its batches through one locked queue, cancel, join |
 | `src/fuzzy.h/.c` | fuzzy matching of paths (subsequences, smart case, terms, '/', the score and its spans) and the resumable ranking over an index (slices against a deadline, narrowing, the best 1,000 in a heap) |
 | `src/finder.h/.c` | part of the app (included after files.c): the projects kept (4), their scans and tree watches, `app_wake` (the workers' results), staleness and rescans, the project finder's matcher and its commands (project-find-file, -other-window, project-refresh); dev: smoke and bench helpers |
 | `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded; its core (a pattern, the SSE2 candidate scan on the first and second byte, the comparison) on plain byte ranges, and on top of it the search over the gap buffer's two segments in place, resumable with a budget of positions |
@@ -41,7 +41,7 @@
 | `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield) |
 | `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
-| `res/teal.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
+| `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 
 Core (`app.c`, `files.c`, `finder.c`, `results.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
 `fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
@@ -55,10 +55,10 @@ additionally calls `font_backend.h`. The scanner's worker (project.c), the searc
    `D3D11CreateDevice` (`r_create_device`: no logging, no arenas, results go into Renderer
    fields). Meanwhile the main thread creates the window hidden on the monitor under the
    mouse, sizes it for that monitor's DPI (clamped to the work area) and creates the app,
-   which reads the config (built-in defaults, then the user's teal.conf), opens DirectWrite
+   which reads the config (built-in defaults, then the user's ronin.conf), opens DirectWrite
    once with the configured font, pre-rasterizes ASCII and opens the files of the command line.
 2. Shows the window cloaked (DWMWA_CLOAK) and activates it (SW_SHOW, SetForegroundWindow) right
-   after the app is created: keys typed from then on queue for teal, and the activation (the focus
+   after the app is created: keys typed from then on queue for ronin, and the activation (the focus
    sets up the IME and text services, ~15 ms) overlaps the device creation. (Activating right after
    the window was created instead slowed the device thread down: first Present 175 ms against 169.)
    It joins the worker with MsgWaitForMultipleObjects on QS_SENDMESSAGE, so only sent messages are
@@ -110,7 +110,7 @@ flag 0x4 so the kernel's dead-key state is untouched; a dead key gives its spaci
 Alt works as Meta (WM_SYSKEY* handled, WM_SYSCHAR swallowed, SC_KEYMENU swallowed); Alt+F4
 still closes, through save-buffers-kill-terminal. Numpad: Enter arrives as KEY_ENTER,
 NumLock-off navigation keys as the ordinary ones, digits as text events.
-Every key but the modifier and lock keys sends a KEY_DOWN, with KEY_NONE when teal has no Key
+Every key but the modifier and lock keys sends a KEY_DOWN, with KEY_NONE when ronin has no Key
 for it (keypad digits and operators, VK_OEM_8, media keys): it ends the previous chord's text,
 and makes a chord when it types a character (C-? on Turkish Q's VK_OEM_8); the keypad carries no
 character, so it makes no chords and Alt + keypad digits still enter a character code. A KEY_DOWN
@@ -127,7 +127,7 @@ keymap stack; the result is a command run through `view_run_command`, a prefix s
 
 ## Measurements (Phase 3)
 
-`build\teal_bench.exe` (/O2, dev flags, no debug layer), 1280x800 client, Consolas 16 px.
+`build\ronin_bench.exe` (/O2, dev flags, no debug layer), 1280x800 client, Consolas 16 px.
 `--bench-buffer` on a generated 104,857,642-byte file with 1,963,818 lines (warm file cache):
 
 | what | time |
@@ -144,7 +144,7 @@ Startup with the 100 MB file on the command line: first Present ~190 ms, same as
 
 ## Measurements (Phase 4)
 
-`build\teal_bench.exe`, same machine and file. `--bench-view`, one event per frame through
+`build\ronin_bench.exe`, same machine and file. `--bench-view`, one event per frame through
 `app_update_and_render` (command + frame build; flush + Present(0, 0) separately, ~0.1 ms):
 
 | what | command + frame build |
@@ -160,7 +160,7 @@ with or without the 100 MB file.
 
 ## Measurements (Phase 5)
 
-`build\teal_bench.exe`, same machine (2560x1440 at 144 Hz), 1280x800 client.
+`build\ronin_bench.exe`, same machine (2560x1440 at 144 Hz), 1280x800 client.
 
 - The ~7 ms "flush + Present" of the Phase 4 bench-buffer run: the benches now split it and log
   the presentation mode. Whenever Present takes ~6.9 ms (one 144 Hz refresh interval), DWM
@@ -173,9 +173,9 @@ with or without the 100 MB file.
   12-20, self-insert 18-29 (worst 5 ms: the first insert moving the gap): the keymap adds
   nothing measurable to Phase 4.
 - Config: parsing the built-in config (4839 bytes, 49 bindings) 8 us; reading and parsing the
-  defaults plus a 4.8 KB teal.conf at startup 140-230 us (mostly opening the file).
+  defaults plus a 4.8 KB ronin.conf at startup 140-230 us (mostly opening the file).
 - Startup (`--startup-ms`, release, 10 runs alternating): 189 ms median before Phase 5, 190 ms
-  without a teal.conf, 191 ms with a full one. The font is set up exactly once.
+  without a ronin.conf, 191 ms with a full one. The font is set up exactly once.
 - Idle with the config directory watched: 0 ms CPU over 10 s.
 - Release exe 188,928 bytes (156,672 after Phase 4); the same six imports (kernel32 adds
   GetEnvironmentVariableW, Find*ChangeNotification, CreateDirectoryW; user32 adds ToUnicodeEx,
@@ -183,7 +183,7 @@ with or without the 100 MB file.
 
 ## Measurements (Phase 6)
 
-`build\teal_bench.exe`, same machine; the release build for the memory figures.
+`build\ronin_bench.exe`, same machine; the release build for the memory figures.
 
 - Typing (bench-view, 10,000 self-inserts on one line at line 1,000,000, command + frame build):
   Phase 5 build 22-38 us, Phase 6 build 29-38 us in the same runs (alternated; the spread is
@@ -211,7 +211,7 @@ with or without the 100 MB file.
 
 ## Measurements (Phase 7)
 
-`build\teal_bench.exe`, same machine (2560x1440 at 144 Hz), 1280x800 client; the release build for
+`build\ronin_bench.exe`, same machine (2560x1440 at 144 Hz), 1280x800 client; the release build for
 memory, startup and size.
 
 - Small buffers: commit steps grow 4, 8, 16, 32, then 64 KB. An extra 2 KB buffer: 71 KB of private
@@ -248,7 +248,7 @@ memory, startup and size.
 
 ## Measurements (Phase 8)
 
-`build\teal_bench.exe --bench-syntax`, same machine (2560x1440 at 144 Hz), ~100 MB of generated source per language:
+`build\ronin_bench.exe --bench-syntax`, same machine (2560x1440 at 144 Hz), ~100 MB of generated source per language:
 
 | language | lexer, state only | lexer, with tokens | catch-up over a buffer |
 |---|---|---|---|
@@ -349,7 +349,7 @@ Same machine; the display was 1920x1080 at 75 Hz during this phase (2560x1440 at
 
 ## Measurements (Phase 11)
 
-Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe --bench-project`.
+Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `ronin_bench.exe --bench-project`.
 
 - Ranking a query typed a character at a time ("winmai"), then deleted, twice (24 keystrokes); frame =
   command + frame build; "until ranked" includes the Presents of those frames (one refresh each when DWM
@@ -374,7 +374,7 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
   gap moving to line 1,000,000, as in earlier phases.
 - `--test`'s thread stress: 300 rounds of start and cancel on the 10,000-file tree, the slowest worker
   ended 263-286 us after its cancel; a worker stuck in the file system is left after exactly the bound.
-- Idle after C-x p f on teal's tree (`--idle-check`): 0 frames, 0 main loop passes, 15.6 ms of CPU (one
+- Idle after C-x p f on ronin's tree (`--idle-check`): 0 frames, 0 main loop passes, 15.6 ms of CPU (one
   scheduler tick) over 5 s. A run disturbed by the mouse over the window failed and said so.
 - Memory (release, private bytes idle, 3 runs): *scratch* 76.1-77.6 MB; src\keymap.c 76.3-77.5 MB; the
   100 MB .txt 192.3-193.3 MB; the 100 MB .c 216.3-217.7 MB (Phase 10: 76.1-77.3, 77.1-77.8, 191.8-193.4,
@@ -385,7 +385,7 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_be
 
 ## Measurements (Phase 12)
 
-Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe`.
+Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 1280x800 client; `ronin_bench.exe`.
 
 - The second-byte filter (`--bench-search`, 100 MB, the needle pasted at once): folded, needle at the end
   43 -> 17 ms (20 -> 9 frames), missing 41 -> 17 ms; exact 5-7 ms before and after.
@@ -415,7 +415,7 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Priority, alternated (8 workers, typing as above): one step below normal 41 / 47 us avg, worst 330 / 366
   us, a search 29.8 / 30.3 ms; normal 43 / 45 us avg, worst 1,124 / 539 us, a search 29.9 / 29.4 ms. Kept
   below normal: the same search time, a better worst case for typing.
-- The project search on teal's own tree (71 files): 0.01-0.02 s. `--idle-check` after it: 0 frames, 0 us of
+- The project search on ronin's own tree (71 files): 0.01-0.02 s. `--idle-check` after it: 0 frames, 0 us of
   CPU in 5 s.
 - Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`, which never takes the
   foreground): *scratch* 75.6-77.2 MB; src\keymap.c 75.8-76.2 MB; the 100 MB .txt 191.9-193.5 MB; the 100 MB
@@ -430,7 +430,7 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 
 ## Measurements (Phase 13)
 
-Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe`.
+Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 1280x800 client; `ronin_bench.exe`.
 
 - `--bench-compile`: a `--child` program writes 100 MB of numbered lines (every 64th an MSVC warning on a
   file that exists: 21,808 locations) as fast as it can, best of three. With compilation_max_output_mb =
@@ -444,9 +444,9 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   a key's frame 14-18 us avg, worst 217-237 us, against 13-21 us avg, worst 243 us without (and one 5.8 ms
   first insert moving the gap). The frames between keys (the output written): 78-97 us avg, worst 403-422
   us, results work at most 380-400 us.
-- teal built from inside teal (teal_bench.exe on the repository, C-x p c RET with .\build.bat, debug): 2.39 s,
+- ronin built from inside ronin (ronin_bench.exe on the repository, C-x p c RET with .\build.bat, debug): 2.39 s,
   exit [0]; a copy with an error and a warning in src/edit.c: 1.62 s, both listed with their locations.
-- `--test` takes ~21 s on teal_bench.exe (~20 s before): the build tests start a few hundred processes (cmd.exe
+- `--test` takes ~21 s on ronin_bench.exe (~20 s before): the build tests start a few hundred processes (cmd.exe
   and the `--child` program each time).
 - Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`): *scratch* 76.7-77.0 MB;
   src\keymap.c 76.4-77.3 MB; the 100 MB .txt 191.8-193.0 MB; the 100 MB .c 216.7-217.5 MB (Phase 12:
@@ -463,7 +463,7 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 
 ## Measurements (Phase 14)
 
-Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `teal_bench.exe --bench-cursors`, build = the
+Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `ronin_bench.exe --bench-cursors`, build = the
 command plus the frame's build (Present not included). Averages over 100 commands (10 at 10,000 cursors); ranges are
 over several runs.
 
@@ -517,7 +517,7 @@ over several runs.
 - One cursor, against Phase 13 (rebuilt from 1fd5708, alternated): `--bench-view` self-insert at line 1,000,000
   8-22 us avg against 8-20 us (the quiet rounds 9 us against 8 us); `--bench-edit` (undo on) 16-24 us against
   9-23 us. Unchanged within the noise.
-- `--test` takes ~22.5 s on teal_bench.exe; the Phase 13 build took 23.8-24.7 s on the same day (Phase 13 recorded ~21 s):
+- `--test` takes ~22.5 s on ronin_bench.exe; the Phase 13 build took 23.8-24.7 s on the same day (Phase 13 recorded ~21 s):
   the machine's noise is larger than what the new groups add.
 - Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`): *scratch* 75.9-77.5 MB; src\keymap.c
   76.5-77.7 MB; the 100 MB .txt 192.0-193.5 MB; the 100 MB .c 216.0-217.5 MB (Phase 13: 76.7-77.0, 76.4-77.3,
@@ -556,9 +556,9 @@ over several runs.
 - Flip model (FLIP_DISCARD, 2 buffers, SCALING_NONE), max frame latency 1, vsync Present.
 - First frame is presented while the window is DWM-cloaked, then uncloaked.
 - `/external:anglebrackets /external:W0`: SDK headers do not break our /W4 /WX.
-- No teal identifier may be a name a system header defines as a macro: build.bat compiles
+- No ronin identifier may be a name a system header defines as a macro: build.bat compiles
   `src/check_macros.c` (every system header we use, then the whole unity build) with /Zs in every
-  configuration, so such a collision, or a teal macro redefining a system one, fails the build where
+  configuration, so such a collision, or a ronin macro redefining a system one, fails the build where
   /external:W0 would have hidden it. Fixes are renames (KEYMOD_*, never #undef).
 - Import list kept minimal for startup: kernel32, user32, gdi32, d3d11, dwmapi, dwrite (dxgi
   only in dev builds; dxguid.lib is static). No shell32 (own command-line parser), no shcore.
@@ -630,7 +630,7 @@ over several runs.
   BOM (and an even length) is converted to UTF-8 on load and written back in its encoding;
   unpaired surrogates are kept as 3-byte WTF-8 so the round trip stays exact. Everything else
   is raw bytes.
-- Saving writes a temp file `<name>.teal~N` in the same directory, streaming through a fixed
+- Saving writes a temp file `<name>.ronin~N` in the same directory, streaming through a fixed
   64 KB chunk when converting (no second copy of the text), flushes it (FlushFileBuffers), then
   swaps it in with ReplaceFileW (attributes, ACLs, creation time preserved; MoveFileExW when
   the target does not exist). It writes in place instead (also flushed) when the target is a
@@ -639,7 +639,7 @@ over several runs.
 - Paths are stored as full, normalized UTF-8 paths (GetFullPathNameW). Opening a path that
   does not exist gives an empty buffer visiting it, "(New file)", as in Emacs.
 - Every file failure returns an `OsFileStatus` the caller turns into a minibuffer message.
-- `TEAL_D3D_DEBUG` (defaults to TEAL_DEV) controls the D3D11 debug layer, so `build.bat bench`
+- `RONIN_D3D_DEBUG` (defaults to RONIN_DEV) controls the D3D11 debug layer, so `build.bat bench`
   is an optimized dev build without it.
 
 ### Views, cursors, markers (Phase 4)
@@ -688,10 +688,10 @@ over several runs.
 - Cursor: a filled block with the character under it in the background color while the window
   has keyboard focus (and the View is active); a hollow box otherwise. One cell wide at the end
   of a line and on a tab, two on a control character.
-- Command line: `teal [+LINE[:COLUMN]] [file]`, LINE and COLUMN 1-based as in Emacs (COLUMN is a
+- Command line: `ronin [+LINE[:COLUMN]] [file]`, LINE and COLUMN 1-based as in Emacs (COLUMN is a
   visual column); the mode line shows the column 0-based. Any unrecognized argument starting
   with "--" exits immediately with code 10, before a window exists.
-- The window title is "<buffer name> - teal", set only when it changes.
+- The window title is "<buffer name> - ronin", set only when it changes.
 - Motions follow Emacs: next-line on the last line goes to the end of the buffer ("End of
   buffer"), previous-line on the first to the beginning; C-f / C-b / C-d / DEL at a limit show
   the message and do nothing; word and paragraph motions stop silently. A paragraph separator
@@ -742,8 +742,8 @@ over several runs.
   bound. The built-in defaults are the same format, embedded as a C string
   (config_default.h, fully commented) and parsed by the same code at startup; the user's file
   is applied on top. Dev builds assert that the defaults parse without diagnostics.
-- Location: teal.conf next to the exe if it exists (portable), otherwise
-  %APPDATA%\teal\teal.conf (APPDATA from the environment, no shell32). Startup never creates a
+- Location: ronin.conf next to the exe if it exists (portable), otherwise
+  %APPDATA%\ronin\ronin.conf (APPDATA from the environment, no shell32). Startup never creates a
   file; open-config creates it from the defaults.
 - A config error never blocks startup or a reload: bad lines are skipped and reported with file
   and line number; out-of-range values are clamped with a warning. A binding removes the older
@@ -902,7 +902,7 @@ over several runs.
   descends; "/~/" or "/X:/" in the input starts over there (not dimmed). RET on an empty file name
   takes the selected entry; C-j on a directory says it is a directory (no dired).
 - Buffer names are unique: a newcomer whose name is taken gets "name<parent dir>", then "name<N>"
-  (Emacs' uniquify renames both; teal only the newcomer). switch-to-buffer offers buffers most
+  (Emacs' uniquify renames both; ronin only the newcomer). switch-to-buffer offers buffers most
   recently shown first with the default (the most recently shown other buffer) selected; killing a
   buffer shows that one in its views; *scratch* is recreated at once; *Messages* cannot be killed.
 - Revert goes through buffer_replace: the file is loaded into a temporary buffer, the common prefix
@@ -1104,7 +1104,7 @@ over several runs.
   rows and columns stay at least 1 for the commands' arithmetic, the drawing goes by the pixels. A
   window without room for a text row and its mode line is not drawn, and the layout pass leaves its
   scroll position alone, so every window comes back as it was when the frame grows.
-- Command line: `teal [+LINE[:COLUMN]] file ...`: every file is opened (the buffer list is the files,
+- Command line: `ronin [+LINE[:COLUMN]] file ...`: every file is opened (the buffer list is the files,
   *scratch*, *Messages*), each at the +LINE[:COLUMN] before it; the first is shown; with
   startup_windows = 2 the frame starts side by side and the second window shows the second file.
 - Type-ahead: keys pressed while no window has the keyboard focus (inside an activation) are posted
@@ -1115,15 +1115,15 @@ over several runs.
 ### Projects and fuzzy file open (Phase 11)
 
 - A project needs no setup. Its root is the nearest directory at or above the buffer's file that holds a
-  marker (project_markers: .git, .hg, .svn or a .teal-project file; a marker may be a file, as .git is in
+  marker (project_markers: .git, .hg, .svn or a .ronin-project file; a marker may be a file, as .git is in
   a worktree). A marker at a drive or share root does not count, so nothing ever scans a whole drive by
-  itself. A directory given on the command line (`teal <directory>`) is a project too: for the files
+  itself. A directory given on the command line (`ronin <directory>`) is a project too: for the files
   inside it, unless a marker below it is nearer (the search stops at it, so a repository around it does
   not take over), and for buffers without a file (*scratch*). The current directory never becomes a root
-  by itself: a terminal usually starts in the profile, and `teal Documents\a.txt` must not make the profile
-  a project. Otherwise: "Not in a project (no .git found; start teal with a directory, or add a
-  .teal-project file)". Roots are cached per directory (256, reset by project-refresh).
-- `teal <directory>` opens no buffer for the directory (it used to say "is a directory"): *scratch* is
+  by itself: a terminal usually starts in the profile, and `ronin Documents\a.txt` must not make the profile
+  a project. Otherwise: "Not in a project (no .git found; start ronin with a directory, or add a
+  .ronin-project file)". Roots are cached per directory (256, reset by project-refresh).
+- `ronin <directory>` opens no buffer for the directory (it used to say "is a directory"): *scratch* is
   shown, and *scratch* and C-x C-f start in it. The process's current directory is not changed.
 - The file list comes from a worker thread (CLAUDE.md has the threading rules). It walks the root breadth
   first (shallow files first) with its own two arenas, hands records to the main thread in 64 KB batches
@@ -1138,17 +1138,17 @@ over several runs.
   placeholder) is listed. Depth is capped at 256, a relative path at 4,096 bytes (counted as errors).
 - Ignore rules, one ordered list in which the last matching pattern decides: the built-in project_ignore,
   the .gitignore files from the root down (each scoped to its directory, read by the worker as it enters
-  it), then .teal-project's [ignore], then its [allow] as negations. Supported: comments, blank lines,
+  it), then .ronin-project's [ignore], then its [allow] as negations. Supported: comments, blank lines,
   trailing blanks trimmed, '*' and '?' within a segment, "**" as a leading "**/", a trailing "/**" and a
   middle "/**/", a leading or inner '/' anchoring to the file's directory, a trailing '/' for directories
   only, '!' negation; ASCII is matched case-insensitively. Not supported: character classes ([a-z]),
   backslash escapes (\#, \!, "\ "), .git/info/exclude, core.excludesFile and the global gitignore. An
   ignored directory is never entered, so nothing below it can be included again (git behaves the same). In
-  .teal-project a pattern cannot start with '[' (that is a section header).
+  .ronin-project a pattern cannot start with '[' (that is a section header).
 - The built-in list holds only names that cannot be source directories (.git/ .hg/ .svn/ .vs/
   node_modules/ __pycache__/) and binary extensions. build/, out/, bin/, obj/, target/ and dist/ are not
   in it: a name pattern matches at any depth and would silently hide real source directories; they belong
-  in the project's .gitignore or .teal-project. When a scan ends the echo area says "<N> files in <root>/
+  in the project's .gitignore or .ronin-project. When a scan ends the echo area says "<N> files in <root>/
   (<M> ignored)" (M counts what a rule left out, not what was inside an ignored directory).
 - The index: per file 16 bytes (the 64-bit character mask of its relative path, its directory, its name's
   offset), the name once (u16 length first), each directory's path once; about 33 bytes a file for short
@@ -1274,9 +1274,9 @@ over several runs.
 - The pipe is an overlapped named pipe (a unique name, one instance, remote clients refused): an anonymous
   pipe has no overlapped reads, and the reader must wait on the read, the process and its cancel event at
   once. Only the pipe's write end and NUL are inherited (PROC_THREAD_ATTRIBUTE_HANDLE_LIST): no other handle
-  of teal reaches the child, so one build never holds another's pipe open.
+  of ronin reaches the child, so one build never holds another's pipe open.
 - The child is created suspended, put into a job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, then
-  resumed, so nothing it starts escapes the job. Killing the build terminates the job: the whole tree. teal's
+  resumed, so nothing it starts escapes the job. Killing the build terminates the job: the whole tree. ronin's
   exit (a crash too) closes the job handle, which ends the tree.
 - The build ends when cmd.exe exits, not when the pipe reaches its end: a process the build leaves running
   (mspdbsrv.exe started by cl /Zi, a build server) can hold the pipe open forever. What is already in the
@@ -1324,8 +1324,8 @@ over several runs.
 - Where RET, n, p, next-error and previous-error land stays highlighted (lazy_highlight) until the next key
   event (a prefix key too) or until its buffer is killed: the match in *search* and *occur*, the whole line
   for a build's location. No timer.
-- teal never runs a command it has not shown: C-x p c fills the prompt with the command last used for the
-  project in this session, else .teal-project's [build] command, and waits for RET; compile does the same
+- ronin never runs a command it has not shown: C-x p c fills the prompt with the command last used for the
+  project in this session, else .ronin-project's [build] command, and waits for RET; compile does the same
   keyed by the buffer's directory. recompile reruns *search* and *occur* in those buffers (as g did since
   Phase 12) and the last build anywhere else, without the prompt.
 - The order before a start follows Emacs: the prompt, then the unsaved file buffers by
@@ -1470,7 +1470,7 @@ over several runs.
 - Per-cursor kill rings (the multiple-cursors package's mc/kill-ring); undo with one cursor still restores
   only its point, not its mark.
 - Auto-save and crash recovery.
-- Writing to a path another buffer visits (Emacs asks first; teal then has two buffers on it).
+- Writing to a path another buffer visits (Emacs asks first; ronin then has two buffers on it).
 - Clicking a candidate in the list; dimming the shadowed part of a file name ("c:/a/~/b").
 - Candidates' bindings from the minibuffer keymap in M-x annotations (only global ones are shown).
 - A change on disk within the same file-time tick at the same size goes unseen (a content hash on
