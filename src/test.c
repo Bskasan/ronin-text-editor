@@ -11634,6 +11634,185 @@ static b32 test_compile_app(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 15: crash recovery
+
+// `text` in --keys notation, one character at a time (SPC for a space).
+static String8 test_spell(Test *t, const char *text) {
+    String8 s = str8_cstr(text);
+    u8 *out = PUSH_ARRAY(&t->arena, u8, s.len * 4 + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < s.len; i++) {
+        if (n) out[n++] = ' ';
+        if (s.data[i] == ' ') {
+            memcpy(out + n, "SPC", 3);
+            n += 3;
+        } else {
+            out[n++] = s.data[i];
+        }
+    }
+    return str8(out, n);
+}
+
+// Keys (--keys notation) one event a frame, as app_dev_feed, from a String8.
+static void test_feed8(Test *t, App *app, String8 keys) {
+    Event events[256];
+    i32 n = app_dev_key_events(app, keys, events, ARRAY_COUNT(events));
+    for (i32 i = 0; i < n; i++) app_dev_feed_events(app, &events[i], 1, &t->arena);
+}
+
+// Every file in `dir` deleted, then the directory.
+static void test_clear_dir(Test *t, String8 dir) {
+    OsDirEntry *entries;
+    i64 count;
+    if (os_list_dir(&t->arena, dir, &entries, &count) == OS_FILE_OK) {
+        for (i64 i = 0; i < count; i++) {
+            if (!entries[i].is_dir) os_file_delete(str8_fmt(&t->arena, "%S\\%S", dir, entries[i].name));
+        }
+    }
+    os_dev_remove_dir(dir);
+}
+
+static b32 test_has(String8 text, String8 part) {
+    for (i64 i = 0; i + part.len <= text.len; i++) {
+        if (mem_equal(text.data + i, part.data, part.len)) return 1;
+    }
+    return 0;
+}
+
+// A child (this executable) opens six files, edits five of them with --keys (CRLF UTF-8, UTF-16 LE with CRLF and a
+// character above U+FFFF, UTF-16 BE, UTF-8 with a BOM, mixed endings; the last edit of each leaves the gap inside the
+// text, after the astral character in the UTF-16 ones) and crashes on purpose (--crash). Each recovery file must hold
+// exactly what saving the same edited buffer writes (a headless app given the same keys saves it), its sidecar the
+// path, the encoding and the line endings; the unmodified file gets none. Then a headless app with that directory:
+// the echo area's notice, *Messages*, recover-file's two windows, nothing overwritten.
+static b32 test_crash_recovery(Test *t) {
+    String8 src = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\crash", t->tmp_dir));
+    String8 rec = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\crash_rec", t->tmp_dir));
+    String8 ref_dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\crash_ref", t->tmp_dir));
+    test_clear_dir(t, src);
+    test_clear_dir(t, rec);
+    test_clear_dir(t, ref_dir);
+    os_make_dir(src);
+    os_make_dir(ref_dir);
+    enum { FILES = 6, EDITED = 5 };
+    static const char *names[FILES] = { "crlf.txt", "u16le.txt", "u16be.txt", "bom8.txt", "mixed.txt", "same.txt" };
+    static const char *edits[FILES] = { "M-> X M-< C-e Z", "C-e Q M-< C-f C-f C-f C-f C-f C-f C-f Y", "C-n W M-< C-e V", "C-e V",
+                                        "C-n C-e U", "" };
+    String8 contents[FILES] = {
+        STR8_LIT("line one\r\nline two\r\n"),
+        test_grep_utf16(t, STR8_LIT("hello \xF0\x9F\x98\x80 world\r\nsecond\r\n"), 0),
+        test_grep_utf16(t, STR8_LIT("alpha \xF0\x9F\x98\x80\nbeta\n"), 1),
+        STR8_LIT("\xEF\xBB\xBFx\ny\n"),
+        STR8_LIT("a\r\nb\nc\r\n"),
+        STR8_LIT("untouched\n"),
+    };
+    String8 paths[FILES];
+    String8 files_arg = str8(NULL, 0), keys = str8(NULL, 0);
+    for (i32 i = 0; i < FILES; i++) {
+        paths[i] = str8_fmt(&t->arena, "%S\\%s", src, names[i]);
+        TEST_CHECK(t, os_write_file(paths[i], contents[i]), "crash: cannot write %S", paths[i]);
+        files_arg = str8_fmt(&t->arena, "%S \"%S\"", files_arg, paths[i]);
+        if (edits[i][0]) keys = str8_fmt(&t->arena, "%S%sC-x b %S RET %s", keys, keys.len ? " " : "", test_spell(t, names[i]), edits[i]);
+    }
+    String8 conf = str8_fmt(&t->arena, "%S\\crash.conf", src);
+    TEST_CHECK(t, os_write_file(conf, STR8_LIT("# defaults\n")), "crash: cannot write the config");
+
+    // The reference: the same keys in a headless app, each edited buffer saved.
+    String8 expected[EDITED], sidecar[EDITED], text_crlf = str8(NULL, 0);
+    App *ref = test_app_create(t);
+    TEST_CHECK(t, ref, "crash: reference app_create failed");
+    for (i32 i = 0; i < FILES; i++) TEST_CHECK(t, app_dev_visit(ref, paths[i]), "crash: reference cannot visit %S", paths[i]);
+    test_feed8(t, ref, keys);
+    for (i32 i = 0; i < FILES; i++) {
+        Buffer *b = buffer_list_find_name(&ref->buffers, str8_cstr(names[i]));
+        TEST_CHECK(t, b && b->modified == (i < EDITED), "crash: reference buffer %s (modified %d)", names[i], b ? b->modified : -1);
+        if (i >= EDITED) continue;
+        if (i == 0) text_crlf = buffer_text(b, &t->arena, 0, buffer_size(b));
+        sidecar[i] = str8_fmt(&t->arena, "%S\nencoding: %s\nline endings: %s\n", b->path, app_encoding_name(b->encoding), app_eol_name(b->eol));
+        String8 out = str8_fmt(&t->arena, "%S\\%s", ref_dir, names[i]);
+        TEST_CHECK(t, buffer_save_as(b, out) == OS_FILE_OK, "crash: reference save of %s", names[i]);
+        TEST_CHECK(t, os_read_small_file(&t->arena, out, MB(1), &expected[i]) == OS_FILE_OK, "crash: reference read of %s", names[i]);
+    }
+    if (!test_app_destroy(t, ref, "crash reference")) return 0;
+    TEST_CHECK(t, test_has(sidecar[1], STR8_LIT("UTF-16LE")) && test_has(sidecar[1], STR8_LIT("CRLF")) &&
+                  test_has(sidecar[2], STR8_LIT("UTF-16BE")) && expected[1].len > 2 && expected[1].data[0] == 0xFF,
+               "crash: the reference's encodings ('%S', '%S')", sidecar[1], sidecar[2]);
+
+    // The child: edits, then an access violation; the filter writes the recovery files.
+    String8 cmd = str8_fmt(&t->arena, "\"%S\" --config \"%S\" --recovery-dir \"%S\"%S --keys \"%S\" --crash", os_dev_exe_path(&t->arena), conf,
+                           rec, files_arg, keys);
+    TestProcRun run = test_proc_run(t, cmd, src, NULL);
+    TEST_CHECK(t, run.status == OS_FILE_OK && run.code == 0xC0000005u, "crash: the child's exit code 0x%x (status %d)", run.code, run.status);
+    OsDirEntry *entries;
+    i64 count = 0;
+    TEST_CHECK(t, os_list_dir(&t->arena, rec, &entries, &count) == OS_FILE_OK && count == 2 * EDITED,
+               "crash: %D files in the recovery directory, %d expected (each edited file and its sidecar)", count, 2 * EDITED);
+    String8 crlf_entry = str8(NULL, 0);
+    for (i32 i = 0; i < EDITED; i++) {
+        u32 hash = 2166136261u;
+        String8 path = paths[i];
+        for (i64 k = 0; k < path.len; k++) hash = (hash ^ path.data[k]) * 16777619u;
+        String8 prefix = str8_fmt(&t->arena, "%s %08x ", names[i], hash);
+        String8 suffix = STR8_LIT(".recovered");
+        String8 found = str8(NULL, 0);
+        for (i64 e = 0; e < count; e++) {
+            String8 n = entries[e].name;
+            if (n.len == prefix.len + 15 + suffix.len && mem_equal(n.data, prefix.data, prefix.len) &&
+                mem_equal(n.data + n.len - suffix.len, suffix.data, suffix.len)) {
+                found = n;
+            }
+        }
+        TEST_CHECK(t, found.len, "crash: no recovery file '%S<YYYYMMDD-HHMMSS>.recovered'", prefix);
+        if (i == 0) crlf_entry = found;
+        String8 got, side;
+        TEST_CHECK(t, os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\%S", rec, found), MB(1), &got) == OS_FILE_OK &&
+                      str8_equal(got, expected[i]),
+                   "crash: %s: the recovery file's %D bytes differ from the save's %D", names[i], got.len, expected[i].len);
+        TEST_CHECK(t, os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\%S.path", rec, found), KB(64), &side) == OS_FILE_OK &&
+                      str8_equal(side, sidecar[i]),
+                   "crash: %s: the sidecar says '%S', not '%S'", names[i], side, sidecar[i]);
+    }
+
+    // The next start: the notice, *Messages*, recover-file.
+    String8 old_dir = str8_copy(&t->arena, os_recovery_dir());
+    os_dev_set_recovery_dir(rec);
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "crash: app_create failed");
+    String8 notice = str8_fmt(&t->arena, "%d recovery files from a crash in %S (listed in *Messages*): M-x recover-file", EDITED, rec);
+    TEST_CHECK(t, str8_equal(test_echo(app), notice), "crash: the echo area says '%S'", test_echo(app));
+    Buffer *messages = buffer_list_find_name(&app->buffers, STR8_LIT("*Messages*"));
+    String8 log = messages ? buffer_text(messages, &t->arena, 0, buffer_size(messages)) : str8(NULL, 0);
+    TEST_CHECK(t, test_has(log, str8_fmt(&t->arena, "Recovery file %S (of %S)", crlf_entry, paths[0])), "crash: *Messages* lacks the crlf.txt line");
+    test_feed8(t, app, str8_fmt(&t->arena, "M-x %S RET c r l f RET", test_spell(t, "recover-file")));
+    View *here = test_win(app, 0), *other = test_win(app, 1);
+    TEST_CHECK(t, here && other && here == app_selected_view(app), "crash: recover-file did not give two windows, the first selected");
+    TEST_CHECK(t, str8_equal(here->buffer->path, paths[0]) && str8_equal(test_app_text(t, app), STR8_LIT("line one\nline two\n")),
+               "crash: the selected window shows '%S'", here->buffer->path);
+    String8 shown = buffer_text(other->buffer, &t->arena, 0, buffer_size(other->buffer));
+    TEST_CHECK(t, str8_equal(other->buffer->path, str8_fmt(&t->arena, "%S\\%S", rec, crlf_entry)) && str8_equal(shown, text_crlf),
+               "crash: the other window shows '%S': '%S'", other->buffer->path, shown);
+    TEST_CHECK(t, test_echo_has(app, "The recovered text is in the other window; crlf.txt itself is unchanged"), "crash: recover-file says '%S'",
+               test_echo(app));
+    if (!test_app_destroy(t, app, "crash")) return 0;
+    String8 now;
+    TEST_CHECK(t, os_read_small_file(&t->arena, paths[0], KB(64), &now) == OS_FILE_OK && str8_equal(now, contents[0]), "crash: crlf.txt changed");
+    TEST_CHECK(t, os_list_dir(&t->arena, rec, &entries, &count) == OS_FILE_OK && count == 2 * EDITED, "crash: recovery files went (%D)", count);
+
+    // Without recovery files: no notice.
+    test_clear_dir(t, rec);
+    app = test_app_create(t);
+    TEST_CHECK(t, app && !test_has(test_echo(app), STR8_LIT("recovery")), "crash: a notice without recovery files: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "crash, none")) return 0;
+    os_dev_set_recovery_dir(old_dir);
+    test_clear_dir(t, src);
+    test_clear_dir(t, ref_dir);
+    LOG("test: ok: crash recovery (a child crashing after edits: CRLF UTF-8, UTF-16 LE with CRLF and an astral character, UTF-16 BE, "
+        "a UTF-8 BOM and mixed endings each written as a save writes it, the sidecars, none for an unmodified file; the notice, "
+        "*Messages*, recover-file's two windows, nothing overwritten; no notice without them)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
@@ -11845,6 +12024,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_manual_config(&t);
     arena_reset(&t.arena);
     test_manual_disk_search(&t);
+    arena_reset(&t.arena);
+    test_crash_recovery(&t);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
