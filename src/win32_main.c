@@ -4479,6 +4479,8 @@ static void win32_bench_modal(Platform *p) {
     u64 build[4][ROUNDS * 20], filter[ROUNDS * 20];
     i32 nb[4] = { 0 }, nf = 0;
     b32 opened_ok = 1;
+    OsDevMetrics m0, m1 = { 0 }, m2;
+    os_dev_metrics(&m0);
     for (i32 round = 0; round < ROUNDS; round++) {
         for (i32 part = 0; part < 4; part++) {
             Event events[64];
@@ -4503,7 +4505,13 @@ static void win32_bench_modal(Platform *p) {
             if (part == 0) opened_ok &= app_dev_modal_open(p->app);
         }
         opened_ok &= !app_dev_modal_open(p->app);
+        if (round == 0) os_dev_metrics(&m1);
     }
+    os_dev_metrics(&m2);
+    LOG("bench-modal: private bytes %U KB before the first open, %U KB after the first round, %U KB after the last; our arenas' "
+        "commit %U KB, %U KB, %U KB (%d, %d, %d reservations: the field's buffer and View, the modal's arena)", m0.private_bytes >> 10,
+        m1.private_bytes >> 10, m2.private_bytes >> 10, m0.reserved_committed >> 10, m1.reserved_committed >> 10,
+        m2.reserved_committed >> 10, m0.reservations, m1.reservations, m2.reservations);
     b32 slow = 0;
     win32_bench_sort(filter, nf);
     if (nf) {
