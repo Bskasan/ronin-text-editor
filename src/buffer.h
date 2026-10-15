@@ -157,6 +157,9 @@ typedef struct BufferUndo {
     b32 applying;                     // inside buffer_undo / buffer_redo: no merging, no trimming
     u64 state, next_state, saved_state;
     i64 pending;                      // the undo chain: the next group to undo, -1 = none
+#if RONIN_DEV
+    u64 dev_trims;                    // buffer_undo_trim calls that dropped groups (the leak check's undo cap)
+#endif
 } BufferUndo;
 
 typedef struct Buffer {
@@ -302,6 +305,10 @@ BufferUndoResult buffer_undo(Buffer *buf, b32 chain, i64 point, i64 *point_out);
 BufferUndoResult buffer_redo(Buffer *buf, i64 point, i64 *point_out);
 void buffer_mark_saved(Buffer *buf);  // the current state is the saved one: unmodified
 u64  buffer_undo_memory(Buffer *buf); // committed bytes of the log and its group index
+#if RONIN_DEV
+u64  buffer_dev_undo_trims(Buffer *buf); // trims that dropped groups (the limit was reached)
+u64  buffer_dev_undo_used(Buffer *buf);  // bytes of records in the log now
+#endif
 
 // Lexer states (see Buffer). Enabling commits one u32 per line, with every state untrusted (only
 // line 0 is known); disabling gives the memory back. An edit replacing lines [a, b] by [a, a + n]

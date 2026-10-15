@@ -9,6 +9,7 @@
 #if RONIN_DEV
 #define PSAPI_VERSION 2 // K32GetProcessMemoryInfo, exported by kernel32: no psapi.lib
 #include <psapi.h>
+#include <tlhelp32.h> // the leak check's process thread count
 #endif
 
 // platform.h's modifier bits are KEYMOD_*: winuser.h defines MOD_ALT (0x1) and MOD_SHIFT (0x4) for
@@ -41,7 +42,8 @@ typedef struct Platform {
     volatile LONG live_threads;        // os_thread_start minus joined
     volatile LONG live_events;         // os_event_create minus destroyed
     volatile LONG live_processes;      // os_process_start minus os_process_close
-    b32 background_normal;             // --bench-grep: background workers at normal priority (the comparison)
+    volatile LONG live_handles;        // the ledger: kernel handles opened by the os_* layer and not closed
+    b32 background_normal;            // --bench-grep: background workers at normal priority (the comparison)
     b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
     u16 *clip_text;          // in its own reservation
     i64 clip_len;
@@ -171,6 +173,13 @@ static b32 win32_dev_batch_mode(Platform *p);
 // The window procedure has no user pointer before WM_NCCREATE; this is its only way in.
 static Platform *g_platform;
 
+// The handle ledger (dev builds): +1 next to every kernel handle the os_* layer opens, -1 where it is closed.
+#if RONIN_DEV
+#define WIN32_DEV_HANDLES(n) InterlockedAdd(&g_platform->live_handles, (n))
+#else
+#define WIN32_DEV_HANDLES(n) ((void)0)
+#endif
+
 // ---------------------------------------------------------------------------
 // os_* primitives
 
@@ -268,6 +277,7 @@ b32 os_write_file(String8 path, String8 data) {
     HANDLE file = CreateFileW((WCHAR *)path16.data, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     arena_pop_to(scratch, mark);
     if (file == INVALID_HANDLE_VALUE) return 0;
+    WIN32_DEV_HANDLES(1);
     b32 ok = 1;
     for (i64 offset = 0; offset < data.len;) {
         DWORD chunk = (DWORD)MIN(data.len - offset, (i64)MB(64));
@@ -279,6 +289,7 @@ b32 os_write_file(String8 path, String8 data) {
         offset += written;
     }
     CloseHandle(file);
+    WIN32_DEV_HANDLES(-1);
     return ok;
 }
 
@@ -369,6 +380,7 @@ OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *c
         DWORD error = GetLastError();
         return error == ERROR_FILE_NOT_FOUND ? OS_FILE_OK : win32_file_status(error); // an empty directory (a root)
     }
+    WIN32_DEV_HANDLES(1);
     // The names and the nodes as they come, then one array.
     Node *first = NULL, *last = NULL;
     i64 n = 0;
@@ -387,6 +399,7 @@ OsFileStatus os_list_dir(Arena *arena, String8 dir, OsDirEntry **entries, i64 *c
         n++;
     } while (FindNextFileW(h, &fd));
     FindClose(h);
+    WIN32_DEV_HANDLES(-1);
     OsDirEntry *out = PUSH_ARRAY(arena, OsDirEntry, n);
     i64 i = 0;
     for (Node *node = first; node; node = node->next) out[i++] = node->e;
@@ -404,6 +417,7 @@ OsFileStatus os_read_small_file(Arena *arena, String8 path, i64 max, String8 *ou
                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     arena_pop_to(arena, mark);
     if (h == INVALID_HANDLE_VALUE) return win32_last_file_status();
+    WIN32_DEV_HANDLES(1);
     LARGE_INTEGER size;
     OsFileStatus status = OS_FILE_OK;
     if (!GetFileSizeEx(h, &size)) status = win32_last_file_status();
@@ -419,6 +433,7 @@ OsFileStatus os_read_small_file(Arena *arena, String8 path, i64 max, String8 *ou
         }
     }
     CloseHandle(h);
+    WIN32_DEV_HANDLES(-1);
     return status;
 }
 
@@ -452,8 +467,10 @@ OsFileStatus os_file_info(String8 path, OsFileInfo *info) {
                                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
             BY_HANDLE_FILE_INFORMATION bhfi;
             if (h != INVALID_HANDLE_VALUE) {
+                WIN32_DEV_HANDLES(1);
                 if (GetFileInformationByHandle(h, &bhfi) && bhfi.nNumberOfLinks > 1) info->swap_ok = 0;
                 CloseHandle(h);
+                WIN32_DEV_HANDLES(-1);
             }
         }
     }
@@ -483,6 +500,7 @@ OsFileStatus os_file_open_read(String8 path, OsFile *file, OsFileInfo *info) {
         } else {
             win32_fill_info(info, &bhfi);
             file->handle = h;
+            WIN32_DEV_HANDLES(1);
         }
     }
     arena_pop_to(scratch, mark);
@@ -518,6 +536,7 @@ OsFileStatus os_file_create_temp(String8 target, Arena *arena, OsFile *file, Str
             String8 copy = str8_copy(arena, name);
             if (arena != scratch) arena_pop_to(scratch, mark);
             file->handle = h;
+            WIN32_DEV_HANDLES(1);
             *temp_path = copy;
             return OS_FILE_OK;
         }
@@ -544,6 +563,7 @@ OsFileStatus os_file_open_overwrite(String8 path, OsFile *file) {
         return status;
     }
     file->handle = h;
+    WIN32_DEV_HANDLES(1);
     return OS_FILE_OK;
 }
 
@@ -565,7 +585,9 @@ OsFileStatus os_file_flush(OsFile file) {
 }
 
 void os_file_close(OsFile file) {
-    if (file.handle) CloseHandle((HANDLE)file.handle);
+    if (!file.handle) return;
+    CloseHandle((HANDLE)file.handle);
+    WIN32_DEV_HANDLES(-1);
 }
 
 // Any thread: the path in the caller's arena.
@@ -585,6 +607,7 @@ OsFileStatus os_file_open_read_arena(Arena *arena, String8 path, OsFile *file, i
         return status;
     }
     file->handle = h;
+    WIN32_DEV_HANDLES(1);
     *size = s.QuadPart;
     return OS_FILE_OK;
 }
@@ -764,6 +787,7 @@ OsWatch os_watch_dir(String8 dir) {
                                             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
     arena_pop_to(&p->scratch, mark);
     if (h == INVALID_HANDLE_VALUE) return 0;
+    WIN32_DEV_HANDLES(1);
     p->watches[slot] = h;
     return (OsWatch)(slot + 1);
 }
@@ -782,6 +806,7 @@ OsWatch os_watch_tree(String8 dir) {
     if (slot == WIN32_MAX_WATCHES) return 0;
     HANDLE h = win32_tree_notification(p, dir);
     if (h == INVALID_HANDLE_VALUE) return 0;
+    WIN32_DEV_HANDLES(1);
     p->watches[slot] = h;
     p->watch_tree[slot] = 1;
     p->watch_fired[slot] = 0;
@@ -795,7 +820,7 @@ b32 os_watch_rearm(OsWatch watch, String8 dir) {
     if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1] || !p->watch_tree[watch - 1]) return 0;
     HANDLE h = win32_tree_notification(p, dir);
     if (h == INVALID_HANDLE_VALUE) return 0;
-    FindCloseChangeNotification(p->watches[watch - 1]);
+    FindCloseChangeNotification(p->watches[watch - 1]); // the ledger: one opened, one closed
     p->watches[watch - 1] = h;
     p->watch_fired[watch - 1] = 0;
     return 1;
@@ -805,6 +830,7 @@ void os_unwatch(OsWatch watch) {
     Platform *p = g_platform;
     if (watch < 1 || watch > WIN32_MAX_WATCHES || !p->watches[watch - 1]) return;
     FindCloseChangeNotification(p->watches[watch - 1]);
+    WIN32_DEV_HANDLES(-1);
     p->watches[watch - 1] = NULL;
     p->watch_tree[watch - 1] = p->watch_fired[watch - 1] = 0;
 }
@@ -845,6 +871,7 @@ b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data, b32 background
     lower = lower && !g_platform->background_normal;
     InterlockedIncrement(&g_platform->live_threads);
 #endif
+    WIN32_DEV_HANDLES(1);
     if (lower) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
     return 1;
 }
@@ -863,6 +890,7 @@ b32 os_thread_join(OsThread thread, u32 timeout_ms) {
     if (!thread.handle) return 1;
     if (WaitForSingleObject(thread.handle, timeout_ms) != WAIT_OBJECT_0) return 0;
     CloseHandle(thread.handle);
+    WIN32_DEV_HANDLES(-1);
 #if RONIN_DEV
     InterlockedDecrement(&g_platform->live_threads);
 #endif
@@ -884,6 +912,7 @@ b32 os_event_create(OsEvent *event) {
 #if RONIN_DEV
     if (event->handle) InterlockedIncrement(&g_platform->live_events);
 #endif
+    if (event->handle) WIN32_DEV_HANDLES(1);
     return event->handle != NULL;
 }
 
@@ -898,6 +927,7 @@ b32 os_event_wait(OsEvent event, u32 timeout_ms) {
 void os_event_destroy(OsEvent event) {
     if (!event.handle) return;
     CloseHandle(event.handle);
+    WIN32_DEV_HANDLES(-1);
 #if RONIN_DEV
     InterlockedDecrement(&g_platform->live_events);
 #endif
@@ -959,8 +989,12 @@ String8 os_oem_to_utf8(Arena *arena, String8 text) {
 // ---------------------------------------------------------------------------
 // Processes: any thread (platform.h). Every path closes what it opened.
 
+// Closes one of the process handles os_process_start counted in the ledger.
 static void win32_close(HANDLE *h) {
-    if (*h && *h != INVALID_HANDLE_VALUE) CloseHandle(*h);
+    if (*h && *h != INVALID_HANDLE_VALUE) {
+        CloseHandle(*h);
+        WIN32_DEV_HANDLES(-1);
+    }
     *h = NULL;
 }
 
@@ -1012,11 +1046,13 @@ OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProc
         status = win32_last_file_status();
         goto done;
     }
+    WIN32_DEV_HANDLES(1);
     SECURITY_ATTRIBUTES inherit = { sizeof(inherit), NULL, TRUE };
     client = CreateFileW(name, GENERIC_WRITE, 0, &inherit, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     io_event = CreateEventW(NULL, TRUE, FALSE, NULL); // manual reset, as OVERLAPPED wants
     job = CreateJobObjectW(NULL, NULL);
+    WIN32_DEV_HANDLES((client != INVALID_HANDLE_VALUE) + (nul != INVALID_HANDLE_VALUE) + (io_event != NULL) + (job != NULL));
     if (client == INVALID_HANDLE_VALUE || nul == INVALID_HANDLE_VALUE || !io_event || !job) {
         if (client == INVALID_HANDLE_VALUE) client = NULL;
         if (nul == INVALID_HANDLE_VALUE) nul = NULL;
@@ -1058,6 +1094,7 @@ OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProc
         status = error == ERROR_DIRECTORY ? OS_FILE_NOT_FOUND : win32_file_status(error);
         goto done;
     }
+    WIN32_DEV_HANDLES(2); // the process and its thread
     if (!AssignProcessToJobObject(job, pi.hProcess)) {
         status = win32_last_file_status();
         TerminateProcess(pi.hProcess, 1);
@@ -1200,10 +1237,12 @@ i32 os_dev_live_threads(void) {
 
 void os_dev_thread_abandoned(void) {
     InterlockedDecrement(&g_platform->live_threads); // still running, but the process exit ends it: not a leak
+    WIN32_DEV_HANDLES(-1);                           // ... its handle too
 }
 
 void os_dev_thread_reclaimed(void) {
     InterlockedIncrement(&g_platform->live_threads);
+    WIN32_DEV_HANDLES(1);
 }
 
 i32 os_dev_live_events(void) {
@@ -1234,6 +1273,49 @@ i32 os_dev_handle_count(void) {
     DWORD n = 0;
     GetProcessHandleCount(GetCurrentProcess(), &n);
     return (i32)n;
+}
+
+i32 os_dev_live_handles(void) {
+    return (i32)InterlockedOr(&g_platform->live_handles, 0);
+}
+
+// The committed bytes of one os_reserve range: its regions while they belong to that allocation.
+static u64 win32_dev_reservation_committed(void *base) {
+    u64 committed = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    for (u8 *at = (u8 *)base; VirtualQuery(at, &mbi, sizeof(mbi)) && mbi.AllocationBase == base; at += mbi.RegionSize) {
+        if (mbi.State == MEM_COMMIT) committed += mbi.RegionSize;
+    }
+    return committed;
+}
+
+void os_dev_metrics(OsDevMetrics *m) {
+    memset(m, 0, sizeof(*m));
+    m->handles = os_dev_handle_count(); // first: the Toolhelp snapshot below is a handle of its own
+    PROCESS_MEMORY_COUNTERS_EX pmc = { .cb = sizeof(pmc) };
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) {
+        m->private_bytes = pmc.PrivateUsage;
+        m->working_set = pmc.WorkingSetSize;
+    }
+    m->gdi_objects = (i32)GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    m->user_objects = (i32)GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+    m->live_handles = os_dev_live_handles();
+    m->live_threads = os_dev_live_threads();
+    m->live_events = os_dev_live_events();
+    m->live_processes = os_dev_live_processes();
+    m->watches = os_dev_watch_count();
+    Win32DevReservations *r = &win32_dev_reservations;
+    AcquireSRWLockExclusive(&r->lock);
+    m->reservations = r->count;
+    for (i32 i = 0; i < r->count; i++) m->reserved_committed += win32_dev_reservation_committed(r->base[i]);
+    ReleaseSRWLockExclusive(&r->lock);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        DWORD pid = GetCurrentProcessId();
+        THREADENTRY32 te = { .dwSize = sizeof(te) };
+        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) m->process_threads += te.th32OwnerProcessID == pid;
+        CloseHandle(snap);
+    }
 }
 
 String8 os_dev_exe_path(Arena *arena) {
@@ -1354,6 +1436,7 @@ OsFileStatus os_dev_lock_file(String8 path, OsFile *file) {
     HANDLE h = CreateFileW(win32_path16(path), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     arena_pop_to(scratch, mark);
     file->handle = h == INVALID_HANDLE_VALUE ? NULL : h;
+    if (file->handle) WIN32_DEV_HANDLES(1); // closed by os_file_close
     return file->handle ? OS_FILE_OK : win32_last_file_status();
 }
 

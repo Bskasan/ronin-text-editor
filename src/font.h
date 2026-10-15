@@ -71,6 +71,14 @@ i32   font_draw_text(Font *f, Renderer *r, i32 x, i32 y, String8 text, Color col
 
 #if RONIN_DEV
 b32   font_dev_atlas_has_coverage(Font *f);
+typedef struct FontDevStats {
+    i64 used_area;   // atlas texels the shelves have taken: the closed shelves' full width, the open one up to shelf_x
+    i64 glyphs;      // cached glyphs: the hash table's, the pre-rasterized ASCII and the missing box
+    i32 atlas_rows;  // committed rows (atlas_h), at most atlas_size
+    i32 atlas_size;
+    u32 reset_count; // informational: cache resets so far (a text-scale change resets by design)
+} FontDevStats;
+void  font_dev_stats(Font *f, FontDevStats *s);
 #endif
 
 #endif // FONT_H
