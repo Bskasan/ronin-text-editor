@@ -236,6 +236,12 @@ typedef struct OsDevMetrics {
     i32 process_threads; // informational: every thread of the process (Toolhelp), the driver's too
 } OsDevMetrics;
 void os_dev_metrics(OsDevMetrics *m);
+typedef struct OsDevHandleType {
+    u8 name[32]; // the kernel's type name ("File", "Event", "Key", ...), UTF-8
+    i32 name_len;
+    i32 count;
+} OsDevHandleType;
+i32  os_dev_handle_types(OsDevHandleType *out, i32 cap); // the process's handles by type; the number of types (0: unavailable)
 String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
 void    os_dev_set_recovery_dir(String8 dir); // tests: the recovery directory from here on
 #endif
@@ -437,6 +443,21 @@ i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file te
 i32  test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir); // --fuzz-seeds: the seeded groups over seeds
 i32  test_soak(u64 events, u64 seed, String8 tmp_dir); // --soak N: random key and mouse events through the headless app
 i32  test_map_report(String8 map_path, String8 src_dir); // --map-report: the release exe's bytes by module (the log)
+// --leak-check (leak.c, Phase 16): the platform drives the shown window through these.
+typedef struct LeakHost {
+    void *ctx;
+    Renderer *renderer;
+    // Into the window's queue: a frame after each event (frame_each), or only when the queue fills and once at the end.
+    void (*feed)(void *ctx, Event *events, i32 count, b32 frame_each);
+    // One pass of the main loop, waiting up to wait_ms: the watches, the workers' wake, the messages, a frame when one is
+    // wanted. True when anything happened.
+    b32 (*pump)(void *ctx, u32 wait_ms);
+    u8 *(*capture)(void *ctx, Arena *arena, i32 *w, i32 *h); // a frame drawn and read back (tightly packed BGRA)
+    b32 (*write_png)(void *ctx, String8 path, u8 *bgra, i32 w, i32 h);
+} LeakHost;
+b32     leak_scenario_known(String8 name);            // "all", a scenario ("window-cycle") or one of its sub-cycles
+String8 leak_prepare(Arena *arena, String8 tmp_dir);  // its files under tmp_dir\leak (made once) and leak.conf: the config's path
+i32     leak_check(App *app, LeakHost *host, String8 which, i32 cycles, String8 tmp_dir, Arena *arena); // an exit code
 void app_dev_goto_line(App *app, i64 line); // point to the start of line (< 0: the last line), recentered
 i32  app_dev_key_events(App *app, String8 keys, Event *out, i32 cap); // --keys: tokens to events (bad tokens logged, skipped)
 b32  app_dev_feed_events(App *app, Event *events, i32 count, Arena *scratch); // headless: events through the app, false = quit

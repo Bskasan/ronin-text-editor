@@ -1,0 +1,536 @@
+// leak.c — dev only: --leak-check (Phase 16; docs/ARCHITECTURE.md, "Memory and resource leak audit"). Each scenario
+// repeats an operation that ends in the state it started from. After a prime step that fills the bounded caches
+// (*Messages*, the minibuffer history, the kill ring) come 20 warm-up cycles, then 4 windows of N/4 cycles; every
+// metric is sampled at the end of the warm-up and of each window. A verdict metric that grows from one window to
+// the next in any of the last three is a LEAK (exit 6); an informational one that rises in each of them is a WATCH.
+// Every cycle must leave the state the first one left (exit 9 otherwise). Part of the app, as test.c: it reads App
+// directly; the platform drives the window through LeakHost.
+
+#if RONIN_DEV
+
+#define LEAK_WARMUP 20
+#define LEAK_WINDOWS 4
+#define LEAK_PRIVATE_TOLERANCE KB(64) // private commit between windows (OS noise); every other verdict metric: exact
+#define LEAK_STEP_MS 60000            // a step that does not settle within this fails the run
+
+enum { LEAK_GROWTH, LEAK_BOUNDED, LEAK_INFO };
+
+enum {
+    LEAK_M_PRIVATE,
+    LEAK_M_HANDLES,
+    LEAK_M_GDI,
+    LEAK_M_USER,
+    LEAK_M_LEDGER,
+    LEAK_M_THREADS,
+    LEAK_M_EVENTS,
+    LEAK_M_PROCESSES,
+    LEAK_M_WATCHES,
+    LEAK_M_RESERVATIONS,
+    LEAK_M_COMMITTED,
+    LEAK_M_ATLAS_AREA,
+    LEAK_M_GLYPHS,
+    LEAK_M_D3D,
+    LEAK_M_ATLAS_ROWS,
+    LEAK_M_UNDO,
+    LEAK_M_WORKING_SET,
+    LEAK_M_PROCESS_THREADS,
+    LEAK_M_VIDEO,
+    LEAK_M_RESETS,
+    LEAK_M_COUNT
+};
+
+typedef struct LeakMetricInfo {
+    const char *name;
+    i32 kind;
+    i64 tolerance; // LEAK_GROWTH: allowed growth between windows
+} LeakMetricInfo;
+
+static const LeakMetricInfo leak_metrics[LEAK_M_COUNT] = {
+    { "private commit (bytes)", LEAK_GROWTH, LEAK_PRIVATE_TOLERANCE },
+    { "process handles", LEAK_GROWTH, 0 },
+    { "GDI objects", LEAK_GROWTH, 0 },
+    { "USER objects", LEAK_GROWTH, 0 },
+    { "handle ledger (ours)", LEAK_GROWTH, 0 },
+    { "our threads", LEAK_GROWTH, 0 },
+    { "our events", LEAK_GROWTH, 0 },
+    { "our processes", LEAK_GROWTH, 0 },
+    { "directory watches", LEAK_GROWTH, 0 },
+    { "our reservations", LEAK_GROWTH, 0 },
+    { "our committed bytes", LEAK_GROWTH, 0 },
+    { "atlas used area (texels)", LEAK_GROWTH, 0 },
+    { "cached glyphs", LEAK_GROWTH, 0 },
+    { "D3D11 live objects", LEAK_GROWTH, 0 },
+    { "atlas rows", LEAK_BOUNDED, 0 },
+    { "undo log (bytes)", LEAK_BOUNDED, 0 },
+    { "working set (bytes)", LEAK_INFO, 0 },
+    { "process threads (Toolhelp)", LEAK_INFO, 0 },
+    { "video memory, local (bytes)", LEAK_INFO, 0 },
+    { "font resets", LEAK_INFO, 0 },
+};
+
+typedef struct Leak {
+    App *app;
+    LeakHost *host;
+    Arena *arena;
+    String8 dir;          // tmp\leak
+    String8 dir_fwd;      // ... with forward slashes, as find-file shows it
+    String8 bench_file;   // tmp\bench_100mb.txt
+    String8 shots_dir;    // build\shots: the screenshots before and after
+    Buffer *home;         // home.txt: the buffer every scenario starts and ends on
+    Buffer *undo_buffer;  // undo-cycle's buffer, kept across its cycles
+    i32 failed;           // steps that failed (exit 9)
+    i32 leaks;            // LEAK verdicts
+    i32 mismatches;       // screenshots that differ
+    char watch[1024];     // the WATCH verdicts, "scenario: metric; ..."
+    i64 watch_len;
+    OsDevHandleType types[LEAK_WINDOWS + 1][64]; // the process's handles by type at each sample
+    i32 type_count[LEAK_WINDOWS + 1];
+} Leak;
+
+typedef struct LeakScenario {
+    const char *name;
+    b32 (*setup)(Leak *L);    // may be NULL
+    b32 (*cycle)(Leak *L);    // false: a step failed
+    void (*teardown)(Leak *L); // may be NULL
+    b32 five;                 // 5 cycles: 1 warm-up, 4 windows of 1 (the 100 MB file)
+    b32 shots;                // a screenshot before the first cycle and after the last, compared pixel-exact
+    b32 from_start;           // the state is compared with the one before the first cycle (not after it)
+} LeakScenario;
+
+// ---------------------------------------------------------------------------
+// Driving the app
+
+static void leak_fail(Leak *L, const char *what, String8 detail) {
+    LOG("leak: FAIL: %s %S", what, detail);
+    L->failed++;
+}
+
+// Workers, prompts and timers that still have something to do: the app is not settled.
+static b32 leak_busy(App *app) {
+    b32 busy = app_wants_frame(app) || app_dev_results_busy(app) || app_dev_compile_busy(app) || app->finder.dying_count > 0 ||
+               app_wait_ms(app) != CONFIG_WAIT_INFINITE || cursor_job_pending(&app->cursor_job) || replace_pending(&app->replace);
+    for (i32 i = 0; i < PROJECT_KEPT; i++) busy |= app->finder.projects[i].scan != NULL;
+    return busy;
+}
+
+// Until nothing is pending and a pass of the loop brings nothing new.
+static b32 leak_settle(Leak *L) {
+    u64 start = os_time_us();
+    for (;;) {
+        b32 busy = leak_busy(L->app);
+        b32 did = L->host->pump(L->host->ctx, busy ? 2 : 0);
+        if (!busy && !did) return 1;
+        if (os_time_us() - start > (u64)LEAK_STEP_MS * 1000) {
+            leak_fail(L, "the app did not settle within the step's time", str8(NULL, 0));
+            return 0;
+        }
+    }
+}
+
+// Pumps until done(L) holds (the app need not be idle meanwhile).
+static b32 leak_wait(Leak *L, b32 (*done)(Leak *L), const char *what) {
+    u64 start = os_time_us();
+    while (!done(L)) {
+        L->host->pump(L->host->ctx, 2);
+        if (os_time_us() - start > (u64)LEAK_STEP_MS * 1000) {
+            leak_fail(L, "timed out waiting for", str8_cstr(what));
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void leak_feed(Leak *L, String8 keys, b32 frame_each) {
+    u64 mark = arena_pos(L->arena);
+    i32 cap = (i32)keys.len * 2 + 2;
+    Event *events = PUSH_ARRAY(L->arena, Event, cap);
+    i32 n = app_dev_key_events(L->app, keys, events, cap);
+    L->host->feed(L->host->ctx, events, n, frame_each);
+    arena_pop_to(L->arena, mark);
+}
+
+// Keys in --keys notation, a frame after each, then settled.
+static b32 leak_keys(Leak *L, const char *keys) {
+    leak_feed(L, str8_cstr(keys), 1);
+    return leak_settle(L);
+}
+
+// Text typed a character at a time.
+static b32 leak_type(Leak *L, String8 text) {
+    u64 mark = arena_pos(L->arena);
+    u8 *keys = PUSH_ARRAY(L->arena, u8, text.len * 4 + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < text.len; i++) {
+        if (text.data[i] == ' ') {
+            memcpy(keys + n, "SPC ", 4);
+            n += 4;
+        } else {
+            keys[n++] = text.data[i];
+            keys[n++] = ' ';
+        }
+    }
+    leak_feed(L, str8(keys, n), 1);
+    arena_pop_to(L->arena, mark);
+    return leak_settle(L);
+}
+
+static Buffer *leak_current(Leak *L) {
+    return app_selected_view(L->app)->buffer;
+}
+
+// kill-buffer on the selected buffer (C-x k RET), answering the question of a modified one.
+static b32 leak_kill_current(Leak *L) {
+    if (!leak_keys(L, "C-x k RET")) return 0;
+    if (L->app->mini.active && L->app->mini.kind == MINI_YES_NO && !leak_keys(L, "y e s RET")) return 0;
+    return !L->app->mini.active;
+}
+
+// find-file of a name in tmp\leak from a buffer there (its directory is the prompt's initial input).
+static b32 leak_find_file(Leak *L, const char *name) {
+    if (!leak_keys(L, "C-x C-f")) return 0;
+    if (!leak_type(L, str8_cstr(name))) return 0;
+    if (!leak_keys(L, "RET")) return 0;
+    return !L->app->mini.active;
+}
+
+// ---------------------------------------------------------------------------
+// The state a cycle must leave, as text (compared, and logged when it differs)
+
+static u64 leak_hash(String8 s) {
+    u64 h = 1469598103934665603ull;
+    for (i64 i = 0; i < s.len; i++) h = (h ^ s.data[i]) * 1099511628211ull;
+    return h;
+}
+
+static String8 leak_state(Leak *L, Arena *a) {
+    App *app = L->app;
+    String8 s = str8_fmt(a, "buffers %d:", app->buffers.count);
+    for (i32 i = 0; i < app->buffers.count; i++) {
+        Buffer *b = app->buffers.entries[i].buffer;
+        if (b == app->messages) {
+            s = str8_fmt(a, "%S *Messages*", s);
+            continue;
+        }
+        s = str8_fmt(a, "%S %S%s(%D)", s, b->name, b->modified ? "*" : "", buffer_size(b));
+        if (b == L->undo_buffer) s = str8_fmt(a, "%S#%X", s, leak_hash(buffer_text(b, a, 0, buffer_size(b))));
+    }
+    i32 leaves[WINDOW_MAX];
+    i32 n = window_leaves(&app->windows, leaves);
+    s = str8_fmt(a, "%S; windows %d:", s, n);
+    for (i32 i = 0; i < n; i++) {
+        WindowNode *w = &app->windows.nodes[leaves[i]];
+        View *v = w->view;
+        s = str8_fmt(a, "%S [%d %d %d %d %S point %D cursors %d%s]", s, w->x, w->y, w->w, w->h, v->buffer->name,
+                     view_point(v, &v->cursors[v->primary]), v->cursor_count, leaves[i] == app->windows.selected ? " selected" : "");
+    }
+    i32 running = 0, scans = 0;
+    for (i32 i = 0; i < RESULTS_MAX; i++) running += app->results[i].buffer && app->results[i].running;
+    for (i32 i = 0; i < PROJECT_KEPT; i++) scans += app->finder.projects[i].scan != NULL;
+    s = str8_fmt(a, "%S; minibuffer %d isearch %d replace %d cursor job %d; running %d scans %d dying %d %d %d", s, app->mini.active,
+                 app->isearch.active, (i32)app->replace.state, (i32)app->cursor_job.kind, running, scans, app->finder.dying_count,
+                 app->grep_dying_count, app->compile_dying_count);
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Metrics, the verdict and the table
+
+static void leak_sample(Leak *L, i32 w, i64 *v, i64 *caps) {
+    L->type_count[w] = os_dev_handle_types(L->types[w], ARRAY_COUNT(L->types[w]));
+    OsDevMetrics m;
+    os_dev_metrics(&m);
+    RDevGpuMetrics g;
+    r_dev_gpu_metrics(L->host->renderer, &g);
+    FontDevStats f;
+    font_dev_stats(L->app->font, &f);
+    v[LEAK_M_PRIVATE] = (i64)m.private_bytes;
+    v[LEAK_M_HANDLES] = m.handles;
+    v[LEAK_M_GDI] = m.gdi_objects;
+    v[LEAK_M_USER] = m.user_objects;
+    v[LEAK_M_LEDGER] = m.live_handles;
+    v[LEAK_M_THREADS] = m.live_threads;
+    v[LEAK_M_EVENTS] = m.live_events;
+    v[LEAK_M_PROCESSES] = m.live_processes;
+    v[LEAK_M_WATCHES] = m.watches;
+    v[LEAK_M_RESERVATIONS] = m.reservations;
+    v[LEAK_M_COMMITTED] = (i64)m.reserved_committed;
+    v[LEAK_M_ATLAS_AREA] = f.used_area;
+    v[LEAK_M_GLYPHS] = f.glyphs;
+    v[LEAK_M_D3D] = g.live_objects;
+    v[LEAK_M_ATLAS_ROWS] = f.atlas_rows;
+    v[LEAK_M_UNDO] = L->undo_buffer ? (i64)buffer_dev_undo_used(L->undo_buffer) : -1;
+    v[LEAK_M_WORKING_SET] = (i64)m.working_set;
+    v[LEAK_M_PROCESS_THREADS] = m.process_threads;
+    v[LEAK_M_VIDEO] = (i64)g.video_local;
+    v[LEAK_M_RESETS] = f.reset_count;
+    caps[LEAK_M_ATLAS_ROWS] = f.atlas_size;
+    caps[LEAK_M_UNDO] = (i64)L->app->config->settings.undo_limit_mb << 20;
+}
+
+static void leak_watch_note(Leak *L, const char *scenario, const char *metric) {
+    i64 n = fmt_buf((u8 *)L->watch + L->watch_len, (i64)sizeof(L->watch) - L->watch_len, "%s%s: %s", L->watch_len ? "; " : "", scenario, metric);
+    L->watch_len = MIN(L->watch_len + n, (i64)sizeof(L->watch) - 1);
+}
+
+// v[0]: after the warm-up, v[1..4]: after each window of `per` cycles. Logs the table; returns the LEAK verdicts.
+static i32 leak_verdict(Leak *L, const char *scenario, i64 v[LEAK_WINDOWS + 1][LEAK_M_COUNT], i64 *caps, i32 per) {
+    i32 leaks = 0;
+    LOG("leak: | %s | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle (last 3 windows) | verdict |", scenario);
+    LOG("leak: |---|---|---|---|---|---|---|---|");
+    for (i32 k = 0; k < LEAK_M_COUNT; k++) {
+        const LeakMetricInfo *mi = &leak_metrics[k];
+        if (v[0][k] < 0) continue; // not measured here (the undo log outside undo-cycle, live objects without the debug layer)
+        const char *verdict = "OK";
+        if (mi->kind == LEAK_GROWTH) {
+            for (i32 w = 2; w <= LEAK_WINDOWS; w++) if (v[w][k] - v[w - 1][k] > mi->tolerance) verdict = "LEAK";
+        } else if (mi->kind == LEAK_BOUNDED) {
+            for (i32 w = 0; w <= LEAK_WINDOWS; w++) if (v[w][k] > caps[k]) verdict = "LEAK (over its cap)";
+        } else {
+            b32 rising = 1;
+            for (i32 w = 2; w <= LEAK_WINDOWS; w++) rising &= v[w][k] > v[w - 1][k];
+            verdict = rising ? "WATCH" : "";
+            if (rising) leak_watch_note(L, scenario, mi->name);
+        }
+        if (verdict[0] == 'L') leaks++;
+        i64 delta = v[LEAK_WINDOWS][k] - v[1][k], cycles = (i64)(LEAK_WINDOWS - 1) * per;
+        i64 tenths = delta * 10 / cycles;
+        i64 mag = tenths < 0 ? -tenths : tenths;
+        u8 cap_text[64];
+        i64 cap_len = mi->kind == LEAK_BOUNDED ? fmt_buf(cap_text, sizeof(cap_text), " (cap %D)", caps[k]) : 0;
+        LOG("leak: | %s | %D | %D | %D | %D | %D | %s%D.%D | %s%S |", mi->name, v[0][k], v[1][k], v[2][k], v[3][k], v[4][k],
+            tenths < 0 ? "-" : "", mag / 10, mag % 10, verdict, str8(cap_text, cap_len));
+    }
+    // The process's handles by type wherever they moved between the samples.
+    for (i32 i = 0; i < L->type_count[0]; i++) {
+        String8 name = str8(L->types[0][i].name, L->types[0][i].name_len);
+        i32 c[LEAK_WINDOWS + 1];
+        b32 moved = 0;
+        for (i32 w = 0; w <= LEAK_WINDOWS; w++) {
+            c[w] = 0;
+            for (i32 j = 0; j < L->type_count[w]; j++) {
+                if (str8_equal(str8(L->types[w][j].name, L->types[w][j].name_len), name)) c[w] = L->types[w][j].count;
+            }
+            moved |= c[w] != c[0];
+        }
+        if (moved) LOG("leak:   handles of type %S: %d | %d | %d | %d | %d", name, c[0], c[1], c[2], c[3], c[4]);
+    }
+    return leaks;
+}
+
+// ---------------------------------------------------------------------------
+// Screenshots: the frame before the first cycle against the frame after the last
+
+static u8 *leak_shot(Leak *L, Arena *a, i32 *w, i32 *h) {
+    echo_clear(&L->app->echo);
+    leak_settle(L);
+    return L->host->capture(L->host->ctx, a, w, h);
+}
+
+static void leak_compare_shots(Leak *L, const char *scenario, u8 *before, i32 bw, i32 bh, u8 *after, i32 aw, i32 ah) {
+    String8 name = str8_cstr(scenario);
+    u8 file[96];
+    i64 n = 0;
+    for (i64 i = 0; i < name.len && n < (i64)sizeof(file) - 1; i++) file[n++] = name.data[i] == '/' ? '_' : name.data[i];
+    os_make_dir(L->shots_dir);
+    String8 base = str8_fmt(L->arena, "%S\\leak_%S", L->shots_dir, str8(file, n));
+    if (before) L->host->write_png(L->host->ctx, str8_fmt(L->arena, "%S_before.png", base), before, bw, bh);
+    if (after) L->host->write_png(L->host->ctx, str8_fmt(L->arena, "%S_after.png", base), after, aw, ah);
+    i64 differ = -1;
+    if (before && after && bw == aw && bh == ah) {
+        differ = 0;
+        for (i64 i = 0; i < (i64)bw * bh * 4; i += 4) differ += before[i] != after[i] || before[i + 1] != after[i + 1] || before[i + 2] != after[i + 2];
+    }
+    if (differ) {
+        LOG("leak: FAIL: %s: the frame after the last cycle differs from the one before the first (%D pixels, %dx%d against %dx%d)",
+            scenario, differ, aw, ah, bw, bh);
+        L->mismatches++;
+    } else {
+        LOG("leak: %s: the frame after the last cycle equals the one before the first, pixel for pixel (%dx%d)", scenario, bw, bh);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The scenarios
+
+static b32 leak_file_cycle(Leak *L) {
+    if (!leak_find_file(L, "sample.c") || !str8_equal(leak_current(L)->name, STR8_LIT("sample.c"))) return 0;
+    if (!leak_keys(L, "M-> h e l l o SPC w o r l d DEL DEL DEL DEL DEL DEL DEL DEL DEL DEL DEL")) return 0;
+    return leak_kill_current(L) && leak_current(L) == L->home;
+}
+
+static b32 leak_file_100mb_cycle(Leak *L) {
+    if (!leak_keys(L, "C-x C-f DEL")) return 0; // up from tmp\leak to tmp
+    if (!leak_type(L, STR8_LIT("bench_100mb.txt")) || !leak_keys(L, "RET")) return 0;
+    if (!str8_equal(leak_current(L)->name, STR8_LIT("bench_100mb.txt"))) return 0;
+    if (!leak_keys(L, "M-> h e l l o DEL DEL DEL DEL DEL")) return 0;
+    return leak_kill_current(L) && leak_current(L) == L->home;
+}
+
+static b32 leak_window_split_cycle(Leak *L) {
+    if (!leak_keys(L, "C-x 2 C-x 3 C-x o C-x 0 C-x 0")) return 0;
+    return window_count(&L->app->windows) == 1;
+}
+
+static b32 leak_window_one_cycle(Leak *L) {
+    // Four equal columns, then each column split once (C-x o twice reaches the next column's window).
+    if (!leak_keys(L, "C-x 3 C-x 3 C-x 3 C-x + C-x 2 C-x o C-x o C-x 2 C-x o C-x o C-x 2 C-x o C-x o C-x 2")) return 0;
+    if (window_count(&L->app->windows) != 8) return 0;
+    if (!leak_keys(L, "C-x 1")) return 0;
+    return window_count(&L->app->windows) == 1;
+}
+
+static const LeakScenario leak_scenarios[] = {
+    { "file-cycle", NULL, leak_file_cycle, NULL, 0, 0, 0 },
+    { "file-cycle-100mb", NULL, leak_file_100mb_cycle, NULL, 1, 0, 0 },
+    { "window-cycle/split", NULL, leak_window_split_cycle, NULL, 0, 1, 1 },
+    { "window-cycle/one", NULL, leak_window_one_cycle, NULL, 0, 1, 1 },
+};
+
+// "all", a scenario's whole name, or the part before '/' (all its sub-cycles).
+static b32 leak_selected(String8 which, const char *name) {
+    String8 n = str8_cstr(name);
+    if (str8_equal(which, STR8_LIT("all")) || str8_equal(which, n)) return 1;
+    return which.len < n.len && n.data[which.len] == '/' && mem_equal(n.data, which.data, which.len);
+}
+
+b32 leak_scenario_known(String8 name) {
+    for (i32 i = 0; i < ARRAY_COUNT(leak_scenarios); i++) if (leak_selected(name, leak_scenarios[i].name)) return 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// The run
+
+static void leak_write_if_changed(Arena *a, String8 path, String8 text) {
+    String8 old;
+    if (os_read_small_file(a, path, MB(1), &old) == OS_FILE_OK && str8_equal(old, text)) return;
+    os_write_file(path, text);
+}
+
+String8 leak_prepare(Arena *arena, String8 tmp_dir) {
+    String8 dir = str8_fmt(arena, "%S\\leak", tmp_dir);
+    os_make_dir(dir);
+    os_make_dir(str8_fmt(arena, "%S\\conf", dir));
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\home.txt", dir), STR8_LIT("The leak check's home buffer.\n"));
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\sample.c", dir),
+                          STR8_LIT("#include <stdio.h>\n\n// A sample for file-cycle.\nint main(void) {\n    int total = 0;\n"
+                                   "    for (int i = 0; i < 10; i++) total += i * i;\n    printf(\"%d\\n\", total);\n    return 0;\n}\n"));
+    String8 conf = str8_fmt(arena, "%S\\conf\\leak.conf", dir);
+    leak_write_if_changed(arena, conf, STR8_LIT("[settings]\nundo_limit_mb = 1\nsearch_workers = 4\n"));
+    test_bench_buffer_file(arena, tmp_dir); // the 100 MB file, made once
+    return conf;
+}
+
+// The bounded caches at their caps, so that the windows measure the operations themselves: *Messages* full of
+// full-length lines, every history kind full and its arena past a compaction, the kill ring full.
+static void leak_prime(Leak *L) {
+    App *app = L->app;
+    u8 line[ECHO_CAP];
+    memset(line, 'p', sizeof(line));
+    for (i32 i = 0; i < ECHO_LOG_LINES; i++) echo_log(&app->echo, str8(line, ECHO_CAP));
+    Minibuffer *mb = &app->mini;
+    for (i32 k = MINI_HISTORY_NONE + 1; k < MINI_HISTORY_COUNT; k++) {
+        for (i32 i = 0; i < MINI_HISTORY_MAX; i++) {
+            u8 text[64];
+            memset(text, '.', sizeof(text));
+            fmt_buf(text, sizeof(text), "prime %d %d", k, i);
+            minibuffer_history_add(mb, (MiniHistoryKind)k, str8(text, sizeof(text)));
+        }
+    }
+    i32 compactions = 0;
+    u64 last = mb->history_arena.pos;
+    for (i32 i = 0; compactions < 2 && i < 100000; i++) {
+        u8 text[64];
+        memset(text, i & 1 ? 'a' : 'b', sizeof(text));
+        minibuffer_history_add(mb, MINI_HISTORY_TEXT, str8(text, sizeof(text)));
+        if (mb->history_arena.pos < last) compactions++;
+        last = mb->history_arena.pos;
+    }
+    for (i32 i = 0; i < app->config->settings.kill_ring_max; i++) {
+        u8 *d = kill_push(&app->kills, 64);
+        if (d) memset(d, 'k', 64);
+    }
+    LOG("leak: primed: *Messages* %D bytes, history arena %U bytes after %d compactions, kill ring %d entries",
+        buffer_size(app->messages), mb->history_arena.pos, compactions, app->config->settings.kill_ring_max);
+}
+
+static void leak_run(Leak *L, const LeakScenario *s, i32 cycles) {
+    u64 t0 = os_time_us();
+    i32 warm = s->five ? 1 : LEAK_WARMUP, per = s->five ? 1 : cycles / LEAK_WINDOWS;
+    i32 failed = L->failed;
+    LOG("leak: %s: %d cycles (%d warm-up, %d windows of %d)", s->name, warm + LEAK_WINDOWS * per, warm, LEAK_WINDOWS, per);
+    if (s->setup && !s->setup(L)) {
+        leak_fail(L, s->name, STR8_LIT("setup failed"));
+        return;
+    }
+    if (!leak_settle(L)) return;
+    u64 base = arena_pos(L->arena);
+    i32 bw = 0, bh = 0, aw = 0, ah = 0;
+    u8 *before = s->shots ? leak_shot(L, L->arena, &bw, &bh) : NULL;
+    String8 state0 = s->from_start ? leak_state(L, L->arena) : str8(NULL, 0);
+    i64 v[LEAK_WINDOWS + 1][LEAK_M_COUNT], caps[LEAK_M_COUNT] = { 0 };
+    i32 total = warm + LEAK_WINDOWS * per;
+    for (i32 c = 0; c < total && L->failed == failed; c++) {
+        b32 ok = s->cycle(L) && leak_settle(L);
+        if (!ok) {
+            leak_fail(L, s->name, str8_fmt(L->arena, "cycle %d: a step did not do what it should (the buffer %S, the echo '%S')", c + 1,
+                                           leak_current(L)->name, str8(L->app->echo.text, L->app->echo.len)));
+            break;
+        }
+        u64 mark = arena_pos(L->arena);
+        String8 state = leak_state(L, L->arena);
+        if (!state0.len) {
+            state0 = state; // after the first cycle: what every later one must leave
+            mark = arena_pos(L->arena);
+        } else if (!str8_equal(state, state0)) {
+            leak_fail(L, s->name, str8_fmt(L->arena, "cycle %d left another state:\n  %S\nthan the first:\n  %S", c + 1, state, state0));
+            break;
+        }
+        arena_pop_to(L->arena, mark);
+        i32 done = c + 1;
+        if (done == warm) leak_sample(L, 0, v[0], caps);
+        else if (done > warm && (done - warm) % per == 0) leak_sample(L, (done - warm) / per, v[(done - warm) / per], caps);
+    }
+    if (L->failed == failed) {
+        u8 *after = s->shots ? leak_shot(L, L->arena, &aw, &ah) : NULL;
+        if (s->shots) leak_compare_shots(L, s->name, before, bw, bh, after, aw, ah);
+    }
+    if (s->teardown) s->teardown(L);
+    leak_settle(L);
+    if (L->failed == failed) {
+        i32 leaks = leak_verdict(L, s->name, v, caps, per);
+        L->leaks += leaks;
+        LOG("leak: %s: %s, %U ms", s->name, leaks ? "LEAK" : "OK", (os_time_us() - t0) / 1000);
+    }
+    arena_pop_to(L->arena, base);
+}
+
+i32 leak_check(App *app, LeakHost *host, String8 which, i32 cycles, String8 tmp_dir, Arena *arena) {
+    u64 t0 = os_time_us();
+    Leak L = { .app = app, .host = host, .arena = arena };
+    L.dir = os_full_path(arena, str8_fmt(arena, "%S\\leak", tmp_dir));
+    L.dir_fwd = str8_copy(arena, L.dir);
+    for (i64 i = 0; i < L.dir_fwd.len; i++) if (L.dir_fwd.data[i] == '\\') L.dir_fwd.data[i] = '/';
+    L.bench_file = str8_fmt(arena, "%S\\bench_100mb.txt", tmp_dir);
+    L.shots_dir = os_full_path(arena, str8_fmt(arena, "%S\\..\\shots", tmp_dir));
+    app_dev_force_focus(app, 1);
+    if (!app_dev_visit(app, str8_fmt(arena, "%S\\home.txt", L.dir))) {
+        LOG("leak: FAIL: cannot visit home.txt in %S", L.dir);
+        return 9;
+    }
+    L.home = leak_current(&L);
+    leak_prime(&L);
+    leak_settle(&L);
+    i32 ran = 0;
+    for (i32 i = 0; i < ARRAY_COUNT(leak_scenarios) && !L.failed; i++) {
+        if (!leak_selected(which, leak_scenarios[i].name)) continue;
+        leak_run(&L, &leak_scenarios[i], cycles);
+        ran++;
+    }
+    i32 code = L.failed ? 9 : L.leaks ? 6 : L.mismatches ? 3 : 0;
+    LOG("leak: %s: %d scenario(s), %d LEAK, %d failure(s), %d screenshot mismatch(es), %U s; WATCH: %s", code ? "FAIL" : "PASS", ran, L.leaks,
+        L.failed, L.mismatches, (os_time_us() - t0) / 1000000, L.watch_len ? L.watch : "none");
+    return code;
+}
+
+#endif
