@@ -372,9 +372,23 @@ static ULONG r_release_all(Renderer *r) {
     return refs;
 }
 
+#if RONIN_DEV
+static i32 r_dev_report_live(Renderer *r, b32 log, i32 *others);
+#endif
+
 u32 r_shutdown(Renderer *r) {
+    u32 leaks = 0;
+#if RONIN_DEV
+    // The exit check (Phase 16): with everything but the device released, the debug layer may list only the device
+    // and its immediate context.
+    r_release_resources(r);
+    i32 others = 0;
+    i32 live = r_dev_report_live(r, 1, &others);
+    if (live >= 0) LOG("exit-check: d3d11: %d live object(s) with everything else released, %d of them neither the device nor its context", live, others);
+    leaks += (u32)others;
+#endif
     ULONG device_refs = r_release_all(r);
-    u32 leaks = (u32)device_refs;
+    leaks += (u32)device_refs;
 #if RONIN_DEV
     LOG("d3d11: device refcount after final release: %u", (u32)device_refs);
     // Everything is released now, so any object DXGI still tracks is a leak.

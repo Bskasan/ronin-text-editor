@@ -44,6 +44,9 @@ typedef struct Platform {
     volatile LONG live_events;         // os_event_create minus destroyed
     volatile LONG live_processes;      // os_process_start minus os_process_close
     volatile LONG live_handles;        // the ledger: kernel handles opened by the os_* layer and not closed
+    i32 exit_handles_window, exit_handles_frame; // the process's handles after the window was created, after the first frame
+    OsDevHandleType exit_types[64];    // ... by type, after the window was created
+    i32 exit_type_count;
     b32 background_normal;            // --bench-grep: background workers at normal priority (the comparison)
     b32 clip_fake;           // the in-memory clipboard: UTF-16 with CRLF, as the real one holds it
     u16 *clip_text;          // in its own reservation
@@ -2029,6 +2032,7 @@ static void win32_frame(Platform *p) {
         QueryPerformanceFrequency(&freq);
         i64 us_main = (now.QuadPart - p->qpc_start.QuadPart) * 1000000 / freq.QuadPart;
         LOG("memory: private bytes after the first frame: %U KB", os_dev_private_bytes() / 1024);
+        p->exit_handles_frame = os_dev_handle_count();
         LOG("startup: first Present %D.%03D ms after WinMain, %D.%03D ms after process creation",
             us_main / 1000, us_main % 1000, us_process / 1000, us_process % 1000);
 #endif
@@ -5654,6 +5658,53 @@ static i32 win32_leak_check(Platform *p) {
 }
 #endif
 
+// The exit check (Phase 16), after the renderer, the app and the window are gone: every arena but the permanent one
+// and the frame scratch released, the handle ledger at 0. The process's handle total is logged after the window was
+// created, after the first frame and now, with the difference by type: the driver, the D3D runtime and
+// DirectWrite's shared factory keep handles for the life of the process, so it is not a verdict. Returns the
+// violations.
+static i32 win32_dev_exit_check(Platform *p) {
+    i32 violations = 0;
+    if (p->clip_text) { // the dev clipboard fake's own reservation
+        os_release(p->clip_text);
+        p->clip_text = NULL;
+        p->clip_committed = 0;
+    }
+    OsDevReservation res[64];
+    i32 n = os_dev_reservations(res, ARRAY_COUNT(res));
+    for (i32 i = 0; i < n; i++) {
+        if (res[i].base == p->perm.base || res[i].base == p->scratch.base) continue;
+        LOG("exit-check: FAIL: an arena not released, %U KB committed, made by %S", res[i].committed >> 10,
+            os_dev_reservation_origin(&p->scratch, res[i].base));
+        violations++;
+    }
+    i32 ledger = os_dev_live_handles();
+    if (ledger) {
+        LOG("exit-check: FAIL: %d handle(s) the os_* layer opened are still open", ledger);
+        violations += ledger;
+    }
+    i32 now = os_dev_handle_count();
+    LOG("exit-check: process handles: %d after the window was created, %d after the first frame, %d now", p->exit_handles_window,
+        p->exit_handles_frame, now);
+    OsDevHandleType types[64];
+    i32 tn = os_dev_handle_types(types, ARRAY_COUNT(types));
+    for (i32 i = 0; i < tn; i++) {
+        i32 before = 0;
+        for (i32 j = 0; j < p->exit_type_count; j++) {
+            if (str8_equal(str8(p->exit_types[j].name, p->exit_types[j].name_len), str8(types[i].name, types[i].name_len))) before = p->exit_types[j].count;
+        }
+        if (before != types[i].count) LOG("exit-check:   %S: %d after the window was created, %d now", str8(types[i].name, types[i].name_len), before, types[i].count);
+    }
+    for (i32 j = 0; j < p->exit_type_count; j++) {
+        b32 found = 0;
+        for (i32 i = 0; i < tn && !found; i++) found = str8_equal(str8(p->exit_types[j].name, p->exit_types[j].name_len), str8(types[i].name, types[i].name_len));
+        if (!found) LOG("exit-check:   %S: %d after the window was created, 0 now", str8(p->exit_types[j].name, p->exit_types[j].name_len), p->exit_types[j].count);
+    }
+    LOG("exit-check: %s: %d arena(s) besides the permanent one and the frame scratch, the handle ledger at %d", violations ? "FAIL" : "PASS",
+        n - 2, ledger);
+    return violations;
+}
+
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
            p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
@@ -6170,6 +6221,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->height = client.bottom - client.top;
 #if RONIN_DEV
     os_dev_stage("window created (hidden), sized for its DPI");
+    p->exit_handles_window = os_dev_handle_count();
+    p->exit_type_count = os_dev_handle_types(p->exit_types, ARRAY_COUNT(p->exit_types));
     p->main_thread_id = GetCurrentThreadId();
     if (p->type_ahead_check) p->type_ahead_thread = CreateThread(NULL, 0, win32_dev_type_ahead_thread, p, 0, NULL);
 #endif
@@ -6547,6 +6600,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         LOG("app: %d of the font's arenas (atlas, glyph table) still reserved after close", font_kept);
         font_refs += font_kept;
     }
+    font_refs += win32_dev_exit_check(p);
     if (os_dev_watch_count()) {
         LOG("app: %d directory watch(es) still open after close", os_dev_watch_count());
         font_refs += os_dev_watch_count();
