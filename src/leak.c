@@ -236,8 +236,8 @@ static String8 leak_state(Leak *L, Arena *a) {
     i32 running = 0, scans = 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) running += app->results[i].buffer && app->results[i].running;
     for (i32 i = 0; i < PROJECT_KEPT; i++) scans += app->finder.projects[i].scan != NULL;
-    s = str8_fmt(a, "%S; minibuffer %d isearch %d replace %d cursor job %d; running %d scans %d dying %d %d %d", s, app->mini.active,
-                 app->isearch.active, (i32)app->replace.state, (i32)app->cursor_job.kind, running, scans, app->finder.dying_count,
+    s = str8_fmt(a, "%S; modal %d minibuffer %d isearch %d replace %d cursor job %d; running %d scans %d dying %d %d %d", s,
+                 app->modal.active, app->mini.active, app->isearch.active, (i32)app->replace.state, (i32)app->cursor_job.kind, running, scans, app->finder.dying_count,
                  app->grep_dying_count, app->compile_dying_count);
     return s;
 }
@@ -421,6 +421,22 @@ static b32 leak_window_one_cycle(Leak *L) {
 
 static b32 leak_mx_cycle(Leak *L) {
     return leak_keys(L, "M-x m i n i b") && L->app->mini.active && leak_keys(L, "C-g") && !L->app->mini.active;
+}
+
+// The command list: open, filter, move, C-g (the frame and the state as before the first cycle); and open, run
+// goto-line through it, cancel its prompt.
+static b32 leak_modal_setup(Leak *L) {
+    echo_clear(&L->app->echo); // the frames before and after are compared: no message left from earlier scenarios
+    return 1;
+}
+
+static b32 leak_modal_browse_cycle(Leak *L) {
+    return leak_keys(L, "C-S-p g o t o <down> <down> <up>") && L->app->modal.active && leak_keys(L, "C-g") && !L->app->modal.active;
+}
+
+static b32 leak_modal_run_cycle(Leak *L) {
+    return leak_keys(L, "C-S-p g o t o - l i n e RET") && !L->app->modal.active && L->app->mini.active && leak_keys(L, "C-g") &&
+           !L->app->mini.active;
 }
 
 static b32 leak_find_file_prompt_cycle(Leak *L) {
@@ -652,6 +668,8 @@ static const LeakScenario leak_scenarios[] = {
     { "isearch-cycle/lazy", leak_isearch_setup, leak_isearch_cycle, leak_kill_teardown, 0, 0, 0 },
     { "isearch-cycle/query-replace", NULL, leak_query_replace_cycle, NULL, 0, 0, 0 },
     { "multi-cursor-cycle", NULL, leak_cursors_cycle, NULL, 0, 0, 0 },
+    { "modal-cycle/browse", leak_modal_setup, leak_modal_browse_cycle, NULL, 0, 1, 1 },
+    { "modal-cycle/run", NULL, leak_modal_run_cycle, NULL, 0, 0, 0 },
     { "undo-cycle", leak_undo_setup, leak_undo_cycle, leak_undo_teardown, 0, 0, 1 },
     { "finder-cycle/open", leak_project_setup, leak_finder_open_cycle, leak_kill_teardown, 0, 0, 0 },
     { "finder-cycle/cancel", leak_project_setup, leak_finder_cancel_cycle, leak_kill_teardown, 0, 0, 0 },
