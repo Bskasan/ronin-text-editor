@@ -86,6 +86,7 @@ b32        modal_open(App *app, const ModalSpec *spec); // false + echo: one is 
 void       modal_close(App *app);                       // closed() runs; the arena is reset; no echo
 b32        modal_active(App *app);
 Arena     *modal_arena(App *app);                       // the owner's per-open memory; reset when it closes
+void       modal_set_data(App *app, void *data);       // the owner's state, when it lives in modal_arena (made after the open)
 void       modal_set_rows(App *app, i32 pane, i64 count); // selection back to 0, top to 0
 ModalList *modal_list(App *app, i32 pane);
 i32        modal_focus_pane(App *app);                  // the pane the movement commands act on (modal-other-pane)
@@ -95,5 +96,6 @@ Rect       modal_rect(App *app);                        // where the box is (the
 
 extern const Command CMD_MODAL_NEXT, CMD_MODAL_PREVIOUS, CMD_MODAL_NEXT_PAGE, CMD_MODAL_PREVIOUS_PAGE;
 extern const Command CMD_MODAL_ACCEPT, CMD_MODAL_OTHER_PANE;
+extern const Command CMD_SHOW_COMMAND_LIST; // commands_list.c: the layer's first owner
 
 #endif // MODAL_H

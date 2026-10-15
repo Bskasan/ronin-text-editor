@@ -69,7 +69,10 @@ static void modal_layout(App *app, AppLayout *l, FrameInput *in) {
         echo_message(&app->echo, "The frame is too small for the %S", name);
         return;
     }
-    for (i32 p = 0; p < MAX(m->spec.panes, 1); p++) modal_list_show(&m->lists[p], m->g.rows);
+    for (i32 p = 0; p < MAX(m->spec.panes, 1); p++) { // the rows may have changed: the top stays in range (the wheel may
+        ModalList *list = &m->lists[p];                // have scrolled the selection out of view: it stays there)
+        list->top = CLAMP(list->top, 0, MAX(list->count - m->g.rows, 0));
+    }
     if (m->spec.field) {
         View *v = &m->field_view;
         Rect f = m->g.field;
@@ -89,6 +92,10 @@ b32 modal_active(App *app) {
 
 Arena *modal_arena(App *app) {
     return &app->modal.arena;
+}
+
+void modal_set_data(App *app, void *data) {
+    app->modal.spec.data = data;
 }
 
 ModalList *modal_list(App *app, i32 pane) {

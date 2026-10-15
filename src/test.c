@@ -5213,7 +5213,10 @@ static b32 test_config(Test *t, u64 seed) {
         const char *error;
         key_seq_parse(STR8_LIT("C-n"), &seq, &error);
         b32 derived = m->modal_selection == 0x111111 && m->modal_key == 0x333333 && m->search_line_number == 0x444444;
-        b32 keys = keymap_get(&w->command_list, &seq) == &CMD_NEXT_LINE && w->command_list.count == 1 &&
+        KeySeq down;
+        key_seq_parse(STR8_LIT("<down>"), &down, &error);
+        b32 keys = keymap_get(&w->command_list, &seq) == &CMD_NEXT_LINE && keymap_get(&w->command_list, &down) == &CMD_MODAL_NEXT &&
+                   w->command_list.count == 10 &&
                    str8_equal(str8_cstr(w->command_list.name), STR8_LIT("command-list")) && w->diags.errors == 0;
         arena_pop_to(&t->arena, mark);
         TEST_CHECK(t, defaults && derived && keys, "config: modal colors: defaults %d, derived and kept %d, [keys command-list] %d",
@@ -12418,6 +12421,187 @@ static b32 test_modal_layer(Test *t) {
     return 1;
 }
 
+// The open command list's state (NULL when it is not open).
+static CmdList *test_cmdlist(App *app) {
+    return app->modal.active && app->modal.spec.field_changed == cmdlist_field_changed ? app->modal.spec.data : NULL;
+}
+
+// The first `n` shown commands as "a,b,c".
+static String8 test_cmdlist_top(Test *t, App *app, i32 n) {
+    CmdList *cl = test_cmdlist(app);
+    if (!cl) return STR8_LIT("(closed)");
+    String8 out = str8(NULL, 0);
+    for (i32 i = 0; i < MIN(n, cl->shown_count); i++) out = str8_fmt(&t->arena, "%S%s%S", out, i ? "," : "", cl->rows[cl->shown[i]].name);
+    return out;
+}
+
+static String8 test_cmdlist_keys(App *app, const Command *cmd) {
+    CmdList *cl = test_cmdlist(app);
+    for (i32 i = 0; cl && i < cl->count; i++) if (cl->rows[i].cmd == cmd) return cl->rows[i].keys;
+    return STR8_LIT("(none)");
+}
+
+static String8 test_cmdlist_field(Test *t, App *app) {
+    Buffer *buf = app->modal.field_buffer;
+    return buf ? buffer_text(buf, &t->arena, 0, buffer_size(buf)) : str8(NULL, 0);
+}
+
+// show-command-list through the headless app: C-S-p, every command in table order with its keys, the filter's
+// goldens (a name, two words, a description only, a query split across name and description), the ends of the list,
+// RET running a motion, a region command and a prompting one, C-g and ESC, the minibuffer, refusals, editing the
+// field, the mouse, no allocation per keystroke, a config reload while open, a frame too small.
+static b32 test_command_list(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "command list: no app");
+    app_dev_show_scratch(app, STR8_LIT("one\ntwo\nthree\n"));
+    View *v = app_selected_view(app);
+    view_set_point(v, view_primary(v), 4);
+    app_dev_feed(app, "C-S-p", &t->arena);
+    CmdList *cl = test_cmdlist(app);
+    TEST_CHECK(t, cl && cl->count == command_count() && cl->shown_count == cl->count, "command list: C-S-p did not open it with every command");
+    b32 in_order = 1;
+    for (i32 i = 0; i < cl->count; i++) in_order &= cl->shown[i] == i && cl->rows[i].cmd == command_at(i);
+    TEST_CHECK(t, in_order, "command list: the empty filter lists the table in its order");
+    String8 status = cmdlist_status(app, cl, &t->arena);
+    TEST_CHECK(t, str8_equal(status, str8_fmt(&t->arena, "%d/%d", command_count(), command_count())), "command list: status '%S'", status);
+    struct { const Command *cmd; const char *keys; } keys[] = {
+        { &CMD_SAVE_BUFFER, "C-x C-s" }, { &CMD_FORWARD_CHAR, "C-f, <right>" }, { &CMD_GOTO_LINE, "M-g g, M-g M-g" },
+        { &CMD_UNDO, "C-/, C-_ +1" }, { &CMD_NEWLINE, "RET, C-m +1" }, { &CMD_SKIP_TO_NEXT_LIKE_THIS, "" },
+        { &CMD_SHOW_COMMAND_LIST, "C-S-p" }, { &CMD_MODAL_OTHER_PANE, "" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(keys); i++) {
+        String8 got = test_cmdlist_keys(app, keys[i].cmd);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(keys[i].keys)), "command list: %s shows '%S', expected '%s'", keys[i].cmd->name, got, keys[i].keys);
+    }
+    // No allocation per keystroke: the arena stays where the open left it.
+    u64 pos = arena_pos(&app->modal.arena);
+    app_dev_feed(app, "s a v e SPC b u f f e r SPC k i l l SPC w o r d", &t->arena);
+    TEST_CHECK(t, arena_pos(&app->modal.arena) == pos && str8_equal(test_cmdlist_field(t, app), STR8_LIT("save buffer kill word")),
+               "command list: 21 keystrokes moved the arena from %U to %U", pos, arena_pos(&app->modal.arena));
+    app_dev_feed(app, "C-a C-k", &t->arena);
+
+    // The filter's goldens.
+    struct { const char *query; const char *top; i32 n; } goldens[] = {
+        { "gotol", "goto-line", 1 },
+        { "sav buf", "save-buffer,save-buffers-kill-terminal,save-some-buffers", 3 },
+        { "clipboard", "kill-ring-save,yank", 2 },
+        { "undo", "undo,undo-redo", 2 },
+        { "occur lines", "occur", 1 },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(goldens); i++) {
+        app_dev_feed(app, "C-a C-k", &t->arena);
+        String8 query = str8_cstr(goldens[i].query);
+        for (i64 k = 0; k < query.len; k++) {
+            u8 typed[4] = { query.data[k] };
+            app_dev_feed(app, query.data[k] == ' ' ? "SPC" : (const char *)typed, &t->arena);
+        }
+        String8 top = test_cmdlist_top(t, app, goldens[i].n);
+        TEST_CHECK(t, str8_equal(top, str8_cstr(goldens[i].top)), "command list: '%s' gives '%S', expected '%s'", goldens[i].query, top,
+                   goldens[i].top);
+    }
+    // "occur lines" matches only across the name and the description: neither alone has both words.
+    {
+        FuzzyQuery q = fuzzy_query(&t->arena, STR8_LIT("occur lines"));
+        CmdRow *row = &cl->rows[cl->shown[0]];
+        TEST_CHECK(t, fuzzy_score(&q, row->name, 0, NULL, 0, NULL) == FUZZY_NO_MATCH &&
+                          fuzzy_score(&q, row->description, 0, NULL, 0, NULL) == FUZZY_NO_MATCH && row->won == CMDLIST_BOTH,
+                   "command list: 'occur lines' must match through name and description together only");
+        MatchSpan name[64], desc[64];
+        i32 nn, nd;
+        cmdlist_spans(app, cl, row, &t->arena, name, &nn, desc, &nd);
+        TEST_CHECK(t, nn == 1 && name[0].start == 0 && name[0].end == 5 && nd >= 1 && desc[0].start == 9 && desc[0].end == 14,
+                   "command list: the split query's spans: %d in the name (%D-%D), %d in the description (%D-%D)", nn, nn ? name[0].start : -1,
+                   nn ? name[0].end : -1, nd, nd ? desc[0].start : -1, nd ? desc[0].end : -1);
+    }
+    // The ends of the list.
+    app_dev_feed(app, "C-a C-k", &t->arena);
+    ModalList *list = modal_list(app, 0);
+    app_dev_feed(app, "C-p <up>", &t->arena);
+    TEST_CHECK(t, list->selected == 0 && list->top == 0, "command list: C-p and <up> at the first row");
+    for (i32 i = 0; i < 8; i++) app_dev_feed(app, "C-v", &t->arena);
+    app_dev_feed(app, "<down> C-n", &t->arena);
+    TEST_CHECK(t, list->selected == cl->count - 1 && list->top == cl->count - app->modal.g.rows, "command list: the last row: %D, top %D",
+               list->selected, list->top);
+    app_dev_feed(app, "M-v <next> <prior>", &t->arena);
+    TEST_CHECK(t, list->selected == cl->count - 1 - app->modal.g.rows, "command list: M-v, <next>, <prior>: %D", list->selected);
+
+    // Refusals inside it; editing the field.
+    app_dev_feed(app, "C-x C-s", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "save-buffer is not available in the command list"), "command list: C-x C-s: '%S'",
+               test_echo(app));
+    app_dev_feed(app, "a b c SPC d e f M-DEL", &t->arena);
+    TEST_CHECK(t, str8_equal(test_cmdlist_field(t, app), STR8_LIT("abc ")), "command list: M-DEL in the field");
+    app_dev_feed(app, "C-a C-k", &t->arena);
+    TEST_CHECK(t, test_cmdlist_field(t, app).len == 0 && cl->shown_count == cl->count, "command list: C-a C-k empties the filter");
+    app_dev_feed(app, "C-y C-b C-b x", &t->arena);
+    TEST_CHECK(t, str8_equal(test_cmdlist_field(t, app), STR8_LIT("abxc ")), "command list: C-y and C-b in the field: '%S'",
+               test_cmdlist_field(t, app));
+    TEST_CHECK(t, str8_equal(test_app_text(t, app), STR8_LIT("one\ntwo\nthree\n")) && view_point(v, view_primary(v)) == 4,
+               "command list: the buffer underneath is untouched");
+
+    // C-g and ESC: closed, nothing said, everything underneath as it was.
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, "") && view_point(v, view_primary(v)) == 4 && app_dev_window_count(app) == 1 &&
+                      arena_pos(&app->modal.arena) == 0, "command list: C-g");
+    app_dev_feed(app, "C-S-p e n d ESC", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, "") && view_point(v, view_primary(v)) == 4, "command list: ESC");
+    // RET runs the selected command on the window, as M-x does.
+    app_dev_feed(app, "C-S-p e n d - o f - b u f RET", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && view_point(v, view_primary(v)) == 14, "command list: RET ran end-of-buffer (%D)", view_point(v, view_primary(v)));
+    app_dev_feed(app, "C-S-p m a r k - w h o l e RET", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && view_region_active(v, view_primary(v), &app->config->settings), "command list: mark-whole-buffer");
+    app_dev_feed(app, "C-g C-S-p g o t o - l i n e RET", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && app->mini.active && str8_equal(app->mini.prompt, STR8_LIT("Goto line: ")),
+               "command list: goto-line opened its prompt after the list closed ('%S')", app->mini.prompt);
+    // In the minibuffer it is refused.
+    app_dev_feed(app, "C-S-p", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && app->mini.active && test_app_echo_is(app, "The command list is not available in the minibuffer"),
+               "command list: in the minibuffer: '%S'", test_echo(app));
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    TEST_CHECK(t, !app->mini.active, "command list: the prompt cancelled");
+    // From M-x too.
+    app_dev_feed(app, "M-x s h o w - c o m m a n d - l i s t RET", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_cmdlist(app), "command list: M-x show-command-list");
+
+    // The mouse. The box: 27 list rows under the field line, y from 166; the rows from y 184.
+    TEST_CHECK(t, app->modal.g.rows == 27 && app->modal.g.box.y0 == 166 && app->modal.g.panes[0].y0 == 184, "command list: geometry %d rows, y %f",
+               app->modal.g.rows, app->modal.g.box.y0);
+    test_modal_click(t, app, 400, 184 + 2 * 16 + 4, 1);
+    TEST_CHECK(t, list->selected == 2, "command list: a click selects row 2");
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 400, .y = 300, .wheel = -120 };
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    TEST_CHECK(t, list->top == 3 && list->selected == 2, "command list: the wheel scrolls (top %D)", list->top);
+    app_dev_feed(app, "e n d - o f - b u f", &t->arena);
+    view_set_point(v, view_primary(v), 0);
+    test_modal_click(t, app, 400, 184 + 4, 2);
+    TEST_CHECK(t, !modal_active(app) && view_point(v, view_primary(v)) == 14, "command list: a double click ran end-of-buffer");
+    app_dev_feed(app, "C-S-p", &t->arena);
+    test_modal_click(t, app, 10, 10, 1);
+    TEST_CHECK(t, !modal_active(app) && view_point(v, view_primary(v)) == 14 && test_app_echo_is(app, ""), "command list: a click outside");
+
+    // A config applied while it is open: the bindings shown and its keys follow.
+    app_dev_feed(app, "C-S-p", &t->arena);
+    String8 conf = test_results_conf(t, "p18keys.conf", "[keys]\nC-c s save-buffer\nC-x C-s none\n[keys command-list]\nC-j modal-next\n"
+                                                        "[colors]\nmodal_border = #123456\n");
+    app_dev_use_config(app, conf);
+    app_dev_feed(app, "C-j C-j", &t->arena);
+    TEST_CHECK(t, modal_active(app) && str8_equal(test_cmdlist_keys(app, &CMD_SAVE_BUFFER), STR8_LIT("C-c s")) && list->selected == 2 &&
+                      app->config->theme.modal_border == 0x123456,
+               "command list: after a reload: save-buffer '%S', selected %D", test_cmdlist_keys(app, &CMD_SAVE_BUFFER), list->selected);
+    app_dev_feed(app, "C-g", &t->arena);
+    // Too small a frame.
+    app_dev_frame_size(app, 300, 100);
+    app_dev_feed(app, "C-S-p", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, "The frame is too small for the command list"), "command list: too small: '%S'",
+               test_echo(app));
+    app_dev_frame_size(app, 1280, 800);
+    if (!test_app_destroy(t, app, "command list")) return 0;
+    LOG("test: ok: command list (%d commands, %d key texts, %d filter goldens, the split query's spans, the ends, refusals, the field, "
+        "C-g, ESC, RET x 3, the minibuffer, M-x, the mouse, a reload while open, too small; no allocation over 21 keystrokes)",
+        command_count(), (i32)ARRAY_COUNT(keys), (i32)ARRAY_COUNT(goldens));
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -12554,6 +12738,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_window_startup(&t);
     arena_reset(&t.arena);
     test_modal_layer(&t);
+    arena_reset(&t.arena);
+    test_command_list(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
