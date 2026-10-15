@@ -15,11 +15,11 @@
 | `src/buffer.h/.c` | gap buffer, incremental newline index, `buffer_replace`, the undo log (groups, state ids, undo / redo, limit, a multiple-cursor command's cursors), markers (and their live list), batches (deferred marker adjustment for ordered edit runs), language from the extension, file load (encodings, line endings) and save |
 | `src/syntax.h/.c` | token kinds, the line lexer interface, keyword tables, the catch-up of line states (budget, convergence), bracket matching and line summaries on tokens (indentation, show-paren) |
 | `src/lex_c.c`, `lex_jai.c`, `lex_cs.c`, `lex_js.c` | the lexers: C and C++ (one), Jai, C#, JavaScript and TypeScript (one) |
-| `src/command.h/.c` | `Command` and `CommandContext`; the table of every command, lookup by Emacs name |
+| `src/command.h/.c` | `Command` (its Emacs name, its one-line description, its flags) and `CommandContext`; the table of every command, lookup by Emacs name |
 | `src/view.h/.c` | headless view logic: visual columns, View (cursors, scroll, the position it remembers for every buffer it showed), the command driver `view_run_command` (undo boundaries and the cursors kept with them, shift-select, region rules, kill appending, clipboard; with several cursors the ordered pass in one batch, the swallowed and line rules, the kill pieces, the normalization), mark and region, motion and basic editing commands, the buffer list (`view_switch_buffer`), echo messages and their *Messages* log |
 | `src/window.h/.c` | headless: the frame's windows, a binary tree of splits whose leaves are Views (fixed node array), the selected window and use ticks (LRU / MRU), layout in whole cells by ratios (minimum sizes, frames too small for them), split, delete, move a split line (adjacent windows only), resize, balance, cyclic order, hit tests (window, divider, mode line) |
 | `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link, a multiple-cursor kill's pieces), undo / undo-redo (every cursor back), kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
-| `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine; dev: `--keys` events |
+| `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine, where-is (the sequences that run a command with a keymap stack); dev: `--keys` events |
 | `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
 | `src/config_default.h` | the built-in configuration (the same format as ronin.conf), embedded as a C string |
 | `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, a prompt's own matcher (`MiniMatcher`: ranking across frames, rows, spans, a status), the minibuffer commands, M-x, goto-line |
@@ -30,16 +30,18 @@
 | `src/grep.h/.c` | the project-wide search's worker side: one file in fixed chunks that overlap (encodings, binary files, lines counted, long lines cut), the workers claiming files of an append-only list in order, their batches through one locked queue, cancel, bounded join |
 | `src/compile.h/.c` | builds, the worker side: the reader worker owning the process (start, read, kill, close), the lines (split across reads, CR, ANSI, OEM, the cut, the output cap), the error matchers (MSVC, GCC / Clang, includes, Jai, tsc, MSBuild; kinds without a location), the path resolution and its cache, batches through one locked queue |
 | `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*, *compilation*: each location's row and line offsets, a build's marks without a location), the landing highlight, the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; *compilation* (its lines inside the frame budget, the scroll rule, the end and its check of rewritten files), project-compile, compile, recompile, kill-compilation, the save, kill and exit questions' chain, the commands remembered per directory; dev: smoke and bench helpers |
+| `src/modal.h/.c` | part of the app (included after results.c): a box drawn over the windows, one at a time, taking every key and mouse event while open; its geometry (percentages of the frame, the 40 x 6 minimum, one or two panes), an optional one-line field (its own Buffer and View), the lists it moves, pages, scrolls and hit-tests, the key routing ([owner keymap, global]: quit closes, COMMAND_FIELD edits the field, the rest refused), its drawing, the owner's callbacks, the layer's commands (modal-next ... modal-other-pane) |
+| `src/commands_list.c` | part of the app (included after modal.c): show-command-list, the modal layer's first owner: every command with its description and its bindings (where-is), the fuzzy filter over the name, the description and both, the rows' drawing, RET running the command as M-x |
 | `src/cursors.h/.c` | the multiple-cursors commands (mark-next / previous / all-like-this, skip, unmark, the edit-lines family) and the CursorJob, their search spread over frames |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
-| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
+| `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout; while a modal box is open every key and mouse event goes to modal.c) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger) and the `--bench-buffer` core |
-| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak) and the `--bench-buffer` core |
+| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
 | `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
@@ -48,7 +50,7 @@
 | `tools/make_icon.c` | build-time tool, not part of the exe: draws the icon into build\gen\ronin.ico on every build |
 | `build.bat`, `verify.bat`, `dist.bat` | the build, the gate before every commit, the release zip |
 
-Core (`app.c`, `files.c`, `finder.c`, `results.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
+Core (`app.c`, `files.c`, `finder.c`, `results.c`, `modal.c`, `commands_list.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
 `fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
 additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c) and the build's reader
 (compile.c) call only the os_* functions platform.h marks "any thread".
@@ -1694,6 +1696,83 @@ Nothing there was deleted. Left for the owner: %APPDATA%\teal\teal.conf (9,142 b
 %TEMP%\teal_ids.txt, C:\web-projects\teal-test\, and possibly Windows Error Reporting entries from the crash
 tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin.conf is the live config.
 
+## Measurements (Phase 18)
+
+Same machine (AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800 window).
+
+### The command list (`--bench-modal`)
+
+Bench build, the built-in config, 136 commands; five rounds of open (C-S-p), 20 filter keystrokes ("save buffer
+kill wor"), 20 movements (<down>, C-v, <up>, M-v, five each) and close (C-g), one event per frame. Filter = the
+owner's scoring and ranking of every command; build = the command and the frame build (Present not counted).
+Three runs:
+
+| part | filter median | filter max | build median | build max |
+|---|---|---|---|---|
+| open (5) | | | 145-199 us | 160-382 us |
+| filter keystroke (100) | 8 us | 49-158 us | 25-27 us | 184-190 us |
+| movement (100) | | | 10 us | 20-166 us |
+| close (5) | | | 8-10 us | 11-17 us |
+
+Before the character masks were added the filter's median was 87 us and its max 353 us (the 0.2 ms budget was met
+by the median, not by every keystroke); with them both are well inside it. Opening builds the 136 rows, their
+"name description" strings and their key texts (136 where-is lookups over the default keymaps).
+
+Memory: private bytes +1,076 to +1,228 KB at the first open, of which our arenas' commit +64 KB (1,708 -> 1,772
+KB) and 10 reservations (the field's Buffer and View, the modal's arena); after the first round nothing more (+0
+to +28 KB over the next four). The rest of the first open's growth is not ours ("Later").
+
+### Idle and latency
+
+`ronin_debug.exe --keys "C-S-p a" --idle-check`: PASS, 0 frames, 0 us of CPU in 5 s with the command list open
+(the same as without it: 10 main loop passes for the shell's WM_GETICON messages in both).
+
+`--bench-latency` against the Phase 17 code (2079239, a bench build of it in build\proof), alternated, 3 runs
+each, the window composed by DWM for its first 100 keys and shown directly (overlay) after:
+
+| | arrival to Present returned p50 / p99 | command + frame build p50 | on screen (DWM) p50 | on screen (overlay) p50 |
+|---|---|---|---|---|
+| Phase 17 | 426-436 us / 4.61-4.88 ms | 16-17 us | 17.7-17.8 ms | 4.3-4.4 ms |
+| Phase 18 | 427-439 us / 4.27-4.85 ms | 17 us | 17.8-18.1 ms | 4.2-4.8 ms |
+
+Unchanged within noise. (Both builds' p99 to Present is higher today than Phase 17 recorded, 704 us: the machine,
+not the code.)
+
+### Size and imports
+
+The release exe: 422,400 bytes, 23,552 more than Phase 17's 398,848. By module (the linker's map, `--map-report`,
+bytes in sections): string literals +7,080 (the descriptions), commands_list.c +5,928, modal.c +3,264,
+config_default.h +1,328 (the new section and colors), unwind tables +1,496, win32_main.c +1,168, keymap.c +1,020
+(where-is), app.c +1,000 (the routing, the drawing of the field), the rest +1,084 together (23,368 in sections in all). Imports unchanged:
+KERNEL32 77, USER32 50, GDI32 6 functions.
+
+### The new tests fail when they should
+
+On a scratch copy (build\proof, deleted afterwards), each break alone, `--test` (debug):
+
+| break | result |
+|---|---|
+| where-is ignores shadowing (no earlier-map or prefix check) | exit 9: "where-is: newline (cap 8): 3 'RET, C-m, C-j', expected 1 'C-j'" |
+| where-is keeps only one sequence | exit 9: "where-is: undo (cap 2): 3 'C-/, C-x u', expected 3 'C-/, C-_'" and the command list's key text for undo |
+| forward-char's description 61 bytes long | exit 9: "descriptions: 'forward-char': ...: longer than 60 bytes" |
+| forward-char's description ending with a period | exit 9: "descriptions: 'forward-char': \"Move point forward one character.\": a trailing period" |
+
+### Screenshots
+
+docs/images/command-list.png: `ronin_debug.exe --config build\tmp\none.conf src\modal.c --keys "C-S-p f i l e"
+--screenshot`, re-encoded with System.Drawing (3,073,098 -> 141,305 bytes, every pixel identical). Checked with
+System.Drawing: the frame #2e8b8b, the field and an unselected row's empty part #0c3434, the selected row #0000ff,
+the window below the box #072626; the first row's keys contain #7ad0c6 and a description #a8977a.
+
+### verify.bat phase
+
+At 4003df9 (the code of this phase): PASS. The seed sweep: 256 seeds PASS (168.9 s; the new "modal" group ~34 ms a
+seed). The soak: bench 1,000,000 events PASS in 10.8 s (private bytes peak 17,164 KB, 14,632 at the end; 3,082
+scripted command list sessions besides the random keys that open it), debug PASS in 14.8 s (17,760 / 16,984 KB).
+The leak check: 24 scenarios, 0 LEAK, 120 s, modal-cycle/browse and modal-cycle/run OK (browse's frames before and
+after equal); STEP: config-reload-cycle/color private commit (the process heap's irregular moves Phase 16
+accepted); the exit check PASS.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -1716,6 +1795,7 @@ tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin
 - [x] 15. Performance and size pass (including an optional CRT-free build)
 - [x] 16. Memory and resource leak audit
 - [x] 17. Repository and build-folder cleanup
+- [ ] 18. Modal overlay and the command list
 
 ## Decisions
 
@@ -2712,8 +2792,8 @@ tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin
 - `build.bat clean` removes build\ and dist\ entirely and nothing else; there is no partial clean. It acts on
   the directory holding build.bat whatever the current directory, and refuses (exit 10, nothing removed) when
   that directory is not ronin's repository root (src\ronin.c and verify.bat beside build.bat) or when build\ or
-  dist\ is a junction, a link or a file. `rd /s` removes the junctions inside the tree (the tests leave one, a
-  loop) without following them. verify.bat's clean-check proves each case on a scratch tree every run.
+  dist\ is a junction, a link or a file. `rd /s` removes the junctions inside the tree (the tests left one, a
+  loop, until Phase 18) without following them. verify.bat's clean-check proves each case on a scratch tree every run.
 - A fresh clone builds and passes verify.bat with build.bat as its only step: the test that no required file
   is untracked or ignored.
 - Nothing outside the repository is deleted by the cleanup; leftovers there are reported to the owner.
@@ -2747,6 +2827,93 @@ tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin
   stop claiming files once more than RESULTS_HELD_MAX is held, but files already claimed (up to
   RESULTS_CLAIM_AHEAD + the workers past the writer) still add their records, each up to search_max_results
   matches. The only hard limit today is the 1 GB reservation (os_fatal beyond it). A real cap is under "Later".
+
+### Modal overlay and the command list (Phase 18)
+
+The modal layer (modal.h / modal.c, part of the app):
+- A modal is a box drawn last in the frame, over the windows, with its own clip, background and frame colors and
+  its own keymap on top of the global one. At most one is open. While it is open every key and mouse event goes
+  to it; the minibuffer and the windows get none. It needs no timer and no frame source of its own: every event
+  already makes one frame, and the owner's work runs inside it. `app_wants_frame` is unchanged.
+- An owner module gives a `ModalSpec`: a name (for messages), its keymap (a callback with the owner's data, so a
+  reloaded config is found), an optional one-line field, one or two panes, `width_pct` (default 70),
+  `height_pct` (60) and `pane_split_pct` (50), and callbacks: the field's text changed, accept (RET or a double
+  click on a row), draw a row, the status at the field line's right end, the config applied again, closed. The
+  layer knows nothing about commands or git.
+- The API Phase 19 sees: `modal_open`, `modal_close`, `modal_active`, `modal_arena` (the owner's per-open memory,
+  reset at the close), `modal_set_data` (the owner's state made in that arena after the open), `modal_set_rows`,
+  `modal_list`, `modal_focus_pane`, `modal_run_after_close`, `modal_rect`. `field_changed` does not run at the
+  open: the owner fills its rows itself after `modal_open` (its data does not exist before).
+- Geometry: `width_pct` of the frame's columns and at most `height_pct` of the window area's rows (the frame above
+  the echo line), centred on the window area, not on the selected window (70% of a narrow window is often under
+  40 columns). Below 40 columns x 6 rows it does not open ("The frame is too small for the command list"); a
+  resize below that closes it with the same message. The height follows the most rows any pane had since the open,
+  so the box does not shrink while a filter narrows the list. It is computed from the layout every frame, so a DPI
+  or font change only reflows it. With two panes the list area is split at `pane_split_pct` in whole cells, with a
+  1-pixel modal_border line between; the focused pane's selected row is in modal_selection, the other's in
+  modal_border.
+- Keys go through [owner keymap, global] with the normal key state machine: a quit command (C-g, ESC) closes the
+  box and says nothing (the frame underneath comes back as it was); a pending prefix cancelled by C-g only echoes
+  "Quit" and the box stays; a command bound in the owner's keymap runs; a command flagged COMMAND_FIELD (the line
+  editing ones: self-insert, the character and word motions, C-a / C-e, the deletes and kills of one line, yank,
+  yank-pop, undo, undo-redo, the mark, transpose-chars, the case and whitespace commands) runs on the field; any
+  other command is refused by name ("save-buffer is not available in the command list"), so nothing reaches the
+  windows underneath.
+- The commands run through `view_run_command` on the field's View (on the selected window's View for an owner
+  without a field). Accept closes the box first and runs the chosen command after the running one, through
+  `app_run_command` on the selected window: exactly the path of M-x, so a prompting command asks in the minibuffer
+  afterwards.
+- The mouse: a click outside the box closes it as C-g does (that press reaches nothing else); a click on a row
+  selects it and focuses its pane; a double click accepts it; a click in the field moves point there; drags are
+  ignored; the wheel scrolls the pane under the pointer and leaves the selection where it is (the per-frame layout
+  only keeps the top in range). The pointer is the arrow over the whole frame.
+- The field is a one-line View on its own Buffer (" *Modal*", not listed), made at the first open that needs one
+  and kept until the shutdown, as the minibuffer has its own; startup memory is unchanged. Each open empties it
+  and its undo history. Its kills go to the shared kill ring.
+- The windows underneath draw their cursors hollow while the box has the keys, as under the minibuffer.
+- The layer's commands are generic, so Phase 19 binds the same ones in its section: modal-next, modal-previous,
+  modal-next-page, modal-previous-page (a page is the rows shown), modal-accept, modal-other-pane (the next pane,
+  wrapping; nothing with one pane). Outside a modal they say "No modal is open".
+- An open modal is not "busy" for the leak check or the soak's settling (it has no pending work, as the
+  minibuffer); the soak presses C-g to close it before a memory reading, as for prompts.
+
+The command list (commands_list.c, the layer's first owner):
+- show-command-list (C-S-p; also M-x show-command-list) opens a box with a filter field and one row per command of
+  the table: the name, the description, and the bindings. Rows, their "name description" strings, their key texts
+  and the shown order are made in the modal's arena at the open; a keystroke scores the rows again into the same
+  arrays and allocates nothing (a test checks the arena's position over 21 keystrokes and the seeded group after
+  every operation).
+- The filter is fuzzy.c's `fuzzy_score` with the finder's weights unchanged. A row's score is the best of three:
+  its name; its description, less 32; and "name description", less 32, so a query whose words are split between
+  the two ("occur lines") still matches. Name matches rank first; equal scores keep the table's order; the empty
+  filter lists the whole table in its order. The spans are drawn in the candidate that won (those of "name
+  description" split back into the two fields). Each row keeps the character masks (`project_mask`) of its name
+  and description: a query with a character neither has is not scored (the filter's median went from 87 to
+  10 us). The filter reads the first 256 bytes of the field.
+- The bindings shown are computed, not stored: `keymap_where_is` walks the stack the selected window would have
+  without the box (its buffer's keymap, then the global one) and keeps the sequences `key_input_feed` would run the
+  command for: a sequence an earlier map binds to something else, or whose proper prefix is bound, does not count,
+  one in two maps counts once. The two shortest (fewest chords, then fewest characters, then config order) are
+  shown, then "+N". Computed at the open and when the config is applied again, never per frame.
+- RET runs the selected row's command with `modal_run_after_close`; a list with no rows does nothing.
+- Its keys: `[keys command-list]` (<down> C-n modal-next, <up> C-p modal-previous, C-v <next> and M-v <prior> the
+  pages, RET C-m modal-accept); C-g and ESC are the global keyboard-quit. `C-S-p show-command-list` in `[keys]`:
+  it takes C-S-p from shift-translation (until now a shift-selecting C-p, as in Emacs); S-<up> still selects.
+- Every command has a description, a new field next to its name: one line of English, at most 60 bytes, printable
+  ASCII, starting with a verb of a fixed list (the test's), no trailing period. The internal commands outside the
+  table have one too (the initializers are positional). 136 commands are in the table now (129, the six modal-*
+  commands and show-command-list).
+- Colors: modal_background (#0c3434), modal_border (#2e8b8b) and modal_description (#a8977a) have their own
+  defaults; modal_selection and modal_key follow selection and number unless a file sets them. They are the 30th to
+  34th colors, so `Config.colors_set` became a u64.
+
+Checks: the smoke's stage 11 (the box's colors, then the frame after C-g must equal the frame before C-S-p byte for
+byte, then C-S-p "end" RET must have run end-of-buffer); `--bench-modal` (exit 9 when a filter keystroke's median
+reaches 200 us); `--leak-check modal-cycle` (browse: the frames before the first cycle and after the last compared;
+run: goto-line through it, its prompt cancelled); the soak's command list sessions; the seeded group "modal".
+
+`--test` removes its junction loop (build\tmp\p11scan\src\loop) once the scanner test no longer needs it, and
+test_run removes it again after the group.
 
 ## Later
 
@@ -2823,6 +2990,13 @@ tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin
   error paths that still do not resolve.
 - `--bench-latency` exited 9 once in six runs: 482 of the 500 keys had no Present of their own (Phase 17; the
   cause not looked into).
+- The command list (Phase 18): the descriptions in M-x's list and in describe-key; M-< / M-> (first and last row);
+  the bindings of the minibuffer's and isearch's keymaps (only the current window's are shown); a field longer
+  than its line scrolls but cannot wrap. The input harness checks `[keys command-list]` only through the global bindings
+  it shares.
+- The first open of the command list adds ~1.0-1.2 MB of private bytes, of which 64 KB are our arenas (the
+  field's Buffer and View, the modal's arena; 10 reservations); later opens add nothing. The rest was not looked
+  into (Phase 18).
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.

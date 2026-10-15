@@ -465,6 +465,33 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | S12 | After a clean build the exe's Details tab still shows the version and the icon | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows 0.1.0, the description and the copyright after the clean; Explorer's Details tab and icon: HUMAN step 37. |
 | S13 | Project searches again and again leave the same memory behind, however the workers' timing went; a large search's extra memory goes back on a minimize | FIXED | found by `verify.bat phase`: `--leak-check grep-cycle/done` LEAK in 2 of 4 runs (*search*'s held[0] reaching its 64 KB high-water after the first window); fixed in f21521a (held and pend committed to a 256 KB floor at the buffer's first run, what grew above it given back by app_trim on a minimize); regression "test: ok: results transient" (fails with the floor off: held 4096 / 0, pend 4096; with the trim off: 3,145,728 / 2,097,152 / 1,048,576 after a minimize); `--leak-check grep-cycle` 5 times: OK, 6,459,392 bytes in every sample. |
 
+## T. The modal layer and the command list (Phase 18)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| T1 | C-S-p opens the command list over the windows: every command of the table, in table order, "136/136" | AUTOMATED-NEW | "test: ok: command list" (C-S-p, the rows against command_at, the status); smoke stage 11. |
+| T2 | Each row shows the name, the description and the key bindings in the current window: the two shortest, then "+N", nothing when unbound | AUTOMATED-NEW | "test: ok: command list" (save-buffer "C-x C-s", forward-char "C-f, <right>", undo "C-/, C-_ +1", newline "RET, C-m +1", skip-to-next-like-this ""); smoke stage 11 (a key pixel in modal_key, a description pixel in modal_description). |
+| T3 | Typing filters with the fuzzy matcher on the name, the description, or both; name matches first; the empty filter lists the table | AUTOMATED-NEW | "test: ok: command list" (goldens "gotol", "sav buf", "clipboard", "undo", the split query "occur lines" with its spans in both fields); the seeded "modal" group (the shown order equal to a slow full ranking, 256 seeds). |
+| T4 | Up / Down, C-n / C-p, C-v / M-v, Page Up / Down move the selection; it stops at both ends | AUTOMATED-NEW | "test: ok: command list" (C-p and <up> at row 0, C-v past the end, <down> and C-n at the last row, M-v <next> <prior>); "test: ok: modal layer". |
+| T5 | RET closes the box and runs the selected command on the window as M-x does; a prompting command asks afterwards | AUTOMATED-NEW | "test: ok: command list" (end-of-buffer, mark-whole-buffer's region, goto-line's "Goto line: " prompt after the close); smoke stage 11 ("RET ran end-of-buffer"). |
+| T6 | C-g, ESC and a click outside close it without a message; the frame underneath is as before | AUTOMATED-NEW | smoke stage 11 (the frame after C-g equal to the one before C-S-p, byte for byte); `--leak-check modal-cycle/browse` (the frames before and after 220 cycles equal); "test: ok: modal layer" and the seeded "modal" group (point, buffer and windows as before). |
+| T7 | The mouse: a click selects a row, a double click runs it, the wheel scrolls the list without moving the selection | AUTOMATED-NEW | "test: ok: command list" and "test: ok: modal layer". |
+| T8 | The filter line takes the line editing keys (C-a, C-k, M-DEL, C-y, C-b ...); other commands are refused by name | AUTOMATED-NEW | "test: ok: command list" ("save-buffer is not available in the command list", the field after M-DEL, C-a C-k, C-y C-b C-b x); "test: ok: modal layer" (a cancelled prefix, an undefined key). |
+| T9 | Not over the minibuffer; M-x show-command-list opens it too | AUTOMATED-NEW | "test: ok: command list" ("The command list is not available in the minibuffer"; M-x). |
+| T10 | A frame too small does not open it; a resize below the minimum closes it, with the message | AUTOMATED-NEW | "test: ok: modal layer" (464 x 176 opens, 456 x 176 and 464 x 175 do not; a resize to 456 px closes it); "test: ok: command list" (300 x 100). |
+| T11 | A config saved while it is open applies: the bindings shown, [keys command-list], the colors | AUTOMATED-NEW | "test: ok: command list" (save-buffer moved to C-c s, C-j bound to modal-next, modal_border changed, the box still open). |
+| T12 | Every command has a description: at most 60 bytes, starting with a verb, no period | AUTOMATED-NEW | "test: ok: command descriptions"; shown to fail with a 61-byte description and with one ending in a period (Measurements (Phase 18)). |
+| T13 | The bindings shown are those that run the command: shadowed ones and ones behind a bound prefix are left out | AUTOMATED-NEW | "test: ok: where-is"; shown to fail with the shadowing check removed and with only one sequence kept. |
+| T14 | A filter keystroke takes under 0.2 ms over the whole table and allocates nothing | AUTOMATED-NEW | `ronin_bench.exe --bench-modal` (exit 9 at a 200 us median; measured median 8 us, max 49-158 us); "test: ok: command list" (the arena unchanged over 21 keystrokes); the seeded "modal" group (the arena unchanged while open). |
+| T15 | Idle with the box open: 0 frames, 0% CPU | AUTOMATED-NEW | dev helper `ronin_debug.exe --keys "C-S-p a" --idle-check`: PASS, 0 frames, 0 us of CPU in 5 s. |
+| T16 | Opening and closing it again and again leaks nothing | AUTOMATED-NEW | `--leak-check modal-cycle` (browse, run): OK, in `verify.bat phase`. |
+| T17 | Random use with the box open keeps every invariant | AUTOMATED-NEW | `--soak` (command list sessions and the random keys that reach it; its field's View and Buffer and the list checked); the seeded "modal" group in `--fuzz-seeds`. |
+| T18 | The layer as Phase 19 will use it: two panes, other percentages, modal-other-pane | AUTOMATED-NEW | "test: ok: modal layer" (90 / 80 / 30: the box and the panes in whole cells; focus 0 -> 1 -> 0; movement only in the focused pane; a click on the other pane focuses it). |
+| T19 | C-S-p on other keyboard layouts | AUTOMATED | the input harness's "every default binding" on US, United Kingdom, Turkish Q and Finnish (C-S-p is a default binding). Note: binding C-S-p takes it from shift-translation (it was a shift-selecting C-p, as in Emacs); S-<up> still selects. |
+| T20 | The box looks right: readable, columns aligned, keys right-aligned, at 100% and 150% | HUMAN | a look; HUMAN step 38 (dev helper for the picture). |
+| T21 | On the real keyboard in the release exe: C-S-p, a filter, RET runs it; a click outside and ESC close it | HUMAN | real input and focus; HUMAN step 39. |
+| T22 | `--test` leaves no junction behind (`git status --ignored` without "Filename too long") | AUTOMATED-NEW | "test: ok: scanner" removes build\tmp\p11scan\src\loop and checks it is gone; test_run removes it again after the group. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -570,6 +597,14 @@ Phase 17, cleanup:
     `build\ronin_debug.exe`. The window opens with *scratch* and the title "*scratch* - ronin"; typing works.
 37. **S12**: `build.bat release`, then in Explorer right-click build\ronin.exe, Properties, Details: version 0.1.0,
     "ronin text editor", the copyright; Explorer shows the icon (the "r" with the green block cursor).
+
+Phase 18, the command list:
+
+38. **T20**: `build\ronin.exe src\app.c`, C-S-p, type "file": the box is readable, the three columns line up, the keys
+    are right-aligned, the selected row stands out. The same at 150% display scale (dev helper for the picture:
+    `ronin_debug.exe src\app.c --scale 150 --keys "C-S-p f i l e" --screenshot build\shots\t20.png`).
+39. **T21**: In `build\ronin.exe` press Ctrl+Shift+P, type "find", RET: the box closes and "Find file:" asks;
+    C-g. Ctrl+Shift+P again and click outside the box: it closes, nothing moved; once more and ESC: the same.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
