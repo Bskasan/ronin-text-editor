@@ -279,8 +279,9 @@ The benches never take the focus (shown cloaked without activation, as the smoke
 screenshot runs take the workers' results (project scans, searches, builds' output; until none came for
 300 ms, or with --compile-wait until the builds ended) before their frame.
 
-The smoke and the benches read only the built-in config (deterministic) unless --config is
-given; every other run reads the user's ronin.conf as usual. Use --config build\tmp\... for
+The smoke, the benches and the measurement flags (--memory-report, --bench-latency,
+--startup-capture), --type-ahead-check and --leak-check read only the built-in config (deterministic)
+unless --config is given (win32_dev_user_config); every other run reads the user's ronin.conf as usual. Use --config build\tmp\... for
 checks, so open-config never touches the real %APPDATA%\ronin\ronin.conf. The benches report
 the final flush and the Present separately, the Presents that waited a vertical blank (>= 5 ms)
 and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait

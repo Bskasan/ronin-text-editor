@@ -5964,6 +5964,15 @@ static i32 win32_dev_fuzz_seeds(Platform *p) {
     return failed ? EXIT_TEST : EXIT_OK;
 }
 
+// Whether a dev run reads the user's ronin.conf. The smoke, the benches, the measurement flags and the checks read
+// only the built-in config (deterministic); --config still names a file for any of them.
+static b32 win32_dev_user_config(const Platform *p) {
+    return !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
+             p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
+             p->bench_compile || p->bench_cursors || p->bench_longline || p->memory_report || p->bench_latency ||
+             p->startup_capture || p->type_ahead_check || p->leak_check);
+}
+
 // --test: command lines through win32_file_arg / win32_files_done.
 static i32 win32_dev_test_args(Platform *p) {
     static const struct { const char *args[5]; const char *want; } cases[] = {
@@ -6009,9 +6018,32 @@ static i32 win32_dev_test_args(Platform *p) {
         LOG("test: FAIL: command line: --no-activate / --startup-ms / --version not recognized as flags of every build (or another one was)");
         failures++;
     }
+    // The user's config: read by a plain run and the dev helpers, never by the smoke, a bench or a measurement flag.
+    u64 mark = arena_pos(&p->scratch);
+    Platform *q = PUSH_STRUCT(&p->scratch, Platform);
+    b32 *builtin[] = { &q->smoke, &q->bench_text, &q->bench_buffer, &q->bench_view, &q->bench_edit, &q->bench_complete,
+                       &q->bench_syntax, &q->bench_search, &q->bench_windows, &q->bench_project, &q->bench_grep,
+                       &q->bench_compile, &q->bench_cursors, &q->bench_longline, &q->memory_report, &q->bench_latency,
+                       &q->startup_capture, &q->type_ahead_check, &q->leak_check };
+    b32 config_ok = win32_dev_user_config(q);
+    q->idle_check = 1;
+    q->screenshot_path = STR8_LIT("x.png");
+    config_ok = config_ok && win32_dev_user_config(q);
+    for (i32 k = 0; k < ARRAY_COUNT(builtin); k++) {
+        *builtin[k] = 1;
+        if (win32_dev_user_config(q)) {
+            LOG("test: FAIL: command line: batch flag %d of the built-in config list reads the user's config", k);
+            config_ok = 0;
+        }
+        *builtin[k] = 0;
+    }
+    arena_pop_to(&p->scratch, mark);
+    if (!config_ok) failures++;
     if (!failures) {
         LOG("test: ok: command line files (+LINE[:COLUMN] before each file, a trailing one, *scratch*, flags between, not a number); "
-            "--no-activate, --startup-ms and --version in every build");
+            "--no-activate, --startup-ms and --version in every build; the user's config for a plain run, --idle-check and "
+            "--screenshot, the built-in one for the smoke, the benches, --memory-report, --bench-latency, --startup-capture, "
+            "--bench-longline, --type-ahead-check and --leak-check");
     }
     return failures;
 }
@@ -6343,9 +6375,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     app_args.config_path = p->config_path;
     app_args.scan_hold = p->scan_hold;
     app_args.grep_hold = p->grep_hold;
-    app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
-                             p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
-                             p->bench_compile || p->bench_cursors || p->type_ahead_check || p->leak_check); // defaults
+    app_args.user_config = win32_dev_user_config(p);
 #endif
 #if RONIN_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
