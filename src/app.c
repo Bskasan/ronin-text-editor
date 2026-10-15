@@ -2291,6 +2291,27 @@ void app_dev_smoke_cursors(App *app) {
     app->force_focus = 1;
 }
 
+// Stage 11: *scratch* with three short lines, point at the end of the first (nothing under the cursor), focus on, nothing in the echo area (the frame before the
+// command list opens is compared with the one after C-g closes it).
+void app_dev_smoke_modal(App *app) {
+    View *v = app_selected_view(app);
+    Buffer *buf = v->buffer;
+    buffer_replace(buf, 0, buffer_size(buf), STR8_LIT("alpha\nbeta\ngamma\n"));
+    view_collapse_cursors(v);
+    view_deactivate_mark(v);
+    view_set_point(v, view_primary(v), 5);
+    buffer_marker_set(buf, v->top, 0);
+    v->left_col = 0;
+    echo_clear(&app->echo);
+    app->force_focus = 1;
+}
+void app_dev_smoke_modal_end(App *app) {
+    modal_close(app);
+    app->force_focus = 0;
+}
+b32 app_dev_modal_open(App *app) {
+    return app->modal.active;
+}
 void app_dev_smoke_cursors_end(App *app) {
     View *v = app_selected_view(app);
     view_collapse_cursors(v);
@@ -2483,7 +2504,39 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
     i32 t = MAX((i32)(in->dpi_scale + 0.5f), 1); // the hollow cursor's line width
 #define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
 #define CELL(col, line) .x0 = x + (col) * cw, .y0 = (line) * lh, .x1 = x + ((col) + 1) * cw, .y1 = ((line) + 1) * lh
-    if (stage == 10) {
+    if (stage == 11) {
+        // app_dev_smoke_modal, then C-S-p and "end" (end-of-buffer first): the box's frame, background and selected row, a
+        // key binding and a description, the filled cursor of its field after the 3 characters, and the window underneath (its
+        // first line above the box, its cursor hollow while the box has the keys).
+        Theme *th = &app->config->theme;
+        ModalGeometry *g = &app->modal.g;
+        ModalList *list = &app->modal.lists[0];
+        if (app->modal.active && g->fits && list->count >= 2) {
+            i32 bx0 = (i32)g->box.x0, by0 = (i32)g->box.y0, by1 = (i32)g->box.y1, bx1 = (i32)g->box.x1;
+            i32 fx = (i32)g->field.x0 + l.pad, fy = (i32)g->field.y0;
+            i32 px = (i32)g->panes[0].x0 + l.pad, py = (i32)g->panes[0].y0 + (i32)(list->selected - list->top) * lh;
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = bx0, .y0 = by0, .x1 = bx0 + g->border, .y1 = by1, .rgb = th->modal_border,
+                           .what = "modal: the left edge of its frame in modal_border");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = bx0, .y0 = by0, .x1 = bx1, .y1 = by0 + g->border, .rgb = th->modal_border,
+                           .what = "modal: the top edge of its frame in modal_border");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = fx + 20 * cw, .y0 = fy, .x1 = fx + 40 * cw, .y1 = fy + lh, .rgb = th->modal_background,
+                           .what = "modal: the empty middle of the field line in modal_background");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = fx + 3 * cw, .y0 = fy, .rgb = th->cursor,
+                           .what = "modal: the field's filled cursor after 'end'");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = px + 16 * cw, .y0 = py, .x1 = px + 28 * cw, .y1 = py + lh, .rgb = th->modal_selection,
+                           .what = "modal: the selected row's empty part (after its name) in modal_selection");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = (i32)g->panes[0].x1 - l.pad - 14 * cw, .y0 = py, .x1 = (i32)g->panes[0].x1 - l.pad,
+                           .y1 = py + lh, .rgb = th->modal_key, .what = "modal: the selected row's keys in modal_key");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = px + 32 * cw, .y0 = py + lh, .x1 = px + 60 * cw, .y1 = py + 2 * lh,
+                           .rgb = th->modal_description, .what = "modal: the next row's description in modal_description");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 8 * cw, .y0 = 0, .x1 = x + 40 * cw, .y1 = 3 * lh, .rgb = th->background,
+                           .what = "modal: the window underneath, right of its three lines, untouched");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = x + 5 * cw, .y0 = 0, .rgb = th->cursor,
+                           .what = "modal: the window's cursor at the end of line 0: its top edge");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 5 * cw + t, .y0 = t, .x1 = x + 6 * cw - t, .y1 = lh - t, .rgb = th->background,
+                           .what = "modal: ... hollow (its inside in the background) while the box has the keys");
+        }
+    } else if (stage == 10) {
         // app_dev_smoke_cursors: on each of lines 0-2 the filled cursor at column 4, the region over columns 1-3,
         // nothing after the line's end (column 6 on); "mc:3" in the mode line.
         Theme *th = &app->config->theme;
