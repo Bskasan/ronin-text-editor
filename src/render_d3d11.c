@@ -768,6 +768,18 @@ static i32 r_dev_report_live(Renderer *r, b32 log, i32 *others) {
     return live;
 }
 
+void *r_dev_test_device(void) {
+    HMODULE d3d11 = LoadLibraryW(L"d3d11.dll");
+    PFN_D3D11_CREATE_DEVICE create = d3d11 ? (PFN_D3D11_CREATE_DEVICE)(void *)GetProcAddress(d3d11, "D3D11CreateDevice") : NULL;
+    ID3D11Device *device = NULL;
+    if (create) create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+    return device;
+}
+
+void r_dev_test_device_release(void *device) {
+    if (device) ID3D11Device_Release((ID3D11Device *)device);
+}
+
 void r_dev_gpu_metrics(Renderer *r, RDevGpuMetrics *m) {
     memset(m, 0, sizeof(*m));
     i32 others;

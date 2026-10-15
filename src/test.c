@@ -11929,6 +11929,7 @@ static b32 test_crash_recovery(Test *t) {
 // The leak check's sampler (Phase 16): sane values, the handle ledger following an open and a close, and every
 // handle the tests opened closed again by their end.
 static b32 test_leak_metrics(Test *t, i32 ledger0) {
+    os_dev_thread_pool_end(); // the parked worker threads' handles
     OsDevMetrics m;
     os_dev_metrics(&m);
     TEST_CHECK(t, m.private_bytes && m.working_set && m.handles > 0 && m.reservations > 0 && m.reserved_committed && m.process_threads >= 1 &&
