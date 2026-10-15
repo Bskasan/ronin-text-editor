@@ -1553,6 +1553,147 @@ external-change-cycle: OK in 27890 ms.
 
 Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 119 s; WATCH and STEP: config-reload-cycle/color: private commit (bytes) (STEP); config-reload-cycle/color: working set (bytes) (WATCH)
 
+## Measurements (Phase 17)
+
+Same machine. Sizes are bytes of files, junctions not followed (`--test` leaves a junction loop in
+build\tmp\p11scan\src\loop).
+
+### The tracked files
+
+91 files, every one kept: the sources (63 under src\, each included by src\ronin.c or compiled by build.bat:
+check_macros.c, win32_dwrite.cpp, shaders\quad.hlsl), tools\make_icon.c, res\ (imports.txt, ronin.manifest,
+ronin.rc), the scripts (build.bat, verify.bat, dist.bat), the documents (README.md, CHANGELOG.md, LICENSE,
+CLAUDE.md, docs\ARCHITECTURE.md, docs\MANUAL_TESTS.md), the seven README images in docs\images (each referenced
+by README.md), samples\ (one file per language, now named in README.md), .gitattributes, .gitignore and
+.ronin-project. None was generated, so nothing left the index; none was empty. "teal" survives only in history
+notes (CHANGELOG.md, the Phase 15 decisions, Q1, and N3's color).
+
+.gitignore: `/build/` and `/dist/` anchored at the root; `*.map`, `*.res`, `*.ico`, `*.zip` added; `*.png`
+everywhere except `/docs/images/*.png` (was `/*.png`). `git ls-files -ci --exclude-standard` prints nothing;
+`git status --ignored` lists only `build/` (its "Filename too long" warnings come from the junction loop).
+
+docs\images\cursors.png was stored uncompressed: 3,073,098 -> 90,120 bytes, re-encoded with System.Drawing; both
+decoded as 1280 x 800 24 bpp (LockBits) and compared byte for byte: every one of the 1,024,000 pixels identical.
+Its chunks are now those of the other six images (IHDR, sRGB, gAMA, IDAT, IEND). History keeps the old blob.
+
+### build\ before and after
+
+| what | bytes |
+|---|---|
+| the teal era (build\teal*, build\base) | 35,355,162 |
+| stale exes and a screenshot (p14*.exe, *_prev*.exe, ronin_bench_ll0 / _o2.exe, shot.png) | 10,755,658 |
+| build\proof (scratch copies of the repository from Phases 15 and 16) | 773,695,623 |
+| build\shots | 456,416,086 |
+| build\tmp: ta_* and the comparison logs (cmp*, inst_text*, ret*, colon*, seed*, leak_*.log, ...) | 1,251,116 |
+| build\tmp: made by hand (demo_build, crash_manual, recovery_manual, readme*, shots_jai, shots_run, ...) | 3,390,252 |
+| the rest (the current outputs, the fixtures the runs make again, logs) | 436,862,466 |
+| **build\ before** | **1,717,726,363** |
+| dist\ before (the 0.1.0 zip) | 224,440 |
+| `build.bat clean` (20.4 s, exit 0) | build\ and dist\ gone |
+| after verify.bat from nothing (42.7 s, PASS) | 47,283,953 |
+| after verify.bat phase (and this phase's --bench-grep runs: their 100 MB file and p12bench tree, 9,721,247 bytes of measurement copies) | 293,076,300 |
+
+### build.bat clean and verify's clean-check
+
+clean-check builds a scratch tree in build\tmp\clean_check and runs a copy of build.bat from another directory
+that looks like a repository: build\ present with a junction to a directory outside it (exit 0, both gone, the
+target's sentinel kept), missing (exit 0), build\ a junction (exit 10, the junction and its target kept), dist\ a
+file (exit 10), not the repository root (exit 10, its build\ kept); the current directory's build\ kept; then
+the tree goes (rd /s, junctions removed, not followed) and must be gone. 110 ms. With the junction refusal
+removed it fails: "clean-check: junction (exit 0); junction: removed" (even then rd /s removed only the link).
+
+### The fresh clone
+
+`git clone` of the repository into build\tmp\fresh, then there, with nothing else; twice: after the build
+changes (be293bd) and with the final code (f21521a; the commits after it change only documents):
+
+| step | be293bd | f21521a |
+|---|---|---|
+| git clone (91 files) | 1.1 s | 1.2 s |
+| build.bat | 2.9 s, build\ronin_debug.exe 2,581,504 bytes | 2.8 s, 2,588,672 bytes |
+| build.bat release | 3.7 s, build\ronin.exe 398,336 bytes | 3.5 s, 398,848 bytes |
+| build.bat bench | 6.2 s, build\ronin_bench.exe 1,355,776 bytes | 5.9 s, 1,361,408 bytes |
+| verify.bat | 40.6 s, PASS (clean-check 110 ms) | 40.1 s, PASS (clean-check 100 ms) |
+
+Both: check-imports KERNEL32 77, USER32 50, GDI32 6 functions; "ronin 0.1.0". The release exe was unchanged from
+Phase 16 until f21521a (398,336 bytes) and is 398,848 bytes after it (the results fix: release code); the same
+three DLLs. dumpbin /imports, counting every line that starts with an address, gives 145 as in Phase 16; 12 of
+them are the four header lines of each DLL, so 133 functions, as --check-imports counts.
+
+### The measurement flags and the built-in config
+
+Before be293bd `--memory-report`, `--bench-latency`, `--startup-capture` and `--bench-longline` read
+%APPDATA%\ronin\ronin.conf. Run once each afterwards (built-in config, bench build), against Phase 15:
+
+| `--memory-report` (KB) | built-in, run 1 | built-in, run 2 | `--config` the user's ronin.conf | Phase 15 (MB) |
+|---|---|---|---|---|
+| private bytes | 61,476 | 62,412 | 63,200 | 60 |
+| our arenas | 3,032 | 3,032 | 3,136 | 3.0 |
+| process heaps | 6,320 | 6,232 | 6,132 | 6.4 |
+| thread stacks | 1,400 | 1,388 | 1,388 | 1.4 |
+| the driver's other private allocations | 14,224 | 15,304 | 16,032 | 15.1 |
+| writable image pages | 34,540 | 34,540 | 34,540 | 33.9 |
+| writable mapped views | 1,128 | 1,128 | 1,128 | 1.1 |
+
+The same as Phase 15: the driver's row moves by ~1 MB from run to run with either config; with the user's config our
+arenas hold ~100 KB more.
+
+`--bench-latency`, composed by DWM: arrival to Present returned p50 401 us, p99 704 us (Phase 15: 0.41 ms, 0.89
+ms); on screen p50 17.9 ms, p99 21.3 ms (17.1, 21.3); command + frame build p50 26 us (23). An overlay run: on
+screen p50 4.8 ms (4.9). The same as Phase 15 within the run-to-run spread. The first of six runs exited 9:
+482 of the 500 keys had a Present of their own (the bench wants all 500); the five after it, two of them with
+`--config` naming the user's ronin.conf, passed with 500. Intermittent and not the config ("Later").
+
+### The leak check's grep-cycle/done and the results arenas
+
+The first `verify.bat phase` of this phase failed: `--leak-check` gave grep-cycle/done LEAK at 200 cycles, "our
+committed bytes" +16 KB then +32 KB between windows 1 and 2, then flat; run alone it was LEAK in 1 of 3 runs, all
+ending at 5,742,592 bytes. Logging each of the slot's seven arenas at every search's end (3 runs, 220 searches):
+only held[0] moved, 8 -> 16 -> 32 -> 64 KB, reaching 64 KB at search 1, 57 or 67 depending on the run; arena 64 KB,
+loc 64 KB, state 128 KB, held[1] 0, pend 4 KB and mark 0 the same in every search. held[0] is reset only when
+nothing is held, so its high-water is everything appended while the writer waited on a file the workers had not
+finished: thread timing.
+
+Three fixes, each measured with `--bench-grep` against the old code (fix-off), "ronin_grep_common" (52,138 matches
+in 3,001 files), runs alternated, the display kept on (SetThreadExecutionState from the script running them; the
+first attempts were spoiled by the display going to sleep: every Present 6.9 ms, first results ~6 ms in both
+builds, those runs discarded); idle Present 81-88 us in every run kept:
+
+| workers | first result, fix-off (ms) | longest frame, fix-off (us) | all given back at the end | 1 MB floors, above given back at the end | 256 KB floors kept, above given back on minimize (committed) |
+|---|---|---|---|---|---|
+| 1 | 1.51-1.82 | 179-329 | 1.58-1.90 / 319-366 | 1.50-1.68 / 254-522 | 1.53-1.55 / 190-258 |
+| 2 | 1.58-2.07 | 258-442 | 1.68-1.97 / 468-555 | 1.62-1.81 / 504-592 | 1.67-1.71 / 282-379 |
+| 4 | 1.74-2.55 | 411-618 | 2.06-2.50 / 646-763 | 1.84-2.04 / 713-736 | 2.07-2.39 / 405-530 |
+| 8 | 2.41-2.96 | 849-1,713 | 2.52-2.92 / 1,120-1,333 | 2.35-3.03 / 1,015-1,678 | 2.69-3.21 / 936-1,180 |
+| cap 10,000 | 2.41-3.00 | 723-1,061 | 2.57-2.80 / 777-986 | 2.49-2.66 / 628-1,117 | 1.94-2.64 / 655-978 |
+
+(the variants' cells: first result ms / longest frame us; fix-off over its 10 clean runs, the first variant against
+3 runs before it taken back to back, the other two alternated with 3 fix-off runs each.) Giving back at a run's
+end cost the final frame: timed in one run, 1,498 runs ended, 762 with nothing above the 1 MB floors (free), the
+others held[0] 4.5-4.9 MB, held[1] 2.0-2.2 MB, pend 320 KB above them, given back in 294-456 us at most. The kept
+floor runs exactly the old code per search (one 768 KB commit at the buffer's first run), within noise everywhere.
+
+After f21521a, `--leak-check grep-cycle` 5 times: grep-cycle/done OK in every run, "our committed bytes"
+6,459,392 in every sample of every run (5,742,592 before: three 256 KB floors in place of held[0]'s 64 KB and pend's 4 KB); grep-cycle/
+cancel OK, 5,369,856. The regression test "results transient" fails with the floor off (held 4096 / 0, pend 4096
+after a search) and with the trim off (3,145,728 / 2,097,152 / 1,048,576 after a minimize).
+
+The release exe: 398,848 bytes, 512 more than Phase 16's 398,336 (the floor's commit and app_trim, release code);
+the same three DLLs.
+
+### verify.bat phase
+
+At f21521a: PASS in 387 s. The seed sweep: 256 seeds PASS (166.7 s). The soak: bench 1,000,000 events PASS in
+11.6 s (private bytes peak 16,772 KB, 14,264 at the end), debug PASS in 13.0 s (16,744 / 17,040 KB). The leak
+check: 22 scenarios, 0 LEAK, 126 s; STEP: file-cycle-100mb and config-reload-cycle/color private commit (the
+process heap's irregular moves Phase 16 accepted); the exit check PASS.
+
+### Outside the repository
+
+Nothing there was deleted. Left for the owner: %APPDATA%\teal\teal.conf (9,142 bytes, 2026-10-08),
+%TEMP%\teal_ids.txt, C:\web-projects\teal-test\, and possibly Windows Error Reporting entries from the crash
+tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin.conf is the live config.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -2549,7 +2690,7 @@ Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 
 - Bounded by design, with their caps: *Messages* (1,000 lines of at most 1,024 bytes), each minibuffer history
   kind (100 entries; the arena compacted below max(64 KB, 2 x live)), the kill ring (kill_ring_max entries), the
   remembered build commands (64), the root cache (256), the undo log (undo_limit_mb, trimmed to 3/4), the atlas
-  rows (at most its width), the worker thread slots (256), and every arena's commit (high-water, never decommitted). The dying lists of scans,
+  rows (at most its width), the worker thread slots (256), and every arena's commit (high-water, never decommitted; Phase 17 amends this for a results buffer's held and pend arenas). The dying lists of scans,
   searches and builds (16 each) drop an object only when full and the oldest does not end within the shutdown
   bound, which never happens in practice; left as it is.
 - A leak is fixed, never hidden by a wider tolerance; growth that is bounded by design gets its cap documented
@@ -2578,6 +2719,34 @@ Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 
 - Nothing outside the repository is deleted by the cleanup; leftovers there are reported to the owner.
 - The measurement flags (`--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`) read
   only the built-in config unless `--config` is given, as the smoke and the other benches do.
+- A results buffer's transient arenas (held[0], held[1]: the records of files the workers finished ahead of the
+  writer; pend: the lines of one frame) are committed to a fixed floor, RESULTS_TRANSIENT_FLOOR = 256 KB each, at
+  the buffer's first run (never at startup: the startup memory is unchanged) and never given back below it.
+  Why: their high-water depends on timing (how far the workers ran ahead, how many lines one frame wrote), and
+  with commit never given back the memory left after a search depended on it; `--leak-check grep-cycle/done`
+  flagged LEAK in 2 of 4 runs at 200 cycles (held[0] reaching its 64 KB high-water after the first window). Under
+  the floor a run leaves the same memory every time: grep-cycle/done then showed 6,459,392 bytes in every sample of
+  5 runs. The size: the leak scenario peaks at 64 KB (held[0]) and 4 KB (pend), and 256 KB, four times that, is
+  the smallest power of two that leaves room for timing; for pend it is also RESULTS_FLUSH_BYTES, so a frame's
+  lines normally fit. The cost: 768 KB of commit per results buffer once it has run (at most RESULTS_MAX = 4).
+- What a larger run grew above the floor is given back when the window is minimized (app_trim, beside the
+  renderer's IDXGIDevice3::Trim, outside any frame), never at a run's end: giving it back at every run's end cost
+  the last frame of a 52,138-match search (held[0] 4.5-4.9 MB, held[1] 2.0-2.2 MB, pend 320 KB) 294-456 us of
+  VirtualFree and lengthened the longest frame of `--bench-grep` at 2 and 4 workers beyond the noise (fix-off
+  273-308 / 454-618 us against 504-592 / 713-736 us with 1 MB floors given back above). With the floor alone,
+  first result and longest frame are within noise of the old code at 1, 2, 4 and 8 workers and at the cap
+  (Measurements (Phase 17)). The trim touches only slots that are not running; such a slot is detached from every
+  producer, because results_finish, results_compile_finish and results_stop clear r->grep, r->run and r->batches in
+  the same call that ends the run (a dev ASSERT checks it). The arenas are written only on the main thread, from a
+  search drained into the slot or the batches the slot took from its build; a detached search's batches are drained
+  into nothing (results_wake) and a detached build's given back unread (results_drop_run), so workers still ending
+  (joined later from the dying lists, the main thread never waiting) cannot reach them.
+- This amends Phase 16's "every arena's commit (high-water, never decommitted)" for those three arenas.
+- Their bound is not 2 x RESULTS_HELD_MAX + 4 MB, as first stated in this phase: the code compacts the held
+  records when an arena passes 2 x what is still held + 4 MB (checked after each file written), and the workers
+  stop claiming files once more than RESULTS_HELD_MAX is held, but files already claimed (up to
+  RESULTS_CLAIM_AHEAD + the workers past the writer) still add their records, each up to search_max_results
+  matches. The only hard limit today is the 1 GB reservation (os_fatal beyond it). A real cap is under "Later".
 
 ## Later
 
@@ -2652,3 +2821,10 @@ Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 
   "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
   line); a save question limited to the project's buffers; a unique-suffix lookup in the project index for
   error paths that still do not resolve.
+- `--bench-latency` exited 9 once in six runs: 482 of the 500 keys had no Present of their own (Phase 17; the
+  cause not looked into).
+- `--test` leaves its junction loop (build\tmp\p11scan\src\loop); `git status --ignored` walks into it and
+  warns "Filename too long" (Phase 17). Removing it after the scanner test would keep build\ plain.
+- A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
+  already claimed still add up to search_max_results records each); stop draining or pause the workers above a
+  cap, and assert it.

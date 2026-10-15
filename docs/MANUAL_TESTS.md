@@ -368,7 +368,7 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 | O21 | A command that does not exist, a directory that does not exist | AUTOMATED-NEW | builds (cmd's own message and exit 1; the directory: no start, nothing left open); builds in the app (a [build] directory that does not exist: "Compilation could not start: ...", mode Compilation:failed); processes (the same through the platform layer). |
 | O22 | .ronin-project's [build] directory and its mistakes | AUTOMATED-NEW | .ronin-project tests ([build] command and directory, unknown names, a backslash in a command); builds in the app (the build runs in root\sub; the diagnostic in *Messages*). |
 | O23 | Building ronin itself from ronin: a clean build, then one with an error | AUTOMATED-NEW + HUMAN | screenshots p13_selfbuild.png (ronin_bench.exe on the repository, C-x p c RET: .\build.bat, 2.39 s, exit [0]) and p13_selfbuild_error.png / p13_selfbuild_next_error.png (a copy with an error and a warning in edit.c: both listed and colored, M-g n on edit.c line 866). Looking at a real failing build: HUMAN step 21. |
-| O24 | After a build ronin is idle again: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe build\tmp\demo_build\particles.jai --keys "C-x p c RET" --compile-wait 10000 --idle-check`: 0 frames, 0 us of CPU in 5 s (and the same with no build). The build's worker waits in the kernel; nothing polls. |
+| O24 | After a build ronin is idle again: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe build\tmp\demo_build\particles.jai --keys "C-x p c RET" --compile-wait 10000 --idle-check` (demo_build: a copy of samples\particles.jai with a .ronin-project build command, made by hand; no tool makes it): 0 frames, 0 us of CPU in 5 s (and the same with no build). The build's worker waits in the kernel; nothing polls. |
 
 ## P. Multiple cursors (Phase 14)
 
@@ -397,7 +397,7 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | P18 | max_cursors (10000) stops every adding command with "Cursor limit reached" | AUTOMATED-NEW | multiple-cursor commands (the cap at 5 for mark-all, mark-next, mark-previous and edit-lines); the multiple-cursor driver (the default, the range, the warning); `--bench-cursors` (100,000). |
 | P19 | Two windows on one buffer: each keeps its own cursors, which follow the other window's edits | AUTOMATED-NEW | multiple cursors and the mouse (three cursors in one window, one in the other, typing in each). |
 | P20 | Typing at 1,000 and 10,000 cursors stays fast, on a 100 MB file too | AUTOMATED-NEW + HUMAN | `--bench-cursors` (a self-insert at 1,000 cursors 0.2-0.3 ms, at 10,000 1.7-2.4 ms, command plus frame, in several runs); the feel: HUMAN step 27. |
-| P21 | Idle with 10,000 cursors: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
+| P21 | Idle with 10,000 cursors: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe build\tmp\bench_cursors.c` (made by `ronin_bench.exe --bench-cursors`) `--keys "C-x h C-S-c C-S-c" --idle-check`: 0 frames, 0 us of CPU in 5 s. |
 | P22 | C-> and C-< are Ctrl+Shift+. and Ctrl+Shift+, on a US keyboard | AUTOMATED-NEW | harness: every default binding on US and United Kingdom; on Turkish Q and Finnish they are listed as US keys landing elsewhere (the keys with > and < run them there). |
 | P23 | A tool's summary line ("1 error generated.", "0 Error(s)", "Compilation failed (1 error)") is colored and not counted | AUTOMATED-NEW | compile matchers (19 summaries and traps); builds (a summary not counted); builds in the app (both count words of an MSBuild line marked, the echo's counts unchanged). |
 | P24 | An error printed with an absolute path under the project root shows the path relative to the root; visiting it still works | AUTOMATED-NEW | compile path resolution (10 shown-path cases); builds in the app (on and off: under the root, outside it, relative; next-error to the file). |
@@ -447,6 +447,24 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | R17 | A 10-minute editing session in the release exe: Task Manager's memory stays flat | HUMAN | only real, varied use over time shows it; HUMAN step 34. |
 | R18 | Minimizing still gives memory back | HUMAN | needs a real minimize and Task Manager (Q9 measured 60.5 -> 58.1 MB); HUMAN step 35. |
 
+## S. Repository and build-folder cleanup (Phase 17)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| S1 | No generated file is tracked; the README's images are the only pictures | AUTOMATED | the audit of all 91 tracked files (docs/ARCHITECTURE.md, Measurements (Phase 17)); `git ls-files -ci --exclude-standard` prints nothing; `git status --ignored` lists only build/ (and dist/ once dist.bat ran). |
+| S2 | `build.bat clean` removes build\ and dist\ entirely; a junction inside build\ is removed, not followed | AUTOMATED-NEW | verify.bat clean-check, case "present": exit 0, both gone, the junction's target keeps its sentinel file. |
+| S3 | `build.bat clean` with nothing to remove succeeds | AUTOMATED-NEW | clean-check, case "missing": exit 0, "clean: nothing to remove". |
+| S4 | build\ or dist\ a junction or a file: refused, nothing removed | AUTOMATED-NEW | clean-check, cases "junction" and "file": exit 10, the junction and its target untouched; shown to fail with the junction check removed ("junction (exit 0); junction: removed"). |
+| S5 | Outside ronin's repository root `build.bat clean` refuses with a clear message and exit 10; started from another directory it acts on its own directory only | AUTOMATED-NEW | clean-check, case "not-root": exit 10, "clean: refused: ... is not ronin's repository root (no src\ronin.c / verify.bat beside build.bat); nothing removed", its build\ untouched; every case runs from a directory that looks like a repository, whose build\ stays. |
+| S6 | The clean-check leaves nothing behind and takes under a second | AUTOMATED-NEW | clean-check removes build\tmp\clean_check (its junctions included) and fails if it lingers; 110 ms (build\verify\clean-check.log). |
+| S7 | After `build.bat clean`, verify.bat passes: every fixture comes back by itself | AUTOMATED | verify.bat on an empty build\: PASS (42.7 s); `verify.bat phase` at the end of the phase (f21521a): PASS (387 s; the leak check 22 scenarios, 0 LEAK). |
+| S8 | A fresh clone builds and passes verify.bat with build.bat as its only step | AUTOMATED | verify.bat in a `git clone` in build\tmp\fresh, twice (be293bd, and the final code at f21521a): PASS; release 398,848 bytes at f21521a, KERNEL32, USER32, GDI32 (Measurements (Phase 17)). |
+| S9 | The screenshot commands of this list work after a clean (`--screenshot build\shots\..`, `--dpi-check build\shots\dpi`) | FIXED | found by reading the code: nothing made build\shots but `--leak-check`, and `--dpi-check` wrote into a directory nothing made (exit 7); fixed in 464ca37 (build.bat makes build\shots, `--dpi-check` makes its directory); `--dpi-check build\shots\dpi` with the directory missing: PASS. |
+| S10 | The measurement flags do not read the user's ronin.conf | FIXED | found by reading the code: `--memory-report`, `--bench-latency`, `--startup-capture` and `--bench-longline` read it; fixed in be293bd; regression in "test: ok: command line" (fails with --memory-report left out: "batch flag 14 of the built-in config list reads the user's config"). |
+| S11 | `build.bat clean`, `build.bat`, then ronin starts and works | HUMAN | a real start from a fresh build; HUMAN step 36. |
+| S12 | After a clean build the exe's Details tab still shows the version and the icon | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows 0.1.0, the description and the copyright after the clean; Explorer's Details tab and icon: HUMAN step 37. |
+| S13 | Project searches again and again leave the same memory behind, however the workers' timing went; a large search's extra memory goes back on a minimize | FIXED | found by `verify.bat phase`: `--leak-check grep-cycle/done` LEAK in 2 of 4 runs (*search*'s held[0] reaching its 64 KB high-water after the first window); fixed in f21521a (held and pend committed to a 256 KB floor at the buffer's first run, what grew above it given back by app_trim on a minimize); regression "test: ok: results transient" (fails with the floor off: held 4096 / 0, pend 4096; with the trim off: 3,145,728 / 2,097,152 / 1,048,576 after a minimize); `--leak-check grep-cycle` 5 times: OK, 6,459,392 bytes in every sample. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -458,8 +476,10 @@ In this order, with `build\ronin.exe` (or ronin_debug.exe):
    areas appear. Then minimize, restore and maximize.
 4. **A8**: Alt+Tab to another app: the cursor is hollow. Come back: it is filled.
 5. **B4**: Hold a letter key. The repeat must be smooth.
-6. **C9**: Open a 100 MB file (`build\tmp\bench_100mb.txt`), press M->, and scroll with the wheel.
-7. **G11**: Same file renamed to .c: M->, the colors appear within about a second, and typing is never blocked.
+6. **C9**: Open a 100 MB file (`build\tmp\bench_100mb.txt`, made by `ronin_bench.exe --bench-buffer`), press M->,
+   and scroll with the wheel.
+7. **G11**: The same with a 100 MB C file (`build\tmp\bench_syntax_100mb.c`, made by `ronin_bench.exe
+   --bench-syntax`): M->, the colors appear within about a second, and typing is never blocked.
 8. **E14**: Select two lines in ronin, M-w, paste in Notepad: two lines.
 9. **E15**: Copy text from a browser, C-y in ronin.
 10. **I4**: Set `render_mode = classic`, then natural, then symmetric in ronin.conf. Each looks different.
@@ -481,9 +501,10 @@ Phase 11, projects:
 
 16. **M6**: Start ronin on a big real tree (a large repository, or `ronin C:\Windows`), C-x p f, and type at
     once. The list fills in while "scanning: N files" counts up, and the typing is never held up.
-17. **M16**: `ronin_debug.exe build\tmp\p11long\short.c --keys "C-x p f t h e f i l e" --screenshot
-    build\shots\m16.png` (any file deep in a project works): the long row starts with "…" and keeps the file
-    name; with the window narrowed by hand, the same.
+17. **M16**: Make a project first (no tool makes it; any file deep in a project works): `build\tmp\p11long` with
+    a `.git` directory, a `short.c`, and a `thefile.c` several long directory names deep. Then
+    `ronin_debug.exe build\tmp\p11long\short.c --keys "C-x p f t h e f i l e" --screenshot build\shots\m16.png`:
+    the long row starts with "…" and keeps the file name; with the window narrowed by hand, the same.
 18. **M23, M24**: Type in Notepad while `ronin_debug.exe --test` and `ronin_bench.exe --bench-project` run.
     Notepad keeps every key and the focus; `--test` passes (lines "test: inconclusive: ..." in build\ronin.log
     are allowed, a FAIL is not).
@@ -513,8 +534,8 @@ Phase 14, multiple cursors:
     them again: it goes. A plain click: one cursor.
 26. **P8**: With three cursors on three lines, C-k, then paste in Notepad: three lines, the killed texts in order.
 27. **P20**: Open a long file, C-x h C-S-c C-S-c (10,000 cursors), type a word, DEL, RET RET. Nothing lags (dev
-    helper for the look: `ronin_debug.exe build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --screenshot
-    build\shots\p14_many.png`).
+    helper for the look, after `ronin_bench.exe --bench-cursors` made the file: `ronin_debug.exe
+    build\tmp\bench_cursors.c --keys "C-x h C-S-c C-S-c" --screenshot build\shots\p14_many.png`).
 
 Phase 15, the release:
 
@@ -542,6 +563,13 @@ Phase 16, leaks:
     and does not keep rising when you repeat the same work.
 35. **R18**: In the same session note the commit size, minimize ronin and wait 5 seconds: it drops by a few MB.
     Restore it: the window comes back at once with its text.
+
+Phase 17, cleanup:
+
+36. **S11**: In a command prompt in the repository (ronin closed): `build.bat clean`, then `build.bat`, then
+    `build\ronin_debug.exe`. The window opens with *scratch* and the title "*scratch* - ronin"; typing works.
+37. **S12**: `build.bat release`, then in Explorer right-click build\ronin.exe, Properties, Details: version 0.1.0,
+    "ronin text editor", the copyright; Explorer shows the icon (the "r" with the green block cursor).
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
