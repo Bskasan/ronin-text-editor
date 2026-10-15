@@ -6752,6 +6752,49 @@ static b32 test_file_is(Test *t, String8 path, const char *expected) {
     return test_read_file(t, path, &got) && str8_equal(got, str8_cstr(expected));
 }
 
+static void test_clear_dir(Test *t, String8 dir);
+
+// write-file under a new name again and again: the buffer's meta arena (its struct, path and name) must not grow with
+// the number of renames, only with the longest name (Phase 16). Every other rename collides with another open buffer's
+// name, so the name is made unique too ("same.txt<p16meta>").
+static b32 test_write_file_meta(Test *t) {
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p16meta", t->tmp_dir));
+    test_clear_dir(t, dir);
+    os_make_dir(dir);
+    String8 first = str8_fmt(&t->arena, "%S\\start.txt", dir);
+    TEST_CHECK(t, os_write_file(first, STR8_LIT("meta\n")), "write-file meta: cannot write %S", first);
+    String8 sub = str8_fmt(&t->arena, "%S\\sub", dir);
+    os_make_dir(sub);
+    String8 other = str8_fmt(&t->arena, "%S\\same.txt", sub);
+    TEST_CHECK(t, os_write_file(other, STR8_LIT("other\n")), "write-file meta: cannot write %S", other);
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app && app_dev_visit(app, other) && app_dev_visit(app, first), "write-file meta: app or visit failed");
+    Buffer *buf = test_current(app);
+    u64 committed_100 = 0;
+    for (i32 i = 1; i <= 1000; i++) {
+        u64 mark = arena_pos(&t->arena);
+        b32 same = i % 2 == 0;
+        String8 name = same ? STR8_LIT("same.txt") : str8_fmt(&t->arena, "w%u.txt", (u32)(1000000 + i));
+        String8 keys = STR8_LIT("C-x C-w");
+        for (i64 k = 0; k < name.len; k++) keys = str8_fmt(&t->arena, "%S %c", keys, name.data[k]);
+        app_dev_feed(app, (const char *)str8_fmt(&t->arena, "%S RET%s%c", keys, same && i > 2 ? " y" : "", 0).data, &t->arena);
+        String8 want = same ? STR8_LIT("same.txt<p16meta>") : name;
+        b32 ok = test_current(app) == buf && str8_equal(buf->name, want) && !app->mini.active;
+        arena_pop_to(&t->arena, mark);
+        TEST_CHECK(t, ok, "write-file meta: rename %d did not visit its file ('%S', the name '%S')", i, str8(app->echo.text, app->echo.len), buf->name);
+        if (i == 100) committed_100 = buf->meta.committed;
+    }
+    u64 committed_1000 = buf->meta.committed;
+    TEST_CHECK(t, committed_1000 == committed_100, "write-file meta: the buffer's meta arena grew from %U to %U bytes between rename 100 and 1000",
+               committed_100, committed_1000);
+    if (!test_app_destroy(t, app, "write-file meta")) return 0;
+    test_clear_dir(t, sub);
+    test_clear_dir(t, dir);
+    LOG("test: ok: write-file meta (1,000 renames, half of them made unique, the buffer's meta arena at %U bytes after 100 and after 1,000)",
+        committed_1000);
+    return 1;
+}
+
 // find-file, write-file and save-buffer without a file, against a small tree.
 static b32 test_find_write(Test *t) {
     String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p7files", t->tmp_dir));
@@ -12099,6 +12142,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_buffers(&t);
     arena_reset(&t.arena);
     test_find_write(&t);
+    arena_reset(&t.arena);
+    test_write_file_meta(&t);
     arena_reset(&t.arena);
     test_goto_line(&t);
     arena_reset(&t.arena);

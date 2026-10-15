@@ -31,6 +31,7 @@ Buffer *buffer_create_reserve(String8 name, i64 text_reserve) {
     Arena meta = arena_create(BUFFER_META_RESERVE);
     Buffer *buf = PUSH_STRUCT(&meta, Buffer);
     buf->meta = meta;
+    buf->meta_strings = arena_pos(&buf->meta);
     buf->text = text;
     buf->text_reserved = text_reserve;
     buf->nl = nl;
@@ -1388,8 +1389,9 @@ OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
     if (str8_equal(full, buf->path)) {
         arena_pop_to(&buf->meta, mark);
     } else {
-        buf->path = full; // keeps the copy made by os_full_path
-        buf->name = buffer_file_name(full);
+        // The new path and name replace the old ones in meta (until Phase 16 every save under a new name kept the old
+        // path there too, until the 1 MB reservation ran out).
+        buffer_set_names(buf, full, buffer_file_name(full));
         buf->language = buffer_language_of(buf->name);
     }
     buffer_mark_saved(buf);
@@ -1399,6 +1401,21 @@ OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush) {
         buf->disk_state = BUFFER_DISK_OK;
     }
     return OS_FILE_OK;
+}
+
+void buffer_set_names(Buffer *buf, String8 path, String8 name) {
+    // Copies at the end first (after everything, so moving them down overwrites nothing still to be read), then down to
+    // where the strings start; a name inside the path stays a slice of it.
+    b32 in_path = path.len && name.data >= path.data && name.data + name.len <= path.data + path.len;
+    i64 name_off = in_path ? name.data - path.data : 0;
+    String8 p = str8_copy(&buf->meta, path);
+    String8 n = in_path ? str8(NULL, 0) : str8_copy(&buf->meta, name);
+    u8 *at = buf->meta.base + buf->meta_strings; // below the copies: each memmove goes down
+    memmove(at, p.data, (size_t)p.len);
+    memmove(at + p.len, n.data, (size_t)n.len);
+    arena_pop_to(&buf->meta, buf->meta_strings + (u64)(p.len + n.len));
+    buf->path = str8(p.len ? at : NULL, p.len);
+    buf->name = in_path ? str8(at + name_off, name.len) : str8(at + p.len, n.len);
 }
 
 OsFileStatus buffer_save_as(Buffer *buf, String8 path) {
