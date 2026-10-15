@@ -269,6 +269,48 @@ static const Command *key_lookup(Keymap **stack, i32 count, KeySeq *seq, b32 *pr
     return NULL;
 }
 
+// Pressing seq with this stack runs `cmd`: its first exact match is cmd, and none of its proper prefixes is bound to
+// anything (that command would run first).
+static b32 key_reaches(Keymap **stack, i32 count, KeySeq *seq, const Command *cmd) {
+    b32 prefix;
+    if (key_lookup(stack, count, seq, &prefix) != cmd) return 0;
+    for (i32 len = 1; len < seq->len; len++) {
+        KeySeq p = *seq;
+        p.len = len;
+        if (key_lookup(stack, count, &p, &prefix)) return 0;
+    }
+    return 1;
+}
+
+// The order shown: fewer chords, then fewer printed characters; equal ones keep the stack and binding order.
+static b32 key_seq_shorter(KeySeq *a, KeySeq *b) {
+    if (a->len != b->len) return a->len < b->len;
+    u8 ta[KEY_SEQ_TEXT_CAP], tb[KEY_SEQ_TEXT_CAP];
+    return key_seq_print(a, ta, sizeof(ta)) < key_seq_print(b, tb, sizeof(tb));
+}
+
+i32 keymap_where_is(Keymap **stack, i32 count, const Command *cmd, KeySeq *out, i32 cap) {
+    i32 total = 0, kept = 0;
+    for (i32 m = 0; m < count; m++) {
+        for (i32 i = 0; i < stack[m]->count; i++) {
+            KeyBinding *b = &stack[m]->bindings[i];
+            if (b->command != cmd) continue;
+            b32 earlier = 0; // the same sequence in an earlier map: counted there (or shadowed by it)
+            for (i32 e = 0; e < m && !earlier; e++) earlier = keymap_get(stack[e], &b->seq) != NULL;
+            if (earlier || !key_reaches(stack, count, &b->seq, cmd)) continue;
+            total++;
+            i32 at = kept;
+            while (at > 0 && key_seq_shorter(&b->seq, &out[at - 1])) at--;
+            if (at >= cap) continue;
+            i32 last = MIN(kept, cap - 1);
+            for (i32 k = last; k > at; k--) out[k] = out[k - 1];
+            out[at] = b->seq;
+            kept = MIN(kept + 1, cap);
+        }
+    }
+    return total;
+}
+
 #if RONIN_DEV
 i32 key_dev_events(String8 token, Event out[2], const char **error) {
     KeyChord c;
