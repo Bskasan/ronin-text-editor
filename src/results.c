@@ -711,8 +711,12 @@ static Results *results_project_search(CommandContext *ctx, String8 root, String
     r->query = str8_copy(&r->arena, query);
     r->root = str8_copy(&r->arena, root);
     r->fold = fold;
+    // The header's text is built in files_arena and given back once it is in the buffer (until Phase 16 every search
+    // left it there: files_arena is reset only by the file commands).
+    u64 mark = arena_pos(&app->files_arena);
     results_begin_text(app, r, str8_fmt(&app->files_arena, "Search for \"%S\" in %S (%s)", query, results_dir_shown(&app->files_arena, root),
                                         fold ? "ignoring case" : "case-sensitive"));
+    arena_pop_to(&app->files_arena, mark);
     // The buffers with unsaved changes under the root: searched from memory.
     i32 cap = app->buffers.count;
     r->cands = PUSH_ARRAY(&r->arena, ResultsCandidate, MAX(cap, 1));
@@ -1000,8 +1004,10 @@ static void results_occur(CommandContext *ctx, Buffer *target, String8 query, b3
     r->query = str8_copy(&r->arena, query);
     r->root = str8_copy(&r->arena, target->name); // occur's "root": the buffer, by name
     r->fold = fold;
+    u64 mark = arena_pos(&app->files_arena); // the header given back once it is in the buffer (as project-search's)
     results_begin_text(app, r, str8_fmt(&app->files_arena, "Lines matching \"%S\" in buffer %S (%s)", query, target->name,
                                         fold ? "ignoring case" : "case-sensitive"));
+    arena_pop_to(&app->files_arena, mark);
     r->running = 1;
     r->start_us = os_time_us();
     r->mem_path = str8(NULL, 0);
