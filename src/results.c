@@ -693,6 +693,7 @@ static void results_shutdown(App *app, u64 deadline) {
     app->compile_dying_count = 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) if (app->results[i].buffer) results_free(&app->results[i]);
     if (app->compile_arena.base) os_release(app->compile_arena.base);
+    if (app->compile_spare.base) os_release(app->compile_spare.base);
     if (app->compile_next_arena.base) os_release(app->compile_next_arena.base);
 }
 
@@ -1337,8 +1338,12 @@ static String8 results_compile_remembered(App *app, String8 key) {
     return str8(NULL, 0);
 }
 
+// The remembered strings are rebuilt into the spare arena, which then becomes the live one: it holds only what is
+// remembered (until Phase 16 the arena was append-only, every accepted prompt copied the command and its directories
+// again, until its 64 MB reservation ran out). At most RESULTS_COMMANDS commands and keys, once per accepted prompt.
 static void results_compile_remember(App *app, String8 key, String8 command) {
-    Arena *a = results_compile_arena(&app->compile_arena);
+    Arena *a = results_compile_arena(&app->compile_spare);
+    arena_reset(a);
     i32 at = -1;
     for (i32 i = 0; i < app->compile_command_count && at < 0; i++) if (!grep_path_compare(app->compile_keys[i], key)) at = i;
     if (at < 0) {
@@ -1348,12 +1353,19 @@ static void results_compile_remember(App *app, String8 key, String8 command) {
             app->compile_command_count--;
         }
         at = app->compile_command_count++;
-        app->compile_keys[at] = str8_copy(a, key);
+        app->compile_keys[at] = key;
     }
-    app->compile_commands[at] = str8_copy(a, command);
+    app->compile_commands[at] = command;
+    for (i32 i = 0; i < app->compile_command_count; i++) {
+        app->compile_keys[i] = str8_copy(a, app->compile_keys[i]);
+        app->compile_commands[i] = str8_copy(a, app->compile_commands[i]);
+    }
     app->compile_last_command = app->compile_commands[at];
     app->compile_last_dir = str8_copy(a, app->compile_next_dir);
     app->compile_last_root = str8_copy(a, app->compile_next_root);
+    Arena old = app->compile_arena; // what the strings were copied from: the spare now, reset by the next change
+    app->compile_arena = app->compile_spare;
+    app->compile_spare = old;
 }
 
 static void results_compile_start_next(CommandContext *ctx) {

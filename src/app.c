@@ -86,7 +86,8 @@ struct App {
     i32 grep_dying_count;
     CompileRun *compile_dying[RESULTS_DYING_MAX]; // builds killed to start another (or with their buffer), still ending
     i32 compile_dying_count;
-    Arena compile_arena;         // the build commands of the session (made on first use)
+    Arena compile_arena;         // the build commands of the session (made on first use); only what is remembered:
+    Arena compile_spare;         // ... rebuilt into this one at each change, then the two are swapped
     String8 compile_keys[RESULTS_COMMANDS], compile_commands[RESULTS_COMMANDS]; // the last command per directory
     i32 compile_command_count;
     String8 compile_last_command, compile_last_dir, compile_last_root; // recompile's
