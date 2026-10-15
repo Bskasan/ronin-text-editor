@@ -65,9 +65,9 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   exe's imports (`--check-imports`) and its `--version`, checks every exit code and prints one last
   line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts: never run the steps
   by hand and judge them by eye. `verify.bat phase` also runs the full `--test` on the debug build,
-  the seed sweep (`--fuzz-seeds 1 256`, bench) and the soak (`--soak 1000000`, bench and debug): once
-  per phase, before its final commit. Each run's log is kept as build\verify\<step>.log. Take a
-  screenshot after a visual change and look at it.
+  the seed sweep (`--fuzz-seeds 1 256`, bench), the soak (`--soak 1000000`, bench and debug) and the leak
+  check (`--leak-check all`, debug; ~2 minutes): once per phase, before its final commit. Each run's log
+  is kept as build\verify\<step>.log. Take a screenshot after a visual change and look at it.
 - Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
   run without asking the user first, and then only once per request: they may be typing in another
   window. Everything else that is run must keep not taking the focus.
@@ -108,7 +108,8 @@ the explicit `.\`):
 
     cmd //c ".\verify.bat"           # the gate: three builds, smoke (debug, bench), test (bench), imports,
                                      # --version; one PASS / FAIL line
-    cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep and the soak (once per phase)
+    cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
+                                     # (once per phase)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
                                      # README.md, LICENSE); the version is src/version.h's
 
@@ -244,7 +245,19 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # keymap, typed code, mouse, focus, resizes) over the files of
                                                           # build\tmp\soak, the only place it may write; invariants every
                                                           # 1,000 events, settled memory and a typing probe every
-                                                          # 100,000; logs peak / final memory and the 5 slowest events
+                                                          # 100,000; logs peak / final memory and the 5 slowest events;
+                                                          # the leak metrics every 100,000, judged over the last 500,000
+                                                          # (exit 6 on LEAK; memory informational: the walk's high-water)
+    build/ronin_debug.exe --leak-check [SCENARIO|all] [--cycles N]  # debug build only: each scenario (file-cycle,
+                                                          # window-cycle, minibuffer-cycle, isearch-cycle, finder-cycle,
+                                                          # grep-cycle, compile-cycle, multi-cursor-cycle,
+                                                          # config-reload-cycle, undo-cycle, external-change-cycle; a
+                                                          # name before '/' runs its sub-cycles) after a prime step, 20
+                                                          # warm-up cycles and 4 windows of N/4 (N = 200, a multiple of
+                                                          # 4): one table a scenario in the log, LEAK -> exit 6, a cycle
+                                                          # leaving another state -> 9, a screenshot that differs -> 3;
+                                                          # files in build\tmp\leak (made once), its own leak.conf;
+                                                          # the window is never shown
     build/ronin_debug.exe --map-report build\ronin.map    # the release exe's bytes by module (its linker map; src\ scanned)
     build/ronin_debug.exe --check-imports build\ronin.exe res\imports.txt   # its DLLs must equal the list, no CRT DLL
     build/ronin_bench.exe --memory-report                 # shown without activation; private bytes by owner (our
@@ -337,6 +350,10 @@ Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debu
 messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches, threads, events, build processes), 7 output file, 8 font /
 ClearType (also: the font set up more than once), 9 test failure (--test; in the smoke: the
 --keys edit saved the wrong bytes, or the end-of-session check), 10 unknown argument (every build).
+Every dev exit with a window ends with an "exit-check:" block in build\ronin.log (Phase 16): with everything else
+released, ReportLiveDeviceObjects lists only the device and its context, every arena but the permanent one and the
+frame scratch is released, and the handle ledger (the kernel handles the os_* layer opened) is 0; the smoke and
+--leak-check exit 6 otherwise.
 
 `--test` runs without a device and without a visible window: a differential fuzz of `buffer_replace` against a
 flat-array reference (100,000 ops, fixed seed printed in the log and on failure, `--seed`
