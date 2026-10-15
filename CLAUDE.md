@@ -241,6 +241,10 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # of a 10,000-cursor edit; mark-all on a million occurrences
                                                           # (max_cursors 10,000 and 100,000) and over the 100 MB file;
                                                           # the memory of 10,000 / 100,000 cursors (exit 9 if wrong)
+    build/ronin_bench.exe --bench-modal                   # the command list over the full command table, 5 rounds of:
+                                                          # open, 20 filter keystrokes, 20 movements, close; median and
+                                                          # max of the filter and of command + frame build; the memory
+                                                          # of the first open (exit 9 at a filter median of 200 us)
     build/ronin_bench.exe --fuzz-seeds FIRST COUNT        # every seeded --test group for seeds FIRST.. (worker
                                                           # processes, at most 8, below normal priority; their logs
                                                           # in build\fuzz\worker<k>.log); exit 9 names the seed
@@ -253,7 +257,7 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # (exit 6 on LEAK; memory informational: the walk's high-water)
     build/ronin_debug.exe --leak-check [SCENARIO|all] [--cycles N]  # debug build only: each scenario (file-cycle,
                                                           # window-cycle, minibuffer-cycle, isearch-cycle, finder-cycle,
-                                                          # grep-cycle, compile-cycle, multi-cursor-cycle,
+                                                          # grep-cycle, compile-cycle, multi-cursor-cycle, modal-cycle,
                                                           # config-reload-cycle, undo-cycle, external-change-cycle; a
                                                           # name before '/' runs its sub-cycles) after a prime step, 20
                                                           # warm-up cycles and 4 windows of N/4 (N = 200, a multiple of
@@ -336,7 +340,13 @@ in build\tmp\smoke_compile (an error and a warning on a.c, exit 2) into *compila
 name in search_file, "(1,5)" in search_line_number, "error" in compilation_error, "warning" in
 compilation_warning, the mode line's "exit [2]" in its cells; then the window and the buffer go. Three cursors
 with regions (stage 10): on lines 0-2 of *scratch*, focus on, each filled cursor cell, each region in the selection
-color, the cells after the lines in the background, "mc:3" drawn in the mode line; then one cursor again. Every
+color, the cells after the lines in the background, "mc:3" drawn in the mode line; then one cursor again. The command
+list (stage 11): *scratch* with three short lines, point at the end of the first, the echo area empty, that frame kept;
+C-S-p and "end": the box's frame in modal_border (left and top edges), the field line's empty middle in
+modal_background with its filled cursor after the 3 characters, the selected row's empty part in modal_selection, its
+keys in modal_key, the next row's description in modal_description, the window underneath untouched right of its lines
+and its cursor hollow; then C-g, whose frame must equal the kept one byte for byte (exit 3 otherwise); then C-S-p "end"
+RET must have run end-of-buffer and closed the box (exit 9 otherwise). Every
 syntax frame also has a number pixel in its color. The window
 title must be "*scratch* - ronin",
 set exactly once, and the window class must have both icons, the 16 px one drawing a stem pixel in the
@@ -355,7 +365,7 @@ DXGI live-object report, DirectWrite references 0, no directory watch left open)
 Exit codes: 1 fatal, 2 renderer init, 3 pixel mismatch, 4 no debug layer, 5 debug-layer
 messages, 6 leak (D3D, DirectWrite, buffers, live markers, watches, threads, events, build processes), 7 output file, 8 font /
 ClearType (also: the font set up more than once), 9 test failure (--test; in the smoke: the
---keys edit saved the wrong bytes, or the end-of-session check), 10 unknown argument (every build).
+--keys edit saved the wrong bytes, the end-of-session check, or the command list's RET), 10 unknown argument (every build).
 Every dev exit with a window ends with an "exit-check:" block in build\ronin.log (Phase 16): with everything else
 released, ReportLiveDeviceObjects lists only the device and its context, every arena but the permanent one and the
 frame scratch is released, and the handle ledger (the kernel handles the os_* layer opened) is 0; the smoke and
@@ -483,7 +493,17 @@ completed at three cursors in one flush; a child (this executable) crashing afte
 its recovery files byte for byte against a save of the same buffers (CRLF UTF-8, UTF-16 LE with CRLF
 and an astral character, UTF-16 BE, a UTF-8 BOM, mixed endings), their sidecars, none for an unmodified
 file, then the startup notice, *Messages* and recover-file's two windows; --version among the flags of
-every build. A failed
+every build. Phase 18: every command's description against the rules (and broken ones refused); where-is on the
+default keys, shadowed by a results buffer's keymap, behind a prefix bound in an earlier map, in two maps, after a
+config that moves a binding; the modal layer through the headless app with a two-pane test owner (the geometry at
+70 / 60 / 50 and 90 / 80 / 30, a short box, the 40 x 6 minimum, movement in the focused pane, modal-other-pane
+wrapping, pages, refusals, a cancelled prefix, accept, mouse rows, a double click, the wheel, a click outside, C-g,
+ESC, a resize closing it, run after close, not over the minibuffer); the command list (C-S-p, every command in table
+order, the key texts, the filter's goldens and a query split across name and description with its spans, the ends of
+the list, refusals, the field's editing, C-g, ESC, RET running a motion, a region command and a prompting one, the
+minibuffer, M-x, the mouse, a config reload while open, a frame too small, no allocation over 21 keystrokes); the
+seeded group "modal" (600 random operations: the shown order against a slow full ranking, the selection, the top and
+the arena while open, the window underneath after a close); the scanner test's junction removed. A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
@@ -529,5 +549,8 @@ number/constant).
 | isearch_text     | #b0e2ff |   | lazy_highlight (background) | #668b8b |
 | isearch_fail (background) | #8b0000 | | window_divider | #126367 |
 | mode_line_inactive_background | background | | mode_line_inactive_text | text |
+| modal_background | #0c3434 |   | modal_border    | #2e8b8b |
+| modal_selection  | selection |  | modal_description | #a8977a |
+| modal_key        | number  |   |                 |         |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.

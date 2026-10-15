@@ -67,6 +67,19 @@ Only what exists today.
 - M-x lists every command with its key binding, if it has one; find-file, switch-to-buffer, write-file, goto-line
   and kill-buffer prompt in the minibuffer with a vertical candidate list, history and completion.
 
+**Command list**
+- C-S-p opens a box over the windows that lists every command with a one-line description and its key
+  bindings in the current window (the two shortest, then "+N"). Typing filters it with the fuzzy matcher of
+  the project finder, on the name, the description, or both together ("occur lines"); names that match come
+  first. Up / Down, C-n / C-p and C-v / M-v move the selection, the wheel scrolls, a click selects a row.
+- RET (or a double click) closes the box and runs the selected command on the current window, exactly as
+  M-x would: a command that asks for something (goto-line, find-file) asks in the minibuffer afterwards.
+  C-g, ESC or a click outside close it and leave everything as it was. The filter line takes the usual
+  line editing keys (C-a, C-k, M-DEL, C-y, ...); other commands are refused while the box is open.
+- A keystroke filters the whole command table in ~8 us (median; 50-160 us at worst), allocating nothing.
+
+![The command list filtered with "file", over src/modal.c](docs/images/command-list.png)
+
 **Search**
 - isearch forward and backward with the other matches on screen highlighted, smart case, wrapping,
   the search ring, C-w / C-y to extend the search string.
@@ -144,12 +157,12 @@ window.
 
 | what | value |
 |---|---|
-| executable size (release) | 398,848 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
+| executable size (release) | 422,400 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
 | startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms |
 | typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* |
 | typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) |
 | typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms |
-| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build and with 10,000 cursors |
+| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build, with 10,000 cursors and with the command list open |
 | memory (private bytes, idle) | 57-59 MB with an empty buffer, ~3 MB of it our arenas and the rest mostly Direct3D and the driver; 174-175 MB with a 100 MB file open |
 | loading a 100 MB file | 35-40 ms |
 | searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without |
@@ -254,13 +267,15 @@ One deliberate difference from Emacs: `ESC` is keyboard-quit, not a Meta prefix.
 | `C-x p c` | build the project (`*compilation*`; there: `g` again, `C-c C-k` kill) |
 | `M-g n` `M-g p` | next-error / previous-error: the next / previous match or error of the latest results |
 | `M-x` | run a command by name |
+| `C-S-p` | the command list: every command with what it does and its keys; type to filter, `RET` runs |
 | `C-g` | keyboard-quit (also cancels a prompt; with several cursors: their regions, then the extra cursors) |
 | `C-h k` | describe the next key |
 | `C-c ,` | open the config file |
 | `C-x C-c` | quit (asks about unsaved buffers) |
 
 Every key can be rebound in the config file; the complete list of default bindings, with comments,
-is [src/config_default.h](src/config_default.h). M-x shows every command with its binding.
+is [src/config_default.h](src/config_default.h). M-x shows every command with its binding, C-S-p with its description
+too. Unlike Emacs, `C-S-p` is not a shift-selecting `C-p` (`S-<up>` still is).
 
 When several keyboard layouts are installed, Windows' input-language hotkey Left Alt+Shift can
 switch the layout while you type a Meta key with Shift (such as `M-<` or `M-%`); turn that hotkey
@@ -288,7 +303,9 @@ C-c g       goto-line
 
 The sections are `[settings]` (font, size, line height, ClearType mode, tab and indentation
 widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]`, `[keys isearch]`,
-`[keys search-results]` and `[keys compilation]`). In
+`[keys search-results]`, `[keys compilation]` and `[keys command-list]`, the keys while the command list is
+open). The command list's box has its own colors: `modal_background`, `modal_border`, `modal_selection`,
+`modal_description` and `modal_key`. In
 `[keys]` the last word of a line is the command; `none` removes a binding. To run the last build
 again with one key:
 
@@ -344,6 +361,8 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
   `.git/info/exclude` or global excludes file. In `.ronin-project` a pattern cannot start with `[`
   (that line is a section header).
 - Listing a directory on a slow network share in C-x C-f blocks the window until it is done.
+- The command list shows the bindings of the current window's keymaps, not those of the minibuffer or
+  isearch; its filter uses the first 256 bytes typed. describe-key and M-x do not show the descriptions yet.
 
 The full list is the "Later" section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later).
 
@@ -392,15 +411,17 @@ Testing is built into the dev builds:
 - `--fuzz-seeds` runs every seeded test group for hundreds of seeds; `--soak` sends a million random keys,
   clicks and resizes through the app, checking its invariants, its memory, its handles and threads and its
   speed as it goes.
-- `--leak-check` repeats 22 operations (files, windows, prompts, searches, the project finder, project
-  searches, builds, multiple cursors, undo, config reloads, files changed on disk) hundreds of times and
+- `--leak-check` repeats 24 operations (files, windows, prompts, searches, the project finder, project
+  searches, builds, multiple cursors, the command list, undo, config reloads, files changed on disk) hundreds of times and
   checks that memory, handles, threads, the glyph atlas and Direct3D objects stop growing; every exit of a
   dev build checks that nothing of ronin's is left (Direct3D objects, memory, handles).
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
-  the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors), the D3D11 debug layer and
+  the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors, the command list
+  and the frame under it after it closes), the D3D11 debug layer and
   leaks (processes, threads and handles too).
 - Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans, the
-  project-wide search, a build's output and typing at up to 10,000 cursors on a 100 MB file or tree.
+  project-wide search, a build's output, typing at up to 10,000 cursors on a 100 MB file or tree, and the
+  command list's filter.
 - `verify.bat` builds the three configurations, checks `build.bat clean` on a scratch tree, runs the
   smoke and the tests, checks the release exe's imported DLLs against a committed list and prints one
   PASS or FAIL line; it is the gate before every

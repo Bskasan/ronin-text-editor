@@ -27,6 +27,17 @@ A cleanup before the first public release (Phase 17):
   the same memory behind.
 - Building: `build.bat clean` removes `build\` and `dist\`, everything generated, and nothing else.
 
+The command list (Phase 18), the first box drawn over the windows:
+
+- C-S-p lists every command with a one-line description and its key bindings in the current window. Typing
+  filters it (fuzzy, on the name, the description or both), the arrows, C-n / C-p and C-v / M-v move, RET or a
+  double click runs the selected command as M-x would, C-g, ESC or a click outside close it. Its keys are in the
+  new `[keys command-list]` section, its colors are `modal_background`, `modal_border`, `modal_selection`,
+  `modal_description` and `modal_key`.
+- C-S-p is no longer a shift-selecting C-p (S-<up> still is).
+- Every command has a description (M-x and describe-key do not show it yet).
+- The tests no longer leave a junction loop in `build\tmp`.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).
