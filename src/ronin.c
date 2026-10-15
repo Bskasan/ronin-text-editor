@@ -64,6 +64,7 @@
 #pragma optimize("", on)
 #include "results.c"
 #include "modal.c"
+#include "commands_list.c"
 #pragma optimize("s", on)
 #include "cursors.c"
 #pragma optimize("", on)
