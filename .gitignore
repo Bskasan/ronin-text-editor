@@ -1,12 +1,23 @@
-build/
+# Everything generated lives under build/ and dist/ (build.bat, verify.bat, dist.bat and the dev runs).
+/build/
+/dist/
+
+# Generated files anywhere else are never tracked either.
 *.exe
 *.obj
 *.pdb
 *.ilk
 *.exp
 *.lib
+*.map
+*.res
+*.ico
 *.log
-/*.png
+*.zip
+*.png
+!/docs/images/*.png
+
+# Editor and Windows files.
 .vs/
 .vscode/
 *.user
@@ -14,4 +25,3 @@ build/
 Thumbs.db
 desktop.ini
 .claude/settings.local.json
-dist/
