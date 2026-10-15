@@ -11813,7 +11813,32 @@ static b32 test_crash_recovery(Test *t) {
     return 1;
 }
 
+// The leak check's sampler (Phase 16): sane values, the handle ledger following an open and a close, and every
+// handle the tests opened closed again by their end.
+static b32 test_leak_metrics(Test *t, i32 ledger0) {
+    OsDevMetrics m;
+    os_dev_metrics(&m);
+    TEST_CHECK(t, m.private_bytes && m.working_set && m.handles > 0 && m.reservations > 0 && m.reserved_committed && m.process_threads >= 1 &&
+                  m.live_handles >= 0, "leak metrics: private %U, working set %U, handles %d, reservations %d (%U bytes), threads %d, ledger %d",
+               m.private_bytes, m.working_set, m.handles, m.reservations, m.reserved_committed, m.process_threads, m.live_handles);
+    String8 path = str8_fmt(&t->arena, "%S\\p16ledger.txt", t->tmp_dir);
+    TEST_CHECK(t, os_write_file(path, STR8_LIT("ledger\n")) && os_dev_live_handles() == m.live_handles, "leak metrics: a write left a handle");
+    OsFile file;
+    OsFileInfo info;
+    TEST_CHECK(t, os_file_open_read(path, &file, &info) == OS_FILE_OK && os_dev_live_handles() == m.live_handles + 1,
+               "leak metrics: an open file is not in the ledger (%d, %d before)", os_dev_live_handles(), m.live_handles);
+    os_file_close(file);
+    os_file_delete(path);
+    TEST_CHECK(t, os_dev_live_handles() == m.live_handles, "leak metrics: a closed file is still in the ledger");
+    TEST_CHECK(t, m.live_handles == ledger0, "leak metrics: the tests left %d handle(s) open (the ledger %d, %d at the start)",
+               m.live_handles - ledger0, m.live_handles, ledger0);
+    LOG("test: ok: leak metrics (private %U KB, %d handles, %d reservations of %U KB, %d threads; the ledger back at %d)",
+        m.private_bytes / 1024, m.handles, m.reservations, m.reserved_committed / 1024, m.process_threads, ledger0);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
+    i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
     t.arena = arena_create(GB(4));
     t.tmp_dir = tmp_dir;
@@ -12026,6 +12051,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_manual_disk_search(&t);
     arena_reset(&t.arena);
     test_crash_recovery(&t);
+    arena_reset(&t.arena);
+    test_leak_metrics(&t, ledger0);
     arena_reset(&t.arena);
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);

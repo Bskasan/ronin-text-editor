@@ -11,6 +11,7 @@
 #include <dxgi1_3.h>
 #if RONIN_DEV
 #include <dxgidebug.h>
+#include <dxgi1_4.h> // IDXGIAdapter3::QueryVideoMemoryInfo, the leak check's video memory
 #endif
 
 #include "quad_vs.h" // build\gen, from shaders\quad.hlsl
@@ -719,5 +720,55 @@ RDevFrameStats r_dev_take_frame_stats(Renderer *r) {
     RDevFrameStats s = r->stats;
     r->stats = (RDevFrameStats){ 0 };
     return s;
+}
+
+// ReportLiveDeviceObjects through the info queue: the debug layer's pending messages are drained (and counted)
+// first, then the report's messages are read and removed without counting them as debug-layer messages. Returns
+// the live objects; *others gets those that are neither the device nor its immediate context. -1 without the
+// debug layer.
+static i32 r_dev_report_live(Renderer *r, b32 log, i32 *others) {
+    *others = 0;
+    if (!r->device || !r->info_queue) return -1;
+    ID3D11Debug *debug = NULL;
+    if (FAILED(ID3D11Device_QueryInterface(r->device, &IID_ID3D11Debug, (void **)&debug))) return -1;
+    r_drain_messages(r);
+    ID3D11Debug_ReportLiveDeviceObjects(debug, D3D11_RLDO_DETAIL | D3D11_RLDO_IGNORE_INTERNAL);
+    R_RELEASE(debug);
+    i32 live = 0;
+    UINT64 count = ID3D11InfoQueue_GetNumStoredMessages(r->info_queue);
+    for (UINT64 i = 0; i < count; i++) {
+        SIZE_T size = 0;
+        ID3D11InfoQueue_GetMessage(r->info_queue, i, NULL, &size);
+        u8 buffer[4096];
+        if (size > sizeof(buffer)) continue;
+        D3D11_MESSAGE *m = (D3D11_MESSAGE *)buffer;
+        if (FAILED(ID3D11InfoQueue_GetMessage(r->info_queue, i, m, &size))) continue;
+        if (m->ID == D3D11_MESSAGE_ID_LIVE_OBJECT_SUMMARY) continue;
+        String8 text = str8((u8 *)m->pDescription, (i64)m->DescriptionByteLength - 1);
+        live++;
+        b32 own = m->ID == D3D11_MESSAGE_ID_LIVE_DEVICE || m->ID == D3D11_MESSAGE_ID_LIVE_CONTEXT;
+        if (!own) (*others)++;
+        if (log) LOG("d3d11 live object #%d%s: %S", (i32)m->ID, own ? "" : " (not the device or its context)", text);
+    }
+    ID3D11InfoQueue_ClearStoredMessages(r->info_queue);
+    return live;
+}
+
+void r_dev_gpu_metrics(Renderer *r, RDevGpuMetrics *m) {
+    memset(m, 0, sizeof(*m));
+    i32 others;
+    m->live_objects = r_dev_report_live(r, 0, &others);
+    IDXGIDevice *dxgi_device = NULL;
+    IDXGIAdapter *adapter = NULL;
+    IDXGIAdapter3 *adapter3 = NULL;
+    if (r->device && SUCCEEDED(ID3D11Device_QueryInterface(r->device, &IID_IDXGIDevice, (void **)&dxgi_device)) &&
+        SUCCEEDED(IDXGIDevice_GetAdapter(dxgi_device, &adapter)) &&
+        SUCCEEDED(IDXGIAdapter_QueryInterface(adapter, &IID_IDXGIAdapter3, (void **)&adapter3))) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO info;
+        if (SUCCEEDED(IDXGIAdapter3_QueryVideoMemoryInfo(adapter3, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) m->video_local = info.CurrentUsage;
+    }
+    R_RELEASE(adapter3);
+    R_RELEASE(adapter);
+    R_RELEASE(dxgi_device);
 }
 #endif

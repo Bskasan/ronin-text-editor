@@ -599,6 +599,16 @@ u64 buffer_undo_memory(Buffer *buf) {
     return buf->undo.log_committed + (u64)buf->undo.group_committed * sizeof(BufferUndoGroup);
 }
 
+#if RONIN_DEV
+u64 buffer_dev_undo_trims(Buffer *buf) {
+    return buf->undo.dev_trims;
+}
+
+u64 buffer_dev_undo_used(Buffer *buf) {
+    return buf->undo.log_used;
+}
+#endif
+
 void buffer_undo_enable(Buffer *buf, b32 on) {
     BufferUndo *u = &buf->undo;
     u->enabled = on;
@@ -731,6 +741,9 @@ static void buffer_undo_trim(Buffer *buf) {
     }
     u->first_id += drop;
     if (u->pending < u->first_id) u->pending = -1;
+#if RONIN_DEV
+    u->dev_trims++;
+#endif
     buffer_undo_shrink(buf);
 }
 

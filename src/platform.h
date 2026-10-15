@@ -223,6 +223,19 @@ i32  os_dev_live_processes(void);      // os_process_start minus os_process_clos
 b32  os_dev_process_alive(u32 pid);    // a process with this id is running
 void os_dev_kill_pid(u32 pid);         // tests: a leftover they made goes
 i32  os_dev_handle_count(void);        // the process's open kernel handles
+i32  os_dev_live_handles(void);        // the ledger: kernel handles the os_* layer opened and has not closed
+// The leak check's sample (Phase 16). Verdict metrics first, then the informational ones.
+typedef struct OsDevMetrics {
+    u64 private_bytes;   // committed private memory
+    i32 handles;         // the process's kernel handles
+    i32 gdi_objects, user_objects;
+    i32 live_handles, live_threads, live_events, live_processes, watches; // ours
+    i32 reservations;    // os_reserve ranges not released (our arenas)
+    u64 reserved_committed; // ... their committed bytes
+    u64 working_set;     // informational
+    i32 process_threads; // informational: every thread of the process (Toolhelp), the driver's too
+} OsDevMetrics;
+void os_dev_metrics(OsDevMetrics *m);
 String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
 void    os_dev_set_recovery_dir(String8 dir); // tests: the recovery directory from here on
 #endif

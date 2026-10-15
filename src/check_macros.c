@@ -14,8 +14,10 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <d3d11.h>
 #include <dxgi1_3.h>
+#include <dxgi1_4.h>
 #include <dxgidebug.h>
 #include <emmintrin.h>
 #include <intrin.h>

@@ -327,4 +327,12 @@ b32 font_dev_atlas_has_coverage(Font *f) {
     }
     return 0;
 }
+
+void font_dev_stats(Font *f, FontDevStats *s) {
+    s->used_area = (i64)f->shelf_y * f->atlas_size + (i64)f->shelf_x * f->shelf_h;
+    s->glyphs = (i64)f->slot_count + (127 - 32) + 1;
+    s->atlas_rows = f->atlas_h;
+    s->atlas_size = f->atlas_size;
+    s->reset_count = f->reset_count;
+}
 #endif

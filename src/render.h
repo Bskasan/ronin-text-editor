@@ -58,6 +58,12 @@ const char *r_dev_presentation_mode(Renderer *r);   // how DWM shows the swap ch
 // blank that showed it (false when DXGI has no statistics: occluded, or none yet).
 u32 r_dev_last_present_count(Renderer *r);
 b32 r_dev_frame_shown(Renderer *r, u32 *present_count, u64 *sync_qpc);
+// The leak check's sample of the GPU side (Phase 16).
+typedef struct RDevGpuMetrics {
+    i32 live_objects; // ReportLiveDeviceObjects: the device's live objects (itself and its context included); -1 without the debug layer
+    u64 video_local;  // informational: the process's local video memory in use (DXGI), bytes
+} RDevGpuMetrics;
+void r_dev_gpu_metrics(Renderer *r, RDevGpuMetrics *m);
 #endif
 
 #endif // RENDER_H
