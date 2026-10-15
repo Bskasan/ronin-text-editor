@@ -11926,6 +11926,49 @@ static b32 test_crash_recovery(Test *t) {
     return 1;
 }
 
+// The caps of the bounded caches --leak-check's prime step fills (Phase 16): *Messages* keeps ECHO_LOG_LINES lines of
+// at most ECHO_CAP bytes, a history kind MINI_HISTORY_MAX entries in an arena compacted below max(64 KB, 2 x live) (plus
+// the newest entry), the kill ring kill_ring_max entries; and their commit stops growing once the caps are reached.
+static b32 test_bounded_caps(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "bounded caps: app_create failed");
+    u8 line[ECHO_CAP + 100];
+    memset(line, 'm', sizeof(line));
+    i64 messages_commit = 0;
+    for (i32 i = 0; i < 5 * ECHO_LOG_LINES; i++) {
+        echo_log(&app->echo, str8(line, sizeof(line))); // longer than the cap: cut to it
+        if (i == 2 * ECHO_LOG_LINES) messages_commit = app->messages->text_cap;
+    }
+    i64 lines = buffer_line_count(app->messages) - 1, size = buffer_size(app->messages);
+    TEST_CHECK(t, lines == ECHO_LOG_LINES && size == (i64)ECHO_LOG_LINES * (ECHO_CAP + 1) && app->messages->text_cap == messages_commit,
+               "bounded caps: *Messages* %D lines, %D bytes, text commit %D (%D after 2,000)", lines, size, app->messages->text_cap, messages_commit);
+    Minibuffer *mb = &app->mini;
+    u64 history_commit = 0;
+    for (i32 i = 0; i < 10000; i++) {
+        u8 text[64];
+        memset(text, i & 1 ? 'a' : 'b', sizeof(text));
+        fmt_buf(text, sizeof(text), "%d", i % 300); // 300 different entries in turn
+        minibuffer_history_add(mb, MINI_HISTORY_TEXT, str8(text, sizeof(text)));
+        TEST_CHECK(t, mb->histories[MINI_HISTORY_TEXT].count <= MINI_HISTORY_MAX &&
+                      mb->history_arena.pos <= MAX(KB(64), 2 * mb->history_live) + sizeof(text),
+                   "bounded caps: history at %d: %d entries, %U bytes for %U live", i, mb->histories[MINI_HISTORY_TEXT].count, mb->history_arena.pos,
+                   mb->history_live);
+        if (i == 5000) history_commit = mb->history_arena.committed;
+    }
+    TEST_CHECK(t, mb->history_arena.committed == history_commit, "bounded caps: the history arena's commit grew from %U to %U", history_commit,
+               mb->history_arena.committed);
+    i32 max = app->config->settings.kill_ring_max;
+    for (i32 i = 0; i < 10 * max; i++) {
+        u8 *d = kill_push(&app->kills, 64);
+        TEST_CHECK(t, d && app->kills.count <= max, "bounded caps: the kill ring holds %d entries (max %d)", app->kills.count, max);
+        memset(d, 'k', 64);
+    }
+    if (!test_app_destroy(t, app, "bounded caps")) return 0;
+    LOG("test: ok: bounded caps (*Messages* %d lines of at most %d bytes; history %d entries, arena under max(64 KB, 2 x live); kill ring %d)",
+        ECHO_LOG_LINES, ECHO_CAP, MINI_HISTORY_MAX, max);
+    return 1;
+}
+
 // The leak check's sampler (Phase 16): sane values, the handle ledger following an open and a close, and every
 // handle the tests opened closed again by their end.
 static b32 test_leak_metrics(Test *t, i32 ledger0) {
@@ -12171,6 +12214,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_manual_disk_search(&t);
     arena_reset(&t.arena);
     test_crash_recovery(&t);
+    arena_reset(&t.arena);
+    test_bounded_caps(&t);
     arena_reset(&t.arena);
     test_leak_metrics(&t, ledger0);
     arena_reset(&t.arena);
