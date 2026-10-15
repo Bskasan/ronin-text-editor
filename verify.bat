@@ -3,7 +3,8 @@ rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), runs --smoke on the
 rem                     debug and the bench build, --test on the bench build, and checks the release exe's imports and --version
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
-rem                     bench build and the soak (--soak 1000000) on both (once per phase, before its last commit)
+rem                     bench build, the soak (--soak 1000000) on both and the leak check (--leak-check all) on the
+rem                     debug build (once per phase, before its last commit)
 rem From Git Bash: cmd //c ".\verify.bat" [phase]
 rem Every exit code is checked; the last line is "verify: PASS" or "verify: FAIL: <what failed>".
 rem build\ronin.log of each run is kept as build\verify\<step>.log.
@@ -57,8 +58,9 @@ if "%PHASE%"=="1" (
     )
     if "!DEBUG_OK!"=="1" (
         call :run soak-debug build\ronin_debug.exe --soak 1000000
+        call :run leak-check build\ronin_debug.exe --leak-check all
     ) else (
-        call :fail "soak on debug skipped (no exe)"
+        call :fail "soak and leak check on debug skipped (no exe)"
     )
 )
 
