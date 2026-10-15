@@ -1288,6 +1288,15 @@ i32 os_dev_handle_count(void) {
     return (i32)n;
 }
 
+b32 os_dev_reserved(void *base) {
+    Win32DevReservations *r = &win32_dev_reservations;
+    b32 found = 0;
+    AcquireSRWLockExclusive(&r->lock);
+    for (i32 i = 0; i < r->count && !found; i++) found = base && r->base[i] == base;
+    ReleaseSRWLockExclusive(&r->lock);
+    return found;
+}
+
 i32 os_dev_live_handles(void) {
     return (i32)InterlockedOr(&g_platform->live_handles, 0);
 }
@@ -6525,10 +6534,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
 
     win32_block_shutdown(p, 0); // "exit anyway": Windows' shutdown screen can go on
+#if RONIN_DEV
+    void *font_res[2] = { 0 };
+    if (p->app) app_dev_font_reservations(p->app, font_res);
+#endif
     u32 leaks = r_shutdown(p->renderer);
     i32 font_refs = app_shutdown(p->app); // DirectWrite references + unreleased buffers
     DestroyWindow(p->hwnd);
 #if RONIN_DEV
+    i32 font_kept = os_dev_reserved(font_res[0]) + os_dev_reserved(font_res[1]);
+    if (font_kept) {
+        LOG("app: %d of the font's arenas (atlas, glyph table) still reserved after close", font_kept);
+        font_refs += font_kept;
+    }
     if (os_dev_watch_count()) {
         LOG("app: %d directory watch(es) still open after close", os_dev_watch_count());
         font_refs += os_dev_watch_count();

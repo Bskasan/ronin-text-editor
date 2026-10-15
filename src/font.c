@@ -237,6 +237,13 @@ b32 font_reconfigure(Font *f, Renderer *r, FontParams *params) {
 
 i32 font_shutdown(Font *f) {
     fb_close(&f->backend);
+    // The atlas and the glyph table go too (until Phase 16 they stayed reserved and committed until the process ended).
+    if (f->atlas_arena.base) os_release(f->atlas_arena.base);
+    if (f->arena.base) os_release(f->arena.base);
+    f->atlas_arena = (Arena){ 0 };
+    f->arena = (Arena){ 0 };
+    f->atlas = NULL;
+    f->slots = NULL;
     return f->backend.live_refs;
 }
 

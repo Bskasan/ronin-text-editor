@@ -2401,6 +2401,11 @@ b32 app_dev_paren(App *app, Arena *scratch, i64 *a, i64 *b) {
     return app->config->settings.show_paren_mode && app_paren(app, app->windows.selected, scratch, a, b);
 }
 
+void app_dev_font_reservations(App *app, void **out) {
+    out[0] = app->font ? app->font->atlas_arena.base : NULL;
+    out[1] = app->font ? app->font->arena.base : NULL;
+}
+
 void app_dev_force_focus(App *app, i32 focused) {
     app->force_focus = focused;
 }
