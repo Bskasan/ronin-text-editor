@@ -1,7 +1,8 @@
 @echo off
 rem ronin verify: the only gate before a commit.
-rem   verify.bat        builds debug, release and bench (each with the macro check), runs --smoke on the
-rem                     debug and the bench build, --test on the bench build, and checks the release exe's imports and --version
+rem   verify.bat        builds debug, release and bench (each with the macro check), checks build.bat clean on a
+rem                     scratch tree (clean-check), runs --smoke on the debug and the bench build, --test on the
+rem                     bench build, and checks the release exe's imports and --version
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
 rem                     bench build, the soak (--soak 1000000) on both and the leak check (--leak-check all) on the
 rem                     debug build (once per phase, before its last commit)
@@ -24,6 +25,7 @@ set DEBUG_OK=!BUILD_OK!
 call :build release ronin
 call :build bench ronin_bench
 set BENCH_OK=!BUILD_OK!
+call :clean_check
 
 if "!DEBUG_OK!"=="1" (
     call :run smoke build\ronin_debug.exe --smoke
@@ -112,6 +114,71 @@ if not "!CODE!"=="0" (
 )
 findstr /r /x /c:"ronin [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\verify\version.log >nul
 if errorlevel 1 call :fail "version (printed something else)"
+exit /b 0
+
+rem --- clean-check: build.bat clean on a scratch tree, run from another directory that looks like a repository:
+rem build\ present (holding a junction to a directory outside it, which must survive), missing, a junction, a file;
+rem a directory that is not the repository root. The tree is removed afterwards. Log: build\verify\clean-check.log.
+:clean_check
+echo verify: clean-check
+call :clock
+set CC_START=!CLOCK!
+set "CC=%ROOT%build\tmp\clean_check"
+set "CCLOG=%ROOT%build\verify\clean-check.log"
+set CC_FAILED=
+if exist "!CC!" rd /s /q "!CC!"
+mkdir "!CC!\repo\src" "!CC!\repo\build\x" "!CC!\repo\dist" "!CC!\outside" "!CC!\notrepo\build" "!CC!\cwd\src" "!CC!\cwd\build"
+copy /y "%ROOT%build.bat" "!CC!\repo\" >nul
+copy /y "%ROOT%build.bat" "!CC!\notrepo\" >nul
+for %%F in (repo\src\ronin.c repo\verify.bat repo\build\x\f.txt repo\dist\z.zip outside\sentinel.txt notrepo\build\keep.txt cwd\src\ronin.c cwd\verify.bat cwd\build\keep.txt) do (
+    echo clean-check> "!CC!\%%F"
+)
+mklink /J "!CC!\repo\build\link" "!CC!\outside" >nul
+> "!CCLOG!" echo clean-check in !CC! (current directory !CC!\cwd)
+pushd "!CC!\cwd"
+call :cc_run present 0 repo
+if exist "!CC!\repo\build" call :cc_fail "present: build\ left"
+if exist "!CC!\repo\dist" call :cc_fail "present: dist\ left"
+if not exist "!CC!\outside\sentinel.txt" call :cc_fail "present: the junction was followed"
+call :cc_run missing 0 repo
+mklink /J "!CC!\repo\build" "!CC!\outside" >nul
+call :cc_run junction 10 repo
+if not exist "!CC!\repo\build" call :cc_fail "junction: removed"
+if not exist "!CC!\outside\sentinel.txt" call :cc_fail "junction: its target touched"
+rd "!CC!\repo\build"
+echo clean-check> "!CC!\repo\dist"
+call :cc_run file 10 repo
+del /q "!CC!\repo\dist"
+call :cc_run not-root 10 notrepo
+if not exist "!CC!\notrepo\build\keep.txt" call :cc_fail "not-root: build\ touched"
+if not exist "!CC!\cwd\build\keep.txt" call :cc_fail "the current directory's build\ touched"
+popd
+rd /s /q "!CC!"
+if exist "!CC!" call :cc_fail "the scratch tree left"
+call :clock
+set /a CC_CS=CLOCK-CC_START
+if !CC_CS! lss 0 set /a CC_CS+=8640000
+>> "!CCLOG!" echo time: !CC_CS!0 ms
+if defined CC_FAILED call :fail "clean-check:!CC_FAILED!"
+exit /b 0
+
+rem --- cc_run <case> <expected exit code> <directory>: build.bat clean in the scratch tree, its output logged --------
+:cc_run
+call "!CC!\%3\build.bat" clean >> "!CCLOG!" 2>&1
+set CODE=!errorlevel!
+>> "!CCLOG!" echo %1: exit !CODE!
+if not "!CODE!"=="%2" call :cc_fail "%1 (exit !CODE!)"
+exit /b 0
+
+:cc_fail
+>> "!CCLOG!" echo FAIL: %~1
+if defined CC_FAILED (set "CC_FAILED=!CC_FAILED!; %~1") else (set "CC_FAILED= %~1")
+exit /b 0
+
+rem --- clock: CLOCK = centiseconds since midnight -------------------------------------------------------------
+:clock
+set "CLOCK_T=%time: =0%"
+set /a CLOCK=((1!CLOCK_T:~0,2!-100)*3600 + (1!CLOCK_T:~3,2!-100)*60 + (1!CLOCK_T:~6,2!-100))*100 + (1!CLOCK_T:~9,2!-100)
 exit /b 0
 
 :fail
