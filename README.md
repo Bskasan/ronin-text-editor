@@ -13,12 +13,13 @@ changed.
 ## Status
 
 Version 0.1.0 ([CHANGELOG.md](CHANGELOG.md)). Early and experimental: ronin is a learning project (see
-[How this project is made](#how-this-project-is-made)). It was built in 15 phases (listed in
+[How this project is made](#how-this-project-is-made)). It was built in 16 phases (listed in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)), all done: window and renderer, font, text buffer,
 views, commands and the config file, editing, the minibuffer, syntax highlighting, isearch and
 query-replace, window splitting, projects and fuzzy file open, project-wide search, building and jumping
-to errors, multiple cursors, and a last pass over correctness, size, startup, latency and memory with a
-crash safety net. What may come next is under [Roadmap](#roadmap).
+to errors, multiple cursors, a last pass over correctness, size, startup, latency and memory with a
+crash safety net, and an audit for memory and resource leaks (the fixes it led to are under "Unreleased" in
+the changelog). What may come next is under [Roadmap](#roadmap).
 
 Windows 10 or later, x64; developed and tested on Windows 11 only.
 
@@ -384,7 +385,12 @@ Testing is built into the dev builds:
   recovery files must equal a save byte for byte; and a harness that posts
   real key messages through the window procedure on US, UK, Turkish Q and Finnish keyboard layouts.
 - `--fuzz-seeds` runs every seeded test group for hundreds of seeds; `--soak` sends a million random keys,
-  clicks and resizes through the app, checking its invariants, its memory and its speed as it goes.
+  clicks and resizes through the app, checking its invariants, its memory, its handles and threads and its
+  speed as it goes.
+- `--leak-check` repeats 22 operations (files, windows, prompts, searches, the project finder, project
+  searches, builds, multiple cursors, undo, config reloads, files changed on disk) hundreds of times and
+  checks that memory, handles, threads, the glyph atlas and Direct3D objects stop growing; every exit of a
+  dev build checks that nothing of ronin's is left (Direct3D objects, memory, handles).
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
   the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors), the D3D11 debug layer and
   leaks (processes, threads and handles too).
@@ -392,7 +398,7 @@ Testing is built into the dev builds:
   project-wide search, a build's output and typing at up to 10,000 cursors on a 100 MB file or tree.
 - `verify.bat` builds the three configurations, runs the smoke and the tests, checks the release exe's
   imported DLLs against a committed list and prints one PASS or FAIL line; it is the gate before every
-  commit. `verify.bat phase` adds the seed sweep and the soak.
+  commit. `verify.bat phase` adds the seed sweep, the soak and the leak check.
 
 The design, the decisions and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
 every manual test step and what covers it is in [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).

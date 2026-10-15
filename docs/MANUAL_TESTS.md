@@ -43,6 +43,7 @@ dev builds; they are not part of the repository.
 | `--fuzz-seeds` / `--soak` | Phase 15, in `verify.bat phase`: every seeded `--test` group for seeds 1-256 (worker processes); a million random events through the headless app with invariants, settled memory and a typing probe checked as it goes. |
 | crash test | The `--test` group logged as "test: ok: crash recovery" (Phase 15): a child crashing on purpose after edits (`--crash`), its recovery files against a save, the notice, recover-file. |
 | `--startup-capture` / `--bench-latency` / `--bench-longline` / `--memory-report` | Phase 15 measurements, never taking the focus: the early window on screen after each composition; key arrival to Present and to the vertical blank that showed it; a 5 MB line; private bytes by owner. |
+| `--leak-check` | Phase 16, debug build, in `verify.bat phase`: every scenario repeated after a prime step and 20 warm-up cycles, 4 windows of 50 cycles, one table a scenario in build\ronin.log (LEAK exits 6); the window never shown. The "exit-check:" block ends every dev exit with a window. |
 | verify checks | `verify.bat`'s steps "check-imports" (the release exe's DLLs equal res\imports.txt, no CRT DLL) and "version" (`ronin.exe --version` prints "ronin X.Y.Z"). |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
@@ -423,6 +424,29 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | Q16 | The release exe imports only kernel32, user32 and gdi32 and no C runtime DLL | AUTOMATED-NEW | verify.bat "check-imports" against res\imports.txt. |
 | Q17 | `dist.bat` makes `dist\ronin-0.1.0-windows-x64.zip` with ronin.exe, README.md and LICENSE | AUTOMATED-NEW | dist.bat runs verify.bat, checks each copy and tar's exit code, and prints the zip's size (224,440 bytes; `unzip -t`: no errors; the three files in ronin-0.1.0\). |
 
+## R. Memory and resource leaks (Phase 16)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| R1 | Opening, editing and killing a file again and again (also the 100 MB one) does not grow memory, handles or the atlas | AUTOMATED-NEW | `--leak-check file-cycle` (220 cycles) and `file-cycle-100mb` (5 cycles): every verdict metric flat (docs/ARCHITECTURE.md, Measurements (Phase 16)). |
+| R2 | Splitting and deleting windows, C-x 1 with 8 windows, hundreds of times: nothing grows, and the frame afterwards is the same | AUTOMATED-NEW | `--leak-check window-cycle` (both sub-cycles OK; the frames before the first and after the last cycle equal pixel for pixel, also by System.Drawing). |
+| R3 | M-x, the find-file prompt, goto-line and switch-to-buffer opened and closed again and again | AUTOMATED-NEW | `--leak-check minibuffer-cycle` (four sub-cycles OK). |
+| R4 | isearch with the lazy highlight, query-replace and its undo, mark-all-like-this on 1,000 occurrences, repeated | AUTOMATED-NEW | `--leak-check isearch-cycle`, `multi-cursor-cycle` (OK). |
+| R5 | The undo log of a buffer edited and undone for a long time stays under undo_limit_mb | AUTOMATED-NEW | `--leak-check undo-cycle`: the cap reached in cycle 4 of the 20 warm-up cycles, then every sample under 1 MB, memory flat. |
+| R6 | The project finder, the project search and builds, again and again (also cancelled while running): no memory, thread, event, process or handle left | AUTOMATED-NEW | `--leak-check finder-cycle`, `grep-cycle`, `compile-cycle` (all OK after the fixes R8-R12). |
+| R7 | The config file rewritten and the text scale changed hundreds of times: the atlas does not grow, the frame comes back the same; a file changed on disk again and again: its directory's watch does not pile up | AUTOMATED-NEW | `--leak-check config-reload-cycle` (two sub-cycles, the frames equal), `external-change-cycle` (the watch count and the ledger flat). |
+| R8 | A finished scan, search or build shows its results while ronin is idle (no key needed) | FIXED | found by `--leak-check` (the finder, grep and compile cycles never settled); the real main loop's wait ended by the wake three times with app_wake never called. Fixed in e335924; regression "test: ok: wake" (shown to fail with the fix reverted: "app_wake called 0 time(s)"). |
+| R9 | Many builds do not grow the remembered build commands' memory | FIXED | `compile-cycle` grew "our committed bytes" (results_compile_remember); fixed in 11e4ab5; regression "test: ok: compile remember" (fails reverted: 8,192 -> 524,288 bytes). |
+| R10 | Many project searches and occur runs do not grow memory | FIXED | `grep-cycle/done` grew "our committed bytes" (files_arena); fixed in 6840e88; regression "test: ok: results files_arena" (fails reverted: 16,384 -> 131,072 bytes). |
+| R11 | Saving under new names again and again (also names made unique) does not grow the buffer's memory | FIXED | found by reading the code, confirmed by the test; fixed in 0507553; regression "test: ok: write-file meta" (fails reverted: 16,384 -> 131,072 bytes). |
+| R12 | Scans, searches and builds do not grow the process heap (the GPU driver's cost for each thread that ends) | FIXED | `finder-cycle/rescan`, `grep-cycle/cancel` grew the process heaps ~700 bytes a cycle; isolated to the hardware D3D11 device (0 without it, with WARP or with only the DLLs loaded); fixed by reusing worker threads in e11ba96; regression "test: ok: thread reuse" (fails reverted: 417,792 bytes over 2,000 tasks). |
+| R13 | At exit nothing of ronin's is left: Direct3D objects, arenas, handles | AUTOMATED-NEW | the "exit-check:" block of every dev exit with a window, in the smoke and `--leak-check` (exit 6): only the device listed, only the permanent and scratch arenas, the ledger at 0. |
+| R14 | The font's memory is given back at exit | FIXED | the exit check's arena rule; fixed in 338173e; the smoke's check "of the font's arenas ... still reserved after close" fails with the fix reverted (exit 6). |
+| R15 | A million random events: no handle, thread, event, process or watch left; memory reported | AUTOMATED-NEW | `--soak 1000000` (bench and debug) in `verify.bat phase`: the leak metrics every 100,000 events, the exact ones flat over the last 500,000. |
+| R16 | The leak check catches a leak | AUTOMATED-NEW | the detector proof (a scratch copy): 64 KB never freed in C-x 3 and one pipe handle never closed gave LEAK for exactly window-cycle/split, window-cycle/one, compile-cycle/echo and compile-cycle/error (exit 6), every other scenario OK. |
+| R17 | A 10-minute editing session in the release exe: Task Manager's memory stays flat | HUMAN | only real, varied use over time shows it; HUMAN step 34. |
+| R18 | Minimizing still gives memory back | HUMAN | needs a real minimize and Task Manager (Q9 measured 60.5 -> 58.1 MB); HUMAN step 35. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -508,6 +532,16 @@ Phase 15, the release:
     M-x recover-file RET shows x.txt and the copy with "hi" side by side. Delete the files afterwards.
 33. **Q2**: In cmd and in PowerShell, `build\ronin.exe --version`: "ronin 0.1.0" appears (in cmd it may
     come after the next prompt, as for any windowed program); no window opens.
+
+Phase 16, leaks:
+
+34. **R17**: Start `build\ronin.exe` on ronin's repository, open Task Manager (Details tab, add the "Commit size"
+    column) and note ronin's commit size. For 10 minutes, edit as usual: open and kill files, C-x p f, C-x p g,
+    a build (C-x p c), isearch, split and join windows, undo a lot. Then kill the extra buffers, C-x 1, wait a
+    few seconds: the commit size is back within a few MB of the start (the arenas keep their high-water marks)
+    and does not keep rising when you repeat the same work.
+35. **R18**: In the same session note the commit size, minimize ronin and wait 5 seconds: it drops by a few MB.
+    Restore it: the window comes back at once with its text.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
