@@ -25,6 +25,7 @@
 #include "isearch.h"
 #include "results.h"
 #include "cursors.h"
+#include "modal.h"
 
 #include "base.c"
 #include "png.c"
@@ -62,6 +63,7 @@
 #include "finder.c"
 #pragma optimize("", on)
 #include "results.c"
+#include "modal.c"
 #pragma optimize("s", on)
 #include "cursors.c"
 #pragma optimize("", on)

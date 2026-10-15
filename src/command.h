@@ -33,6 +33,7 @@ enum {
     COMMAND_UNDO_CONTINUE  = 1 << 11, // no undo boundary before it: its edits join the open group (a query-replace session)
     COMMAND_LINE           = 1 << 12, // acts on point's line: of several cursors on one line only the first runs it
     COMMAND_SINGLE         = 1 << 13, // makes sense with one cursor only: the others go first (isearch, goto-line, ...)
+    COMMAND_FIELD          = 1 << 14, // edits or moves within one line of text: runs in a modal's text field (modal.h)
 };
 
 typedef struct Command {

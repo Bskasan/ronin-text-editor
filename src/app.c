@@ -94,6 +94,7 @@ struct App {
     Arena compile_next_arena;    // a start waiting for its prompt and questions (reset by each)
     String8 compile_next_key, compile_next_command, compile_next_dir, compile_next_root;
     b32 results_pending;         // results work can go on at once: another frame
+    Modal modal;                 // modal.c: a box over the windows (the command list); while open it takes every event
 #if RONIN_DEV
     i32 dev_grep_hold_after;     // --grep-hold N: every search's workers stand still after N files until released
     b32 dev_grep_stuck_next;     // the next search's workers are stuck in the "file system" (shutdown tests)
@@ -121,6 +122,15 @@ typedef struct AppLayout {
     i32 mode_line_y;     // the mode line of a full-height view
     i32 minibuffer_y;    // the echo area occupies [minibuffer_y, minibuffer_y + line_h)
 } AppLayout;
+
+// modal.c: the box over the windows.
+static void modal_layout(App *app, AppLayout *l, FrameInput *in);
+static void modal_key(App *app, Event *e);
+static void modal_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks);
+static void modal_wheel(App *app, i32 x, i32 y, i32 wheel);
+static void modal_config_applied(App *app);
+static i32  modal_shutdown(App *app);
+static void modal_draw(App *app, Renderer *r, AppLayout *l, FrameInput *in);
 
 static View *app_selected_view(App *app) {
     return app->windows.nodes[app->windows.selected].view;
@@ -925,6 +935,7 @@ static void app_apply_config(App *app, Renderer *r, b32 startup) {
     app->ctx.settings = &c->settings;
     app->ctx.global = &c->global;
     kill_set_max(&app->kills, c->settings.kill_ring_max);
+    modal_config_applied(app);
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,6 +1209,7 @@ i32 app_shutdown(App *app) {
     isearch_destroy(&app->isearch);
     replace_destroy(&app->replace); // before the buffers: its marker
     cursor_job_destroy(&app->cursor_job);
+    leaks += modal_shutdown(app);
     os_release(app->files_arena.base);
     files_unwatch_all(app);
     os_release(app->watch_arena.base);
@@ -1235,6 +1247,7 @@ static i32 app_edge_at(App *app, i32 x, i32 y, WindowSplit *split) {
 
 MouseCursor app_mouse_cursor(App *app, i32 x, i32 y) {
     WindowSplit split;
+    if (app->modal.active) return MOUSE_CURSOR_ARROW;
     if (app_edge_at(app, x, y, &split) < 0) return MOUSE_CURSOR_ARROW;
     return split == WINDOW_SIDE_BY_SIDE ? MOUSE_CURSOR_RESIZE_WE : MOUSE_CURSOR_RESIZE_NS;
 }
@@ -1813,7 +1826,7 @@ static void app_dev_log_key(App *app, Event *e, KeyResult *k, b32 isearch, b32 r
         en = fmt_buf(ev, sizeof(ev), "TEXT U+%04x mods %S", e->codepoint, str8(mods, mn));
     }
     i64 sn = key_seq_print(&k->seq, seq, sizeof(seq));
-    const char *where = app->mini.active ? " [minibuffer]" : replacing ? " [query-replace]" : isearch ? " [isearch]" : "";
+    const char *where = app->modal.active ? " [modal]" : app->mini.active ? " [minibuffer]" : replacing ? " [query-replace]" : isearch ? " [isearch]" : "";
     switch (k->kind) {
     case KEY_RESULT_IGNORED:
         LOG("keys: app #%u: %S%s -> no chord (%s)", e->dev_seq, str8(ev, en), where,
@@ -1906,6 +1919,10 @@ static Keymap *app_buffer_keymap(App *app, Buffer *buf) {
 }
 
 static void app_key_event(App *app, Event *e) {
+    if (app->modal.active) { // [the modal's keymap, global]: it takes every key (modal.c)
+        modal_key(app, e);
+        return;
+    }
     Keymap *stack[3];
     i32 count = 0;
     b32 isearch = app->isearch.active && !app->mini.active;
@@ -2034,6 +2051,7 @@ static b32 app_update(App *app, FrameInput *in) {
     app->ctx.scratch = in->scratch;
     AppLayout l = app_layout(app, in);
     app_layout_views(app, in, &l);
+    modal_layout(app, &l, in);
     // Fit the views again before the events only when the size or the font changed (a click maps
     // through the scroll position); every frame does it after the events anyway.
     b32 relaid = in->width != app->laid_w || in->height != app->laid_h || l.cell_w != app->laid_cell_w || l.line_h != app->laid_line_h;
@@ -2045,6 +2063,7 @@ static b32 app_update(App *app, FrameInput *in) {
         Event *e = &in->events[i];
         switch (e->kind) {
         case EVENT_CLOSE: // the window's close button, Alt+F4: as C-x C-c, after ending any prompt
+            modal_close(app);
             isearch_exit(&app->ctx);
             replace_finish(&app->replace, app->replace.state == REPLACE_ALL ? REPLACE_END_STOPPED : REPLACE_END_DONE);
             minibuffer_abort(&app->mini);
@@ -2062,9 +2081,14 @@ static b32 app_update(App *app, FrameInput *in) {
             app_key_event(app, e);
             break;
         case EVENT_MOUSE_DOWN:
+            if (app->modal.active) { // every press goes to the box (one outside closes it)
+                if (e->button == MOUSE_LEFT) modal_click(app, &l, e->x, e->y, MAX(e->clicks, 1));
+                break;
+            }
             if (e->button == MOUSE_LEFT) app_click(app, &l, e->x, e->y, MAX(e->clicks, 1), e->mods);
             break;
         case EVENT_MOUSE_MOVE:
+            if (app->modal.active) break; // no drags while the box is open
             if (app->resizing >= 0) app_drag_split(app, e->x, e->y);
             else if (app->dragging) app_drag(app, &l, e->x, e->y);
             break;
@@ -2075,7 +2099,8 @@ static b32 app_update(App *app, FrameInput *in) {
             }
             break;
         case EVENT_MOUSE_WHEEL:
-            app_wheel(app, e->x, e->y, e->wheel, e->mods);
+            if (app->modal.active) modal_wheel(app, e->x, e->y, e->wheel);
+            else app_wheel(app, e->x, e->y, e->wheel, e->mods);
             break;
         case EVENT_DIR_CHANGED:
             if (e->watch == app->config_watch) config_notify(&app->config_source, os_time_us());
@@ -2110,6 +2135,7 @@ static b32 app_update(App *app, FrameInput *in) {
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);
     app_layout_views(app, in, &l);
+    modal_layout(app, &l, in); // a resize may have made the box too small: it closes
     view_count = app_views(app, views); // commands may have split or deleted windows
     for (i32 i = 0; i < view_count; i++) { // also views showing a buffer edited elsewhere
         if (!app_view_hidden(app, views[i])) view_ensure_visible(views[i]);
@@ -2136,7 +2162,7 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
     i32 leaves[WINDOW_MAX];
     for (i32 i = 0, n = window_leaves(&app->windows, leaves); i < n; i++) {
         b32 selected = leaves[i] == app->windows.selected;
-        app_draw_view(app, r, &l, in, leaves[i], selected, selected && !app->mini.active, bottom);
+        app_draw_view(app, r, &l, in, leaves[i], selected, selected && !app->mini.active && !app->modal.active, bottom);
     }
     if (app->mini.active) {
         if (list_rows) app_draw_candidates(app, r, &l, in, list_rows);
@@ -2149,6 +2175,7 @@ static void app_render(App *app, FrameInput *in, Renderer *r) {
         String8 echo = app_clip_cells(str8(app->echo.text, app->echo.len), MAX((in->width - l.pad) / l.cell_w, 0));
         font_draw_text(app->font, r, l.pad, l.minibuffer_y, echo, COLOR_HEX(app->config->theme.text));
     }
+    modal_draw(app, r, &l, in); // last: over everything but the echo line
 }
 
 b32 app_update_and_render(App *app, FrameInput *in, Renderer *r) {

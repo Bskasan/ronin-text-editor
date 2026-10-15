@@ -12223,6 +12223,201 @@ static b32 test_leak_metrics(Test *t, i32 ledger0) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// The modal layer (Phase 18), with a test owner: two panes, no field, its own keymap.
+
+typedef struct TestModal {
+    Keymap keys;
+    i32 closed, accepts, accept_pane;
+    i64 accept_row;
+    const Command *run; // accept: modal_run_after_close with it
+} TestModal;
+
+static Keymap *test_modal_keys(App *app, void *data) {
+    (void)app;
+    return &((TestModal *)data)->keys;
+}
+static void test_modal_accept(App *app, void *data, i32 pane, i64 row) {
+    TestModal *tm = data;
+    tm->accepts++;
+    tm->accept_pane = pane;
+    tm->accept_row = row;
+    if (tm->run) modal_run_after_close(app, tm->run);
+}
+static void test_modal_closed(App *app, void *data) {
+    (void)app;
+    ((TestModal *)data)->closed++;
+}
+
+static b32 test_modal_rect_is(Rect r, f32 x0, f32 y0, f32 x1, f32 y1) {
+    return r.x0 == x0 && r.y0 == y0 && r.x1 == x1 && r.y1 == y1;
+}
+
+static void test_modal_click(Test *t, App *app, i32 x, i32 y, i32 clicks) {
+    Event e[2] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = clicks, .x = x, .y = y },
+                   { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = x, .y = y } };
+    app_dev_feed_events(app, e, 2, &t->arena);
+}
+
+// The box's geometry (default and other percentages, the minimum), its keys (movement in the focused pane,
+// modal-other-pane wrapping, paging, refusals, a cancelled prefix, accept, C-g and ESC), the mouse (a row of
+// either pane, a double click, the wheel, a click outside), opening refused (already open, the minibuffer, too
+// small), a resize closing it, and modal_run_after_close.
+static b32 test_modal_layer(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "modal: no app");
+    TestModal *tm = PUSH_STRUCT(&t->arena, TestModal);
+    tm->keys.name = "test-modal";
+    test_bind(&tm->keys, "<down>", &CMD_MODAL_NEXT);
+    test_bind(&tm->keys, "<up>", &CMD_MODAL_PREVIOUS);
+    test_bind(&tm->keys, "C-v", &CMD_MODAL_NEXT_PAGE);
+    test_bind(&tm->keys, "M-v", &CMD_MODAL_PREVIOUS_PAGE);
+    test_bind(&tm->keys, "RET", &CMD_MODAL_ACCEPT);
+    test_bind(&tm->keys, "TAB", &CMD_MODAL_OTHER_PANE);
+    ModalSpec spec = { .name = STR8_LIT("test modal"), .keymap = test_modal_keys, .panes = 2, .data = tm,
+                       .accept = test_modal_accept, .closed = test_modal_closed };
+    View *v = app_selected_view(app);
+    app_dev_show_scratch(app, STR8_LIT("one\ntwo\nthree\n"));
+    view_set_point(v, view_primary(v), 4);
+    Modal *m = &app->modal;
+
+    // 1280 x 800, cells 8 x 16: 160 columns, a window area of 784 px (49 rows). 70% is 112 columns (896 px); 60% is
+    // 29 rows, 464 px: 28 list rows inside the 1 px frame. Centred: x 192, y (784 - 450) / 2 = 167. The panes split
+    // 894 px at 50%, 447 px down to whole cells: 440.
+    TEST_CHECK(t, modal_open(app, &spec) && modal_active(app), "modal: did not open");
+    modal_set_rows(app, 0, 100);
+    modal_set_rows(app, 1, 5);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    ModalGeometry *g = &m->g;
+    TEST_CHECK(t, test_modal_rect_is(g->box, 192, 167, 1088, 617) && g->rows == 28 && g->border == 1 &&
+                      test_modal_rect_is(g->panes[0], 193, 168, 633, 616) && test_modal_rect_is(g->panes[1], 634, 168, 1087, 616),
+               "modal: geometry: box %f %f %f %f, %d rows, panes %f-%f, %f-%f", g->box.x0, g->box.y0, g->box.x1, g->box.y1, g->rows,
+               g->panes[0].x0, g->panes[0].x1, g->panes[1].x0, g->panes[1].x1);
+    TEST_CHECK(t, !modal_open(app, &spec) && test_app_echo_is(app, "The test modal is already open"), "modal: opened twice");
+
+    // Keys: movement in the focused pane only; modal-other-pane wraps; pages; the ends.
+    app_dev_feed(app, "<down> <down>", &t->arena);
+    TEST_CHECK(t, m->lists[0].selected == 2 && m->lists[1].selected == 0 && modal_focus_pane(app) == 0, "modal: <down> twice");
+    app_dev_feed(app, "TAB <down> <down> <down> <down> <down> <down>", &t->arena);
+    TEST_CHECK(t, modal_focus_pane(app) == 1 && m->lists[1].selected == 4 && m->lists[0].selected == 2, "modal: the other pane (%D)",
+               m->lists[1].selected);
+    app_dev_feed(app, "TAB", &t->arena);
+    TEST_CHECK(t, modal_focus_pane(app) == 0, "modal: modal-other-pane wraps to the first pane");
+    app_dev_feed(app, "C-v", &t->arena);
+    TEST_CHECK(t, m->lists[0].selected == 30 && m->lists[0].top == 3, "modal: C-v: %D, top %D", m->lists[0].selected, m->lists[0].top);
+    app_dev_feed(app, "M-v", &t->arena);
+    TEST_CHECK(t, m->lists[0].selected == 2 && m->lists[0].top == 2, "modal: M-v: %D, top %D", m->lists[0].selected, m->lists[0].top);
+    app_dev_feed(app, "<up> <up> <up> <up>", &t->arena);
+    TEST_CHECK(t, m->lists[0].selected == 0 && m->lists[0].top == 0, "modal: <up> stops at the first row");
+    app_dev_feed(app, "C-v C-v C-v C-v C-v <down>", &t->arena);
+    TEST_CHECK(t, m->lists[0].selected == 99 && m->lists[0].top == 72, "modal: the last row: %D, top %D", m->lists[0].selected, m->lists[0].top);
+    // Refusals, a cancelled prefix, an undefined sequence: the box stays.
+    app_dev_feed(app, "C-x C-s", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "save-buffer is not available in the test modal"), "modal: C-x C-s: '%S'",
+               test_echo(app));
+    app_dev_feed(app, "a", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "self-insert-command is not available in the test modal") &&
+                      str8_equal(test_app_text(t, app), STR8_LIT("one\ntwo\nthree\n")), "modal: a without a field: '%S'", test_echo(app));
+    app_dev_feed(app, "C-x C-g", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "Quit"), "modal: C-x C-g cancels the prefix only");
+    app_dev_feed(app, "C-c q", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "C-c q is undefined"), "modal: C-c q: '%S'", test_echo(app));
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, tm->accepts == 1 && tm->accept_pane == 0 && tm->accept_row == 99 && modal_active(app), "modal: RET accepts");
+
+    // The mouse: a row of the other pane focuses it; a double click accepts; the wheel scrolls the pane under it.
+    test_modal_click(t, app, 640, 167 + 1 + 3 * 16 + 5, 1);
+    TEST_CHECK(t, modal_focus_pane(app) == 1 && m->lists[1].selected == 3 && tm->accepts == 1, "modal: a click on pane 1's row 3");
+    test_modal_click(t, app, 640, 167 + 1 + 6 * 16 + 5, 1); // below its 5 rows: nothing
+    TEST_CHECK(t, modal_focus_pane(app) == 1 && m->lists[1].selected == 3, "modal: a click below the rows");
+    test_modal_click(t, app, 300, 167 + 1 + 5 * 16 + 5, 2);
+    TEST_CHECK(t, modal_focus_pane(app) == 0 && tm->accepts == 2 && tm->accept_pane == 0 && tm->accept_row == 72 + 5,
+               "modal: a double click accepts (%d, row %D)", tm->accepts, tm->accept_row);
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = 300, .y = 300, .wheel = 120 };
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    TEST_CHECK(t, m->lists[0].top == 69 && m->lists[0].selected == 77 && app_dev_window_top(app, 0) == 0, "modal: the wheel: top %D",
+               m->lists[0].top);
+    TEST_CHECK(t, app_mouse_cursor(app, 300, 300) == MOUSE_CURSOR_ARROW, "modal: the mouse cursor");
+    // A click outside closes it as C-g does: closed() ran, nothing said, the window underneath untouched.
+    test_modal_click(t, app, 20, 20, 1);
+    TEST_CHECK(t, !modal_active(app) && tm->closed == 1 && test_app_echo_is(app, "") && view_point(v, view_primary(v)) == 4 &&
+                      !view_region_active(v, view_primary(v), &app->config->settings) && !app->dragging,
+               "modal: a click outside: active %d, closed %d, echo '%S', point %D", modal_active(app), tm->closed, test_echo(app),
+               view_point(v, view_primary(v)));
+    TEST_CHECK(t, arena_pos(&m->arena) == 0, "modal: the arena is reset when it closes");
+    // C-g and ESC close it, without a message.
+    TEST_CHECK(t, modal_open(app, &spec), "modal: reopen");
+    app_dev_feed(app, "C-g", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && tm->closed == 2 && test_app_echo_is(app, ""), "modal: C-g: echo '%S'", test_echo(app));
+    TEST_CHECK(t, modal_open(app, &spec), "modal: reopen");
+    app_dev_feed(app, "ESC", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && tm->closed == 3 && test_app_echo_is(app, ""), "modal: ESC");
+    app_dev_feed(app, "C-n", &t->arena);
+    TEST_CHECK(t, view_point(v, view_primary(v)) == 8, "modal: keys reach the window again");
+
+    // Other percentages: 90% of 160 columns, 80% of 49 rows (39: 38 list rows), the panes split at 30%.
+    ModalSpec wide = spec;
+    wide.width_pct = 90;
+    wide.height_pct = 80;
+    wide.pane_split_pct = 30;
+    TEST_CHECK(t, modal_open(app, &wide), "modal: wide: did not open");
+    modal_set_rows(app, 0, 100);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, test_modal_rect_is(g->box, 64, 87, 1216, 697) && g->rows == 38 && test_modal_rect_is(g->panes[0], 65, 88, 409, 696) &&
+                      test_modal_rect_is(g->panes[1], 410, 88, 1215, 696),
+               "modal: wide: box %f %f %f %f, %d rows, panes %f-%f, %f-%f", g->box.x0, g->box.y0, g->box.x1, g->box.y1, g->rows,
+               g->panes[0].x0, g->panes[0].x1, g->panes[1].x0, g->panes[1].x1);
+    // Fewer rows than fit: the box is as high as they need.
+    modal_close(app);
+    TEST_CHECK(t, modal_open(app, &spec), "modal: short: did not open");
+    modal_set_rows(app, 0, 3);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, g->rows == 3 && g->box.y1 - g->box.y0 == 2 + 3 * 16, "modal: three rows: %d rows", g->rows);
+    // A resize below the minimum closes it, with the message an open would give.
+    app_dev_frame_size(app, 456, 800);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, !modal_active(app) && tm->closed == 5 && test_app_echo_is(app, "The frame is too small for the test modal"),
+               "modal: a resize too small: active %d, echo '%S'", modal_active(app), test_echo(app));
+    // The minimum: 40 columns (58 * 70% = 40.6) and 6 rows (10 * 60%: an area of 160 px, a frame of 176).
+    struct { i32 w, h; b32 fits; } sizes[] = { { 464, 176, 1 }, { 456, 176, 0 }, { 464, 175, 0 }, { 300, 100, 0 } };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(sizes); i++) {
+        app_dev_frame_size(app, sizes[i].w, sizes[i].h);
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+        echo_clear(&app->echo);
+        b32 opened = modal_open(app, &spec);
+        TEST_CHECK(t, opened == sizes[i].fits && (opened || test_app_echo_is(app, "The frame is too small for the test modal")),
+                   "modal: %d x %d: opened %d", sizes[i].w, sizes[i].h, opened);
+        modal_close(app);
+    }
+    app_dev_frame_size(app, 1280, 800);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    // One pane: modal-other-pane does nothing.
+    ModalSpec one = spec;
+    one.panes = 1;
+    TEST_CHECK(t, modal_open(app, &one), "modal: one pane: did not open");
+    modal_set_rows(app, 0, 4);
+    app_dev_feed(app, "TAB <down>", &t->arena);
+    TEST_CHECK(t, modal_focus_pane(app) == 0 && m->lists[0].selected == 1, "modal: one pane: TAB changes nothing");
+    // Accept running a command after the box closed, on the selected window.
+    tm->run = &CMD_END_OF_BUFFER;
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && view_point(v, view_primary(v)) == 14, "modal: accept ran end-of-buffer after closing (%D)",
+               view_point(v, view_primary(v)));
+    tm->run = NULL;
+    // Not over the minibuffer; the layer's commands outside a modal.
+    app_dev_feed(app, "M-x", &t->arena);
+    TEST_CHECK(t, app->mini.active && !modal_open(app, &spec) && test_app_echo_is(app, "The test modal is not available in the minibuffer"),
+               "modal: over the minibuffer");
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    app_dev_feed(app, "M-x m o d a l - n e x t RET", &t->arena);
+    TEST_CHECK(t, !app->mini.active && test_app_echo_is(app, "No modal is open"), "modal: modal-next without a modal: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "modal")) return 0;
+    LOG("test: ok: modal layer (geometry at 70/60/50 and 90/80/30, a short box, the 40 x 6 minimum, movement, other pane, pages, "
+        "refusals, a cancelled prefix, accept, mouse rows and double click, the wheel, a click outside, C-g, ESC, a resize, run after "
+        "close, the minibuffer)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -12357,6 +12552,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_window_tiny(&t);
     arena_reset(&t.arena);
     test_window_startup(&t);
+    arena_reset(&t.arena);
+    test_modal_layer(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
