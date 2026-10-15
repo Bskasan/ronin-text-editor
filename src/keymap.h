@@ -103,6 +103,12 @@ typedef struct KeyInput {
 
 void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult *out);
 
+// where-is: the key sequences that run `cmd` with this stack, as key_input_feed would find them (a sequence that an
+// earlier map binds to something else, or whose proper prefix is bound, does not count; one bound in two maps counts
+// once). Returns how many there are; the first `cap` of them in `out`, fewest chords first, then fewest printed
+// characters, then stack and binding order. No allocation.
+i32 keymap_where_is(Keymap **stack, i32 count, const Command *cmd, KeySeq *out, i32 cap);
+
 #if RONIN_DEV
 // --keys: the events one token produces, as the platform would deliver them. A token in kbd
 // notation is a chord (a KEY_DOWN); a single character (or SPC) is typed: a KEY_DOWN without

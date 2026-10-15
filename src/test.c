@@ -4863,6 +4863,71 @@ static b32 test_key_input(Test *t) {
     return 1;
 }
 
+// keymap_where_is's sequences as "C-f, <right>" (all it filled) and its total.
+static String8 test_where_is(Test *t, Keymap **stack, i32 count, const Command *cmd, i32 cap, i32 *total) {
+    KeySeq seqs[8];
+    *total = keymap_where_is(stack, count, cmd, seqs, cap);
+    u8 *out = PUSH_ARRAY(&t->arena, u8, 8 * (KEY_SEQ_TEXT_CAP + 2));
+    i64 n = 0;
+    for (i32 i = 0; i < MIN(*total, cap); i++) {
+        if (i) { out[n++] = ','; out[n++] = ' '; }
+        n += key_seq_print(&seqs[i], out + n, KEY_SEQ_TEXT_CAP);
+    }
+    return str8(out, n);
+}
+
+// where-is (Phase 18): bound once, twice, three times with room for two, not at all; shadowed by an earlier map,
+// unreachable behind a prefix bound in an earlier map, bound in two maps to the same command; after a config
+// that rebinds the command.
+static b32 test_keymap_where_is(Test *t) {
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+    config_init(c);
+    config_parse(c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    Keymap *global[] = { &c->global };
+    Keymap *results[] = { &c->search_results, &c->global };
+    struct { Keymap **stack; i32 count; const Command *cmd; i32 cap; i32 total; const char *want; } cases[] = {
+        { global, 1, &CMD_SAVE_BUFFER, 2, 1, "C-x C-s" },
+        { global, 1, &CMD_FORWARD_CHAR, 2, 2, "C-f, <right>" },
+        { global, 1, &CMD_GOTO_LINE, 2, 2, "M-g g, M-g M-g" },
+        { global, 1, &CMD_UNDO, 2, 3, "C-/, C-_" },              // C-x u has more chords
+        { global, 1, &CMD_UNDO, 8, 3, "C-/, C-_, C-x u" },
+        { global, 1, &CMD_UNDO, 0, 3, "" },
+        { global, 1, &CMD_SKIP_TO_NEXT_LIKE_THIS, 2, 0, "" },
+        { global, 1, &CMD_NEWLINE, 8, 3, "RET, C-m, C-j" },  // equal lengths: the config order
+        { results, 2, &CMD_NEWLINE, 8, 1, "C-j" },                 // RET and C-m run compile-goto-error there
+        { results, 2, &CMD_COMPILE_GOTO_ERROR, 8, 2, "RET, C-m" },
+        { results, 2, &CMD_RECOMPILE, 8, 1, "g" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(cases); i++) {
+        i32 total;
+        String8 got = test_where_is(t, cases[i].stack, cases[i].count, cases[i].cmd, cases[i].cap, &total);
+        TEST_CHECK(t, total == cases[i].total && str8_equal(got, str8_cstr(cases[i].want)), "where-is: %s (cap %d): %d '%S', expected %d '%s'",
+                   cases[i].cmd->name, cases[i].cap, total, got, cases[i].total, cases[i].want);
+    }
+    // A prefix bound in an earlier map hides the sequences behind it; a sequence bound in two maps counts once.
+    Keymap *front = PUSH_STRUCT(&t->arena, Keymap), *back = PUSH_STRUCT(&t->arena, Keymap);
+    test_bind(front, "C-c", &CMD_END_OF_BUFFER);
+    test_bind(front, "C-q", &CMD_YANK);
+    test_bind(back, "C-c r", &CMD_RELOAD_CONFIG);
+    test_bind(back, "C-q", &CMD_YANK);
+    test_bind(back, "C-y", &CMD_YANK);
+    Keymap *both[] = { front, back };
+    i32 total;
+    String8 got = test_where_is(t, both, 2, &CMD_RELOAD_CONFIG, 2, &total);
+    TEST_CHECK(t, total == 0, "where-is: C-c r behind a bound C-c: %d '%S'", total, got);
+    got = test_where_is(t, both, 2, &CMD_YANK, 8, &total);
+    TEST_CHECK(t, total == 2 && str8_equal(got, STR8_LIT("C-q, C-y")), "where-is: yank in two maps: %d '%S'", total, got);
+    got = test_where_is(t, both + 1, 1, &CMD_RELOAD_CONFIG, 2, &total);
+    TEST_CHECK(t, total == 1 && str8_equal(got, STR8_LIT("C-c r")), "where-is: C-c r alone: %d '%S'", total, got);
+    // A config that moves save-buffer.
+    config_parse(c, &t->arena, STR8_LIT("[keys]\nC-c s save-buffer\nC-x C-s none\n"), STR8_LIT("t.conf"));
+    got = test_where_is(t, global, 1, &CMD_SAVE_BUFFER, 2, &total);
+    TEST_CHECK(t, total == 1 && str8_equal(got, STR8_LIT("C-c s")), "where-is: save-buffer rebound: %d '%S'", total, got);
+    LOG("test: ok: where-is (%d cases on the default keys, shadowed, behind a bound prefix, two maps, rebound)",
+        (i32)ARRAY_COUNT(cases));
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Hot reload: a real directory watch in build\tmp\watch, config_poll with the time passed in
 
@@ -12235,6 +12300,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_chords(&t);
     arena_reset(&t.arena);
     test_key_input(&t);
+    arena_reset(&t.arena);
+    test_keymap_where_is(&t);
     arena_reset(&t.arena);
     test_config(&t, seed);
     arena_reset(&t.arena);
