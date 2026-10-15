@@ -214,6 +214,7 @@ b32  os_dev_wake_wait(u32 timeout_ms); // headless tests: the wake was set (and 
 i32  os_dev_live_threads(void);        // started and not joined (nor abandoned)
 void os_dev_thread_abandoned(void);    // a worker left to the process exit at shutdown: not a leak
 void os_dev_thread_reclaimed(void);    // ... joined after all (tests): os_thread_join counts it again
+void os_dev_thread_pool_end(void);     // the parked worker threads end (the exit check, the tests' ledger); made again on demand
 i32  os_dev_live_events(void);         // created and not destroyed
 void os_dev_background_normal(b32 on); // --bench-grep: background workers start at normal priority (the comparison)
 i32  os_dev_thread_priority(OsThread thread); // the thread's priority (Win32 value: 0 normal, -1 below normal)

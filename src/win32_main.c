@@ -22,6 +22,18 @@ _Static_assert(KEYMOD_CTRL == 1 << 0 && KEYMOD_ALT == 1 << 1 && KEYMOD_SHIFT == 
 #define WIN32_MAX_WATCHES 16 // the config's directory and those of the displayed buffers; the wait takes 63
 #define WIN32_TYPE_AHEAD_TAG ((LPARAM)0x7EA1A11E) // --type-ahead-check: dwExtraInfo of its keys (real typing is told apart)
 
+#define WIN32_POOL_MAX 256 // worker thread slots (os_thread_start): the most tasks running at once
+
+typedef struct Win32PoolThread {
+    HANDLE thread;
+    HANDLE go;   // auto-reset: a task (or the end) for the thread
+    HANDLE done; // manual-reset: the task ended
+    OsThreadFn *fn;
+    void *data;
+    b32 busy;    // a task was given and not joined (under pool_lock)
+    volatile b32 quit;
+} Win32PoolThread;
+
 typedef struct Platform {
     HINSTANCE instance;
     HWND hwnd;
@@ -38,6 +50,9 @@ typedef struct Platform {
     u8 watch_tree[WIN32_MAX_WATCHES];  // os_watch_tree: one-shot
     u8 watch_fired[WIN32_MAX_WATCHES]; // ... it fired: out of the wait until os_watch_rearm
     HANDLE wake;                       // os_wake_main: set by workers, part of the wait (auto-reset)
+    SRWLOCK pool_lock;                 // the worker threads, kept and reused (os_thread_start)
+    Win32PoolThread pool[WIN32_POOL_MAX];
+    i32 pool_count;                    // slots used so far (a slot never moves)
     HCURSOR cursors[MOUSE_CURSOR_COUNT]; // loaded once; app_mouse_cursor picks one
 #if RONIN_DEV
     volatile LONG live_threads;        // os_thread_start minus joined
@@ -854,41 +869,71 @@ void os_unwatch(OsWatch watch) {
 // ---------------------------------------------------------------------------
 // Threads: any thread may call these (platform.h). The dev counters are interlocked.
 
-typedef struct Win32ThreadStart {
-    OsThreadFn *fn;
-    void *data;
-} Win32ThreadStart;
+// Worker threads are kept and reused (Phase 16). Once a D3D11 device exists, the GPU driver keeps ~215 bytes of the
+// process heap for every thread that ends (measured with an NVIDIA driver; 0 with WARP or without a device), and ronin
+// starts a thread for every scan, search worker and build. A slot's thread runs a task, sets its done event and parks
+// on its go event (0% CPU) until os_thread_start hands it the next one; os_thread_join waits for done. The slots grow
+// to the most tasks ever running at once; a task that never ends (a worker abandoned at shutdown) keeps its slot.
 
-static DWORD WINAPI win32_thread_main(void *param) {
-    Win32ThreadStart start = *(Win32ThreadStart *)param;
-    VirtualFree(param, 0, MEM_RELEASE);
+static DWORD WINAPI win32_pool_main(void *param) {
+    Win32PoolThread *t = (Win32PoolThread *)param;
     win32_stack_guarantee();
-    start.fn(start.data);
-    return 0;
+    for (;;) {
+        WaitForSingleObject(t->go, INFINITE);
+        if (t->quit) return 0;
+        t->fn(t->data);
+        SetEvent(t->done);
+    }
+}
+
+// A parked slot, or a new one (its thread, its go and done events) in an empty place, taken for a task; NULL when
+// none can be made. Slots never move: a thread and its task's OsThread point at theirs.
+static Win32PoolThread *win32_pool_take(Platform *p) {
+    Win32PoolThread *t = NULL, *empty = NULL;
+    AcquireSRWLockExclusive(&p->pool_lock);
+    for (i32 i = 0; i < p->pool_count && !t; i++) {
+        if (!p->pool[i].thread) {
+            if (!empty) empty = &p->pool[i];
+        } else if (!p->pool[i].busy) {
+            t = &p->pool[i];
+        }
+    }
+    if (!t && !empty && p->pool_count < WIN32_POOL_MAX) empty = &p->pool[p->pool_count++];
+    if (!t && empty) {
+        Win32PoolThread *n = empty;
+        memset(n, 0, sizeof(*n));
+        n->go = CreateEventW(NULL, FALSE, FALSE, NULL);
+        n->done = CreateEventW(NULL, TRUE, FALSE, NULL);
+        n->thread = n->go && n->done ? CreateThread(NULL, 0, win32_pool_main, n, 0, NULL) : NULL;
+        if (n->thread) {
+            WIN32_DEV_HANDLES(3);
+            t = n;
+        } else {
+            if (n->go) CloseHandle(n->go);
+            if (n->done) CloseHandle(n->done);
+        }
+    }
+    if (t) t->busy = 1;
+    ReleaseSRWLockExclusive(&p->pool_lock);
+    return t;
 }
 
 b32 os_thread_start(OsThread *thread, OsThreadFn *fn, void *data, b32 background) {
     thread->handle = NULL;
-    // The start block lives in its own page, freed by the thread: no allocator is shared between threads.
-    Win32ThreadStart *start = VirtualAlloc(NULL, sizeof(Win32ThreadStart), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!start) return 0;
-    start->fn = fn;
-    start->data = data;
-    HANDLE h = CreateThread(NULL, 0, win32_thread_main, start, 0, NULL);
-    if (!h) {
-        VirtualFree(start, 0, MEM_RELEASE);
-        return 0;
-    }
-    thread->handle = h;
-    // Background workers one step below normal: when every core is busy, the main thread (input,
-    // frames) wins.
+    Win32PoolThread *t = win32_pool_take(g_platform);
+    if (!t) return 0;
+    // Background workers one step below normal: when every core is busy, the main thread (input, frames) wins.
     b32 lower = background;
 #if RONIN_DEV
     lower = lower && !g_platform->background_normal;
     InterlockedIncrement(&g_platform->live_threads);
 #endif
-    WIN32_DEV_HANDLES(1);
-    if (lower) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
+    SetThreadPriority(t->thread, lower ? THREAD_PRIORITY_BELOW_NORMAL : THREAD_PRIORITY_NORMAL);
+    t->fn = fn;
+    t->data = data;
+    ResetEvent(t->done);
+    SetEvent(t->go);
+    thread->handle = t;
     return 1;
 }
 
@@ -898,20 +943,44 @@ void os_dev_background_normal(b32 on) {
 }
 
 i32 os_dev_thread_priority(OsThread thread) {
-    return GetThreadPriority(thread.handle);
+    return GetThreadPriority(((Win32PoolThread *)thread.handle)->thread);
 }
 #endif
 
 b32 os_thread_join(OsThread thread, u32 timeout_ms) {
     if (!thread.handle) return 1;
-    if (WaitForSingleObject(thread.handle, timeout_ms) != WAIT_OBJECT_0) return 0;
-    CloseHandle(thread.handle);
-    WIN32_DEV_HANDLES(-1);
+    Win32PoolThread *t = (Win32PoolThread *)thread.handle;
+    if (WaitForSingleObject(t->done, timeout_ms) != WAIT_OBJECT_0) return 0;
+    AcquireSRWLockExclusive(&g_platform->pool_lock);
+    t->busy = 0; // parked again: the next os_thread_start takes it
+    ReleaseSRWLockExclusive(&g_platform->pool_lock);
 #if RONIN_DEV
     InterlockedDecrement(&g_platform->live_threads);
 #endif
     return 1;
 }
+
+#if RONIN_DEV
+// The parked threads end (their slots are made again on demand): before the exit check and the tests' ledger check. A
+// slot whose task never ended (abandoned) is left to the process exit. Main thread, no task running.
+void os_dev_thread_pool_end(void) {
+    Platform *p = g_platform;
+    AcquireSRWLockExclusive(&p->pool_lock);
+    for (i32 i = 0; i < p->pool_count; i++) {
+        Win32PoolThread *t = &p->pool[i];
+        if (!t->thread || t->busy) continue; // empty, or abandoned (its thread still uses the slot)
+        t->quit = 1;
+        SetEvent(t->go);
+        WaitForSingleObject(t->thread, 1000);
+        CloseHandle(t->thread);
+        CloseHandle(t->go);
+        CloseHandle(t->done);
+        t->thread = t->go = t->done = NULL;
+        WIN32_DEV_HANDLES(-3);
+    }
+    ReleaseSRWLockExclusive(&p->pool_lock);
+}
+#endif
 
 _Static_assert(sizeof(OsLock) == sizeof(SRWLOCK), "OsLock holds an SRWLOCK");
 
@@ -1253,12 +1322,12 @@ i32 os_dev_live_threads(void) {
 
 void os_dev_thread_abandoned(void) {
     InterlockedDecrement(&g_platform->live_threads); // still running, but the process exit ends it: not a leak
-    WIN32_DEV_HANDLES(-1);                           // ... its handle too
+    WIN32_DEV_HANDLES(-3);                           // ... its slot's thread and events too
 }
 
 void os_dev_thread_reclaimed(void) {
     InterlockedIncrement(&g_platform->live_threads);
-    WIN32_DEV_HANDLES(1);
+    WIN32_DEV_HANDLES(3);
 }
 
 i32 os_dev_live_events(void) {
@@ -2791,6 +2860,39 @@ static i32 win32_dev_test_wake(Platform *p) {
     b32 ok = !timed_out && taken == 1 && leaks == 0;
     LOG("test: %s: wake (the wait ended by %s, app_wake called %U time(s), %d leak(s))", ok ? "ok" : "FAIL",
         woken ? "the wake" : timed_out ? "its timeout" : "a message", taken, leaks);
+    return !ok;
+}
+
+// Worker threads reused (Phase 16): with a hardware D3D11 device (the GPU driver loaded), 2,000 tasks started and joined
+// one after the other must not grow the process heap (the NVIDIA driver kept ~215 bytes for every thread that ended,
+// ~430 KB here when each task had a thread of its own). Skipped without a hardware device.
+static void win32_dev_noop(void *data) {
+    (void)data;
+}
+
+static i32 win32_dev_test_thread_reuse(Platform *p) {
+    (void)p;
+    void *device = r_dev_test_device();
+    if (!device) {
+        LOG("test: skip: thread reuse (no hardware D3D11 device)");
+        return 0;
+    }
+    OsThread th;
+    for (i32 i = 0; i < 50; i++) if (os_thread_start(&th, win32_dev_noop, NULL, 1)) os_thread_join(th, 10000);
+    OsDevMemoryOwners a, b;
+    os_dev_memory_owners(&a);
+    i32 started = 0;
+    for (i32 i = 0; i < 2000; i++) {
+        if (!os_thread_start(&th, win32_dev_noop, NULL, 1)) continue;
+        started += os_thread_join(th, 10000);
+    }
+    os_dev_memory_owners(&b);
+    r_dev_test_device_release(device);
+    os_dev_thread_pool_end();
+    i64 grew = (i64)b.heaps - (i64)a.heaps;
+    b32 ok = started == 2000 && grew < (i64)KB(64);
+    LOG("test: %s: thread reuse (2,000 tasks with the GPU driver loaded: %d ran, the process heaps grew %D bytes)", ok ? "ok" : "FAIL",
+        started, grew);
     return !ok;
 }
 
@@ -6144,6 +6246,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         failures += win32_dev_test_wake(p);
+        failures += win32_dev_test_thread_reuse(p);
         failures += win32_dev_test_shield();
         failures += win32_dev_test_mods(p);
         failures += win32_dev_test_args(p);
@@ -6600,6 +6703,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         LOG("app: %d of the font's arenas (atlas, glyph table) still reserved after close", font_kept);
         font_refs += font_kept;
     }
+    os_dev_thread_pool_end(); // the parked worker threads: their handles are in the ledger
     font_refs += win32_dev_exit_check(p);
     if (os_dev_watch_count()) {
         LOG("app: %d directory watch(es) still open after close", os_dev_watch_count());

@@ -64,6 +64,8 @@ typedef struct RDevGpuMetrics {
     u64 video_local;  // informational: the process's local video memory in use (DXGI), bytes
 } RDevGpuMetrics;
 void r_dev_gpu_metrics(Renderer *r, RDevGpuMetrics *m);
+void *r_dev_test_device(void);              // a hardware device of its own (the thread-reuse test: the driver loaded); NULL on failure
+void r_dev_test_device_release(void *device);
 #endif
 
 #endif // RENDER_H

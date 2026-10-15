@@ -49,7 +49,9 @@ decisions and the "Later" list. Implement only the phase you are asked for.
   wait then); at exit app_shutdown cancels every worker, then joins them within one shared bound of
   1,000 ms; a worker still inside a file-system call after that (a dead network path) is left to the
   process exit and logged in dev builds. The main thread never waits for a worker otherwise. Dev
-  shutdown counts live threads, scan arenas and queued batches as leaks.
+  shutdown counts live threads, scan arenas and queued batches as leaks. A worker's OS thread is reused: when its task
+  ends it parks on an event (0% CPU) and takes the next os_thread_start (the GPU driver keeps heap for every thread
+  that ends); joining a worker waits for its task's end.
 - Layering: editor core files use only platform.h and render.h (font.c also uses
   font_backend.h). Only win32_*.c/.cpp and render_d3d11.c touch Win32 / D3D / DWrite types.
 - State lives in a few explicit structs (App, Platform, Renderer), not scattered globals.
