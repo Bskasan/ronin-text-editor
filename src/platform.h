@@ -387,6 +387,7 @@ typedef enum MouseCursor {
 MouseCursor app_mouse_cursor(App *app, i32 x, i32 y);
 b32  app_wants_frame(App *app); // another frame right away: highlighting is still catching up
 b32  app_wake(App *app);        // os_wake_main was called: take the workers' results; true = draw a frame
+void app_trim(App *app);        // minimized: memory kept for speed goes back (outside any frame)
 i32  app_shutdown(App *app); // leaked resources (font backend references, unreleased buffers, live markers), 0 = clean
 
 #if RONIN_DEV

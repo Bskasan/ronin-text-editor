@@ -10451,6 +10451,91 @@ static b32 test_results_files_arena(Test *t) {
     return 1;
 }
 
+// The held records and the pending lines (Phase 17): committed to RESULTS_TRANSIENT_FLOOR at a buffer's first run, so
+// a run that stays under it leaves the same memory however the workers' timing went (their high-water made the leak
+// check's verdict depend on it); a minimize (app_trim) gives back what a larger run grew above it. Every match passes
+// through both (results_record, results_add), so a run with matches has used them.
+static String8 test_child(Test *t, const char *name, String8 script);
+
+static b32 test_results_at_floor(Results *r) {
+    return r && r->held[0].committed == RESULTS_TRANSIENT_FLOOR && r->held[1].committed == RESULTS_TRANSIENT_FLOOR &&
+           r->pend.committed == RESULTS_TRANSIENT_FLOOR;
+}
+
+static b32 test_results_transient(Test *t) {
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p17transient", t->tmp_dir));
+    os_make_dir(root);
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", root);
+    for (i32 i = 0; i < 20; i++) os_write_file(str8_fmt(&t->arena, "%S\\f%d.c", root, i), STR8_LIT("int foo;\nint bar;\nfoo = 1;\n"));
+    os_write_file(a_c, STR8_LIT("int foo;\n"));
+    String8 cmd = test_child(t, "transient_build", STR8_LIT("out a.c(1,5): error C2065: 'foo': undeclared identifier\nexit 1\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", cmd));
+    // Nothing at startup; a project search that ends on its own, five times: the floors exactly, every time.
+    App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p17transient.conf", "[settings]\nsearch_workers = 2\ncompilation_save_buffers = none\n"));
+    TEST_CHECK(t, app, "results transient: app_create failed");
+    b32 none_yet = 1;
+    for (i32 k = 0; k < RESULTS_MAX; k++) none_yet &= !app->results[k].buffer && !app->results[k].held[0].committed;
+    TEST_CHECK(t, none_yet, "results transient: a results slot made at startup");
+    Results *r = NULL;
+    i64 found = -1;
+    for (i32 run = 0; run < 5; run++) {
+        app_dev_feed(app, run ? "g" : "C-x p g C-a C-k f o o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results transient: search %d did not end", run);
+        r = results_of(app, test_results_buffer(app));
+        found = r ? r->found : -1;
+        TEST_CHECK(t, found == 41 && test_results_at_floor(r), "results transient: after search %d (%D matches): held %U / %U, pend %U bytes committed",
+                   run, found, r ? r->held[0].committed : 0, r ? r->held[1].committed : 0, r ? r->pend.committed : 0);
+    }
+    // Grown past the floor (as a large search grows them), then a minimize: what is above goes back.
+    arena_push(&r->held[0], MB(3), 8);
+    arena_push(&r->held[1], MB(2), 8);
+    arena_push(&r->pend, MB(1), 8);
+    app_trim(app);
+    TEST_CHECK(t, test_results_at_floor(r) && !r->held[0].pos && !r->held[1].pos && !r->pend.pos,
+               "results transient: grown past the floor, then minimized: held %U / %U, pend %U bytes committed", r->held[0].committed,
+               r->held[1].committed, r->pend.committed);
+    app_dev_feed(app, "C-x b a . c RET C-x p c RET", &t->arena); // a build from a.c (its project's command)
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results transient: the build did not end");
+    Results *c = results_of(app, buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*")));
+    TEST_CHECK(t, c && c->count == 1 && test_results_at_floor(c), "results transient: after a build (%D locations, echo '%S'): held %U / %U, pend %U bytes committed",
+               c ? c->count : -1, test_echo(app), c ? c->held[0].committed : 0, c ? c->held[1].committed : 0, c ? c->pend.committed : 0);
+    if (!test_app_destroy(t, app, "results transient")) return 0;
+    // A running search is not trimmed; stopped (its only worker standing still after five files), it is.
+    app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p17transient1.conf", "[settings]\nsearch_workers = 1\n"));
+    TEST_CHECK(t, app, "results transient: app_create failed (one worker)");
+    app->dev_grep_hold_after = 5;
+    app_dev_feed(app, "C-x p g C-a C-k f o o RET", &t->arena);
+    r = results_of(app, test_results_buffer(app));
+    for (i32 i = 0; i < 200 && r && r->running && !r->found; i++) {
+        if (os_dev_wake_wait(10)) app_wake(app);
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+    }
+    TEST_CHECK(t, r && r->running && r->found, "results transient: the held search wrote nothing");
+    arena_push(&r->held[0], MB(1), 8); // as if its records had grown past the floor
+    u64 running_committed = r->held[0].committed, running_pos = r->held[0].pos;
+    app_trim(app);
+    TEST_CHECK(t, r->held[0].committed == running_committed && r->held[0].pos == running_pos, "results transient: a running search was trimmed");
+    results_stop(app, r);
+    app_trim(app);
+    TEST_CHECK(t, test_results_at_floor(r), "results transient: stopped, then minimized: held %U / %U, pend %U bytes committed",
+               r->held[0].committed, r->held[1].committed, r->pend.committed);
+    results_dev_release(app);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "results transient: the stopped search's workers did not end");
+    if (!test_app_destroy(t, app, "results transient")) return 0;
+    // occur (the main thread's search: pend only).
+    app = test_search_app(t, STR8_LIT("foo\nbar Foo\nnone\n"), 0);
+    TEST_CHECK(t, app, "results transient: the occur app failed");
+    app_dev_feed(app, "M-s o RET", &t->arena);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "results transient: occur did not end");
+    Results *o = results_of(app, buffer_list_find_name(&app->buffers, STR8_LIT("*occur*")));
+    TEST_CHECK(t, o && o->found && test_results_at_floor(o), "results transient: after occur: pend %U bytes committed", o ? o->pend.committed : 0);
+    if (!test_app_destroy(t, app, "results transient")) return 0;
+    LOG("test: ok: results transient (no slot at startup; held[0], held[1] and pend at exactly %U bytes committed after 5 project "
+        "searches of %D matches, a build and occur; grown past it by 3 / 2 / 1 MB, a minimize gives that back; a running search is "
+        "not trimmed, a stopped one is)", (u64)RESULTS_TRANSIENT_FLOOR, found);
+    return 1;
+}
+
 static b32 test_occur(Test *t) {
     App *app = test_search_app(t, STR8_LIT("foo\nbar Foo\n\tfoo foo\nnone\n"), 0);
     TEST_CHECK(t, app, "occur: app_create failed");
@@ -12154,6 +12239,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_occur(&t);
     arena_reset(&t.arena);
     test_results_files_arena(&t);
+    arena_reset(&t.arena);
+    test_results_transient(&t);
     arena_reset(&t.arena);
     test_landing(&t);
     arena_reset(&t.arena);
