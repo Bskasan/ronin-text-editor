@@ -3237,7 +3237,7 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
     i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == 5 ? 1 : stage == 6 ? 10
-                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == 10 ? 11 : stage == -1 ? 13 : 5;
+                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == 10 ? 11 : stage == 11 ? 10 : stage == -1 ? 13 : 5;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
                                          : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
@@ -3245,6 +3245,7 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
                                          : stage == 5 ? "isearch (failing)" : stage == 6 ? "two windows"
                                          : stage == 7 ? "project finder" : stage == 8 ? "results buffer (*search*)"
                                          : stage == 9 ? "build (*compilation*)" : stage == 10 ? "three cursors with regions"
+                                         : stage == 11 ? "command list (modal box)"
                                          : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
         language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
@@ -3309,6 +3310,52 @@ static void win32_smoke_feed_no_frame(Platform *p, const char *keys) {
 static void win32_smoke_feed(Platform *p, const char *keys) {
     win32_smoke_feed_no_frame(p, keys);
     win32_frame(p);
+}
+
+// Stage 11: the frame before the command list opens; C-S-p and "end" (the box's probes); C-g, whose frame must
+// equal the first byte for byte; then C-S-p "end" RET, which must have run end-of-buffer and closed the box.
+static i32 win32_smoke_modal(Platform *p) {
+    app_dev_smoke_modal(p->app);
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    i32 w, h;
+    u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w, &h);
+    if (!pixels) {
+        LOG("smoke: FAIL: back buffer capture failed");
+        return EXIT_PIXEL_MISMATCH;
+    }
+    u64 bytes = (u64)w * (u64)h * 4;
+    u8 *before = PUSH_ARRAY(&p->perm, u8, bytes);
+    memcpy(before, pixels, (size_t)bytes);
+    arena_reset(&p->scratch);
+    win32_smoke_feed_no_frame(p, "C-S-p e n d");
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    i32 code = win32_smoke_check_frame(p, 11, NULL);
+    win32_smoke_feed_no_frame(p, "C-g");
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    i32 w2, h2;
+    pixels = r_read_capture(p->renderer, &p->scratch, &w2, &h2);
+    i64 differ = -1;
+    if (pixels && w2 == w && h2 == h) {
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+    }
+    if (!pixels || w2 != w || h2 != h || differ >= 0 || app_dev_modal_open(p->app)) {
+        LOG("smoke: FAIL: modal: the frame after C-g differs from the one before C-S-p (%dx%d against %dx%d, first pixel (%D, %D)), open %d",
+            w2, h2, w, h, differ >= 0 ? differ % w : -1, differ >= 0 ? differ / w : -1, app_dev_modal_open(p->app));
+        if (code == EXIT_OK) code = EXIT_PIXEL_MISMATCH;
+    } else {
+        LOG("smoke: ok: modal: the frame after C-g equals the one before C-S-p (%dx%d)", w, h);
+    }
+    arena_reset(&p->scratch);
+    win32_smoke_feed(p, "C-S-p e n d RET");
+    b32 ran = !app_dev_modal_open(p->app) && app_dev_point(p->app) == app_dev_size(p->app);
+    LOG("smoke: %s: modal: RET ran end-of-buffer (point %D of %D) and closed the box", ran ? "ok" : "FAIL", app_dev_point(p->app),
+        app_dev_size(p->app));
+    if (!ran && code == EXIT_OK) code = EXIT_TEST;
+    app_dev_smoke_modal_end(p->app);
+    return code;
 }
 
 static b32 win32_smoke_has_reason(Platform *p) {
@@ -6705,6 +6752,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                     code3 = win32_smoke_check_frame(p, 10, NULL);
                     app_dev_smoke_cursors_end(p->app);
                 }
+                if (code3 == EXIT_OK) code3 = win32_smoke_modal(p); // stage 11: the command list
                 i32 code4 = win32_smoke_check_title(p);
                 if (code4 == EXIT_OK) code4 = win32_smoke_check_icon(p);
                 i32 code5 = win32_smoke_config_and_keys(p);
