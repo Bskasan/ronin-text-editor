@@ -18,9 +18,7 @@ enum { LEAK_GROWTH, LEAK_BOUNDED, LEAK_INFO };
 
 enum {
     LEAK_M_PRIVATE,
-    LEAK_M_HANDLES,
     LEAK_M_GDI,
-    LEAK_M_USER,
     LEAK_M_LEDGER,
     LEAK_M_THREADS,
     LEAK_M_EVENTS,
@@ -33,6 +31,8 @@ enum {
     LEAK_M_D3D,
     LEAK_M_ATLAS_ROWS,
     LEAK_M_UNDO,
+    LEAK_M_HANDLES,
+    LEAK_M_USER,
     LEAK_M_WORKING_SET,
     LEAK_M_PROCESS_THREADS,
     LEAK_M_VIDEO,
@@ -48,9 +48,7 @@ typedef struct LeakMetricInfo {
 
 static const LeakMetricInfo leak_metrics[LEAK_M_COUNT] = {
     { "private commit (bytes)", LEAK_GROWTH, LEAK_PRIVATE_TOLERANCE },
-    { "process handles", LEAK_GROWTH, 0 },
     { "GDI objects", LEAK_GROWTH, 0 },
-    { "USER objects", LEAK_GROWTH, 0 },
     { "handle ledger (ours)", LEAK_GROWTH, 0 },
     { "our threads", LEAK_GROWTH, 0 },
     { "our events", LEAK_GROWTH, 0 },
@@ -63,6 +61,10 @@ static const LeakMetricInfo leak_metrics[LEAK_M_COUNT] = {
     { "D3D11 live objects", LEAK_GROWTH, 0 },
     { "atlas rows", LEAK_BOUNDED, 0 },
     { "undo log (bytes)", LEAK_BOUNDED, 0 },
+    // Windows' thread pool, RPC runtime and graphics stack move these on their own (up to +8 and back over 2,000
+    // config reloads): the ledger and our own counters are the verdict on handles.
+    { "process handles", LEAK_INFO, 0 },
+    { "USER objects", LEAK_INFO, 0 },
     { "working set (bytes)", LEAK_INFO, 0 },
     { "process threads (Toolhelp)", LEAK_INFO, 0 },
     { "video memory, local (bytes)", LEAK_INFO, 0 },
@@ -566,6 +568,64 @@ static b32 leak_compile_error_cycle(Leak *L) {
     return leak_compile(L, STR8_LIT("echo a.c(1,5): error C2065: 'x': undeclared identifier"));
 }
 
+// leak.conf as leak_prepare writes it, and the variant config-reload-cycle writes in between (another background).
+#define LEAK_CONF_TEXT "[settings]\nundo_limit_mb = 1\nsearch_workers = 4\n"
+#define LEAK_CONF_OTHER "[settings]\nundo_limit_mb = 1\nsearch_workers = 4\n[colors]\nbackground = #072627\n"
+#define LEAK_BACKGROUND 0x072626u
+#define LEAK_BACKGROUND_OTHER 0x072627u
+
+static b32 leak_background_other(Leak *L) {
+    return L->app->config->theme.background == LEAK_BACKGROUND_OTHER;
+}
+
+static b32 leak_background_back(Leak *L) {
+    return L->app->config->theme.background == LEAK_BACKGROUND;
+}
+
+// The config file rewritten: the reload through its directory watch and the settle, then back.
+static b32 leak_config_color_cycle(Leak *L) {
+    String8 conf = str8_fmt(L->arena, "%S\\conf\\leak.conf", L->dir);
+    if (!os_write_file(conf, STR8_LIT(LEAK_CONF_OTHER)) || !leak_wait(L, leak_background_other, "the reload with the other background")) return 0;
+    if (!leak_settle(L) || !os_write_file(conf, STR8_LIT(LEAK_CONF_TEXT)) || !leak_wait(L, leak_background_back, "the reload back")) return 0;
+    return 1;
+}
+
+// text-scale-increase and -decrease: the font set up again twice, the atlas made again.
+static b32 leak_config_scale_cycle(Leak *L) {
+    i32 setups = L->app->font->setup_count;
+    return leak_keys(L, "C-x C-+ C-x C--") && L->app->font->setup_count == setups + 2;
+}
+
+// ext\ext.txt visited, rewritten outside twice (auto_revert reads it again through its directory's watch; each revert
+// is one undo group, so the buffer goes at the end of the cycle), killed: the directory's watch comes and goes.
+#define LEAK_EXT_TEXT "The file external-change-cycle rewrites.\n"
+#define LEAK_EXT_CHANGED "Changed outside ronin, a different size.\n\n"
+
+static b32 leak_text_is(Leak *L, String8 text) {
+    Buffer *b = leak_current(L);
+    if (buffer_size(b) != text.len) return 0;
+    u64 mark = arena_pos(L->arena);
+    b32 same = str8_equal(buffer_text(b, L->arena, 0, buffer_size(b)), text);
+    arena_pop_to(L->arena, mark);
+    return same;
+}
+
+static b32 leak_ext_changed_in(Leak *L) {
+    return leak_text_is(L, STR8_LIT(LEAK_EXT_CHANGED));
+}
+
+static b32 leak_ext_back(Leak *L) {
+    return leak_text_is(L, STR8_LIT(LEAK_EXT_TEXT));
+}
+
+static b32 leak_external_cycle(Leak *L) {
+    if (!leak_find_file(L, "ext/ext.txt") || !str8_equal(leak_current(L)->name, STR8_LIT("ext.txt"))) return 0;
+    String8 path = str8_fmt(L->arena, "%S\\ext\\ext.txt", L->dir);
+    if (!os_write_file(path, STR8_LIT(LEAK_EXT_CHANGED)) || !leak_wait(L, leak_ext_changed_in, "the revert to the changed file")) return 0;
+    if (!leak_settle(L) || !os_write_file(path, STR8_LIT(LEAK_EXT_TEXT)) || !leak_wait(L, leak_ext_back, "the revert back")) return 0;
+    return !leak_current(L)->modified && leak_kill_current(L) && leak_current(L) == L->home;
+}
+
 static const LeakScenario leak_scenarios[] = {
     { "file-cycle", NULL, leak_file_cycle, NULL, 0, 0, 0 },
     { "file-cycle-100mb", NULL, leak_file_100mb_cycle, NULL, 1, 0, 0 },
@@ -586,6 +646,9 @@ static const LeakScenario leak_scenarios[] = {
     { "grep-cycle/cancel", leak_project_setup, leak_grep_cancel_cycle, leak_kill_teardown, 0, 0, 0 },
     { "compile-cycle/echo", leak_project_setup, leak_compile_echo_cycle, leak_kill_teardown, 0, 0, 0 },
     { "compile-cycle/error", leak_project_setup, leak_compile_error_cycle, leak_kill_teardown, 0, 0, 0 },
+    { "config-reload-cycle/color", NULL, leak_config_color_cycle, NULL, 0, 1, 1 },
+    { "config-reload-cycle/scale", NULL, leak_config_scale_cycle, NULL, 0, 1, 1 },
+    { "external-change-cycle", NULL, leak_external_cycle, NULL, 0, 0, 0 },
 };
 
 // "all", a scenario's whole name, or the part before '/' (all its sub-cycles).
@@ -618,7 +681,9 @@ String8 leak_prepare(Arena *arena, String8 tmp_dir) {
                           STR8_LIT("#include <stdio.h>\n\n// A sample for file-cycle.\nint main(void) {\n    int total = 0;\n"
                                    "    for (int i = 0; i < 10; i++) total += i * i;\n    printf(\"%d\\n\", total);\n    return 0;\n}\n"));
     String8 conf = str8_fmt(arena, "%S\\conf\\leak.conf", dir);
-    leak_write_if_changed(arena, conf, STR8_LIT("[settings]\nundo_limit_mb = 1\nsearch_workers = 4\n"));
+    leak_write_if_changed(arena, conf, STR8_LIT(LEAK_CONF_TEXT));
+    os_make_dir(str8_fmt(arena, "%S\\ext", dir));
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\ext\\ext.txt", dir), STR8_LIT(LEAK_EXT_TEXT));
     leak_write_if_changed(arena, str8_fmt(arena, "%S\\replace.txt", dir), STR8_LIT("foo one\nfoo two\nfoo three\n"));
     leak_write_if_changed(arena, str8_fmt(arena, "%S\\undo.txt", dir), STR8_LIT("undo-cycle types before this line\n"));
     // search.txt: "word" on each of 2,000 lines; cursors.txt: "needle" 1,000 times, once a line.
@@ -695,6 +760,8 @@ static void leak_run(Leak *L, const LeakScenario *s, i32 cycles) {
         leak_fail(L, s->name, STR8_LIT("setup failed"));
         return;
     }
+    Event wakeup = { .kind = EVENT_WAKEUP }; // a frame: the layout and the watches of what the setup shows
+    L->host->feed(L->host->ctx, &wakeup, 1, 1);
     if (!leak_settle(L)) return;
     u64 base = arena_pos(L->arena);
     i32 bw = 0, bh = 0, aw = 0, ah = 0;
@@ -754,6 +821,8 @@ i32 leak_check(App *app, LeakHost *host, String8 which, i32 cycles, String8 tmp_
     L.bench_file = str8_fmt(arena, "%S\\bench_100mb.txt", tmp_dir);
     L.shots_dir = os_full_path(arena, str8_fmt(arena, "%S\\..\\shots", tmp_dir));
     app_dev_force_focus(app, 1);
+    Event focus = { .kind = EVENT_FOCUS, .focused = 1 }; // as a focused editor: changes on disk are acted on through the watches
+    host->feed(host->ctx, &focus, 1, 1);
     if (!app_dev_visit(app, str8_fmt(arena, "%S\\home.txt", L.dir))) {
         LOG("leak: FAIL: cannot visit home.txt in %S", L.dir);
         return 9;
