@@ -136,6 +136,7 @@ typedef struct Platform {
     b32 bench_compile;
     b32 bench_cursors;
     b32 bench_longline;
+    b32 bench_modal;
     b32 dev_crash;           // --crash: an access violation after --keys (the recovery files' test)
     String8 recovery_arg;    // --recovery-dir DIR
     String8 screenshot_path;
@@ -1926,7 +1927,8 @@ void os_fatal(String8 message) {
     if (g_platform && (g_platform->smoke || g_platform->leak_check || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
                        g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
-                       g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile || g_platform->bench_cursors)) interactive = 0;
+                       g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile || g_platform->bench_cursors ||
+                       g_platform->bench_modal)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -4449,6 +4451,79 @@ static void win32_bench_complete(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-modal: the command list over the full command table, in rounds of: open (C-S-p), 20 filter keystrokes
+// ("save buffer kill wor"), 20 movements (<down>, C-v, <up>, M-v, five each), close (C-g); one event per frame.
+// Filter = the owner's work on the field's change alone (scoring and ranking every command); build = the command and
+// the frame build (Present separately, not counted). Median and max of each; exit 9 when the filter's median is
+// 200 us or more.
+static void win32_bench_sort(u64 *us, i32 n) {
+    for (i32 i = 1; i < n; i++) {
+        u64 x = us[i];
+        i32 j = i;
+        while (j > 0 && us[j - 1] > x) {
+            us[j] = us[j - 1];
+            j--;
+        }
+        us[j] = x;
+    }
+}
+
+static void win32_bench_modal(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    enum { ROUNDS = 5 };
+    static const char *const parts[4] = { "C-S-p", "s a v e SPC b u f f e r SPC k i l l SPC w o r",
+                                          "<down> <down> <down> <down> <down> C-v C-v C-v C-v C-v <up> <up> <up> <up> <up> "
+                                          "M-v M-v M-v M-v M-v", "C-g" };
+    static const char *const names[4] = { "open", "filter keystroke", "movement", "close" };
+    u64 build[4][ROUNDS * 20], filter[ROUNDS * 20];
+    i32 nb[4] = { 0 }, nf = 0;
+    b32 opened_ok = 1;
+    for (i32 round = 0; round < ROUNDS; round++) {
+        for (i32 part = 0; part < 4; part++) {
+            Event events[64];
+            i32 n = app_dev_key_events(p->app, str8_cstr(parts[part]), events, ARRAY_COUNT(events));
+            for (i32 i = 0; i < n; i++) {
+                u64 calls0, calls1, field_us;
+                app_dev_modal_stats(p->app, &calls0, &field_us);
+                win32_bench_pump();
+                p->events[0] = events[i];
+                p->event_count = 1;
+                FrameInput input = win32_frame_input(p);
+                app_update_and_render(p->app, &input, p->renderer);
+                p->event_count = 0;
+                arena_reset(&p->scratch);
+                r_dev_take_frame_stats(p->renderer);
+                app_dev_modal_stats(p->app, &calls1, &field_us);
+                if (events[i].kind == EVENT_KEY_DOWN && part == 1 && i + 1 < n && events[i + 1].kind == EVENT_TEXT) continue; // its text follows
+                u64 b = app_dev_build_us(p->app);
+                if (nb[part] < ROUNDS * 20) build[part][nb[part]++] = b;
+                if (part == 1 && calls1 != calls0 && nf < ROUNDS * 20) filter[nf++] = field_us;
+            }
+            if (part == 0) opened_ok &= app_dev_modal_open(p->app);
+        }
+        opened_ok &= !app_dev_modal_open(p->app);
+    }
+    b32 slow = 0;
+    win32_bench_sort(filter, nf);
+    if (nf) {
+        LOG("bench-modal: %d commands, filter keystroke (%d): filter + rank median %U us, max %U us", app_dev_command_count(), nf,
+            filter[nf / 2], filter[nf - 1]);
+        slow = filter[nf / 2] >= 200;
+    }
+    for (i32 part = 0; part < 4; part++) {
+        win32_bench_sort(build[part], nb[part]);
+        if (nb[part]) LOG("bench-modal: %s (%d): command + frame build median %U us, max %U us", names[part], nb[part], build[part][nb[part] / 2],
+                          build[part][nb[part] - 1]);
+    }
+    if (!opened_ok || nf != ROUNDS * 20 || slow) {
+        LOG("bench-modal: FAIL: %s", !opened_ok ? "the command list did not open and close" : nf != ROUNDS * 20 ? "not every keystroke filtered"
+                                                                                                    : "the filter's median is 200 us or more");
+        p->exit_code = EXIT_TEST;
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 // --bench-project, scanning: a project scan of `root` through the app, waited for; its numbers.
 static void win32_bench_scan(Platform *p, String8 root, const char *what) {
     u64 before = os_dev_private_bytes(), t0 = os_time_us();
@@ -5858,7 +5933,7 @@ static i32 win32_dev_exit_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
-           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
+           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors || p->bench_modal ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -6018,7 +6093,7 @@ static b32 win32_dev_user_config(const Platform *p) {
     return !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
              p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
              p->bench_compile || p->bench_cursors || p->bench_longline || p->memory_report || p->bench_latency ||
-             p->startup_capture || p->type_ahead_check || p->leak_check);
+             p->startup_capture || p->type_ahead_check || p->leak_check || p->bench_modal);
 }
 
 // --test: command lines through win32_file_arg / win32_files_done.
@@ -6072,7 +6147,7 @@ static i32 win32_dev_test_args(Platform *p) {
     b32 *builtin[] = { &q->smoke, &q->bench_text, &q->bench_buffer, &q->bench_view, &q->bench_edit, &q->bench_complete,
                        &q->bench_syntax, &q->bench_search, &q->bench_windows, &q->bench_project, &q->bench_grep,
                        &q->bench_compile, &q->bench_cursors, &q->bench_longline, &q->memory_report, &q->bench_latency,
-                       &q->startup_capture, &q->type_ahead_check, &q->leak_check };
+                       &q->startup_capture, &q->type_ahead_check, &q->leak_check, &q->bench_modal };
     b32 config_ok = win32_dev_user_config(q);
     q->idle_check = 1;
     q->screenshot_path = STR8_LIT("x.png");
@@ -6204,6 +6279,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-view"))) { p->bench_view = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-modal"))) { p->bench_modal = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-longline"))) { p->bench_longline = 1; continue; }
         if (str8_equal(a, STR8_LIT("--crash"))) { p->dev_crash = 1; continue; }
@@ -6286,7 +6362,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_longline ? "bench-longline" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
-                                   : p->bench_cursors ? "bench-cursors"
+                                   : p->bench_cursors ? "bench-cursors" : p->bench_modal ? "bench-modal"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -6461,7 +6537,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     b32 show_early = !p->no_activate;
 #if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
-                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
+                p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
+                p->bench_modal;
     show_early = show_early && !(p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early && !p->shown_early) {
@@ -6627,6 +6704,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_complete && !p->quit) {
         win32_bench_complete(p);
+        p->quit = 1;
+    }
+    if (p->bench_modal && !p->quit) {
+        win32_bench_modal(p);
         p->quit = 1;
     }
 #endif

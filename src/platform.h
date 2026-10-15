@@ -427,6 +427,8 @@ void app_dev_smoke_cursors_end(App *app);              // ... and one cursor aga
 void app_dev_smoke_modal(App *app);                    // stage 11: *scratch* with three lines, focus on, the echo area empty
 void app_dev_smoke_modal_end(App *app);                // ... and the box closed
 b32  app_dev_modal_open(App *app);                     // a modal box (the command list) is open
+void app_dev_modal_stats(App *app, u64 *field_calls, u64 *field_us); // --bench-modal: the owner's field changes so far, the last one's time
+i32  app_dev_command_count(void);                      // the command table's size
 b32  app_dev_results_busy(App *app);                    // a search runs or is still ending
 b32  app_dev_compile_busy(App *app);                    // a build runs or is still ending
 // --bench-grep: a project search with these settings (*search* in the other window, not selected), its

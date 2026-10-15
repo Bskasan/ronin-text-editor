@@ -18,6 +18,7 @@ typedef struct CmdRow {
     String8 name, description;
     String8 both;   // "name description": a query split across the two matches here
     String8 keys;   // "C-f, <right>", "M-g g, M-g M-g +1", empty when unbound
+    u64 name_mask, desc_mask; // project_mask of each: a query with a character neither has is not scored (fuzzy.h)
     i32 score;      // the last filter's
     u8 won;         // CmdListField: where the score came from (the spans are drawn there)
 } CmdRow;
@@ -62,9 +63,10 @@ static void cmdlist_where_is(App *app, CmdList *cl) {
 
 // The score of a row for a query (FUZZY_NO_MATCH: none) and where it came from.
 static i32 cmdlist_score(FuzzyQuery *q, CmdRow *row, u8 *won) {
-    i32 best = fuzzy_score(q, row->name, 0, NULL, 0, NULL);
     *won = CMDLIST_NAME;
-    i32 d = fuzzy_score(q, row->description, 0, NULL, 0, NULL);
+    if (((row->name_mask | row->desc_mask) & q->mask) != q->mask) return FUZZY_NO_MATCH; // not even "name description"
+    i32 best = (row->name_mask & q->mask) == q->mask ? fuzzy_score(q, row->name, 0, NULL, 0, NULL) : FUZZY_NO_MATCH;
+    i32 d = (row->desc_mask & q->mask) == q->mask ? fuzzy_score(q, row->description, 0, NULL, 0, NULL) : FUZZY_NO_MATCH;
     if (d != FUZZY_NO_MATCH && (best == FUZZY_NO_MATCH || d - CMDLIST_DESC_PENALTY > best)) {
         best = d - CMDLIST_DESC_PENALTY;
         *won = CMDLIST_DESCRIPTION;
@@ -226,6 +228,8 @@ static void cmd_show_command_list(CommandContext *ctx) {
         row->name = str8_cstr(row->cmd->name);
         row->description = str8_cstr(row->cmd->description ? row->cmd->description : "");
         row->both = str8_fmt(a, "%S %S", row->name, row->description);
+        row->name_mask = project_mask(row->name);
+        row->desc_mask = project_mask(row->description);
         cl->name_cells = (i32)MAX((i64)cl->name_cells, app_text_cells(row->name));
     }
     cmdlist_where_is(app, cl);
