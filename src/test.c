@@ -12562,6 +12562,7 @@ enum {
     SOAK_M_EVENTS,
     SOAK_M_PROCESSES,
     SOAK_M_WATCHES,
+    SOAK_M_SLOTS,   // bounded: at most the cap
     SOAK_M_PRIVATE, // informational from here on
     SOAK_M_COMMITTED,
     SOAK_M_RESERVATIONS,
@@ -12575,13 +12576,13 @@ enum {
 typedef i64 SoakMetrics[SOAK_M_COUNT];
 
 static const char *const soak_metric_names[SOAK_M_COUNT] = {
-    "handle ledger (ours)", "GDI objects", "our threads", "our events", "our processes", "directory watches",
+    "handle ledger (ours)", "GDI objects", "our threads", "our events", "our processes", "directory watches", "worker thread slots",
     "private commit without the undo logs (bytes)", "our committed bytes without the undo logs", "our reservations", "process handles",
     "USER objects",
     "working set (bytes)", "process threads (Toolhelp)",
 };
 
-static void soak_sample(i64 *v, u64 settled_private, u64 undo) {
+static void soak_sample(i64 *v, u64 settled_private, u64 undo, i64 *slots_max) {
     OsDevMetrics m;
     os_dev_metrics(&m);
     v[SOAK_M_RESERVATIONS] = m.reservations;
@@ -12591,6 +12592,8 @@ static void soak_sample(i64 *v, u64 settled_private, u64 undo) {
     v[SOAK_M_EVENTS] = m.live_events;
     v[SOAK_M_PROCESSES] = m.live_processes;
     v[SOAK_M_WATCHES] = m.watches;
+    v[SOAK_M_SLOTS] = m.worker_slots;
+    *slots_max = m.worker_slots_max;
     v[SOAK_M_PRIVATE] = (i64)settled_private;
     v[SOAK_M_COMMITTED] = (i64)(m.reserved_committed > undo ? m.reserved_committed - undo : 0);
     v[SOAK_M_HANDLES] = m.handles;
@@ -12600,7 +12603,7 @@ static void soak_sample(i64 *v, u64 settled_private, u64 undo) {
 }
 
 // The table over the checkpoints from 500,000 events on (index 4); returns the LEAK verdicts.
-static i32 soak_leak_verdict(SoakMetrics *v, i32 count) {
+static i32 soak_leak_verdict(SoakMetrics *v, i32 count, i64 slots_max) {
     i32 first = 4, leaks = 0;
     LOG("soak: leak metrics, the checkpoints from %d00,000 to %d00,000 events:", first + 1, count);
     for (i32 k = 0; k < SOAK_M_COUNT; k++) {
@@ -12611,6 +12614,10 @@ static i32 soak_leak_verdict(SoakMetrics *v, i32 count) {
             if (j >= count - 3) rising += d > 0;
         }
         const char *verdict = k >= SOAK_M_PRIVATE ? (rising == 3 ? "WATCH" : "") : steps ? "LEAK" : "OK";
+        if (k == SOAK_M_SLOTS) { // bounded: the slots grow to the most tasks ever running at once, at most the cap
+            verdict = "OK (under its cap)";
+            for (i32 j = first; j < count; j++) if (v[j][k] > slots_max) verdict = "LEAK (over its cap)";
+        }
         leaks += verdict[0] == 'L';
         u8 row[512];
         i64 n = 0;
@@ -12673,6 +12680,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     SoakMetrics *metrics = PUSH_ARRAY(&t.arena, SoakMetrics, SOAK_CHECKPOINTS); // before the mark the checks pop to
     OsDevReservation *res_mid = PUSH_ARRAY(&t.arena, OsDevReservation, 16384), *res_last = PUSH_ARRAY(&t.arena, OsDevReservation, 16384);
     i32 res_mid_count = 0, res_last_count = 0, checkpoints = 0;
+    i64 slots_max = 0;
     *leak_verdicts = 0;
     u64 base = arena_pos(&t.arena);
     i32 initial_buffers = app->buffers.count;
@@ -12734,7 +12742,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
                 undo >> 10, app->kills.small_committed >> 10, per);
             // The undo logs grow up to their limit (undo_limit_mb a buffer): the rest is what must stay flat.
             settled = settled > undo ? settled - undo : 0;
-            if (checkpoints < SOAK_CHECKPOINTS) soak_sample(metrics[checkpoints++], settled, undo);
+            if (checkpoints < SOAK_CHECKPOINTS) soak_sample(metrics[checkpoints++], settled, undo, &slots_max);
             if (checkpoints == 5) res_mid_count = os_dev_reservations(res_mid, 16384);
             res_last_count = os_dev_reservations(res_last, 16384);
             if (e == SOAK_BLOCK) {
@@ -12765,7 +12773,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
         }
     }
     if (!t.failures && checkpoints >= 6) {
-        *leak_verdicts = soak_leak_verdict(metrics, checkpoints);
+        *leak_verdicts = soak_leak_verdict(metrics, checkpoints, slots_max);
         if (metrics[checkpoints - 1][SOAK_M_COMMITTED] != metrics[4][SOAK_M_COMMITTED] ||
             metrics[checkpoints - 1][SOAK_M_RESERVATIONS] != metrics[4][SOAK_M_RESERVATIONS]) {
             dev_log_reservation_growth("soak: our reservations from 500,000 events to the end", res_mid, res_mid_count, res_last, res_last_count,

@@ -31,6 +31,7 @@ enum {
     LEAK_M_D3D,
     LEAK_M_ATLAS_ROWS,
     LEAK_M_UNDO,
+    LEAK_M_SLOTS,
     LEAK_M_HANDLES,
     LEAK_M_USER,
     LEAK_M_WORKING_SET,
@@ -61,6 +62,7 @@ static const LeakMetricInfo leak_metrics[LEAK_M_COUNT] = {
     { "D3D11 live objects", LEAK_GROWTH, 0 },
     { "atlas rows", LEAK_BOUNDED, 0 },
     { "undo log (bytes)", LEAK_BOUNDED, 0 },
+    { "worker thread slots", LEAK_BOUNDED, 0 }, // reused threads: the most tasks ever running at once
     // Windows' thread pool, RPC runtime and graphics stack move these on their own (up to +8 and back over 2,000
     // config reloads): the ledger and our own counters are the verdict on handles.
     { "process handles", LEAK_INFO, 0 },
@@ -270,6 +272,8 @@ static void leak_sample(Leak *L, i32 w, i64 *v, i64 *caps) {
     v[LEAK_M_D3D] = g.live_objects;
     v[LEAK_M_ATLAS_ROWS] = f.atlas_rows;
     v[LEAK_M_UNDO] = L->undo_buffer ? (i64)buffer_dev_undo_used(L->undo_buffer) : -1;
+    v[LEAK_M_SLOTS] = m.worker_slots;
+    caps[LEAK_M_SLOTS] = m.worker_slots_max;
     v[LEAK_M_WORKING_SET] = (i64)m.working_set;
     v[LEAK_M_PROCESS_THREADS] = m.process_threads;
     v[LEAK_M_VIDEO] = (i64)g.video_local;
