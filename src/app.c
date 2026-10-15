@@ -2312,6 +2312,13 @@ void app_dev_smoke_modal_end(App *app) {
 b32 app_dev_modal_open(App *app) {
     return app->modal.active;
 }
+void app_dev_modal_stats(App *app, u64 *field_calls, u64 *field_us) {
+    *field_calls = app->modal.dev_field_calls;
+    *field_us = app->modal.dev_field_us;
+}
+i32 app_dev_command_count(void) {
+    return command_count();
+}
 void app_dev_smoke_cursors_end(App *app) {
     View *v = app_selected_view(app);
     view_collapse_cursors(v);
