@@ -12602,6 +12602,161 @@ static b32 test_command_list(Test *t) {
     return 1;
 }
 
+// The command list's ranking done the slow way: every row scored on its name, its description and both (no mask
+// prefilter), then the best one picked again and again (score, then table order). Returns the matches.
+static i32 test_cmdlist_reference(Arena *a, CmdList *cl, String8 text, i32 *out) {
+    text.len = MIN(text.len, (i64)CMDLIST_QUERY_CAP);
+    if (!text.len) {
+        for (i32 i = 0; i < cl->count; i++) out[i] = i;
+        return cl->count;
+    }
+    FuzzyQuery q = fuzzy_query(a, text);
+    i32 *score = PUSH_ARRAY(a, i32, cl->count);
+    b32 *taken = PUSH_ARRAY(a, b32, cl->count);
+    i32 n = 0;
+    for (i32 i = 0; i < cl->count; i++) {
+        CmdRow *row = &cl->rows[i];
+        i32 s = fuzzy_score(&q, row->name, 0, NULL, 0, NULL);
+        i32 d = fuzzy_score(&q, row->description, 0, NULL, 0, NULL), b = fuzzy_score(&q, row->both, 0, NULL, 0, NULL);
+        if (d != FUZZY_NO_MATCH) s = s == FUZZY_NO_MATCH ? d - CMDLIST_DESC_PENALTY : MAX(s, d - CMDLIST_DESC_PENALTY);
+        if (b != FUZZY_NO_MATCH) s = s == FUZZY_NO_MATCH ? b - CMDLIST_DESC_PENALTY : MAX(s, b - CMDLIST_DESC_PENALTY);
+        score[i] = s;
+        n += s != FUZZY_NO_MATCH;
+    }
+    for (i32 k = 0; k < n; k++) {
+        i32 best = -1;
+        for (i32 i = 0; i < cl->count; i++) {
+            if (taken[i] || score[i] == FUZZY_NO_MATCH) continue;
+            if (best < 0 || score[i] > score[best]) best = i;
+        }
+        taken[best] = 1;
+        out[k] = best;
+    }
+    return n;
+}
+
+// Seeded (--fuzz-seeds): random sessions of the command list through the headless app (soak's flag on: commands that
+// end the session or leave the directory do nothing). Typing, DEL, clearing, movement, pages, the wheel, clicks on
+// rows and in the field, a click outside, C-g, ESC, RET and double clicks running whatever is selected. While open:
+// the selection and the top in range, the shown order equal to the slow ranking of the field's text, the arena where
+// the open left it. Closed by C-g, ESC or a click outside: the window underneath as before the open.
+static b32 test_modal_fuzz(Test *t, u64 seed) {
+    t->rng = seed ^ 0x6d6f64616cull;
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "modal fuzz: no app");
+    app->ctx.dev_soak = 1;
+    app_dev_show_scratch(app, STR8_LIT("int main(void) {\n    return 0;\n}\n"));
+    static const char chars[] = "abcdefgilnoprstuwxyz-";
+    static const char *moves[] = { "<down>", "<up>", "C-n", "C-p", "C-v", "M-v", "<next>", "<prior>" };
+    i32 ops = 0, opens = 0, runs = 0, closes = 0, checks = 0;
+    Buffer *before_buf = NULL;
+    i64 before_point = 0;
+    i32 before_windows = 0;
+    u64 open_pos = 0;
+    i32 *ref = PUSH_ARRAY(&t->arena, i32, command_count());
+    for (; ops < 600; ops++) {
+        if (!modal_active(app)) {
+            app_dev_feed(app, "C-g C-g C-g", &t->arena); // whatever the last command left: a prompt, a search
+            if (app_dev_window_count(app) > 1) app_dev_feed(app, "C-x 1", &t->arena);
+            View *v = app_selected_view(app);
+            // Not *Messages*: a message logged while the box is open ("Beginning of buffer" from DEL in the field) moves its
+            // point (the "Later" list); the soak skips it for the same reason.
+            Buffer *other = v->buffer == app->messages ? app_other_buffer(app, app->messages) : NULL;
+            if (other) app_switch_buffer(app, v, other);
+            before_buf = v->buffer;
+            before_point = view_point(v, view_primary(v));
+            before_windows = app_dev_window_count(app);
+            app_dev_feed(app, "C-S-p", &t->arena);
+            TEST_CHECK(t, modal_active(app) && test_cmdlist(app), "modal fuzz %U: op %d: C-S-p did not open it (echo '%S')", seed, ops, test_echo(app));
+            open_pos = arena_pos(&app->modal.arena);
+            opens++;
+            continue;
+        }
+        ModalGeometry *g = &app->modal.g;
+        u64 r = test_below(t, 100);
+        i32 closed = 0; // 1: closed as C-g does, 2: something ran
+        if (r < 35) {
+            char c = chars[test_below(t, (i64)sizeof(chars) - 1)];
+            app_dev_feed(app, test_below(t, 8) == 0 ? "SPC" : (const char[2]){ c, 0 }, &t->arena);
+        } else if (r < 45) {
+            app_dev_feed(app, "DEL", &t->arena);
+        } else if (r < 50) {
+            app_dev_feed(app, "C-a C-k", &t->arena);
+        } else if (r < 70) {
+            app_dev_feed(app, moves[test_below(t, ARRAY_COUNT(moves))], &t->arena);
+        } else if (r < 75) {
+            Event e = { .kind = EVENT_MOUSE_WHEEL, .x = (i32)g->panes[0].x0 + 8, .y = (i32)g->panes[0].y0 + 8,
+                        .wheel = ((i32)test_below(t, 7) - 3) * 120 };
+            app_dev_feed_events(app, &e, 1, &t->arena);
+        } else if (r < 80 || r >= 97) {
+            i32 y = (i32)g->panes[0].y0 + (i32)test_below(t, (i64)(g->panes[0].y1 - g->panes[0].y0));
+            b32 dbl = r >= 97;
+            u64 opens0 = app->modal.dev_opens;
+            test_modal_click(t, app, (i32)g->panes[0].x0 + 40, y, dbl ? 2 : 1);
+            if (dbl && (!modal_active(app) || app->modal.dev_opens != opens0)) closed = 2; // ran (show-command-list opens it again)
+        } else if (r < 83) {
+            test_modal_click(t, app, (i32)g->field.x0 + (i32)test_below(t, 200), (i32)g->field.y0 + 4, 1);
+        } else if (r < 87) {
+            test_modal_click(t, app, (i32)test_below(t, (i64)g->box.x0), (i32)test_below(t, 700), 1);
+            TEST_CHECK(t, !modal_active(app), "modal fuzz %U: op %d: a click outside did not close it", seed, ops);
+            closed = 1;
+        } else if (r < 92) {
+            app_dev_feed(app, test_below(t, 2) ? "C-g" : "ESC", &t->arena);
+            TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, ""), "modal fuzz %U: op %d: C-g / ESC did not close it quietly", seed, ops);
+            closed = 1;
+        } else {
+            CmdList *cl = test_cmdlist(app);
+            ModalList *list = modal_list(app, 0);
+            const Command *sel = list->count ? cl->rows[cl->shown[list->selected]].cmd : NULL;
+            app_dev_feed(app, "RET", &t->arena);
+            TEST_CHECK(t, modal_active(app) == (!sel || sel == &CMD_SHOW_COMMAND_LIST), "modal fuzz %U: op %d: RET on %s left it open %d", seed,
+                       ops, sel ? sel->name : "no row", modal_active(app));
+            if (sel) closed = 2;
+        }
+        if (closed == 1) {
+            View *v = app_selected_view(app);
+            TEST_CHECK(t, v->buffer == before_buf && (view_point(v, view_primary(v)) == before_point || before_buf == app->messages) &&
+                              app_dev_window_count(app) == before_windows &&
+                              arena_pos(&app->modal.arena) == 0,
+                       "modal fuzz %U: op %d: closing changed the window underneath (point %D, was %D)", seed, ops, view_point(v, view_primary(v)),
+                       before_point);
+            closes++;
+        }
+        if (closed == 2) {
+            runs++;
+            if (modal_active(app)) { // show-command-list ran: a new open
+                View *v = app_selected_view(app);
+                before_buf = v->buffer;
+                before_point = view_point(v, view_primary(v));
+                before_windows = app_dev_window_count(app);
+                open_pos = arena_pos(&app->modal.arena);
+                opens++;
+            }
+        }
+        if (!modal_active(app)) continue;
+        // The invariants of an open list.
+        CmdList *cl = test_cmdlist(app);
+        ModalList *list = modal_list(app, 0);
+        i32 rows = MAX(app->modal.g.rows, 1);
+        TEST_CHECK(t, cl && list->count == cl->shown_count && (list->count ? list->selected >= 0 && list->selected < list->count : list->selected == -1) &&
+                          list->top >= 0 && list->top <= MAX(list->count - rows, 0) && arena_pos(&app->modal.arena) == open_pos,
+                   "modal fuzz %U: op %d: count %D (shown %d), selected %D, top %D, rows %d, arena %U (open %U)", seed, ops, list->count,
+                   cl ? cl->shown_count : -1, list->selected, list->top, rows, arena_pos(&app->modal.arena), open_pos);
+        u64 mark = arena_pos(&t->arena);
+        String8 text = test_cmdlist_field(t, app);
+        i32 n = test_cmdlist_reference(&t->arena, cl, text, ref);
+        b32 same = n == cl->shown_count && str8_equal(str8(cl->query, cl->query_len), str8(text.data, MIN(text.len, (i64)CMDLIST_QUERY_CAP)));
+        for (i32 i = 0; same && i < n; i++) same = ref[i] == cl->shown[i];
+        TEST_CHECK(t, same, "modal fuzz %U: op %d: '%S' shows %d rows, the slow ranking %d (or another order)", seed, ops, text, cl->shown_count, n);
+        arena_pop_to(&t->arena, mark);
+        checks++;
+    }
+    if (!test_app_destroy(t, app, "modal fuzz")) return 0;
+    LOG("test: ok: modal fuzz (seed %U: %d operations, %d opens, %d closed by C-g / ESC / a click outside, %d commands run, %d checks)",
+        seed, ops, opens, closes, runs, checks);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -12741,6 +12896,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_command_list(&t);
     arena_reset(&t.arena);
+    test_modal_fuzz(&t, seed);
+    arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
     test_threads(&t);
@@ -12861,11 +13018,11 @@ typedef struct Soak {
     Test *t;
     App *app;
     String8 dir;
-    String8 *seqs; // every bound key sequence of the global, minibuffer, isearch and search-results keymaps (kbd)
+    String8 *seqs; // every bound key sequence of the global, minibuffer, isearch, search-results and command-list keymaps (kbd)
     i32 seq_count;
     i32 w, h;      // the frame (h 0: minimized)
     b32 after_key; // the last event was a key: the selected window's point must be visible
-    u64 keys, texts, mice, resizes, focus, truncated, killed;
+    u64 keys, texts, mice, resizes, focus, truncated, killed, modal_sessions;
     char recent[32][64]; // the last events, logged when a check fails
     u64 recent_count;
 } Soak;
@@ -12912,7 +13069,7 @@ static void soak_collect(Soak *s, Keymap *map) {
 }
 
 static b32 soak_busy(App *app) {
-    return app->mini.active || app->isearch.active || app->replace.state != REPLACE_OFF || cursor_job_pending(&app->cursor_job);
+    return app->modal.active || app->mini.active || app->isearch.active || app->replace.state != REPLACE_OFF || cursor_job_pending(&app->cursor_job);
 }
 
 // The buffer against its own line index (a full scan), its markers, its batch and its modified flag.
@@ -12973,6 +13130,13 @@ static b32 soak_check(Soak *s, u64 event) {
     i32 n = app_views(app, views);
     for (i32 i = 0; i < n; i++) if (!soak_check_view(t, views[i], s->h > 0 && !app_view_hidden(app, views[i]), event)) return 0;
     if (!soak_check_view(t, app->mini.view, 0, event)) return 0;
+    if (app->modal.field_buffer && !soak_check_view(t, &app->modal.field_view, 0, event)) return 0;
+    if (app->modal.active) { // the open command list: its rows, selection and top
+        ModalList *list = &app->modal.lists[0];
+        TEST_CHECK(t, (list->count ? list->selected >= 0 && list->selected < list->count : list->selected == -1) && list->top >= 0 &&
+                          list->top <= MAX(list->count - MAX(app->modal.g.rows, 1), 0),
+                   "soak event %U: the modal's list: %D rows, selected %D, top %D", event, list->count, list->selected, list->top);
+    }
     View *sel = app_selected_view(app);
     // Not *Messages*: a message logged outside a command (an undefined key) moves its point without scrolling
     // until the next command ("Later").
@@ -12984,6 +13148,7 @@ static b32 soak_check(Soak *s, u64 event) {
     }
     for (i32 i = 0; i < app->buffers.count; i++) if (!soak_check_buffer(t, app->buffers.entries[i].buffer, event)) return 0;
     if (!soak_check_buffer(t, app->mini.buffer, event)) return 0;
+    if (app->modal.field_buffer && !soak_check_buffer(t, app->modal.field_buffer, event)) return 0;
     TEST_CHECK(t, t->arena.committed <= MB(256), "soak event %U: the test arena committed %U MB", event, t->arena.committed >> 20);
     return 1;
 }
@@ -13111,6 +13276,21 @@ static void soak_event(Soak *s) {
     } else if (r < 850) {
         soak_keys(s, s->seqs[test_below(t, s->seq_count)], test_below(t, 10) == 0);
         s->keys++;
+    } else if (r < 856) { // a command list session: open, filter, move, then C-g, RET or a click outside
+        if (!soak_busy(app)) {
+            static const char *const sessions[] = { "C-S-p", "C-S-p g o", "C-S-p s a v e", "C-S-p e n d <down>", "C-S-p o t h e r C-n C-v M-v",
+                                                    "C-S-p w i n d o w <down> <down>", "C-S-p z q z", "C-S-p l i n e DEL DEL <up>" };
+            soak_keys(s, str8_cstr(sessions[test_below(t, ARRAY_COUNT(sessions))]), 0);
+            u64 how = test_below(t, 3);
+            if (how == 0) soak_keys(s, STR8_LIT("C-g"), 0);
+            else if (how == 1) soak_keys(s, STR8_LIT("RET"), 0);
+            else if (app->modal.active) {
+                Event e[2] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = 0, .y = 0 },
+                               { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 0, .y = 0 } };
+                soak_feed(s, e, 2);
+            }
+            s->modal_sessions++;
+        }
     } else if (r < 860) { // a chord nothing may be bound to
         static const char *mods[] = { "C-", "M-", "C-M-", "C-x C-", "C-c ", "C-x " };
         char token[16];
@@ -13292,11 +13472,12 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     app->ctx.dev_soak = 1;
     os_dev_write_root(s.dir);
     app_dev_feed_events(app, NULL, 0, &t.arena);
-    s.seqs = PUSH_ARRAY(&t.arena, String8, 4 * KEYMAP_CAP);
+    s.seqs = PUSH_ARRAY(&t.arena, String8, 5 * KEYMAP_CAP);
     soak_collect(&s, &app->config->global);
     soak_collect(&s, &app->config->minibuffer);
     soak_collect(&s, &app->config->isearch);
     soak_collect(&s, &app->config->search_results);
+    soak_collect(&s, &app->config->command_list);
     SoakMetrics *metrics = PUSH_ARRAY(&t.arena, SoakMetrics, SOAK_CHECKPOINTS); // before the mark the checks pop to
     OsDevReservation *res_mid = PUSH_ARRAY(&t.arena, OsDevReservation, 16384), *res_last = PUSH_ARRAY(&t.arena, OsDevReservation, 16384);
     i32 res_mid_count = 0, res_last_count = 0, checkpoints = 0;
@@ -13352,9 +13533,9 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             u64 per = (now - block_t0) * 1000 / SOAK_BLOCK; // ns an event
             peak = MAX(peak, mem);
             LOG("soak: %U events: %U ns an event in this block, private bytes %U KB, %d buffers, %d windows, %d cursors; keys %U, "
-                "text %U, mouse %U, resizes %U, focus %U; buffers killed %U, truncated %U; writes refused %U", e, per, mem >> 10,
-                app->buffers.count, window_count(&app->windows), app_selected_view(app)->cursor_count, s.keys, s.texts, s.mice,
-                s.resizes, s.focus, s.killed, s.truncated, os_dev_writes_refused());
+                "text %U, mouse %U, resizes %U, focus %U, command list sessions %U; buffers killed %U, truncated %U; writes refused %U", e,
+                per, mem >> 10, app->buffers.count, window_count(&app->windows), app_selected_view(app)->cursor_count, s.keys, s.texts,
+                s.mice, s.resizes, s.focus, s.modal_sessions, s.killed, s.truncated, os_dev_writes_refused());
             u64 settled = soak_settle(&s, initial_buffers), undo = 0;
             for (i32 i = 0; i < app->buffers.count; i++) undo += buffer_undo_memory(app->buffers.entries[i].buffer);
             per = soak_probe(&s);
@@ -13735,7 +13916,7 @@ i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
         { "mc fuzz", test_mc_fuzz }, { "view fuzz", test_view_fuzz }, { "window tree", test_window_tree },
         { "undo buffer", test_undo_buffer }, { "undo commands", test_undo_commands }, { "syntax", test_syntax },
         { "search", test_search }, { "undo fuzz", test_undo_fuzz }, { "kbd", test_kbd }, { "config", test_config },
-        { "fuzzy", test_fuzzy }, { "grep file", test_grep_file },
+        { "fuzzy", test_fuzzy }, { "grep file", test_grep_file }, { "modal", test_modal_fuzz },
     };
     Test t = { 0 };
     t.arena = arena_create(GB(4));
