@@ -89,6 +89,8 @@ typedef struct Leak {
     OsDevHandleType types[LEAK_WINDOWS + 1][64]; // the process's handles by type at each sample
     i32 type_count[LEAK_WINDOWS + 1];
     OsDevMemoryOwners owners[LEAK_WINDOWS + 1];  // the private memory by owner at each sample
+    OsDevReservation *res_first, *res_last;      // our reservations after window 1 and window 4 (what grew between)
+    i32 res_first_count, res_last_count;
 } Leak;
 
 typedef struct LeakScenario {
@@ -244,6 +246,8 @@ static String8 leak_state(Leak *L, Arena *a) {
 static void leak_sample(Leak *L, i32 w, i64 *v, i64 *caps) {
     L->type_count[w] = os_dev_handle_types(L->types[w], ARRAY_COUNT(L->types[w]));
     os_dev_memory_owners(&L->owners[w]);
+    if (w == 1) L->res_first_count = os_dev_reservations(L->res_first, 16384);
+    if (w == LEAK_WINDOWS) L->res_last_count = os_dev_reservations(L->res_last, 16384);
     OsDevMetrics m;
     os_dev_metrics(&m);
     RDevGpuMetrics g;
@@ -316,6 +320,12 @@ static i32 leak_verdict(Leak *L, const char *scenario, i64 v[LEAK_WINDOWS + 1][L
         i64 cap_len = mi->kind == LEAK_BOUNDED ? fmt_buf(cap_text, sizeof(cap_text), " (cap %D)", caps[k]) : 0;
         LOG("leak: | %s | %D | %D | %D | %D | %D | %s%D.%D | %s%S |", mi->name, v[0][k], v[1][k], v[2][k], v[3][k], v[4][k],
             tenths < 0 ? "-" : "", mag / 10, mag % 10, verdict, str8(cap_text, cap_len));
+    }
+    // Our reservations that grew between window 1 and window 4, by the functions that made them.
+    if (v[LEAK_WINDOWS][LEAK_M_COMMITTED] != v[1][LEAK_M_COMMITTED] || v[LEAK_WINDOWS][LEAK_M_RESERVATIONS] != v[1][LEAK_M_RESERVATIONS]) {
+        u8 prefix[96];
+        fmt_buf(prefix, sizeof(prefix), "leak:   %s: our reservations from window 1 to window 4%c", scenario, 0);
+        dev_log_reservation_growth((const char *)prefix, L->res_first, L->res_first_count, L->res_last, L->res_last_count, L->arena);
     }
     // The private memory by owner when it moved between the windows, and the process's handles by type wherever they
     // moved between the samples.
@@ -764,6 +774,9 @@ static void leak_run(Leak *L, const LeakScenario *s, i32 cycles) {
     L->host->feed(L->host->ctx, &wakeup, 1, 1);
     if (!leak_settle(L)) return;
     u64 base = arena_pos(L->arena);
+    L->res_first = PUSH_ARRAY(L->arena, OsDevReservation, 16384);
+    L->res_last = PUSH_ARRAY(L->arena, OsDevReservation, 16384);
+    L->res_first_count = L->res_last_count = 0;
     i32 bw = 0, bh = 0, aw = 0, ah = 0;
     u8 *before = s->shots ? leak_shot(L, L->arena, &bw, &bh) : NULL;
     String8 state0 = s->from_start ? leak_state(L, L->arena) : str8(NULL, 0);

@@ -15,6 +15,7 @@
 #include <dwmapi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <dbghelp.h>
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <dxgi1_4.h>

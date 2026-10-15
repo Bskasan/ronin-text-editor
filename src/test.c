@@ -12354,7 +12354,108 @@ static String8 soak_file(Test *t, String8 dir, const char *name, String8 text) {
 
 // One run; checks every `every` events (the workers' results and the tidying stay every SOAK_CHECK_EVERY, so a
 // rerun with every = 1 sees the same events). *failed_at: the event whose check failed.
-static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *failed_at) {
+// Our reservations that grew from snapshot a to snapshot b (or are new), the largest first, each with the functions that
+// made it: what the leak check and the soak log when our committed bytes moved (Phase 16).
+static void dev_log_reservation_growth(const char *prefix, OsDevReservation *a, i32 an, OsDevReservation *b, i32 bn, Arena *arena) {
+    u64 mark = arena_pos(arena);
+    i64 *delta = PUSH_ARRAY(arena, i64, bn + 1);
+    i32 gone = 0;
+    for (i32 i = 0; i < bn; i++) {
+        delta[i] = (i64)b[i].committed;
+        for (i32 j = 0; j < an; j++) if (a[j].base == b[i].base) delta[i] -= (i64)a[j].committed;
+    }
+    for (i32 j = 0; j < an; j++) {
+        b32 found = 0;
+        for (i32 i = 0; i < bn && !found; i++) found = a[j].base == b[i].base;
+        gone += !found;
+    }
+    LOG("%s: %d reservations before, %d after (%d released, %d new)", prefix, an, bn, gone, bn - an + gone);
+    for (i32 shown = 0; shown < 8; shown++) {
+        i32 best = -1;
+        for (i32 i = 0; i < bn; i++) if (delta[i] > 0 && (best < 0 || delta[i] > delta[best])) best = i;
+        if (best < 0) break;
+        LOG("%s:   +%D bytes (%U committed now) in the reservation made by %S", prefix, delta[best], b[best].committed,
+            os_dev_reservation_origin(arena, b[best].base));
+        delta[best] = 0;
+    }
+    arena_pop_to(arena, mark);
+}
+
+// The leak metrics at each 100,000-event checkpoint (Phase 16), split as --leak-check splits them. Verdict metrics,
+// exactly flat: the handle ledger, GDI objects, our threads, events, processes and watches. Informational (WATCH when
+// they rise at each of the last three checkpoints): the memory and our reservations, process handles, USER objects,
+// the working set and the threads. The memory is informational here: the random walk keeps raising the high-water
+// marks of the persistent arenas (the minibuffer, the kill ring, *Messages*) with the largest text it happens to push
+// through them, and the set of buffers it leaves (a buffer has 7 to 9 arenas) differs from one checkpoint to the
+// next; the reservations that grew are listed by the functions that made them, and the memory verdict comes from
+// --leak-check's deterministic scenarios. Applied over the last 500,000 events once there are 600,000; the undo logs
+// (up to undo_limit_mb a buffer) are left out of the memory rows.
+enum {
+    SOAK_M_LEDGER,
+    SOAK_M_GDI,
+    SOAK_M_THREADS,
+    SOAK_M_EVENTS,
+    SOAK_M_PROCESSES,
+    SOAK_M_WATCHES,
+    SOAK_M_PRIVATE, // informational from here on
+    SOAK_M_COMMITTED,
+    SOAK_M_RESERVATIONS,
+    SOAK_M_HANDLES,
+    SOAK_M_USER,
+    SOAK_M_WORKING_SET,
+    SOAK_M_PROCESS_THREADS,
+    SOAK_M_COUNT
+};
+#define SOAK_CHECKPOINTS 64
+typedef i64 SoakMetrics[SOAK_M_COUNT];
+
+static const char *const soak_metric_names[SOAK_M_COUNT] = {
+    "handle ledger (ours)", "GDI objects", "our threads", "our events", "our processes", "directory watches",
+    "private commit without the undo logs (bytes)", "our committed bytes without the undo logs", "our reservations", "process handles",
+    "USER objects",
+    "working set (bytes)", "process threads (Toolhelp)",
+};
+
+static void soak_sample(i64 *v, u64 settled_private, u64 undo) {
+    OsDevMetrics m;
+    os_dev_metrics(&m);
+    v[SOAK_M_RESERVATIONS] = m.reservations;
+    v[SOAK_M_LEDGER] = m.live_handles;
+    v[SOAK_M_GDI] = m.gdi_objects;
+    v[SOAK_M_THREADS] = m.live_threads;
+    v[SOAK_M_EVENTS] = m.live_events;
+    v[SOAK_M_PROCESSES] = m.live_processes;
+    v[SOAK_M_WATCHES] = m.watches;
+    v[SOAK_M_PRIVATE] = (i64)settled_private;
+    v[SOAK_M_COMMITTED] = (i64)(m.reserved_committed > undo ? m.reserved_committed - undo : 0);
+    v[SOAK_M_HANDLES] = m.handles;
+    v[SOAK_M_USER] = m.user_objects;
+    v[SOAK_M_WORKING_SET] = (i64)m.working_set;
+    v[SOAK_M_PROCESS_THREADS] = m.process_threads;
+}
+
+// The table over the checkpoints from 500,000 events on (index 4); returns the LEAK verdicts.
+static i32 soak_leak_verdict(SoakMetrics *v, i32 count) {
+    i32 first = 4, leaks = 0;
+    LOG("soak: leak metrics, the checkpoints from %d00,000 to %d00,000 events:", first + 1, count);
+    for (i32 k = 0; k < SOAK_M_COUNT; k++) {
+        i32 steps = 0, rising = 0;
+        for (i32 j = first + 1; j < count; j++) {
+            i64 d = v[j][k] - v[j - 1][k];
+            steps += d > 0;
+            if (j >= count - 3) rising += d > 0;
+        }
+        const char *verdict = k >= SOAK_M_PRIVATE ? (rising == 3 ? "WATCH" : "") : steps ? "LEAK" : "OK";
+        leaks += verdict[0] == 'L';
+        u8 row[512];
+        i64 n = 0;
+        for (i32 j = first; j < count; j++) n += fmt_buf(row + n, (i64)sizeof(row) - n, "%D | ", v[j][k]);
+        LOG("soak: | %s | %S%s |", soak_metric_names[k], str8(row, n), verdict);
+    }
+    return leaks;
+}
+
+static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *failed_at, i32 *leak_verdicts) {
     Test t = { 0 };
     t.arena = arena_create(GB(4));
     t.tmp_dir = tmp_dir;
@@ -12404,6 +12505,10 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     soak_collect(&s, &app->config->minibuffer);
     soak_collect(&s, &app->config->isearch);
     soak_collect(&s, &app->config->search_results);
+    SoakMetrics *metrics = PUSH_ARRAY(&t.arena, SoakMetrics, SOAK_CHECKPOINTS); // before the mark the checks pop to
+    OsDevReservation *res_mid = PUSH_ARRAY(&t.arena, OsDevReservation, 16384), *res_last = PUSH_ARRAY(&t.arena, OsDevReservation, 16384);
+    i32 res_mid_count = 0, res_last_count = 0, checkpoints = 0;
+    *leak_verdicts = 0;
     u64 base = arena_pos(&t.arena);
     i32 initial_buffers = app->buffers.count;
     LOG("soak: %U events, seed 0x%X, %d key sequences, files in %S", events, seed, s.seq_count, s.dir);
@@ -12464,6 +12569,9 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
                 undo >> 10, app->kills.small_committed >> 10, per);
             // The undo logs grow up to their limit (undo_limit_mb a buffer): the rest is what must stay flat.
             settled = settled > undo ? settled - undo : 0;
+            if (checkpoints < SOAK_CHECKPOINTS) soak_sample(metrics[checkpoints++], settled, undo);
+            if (checkpoints == 5) res_mid_count = os_dev_reservations(res_mid, 16384);
+            res_last_count = os_dev_reservations(res_last, 16384);
             if (e == SOAK_BLOCK) {
                 first_us = per;
                 mem_after_first = settled;
@@ -12491,6 +12599,17 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             t.failures++;
         }
     }
+    if (!t.failures && checkpoints >= 6) {
+        *leak_verdicts = soak_leak_verdict(metrics, checkpoints);
+        if (metrics[checkpoints - 1][SOAK_M_COMMITTED] != metrics[4][SOAK_M_COMMITTED] ||
+            metrics[checkpoints - 1][SOAK_M_RESERVATIONS] != metrics[4][SOAK_M_RESERVATIONS]) {
+            dev_log_reservation_growth("soak: our reservations from 500,000 events to the end", res_mid, res_mid_count, res_last, res_last_count,
+                                       &t.arena);
+        }
+        if (*leak_verdicts) LOG("soak: LEAK: %d leak metric(s) grew over the last 500,000 events", *leak_verdicts);
+    } else if (!t.failures) {
+        LOG("soak: the leak metrics' rule needs 600,000 events (the last 500,000 after a first checkpoint): skipped");
+    }
     u64 refused = os_dev_writes_refused();
     for (i32 i = 0; i < 10 && soak_busy(app); i++) soak_keys(&s, STR8_LIT("C-g"), 0);
     i32 leaks = app_shutdown(app);
@@ -12500,7 +12619,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     }
     for (i32 k = 0; k < 5 && slow[k].us; k++) LOG("soak: slowest event %d: %U us at event %U: %s", k + 1, slow[k].us, slow[k].event, slow[k].what);
     LOG("soak: %s, %U events in %U ms (seed 0x%X), private bytes peak %U KB, at the end %U KB; writes refused outside the directory %U",
-        t.failures ? "FAIL" : "PASS", done, (os_time_us() - t0) / 1000, seed, peak >> 10, os_dev_private_bytes() >> 10,
+        t.failures || *leak_verdicts ? "FAIL" : "PASS", done, (os_time_us() - t0) / 1000, seed, peak >> 10, os_dev_private_bytes() >> 10,
         refused);
     os_dev_write_root(STR8_LIT(""));
     os_release(t.arena.base);
@@ -12509,13 +12628,14 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
 
 // --soak N. A failure found by the periodic check is run again with a check after every event, up to it, to
 // name the event that broke the invariant.
-i32 test_soak(u64 events, u64 seed, String8 tmp_dir) {
+i32 test_soak(u64 events, u64 seed, String8 tmp_dir, i32 *leaks) {
     u64 failed_at = 0;
-    i32 failures = soak_run(events, seed, tmp_dir, SOAK_CHECK_EVERY, &failed_at);
+    i32 failures = soak_run(events, seed, tmp_dir, SOAK_CHECK_EVERY, &failed_at, leaks);
     if (failed_at) {
         LOG("soak: again up to event %U, checked after every event", failed_at);
         u64 exact = 0;
-        soak_run(failed_at, seed, tmp_dir, 1, &exact);
+        i32 again;
+        soak_run(failed_at, seed, tmp_dir, 1, &exact, &again);
     }
     return failures;
 }

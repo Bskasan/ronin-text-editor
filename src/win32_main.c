@@ -10,6 +10,7 @@
 #define PSAPI_VERSION 2 // K32GetProcessMemoryInfo, exported by kernel32: no psapi.lib
 #include <psapi.h>
 #include <tlhelp32.h> // the leak check's process thread count
+#include <dbghelp.h>  // the leak check names the functions that made a reservation (dbghelp.dll loaded on use)
 #endif
 
 // platform.h's modifier bits are KEYMOD_*: winuser.h defines MOD_ALT (0x1) and MOD_SHIFT (0x4) for
@@ -206,11 +207,14 @@ static void win32_utf8_to_wide_fixed(String8 s, u16 *out, i64 cap) {
 }
 
 #if RONIN_DEV
-// Every os_reserve range, for --memory-report (our arenas against everything else in the address space). Any
-// thread; dev only. The only global besides g_platform: the first reservations come before the Platform exists.
+// Every os_reserve range, for --memory-report (our arenas against everything else in the address space), with the
+// callers that made it (the leak check names an arena that grew by them). Any thread; dev only. The only global
+// besides g_platform: the first reservations come before the Platform exists.
+#define WIN32_DEV_ORIGIN_FRAMES 5
 typedef struct Win32DevReservations {
     SRWLOCK lock;
     void *base[16384];
+    void *origin[16384][WIN32_DEV_ORIGIN_FRAMES]; // return addresses: arena_create, its caller, ...
     i32 count;
 } Win32DevReservations;
 static Win32DevReservations win32_dev_reservations = { SRWLOCK_INIT };
@@ -221,8 +225,13 @@ void *os_reserve(u64 size) {
 #if RONIN_DEV
     Win32DevReservations *r = &win32_dev_reservations;
     if (p) {
+        void *frames[WIN32_DEV_ORIGIN_FRAMES] = { 0 };
+        RtlCaptureStackBackTrace(1, WIN32_DEV_ORIGIN_FRAMES, frames, NULL);
         AcquireSRWLockExclusive(&r->lock);
-        if (r->count < (i32)ARRAY_COUNT(r->base)) r->base[r->count++] = p;
+        if (r->count < (i32)ARRAY_COUNT(r->base)) {
+            memcpy(r->origin[r->count], frames, sizeof(frames));
+            r->base[r->count++] = p;
+        }
         ReleaseSRWLockExclusive(&r->lock);
     }
 #endif
@@ -303,6 +312,7 @@ b32 os_release(void *ptr) {
     for (i32 i = 0; i < r->count; i++) {
         if (r->base[i] == ptr) {
             r->base[i] = r->base[--r->count];
+            memcpy(r->origin[i], r->origin[r->count], sizeof(r->origin[i]));
             break;
         }
     }
@@ -1327,6 +1337,53 @@ void os_dev_metrics(OsDevMetrics *m) {
         if (again == m->handles) break;
         m->handles = again;
     }
+}
+
+i32 os_dev_reservations(OsDevReservation *out, i32 cap) {
+    Win32DevReservations *r = &win32_dev_reservations;
+    AcquireSRWLockExclusive(&r->lock);
+    i32 n = MIN(r->count, cap);
+    for (i32 i = 0; i < n; i++) out[i] = (OsDevReservation){ r->base[i], win32_dev_reservation_committed(r->base[i]) };
+    ReleaseSRWLockExclusive(&r->lock);
+    return n;
+}
+
+// The functions that made a reservation, through dbghelp.dll (a system DLL, loaded here in dev builds only, with the
+// executable's PDB); their addresses when it is not there.
+String8 os_dev_reservation_origin(Arena *arena, void *base) {
+    typedef BOOL (WINAPI *SymInitializeFn)(HANDLE, PCWSTR, BOOL);
+    typedef DWORD (WINAPI *SymSetOptionsFn)(DWORD);
+    typedef BOOL (WINAPI *SymFromAddrFn)(HANDLE, DWORD64, DWORD64 *, SYMBOL_INFO *);
+    static SymFromAddrFn from_addr;
+    static b32 tried;
+    if (!tried) {
+        tried = 1;
+        HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");
+        SymInitializeFn init = dbghelp ? (SymInitializeFn)(void *)GetProcAddress(dbghelp, "SymInitializeW") : NULL;
+        SymSetOptionsFn options = dbghelp ? (SymSetOptionsFn)(void *)GetProcAddress(dbghelp, "SymSetOptions") : NULL;
+        if (init && options) {
+            options(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+            if (init(GetCurrentProcess(), NULL, TRUE)) from_addr = (SymFromAddrFn)(void *)GetProcAddress(dbghelp, "SymFromAddr");
+        }
+    }
+    void *frames[WIN32_DEV_ORIGIN_FRAMES] = { 0 };
+    Win32DevReservations *r = &win32_dev_reservations;
+    AcquireSRWLockExclusive(&r->lock);
+    for (i32 i = 0; i < r->count; i++) if (r->base[i] == base) memcpy(frames, r->origin[i], sizeof(frames));
+    ReleaseSRWLockExclusive(&r->lock);
+    String8 s = str8(NULL, 0);
+    for (i32 k = 0; k < WIN32_DEV_ORIGIN_FRAMES && frames[k]; k++) {
+        union { SYMBOL_INFO info; u8 bytes[sizeof(SYMBOL_INFO) + 256]; } sym = { 0 };
+        sym.info.SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym.info.MaxNameLen = 255;
+        DWORD64 disp = 0;
+        if (from_addr && from_addr(GetCurrentProcess(), (DWORD64)(uintptr_t)frames[k], &disp, &sym.info)) {
+            s = str8_fmt(arena, "%S%s%S", s, k ? " <- " : "", str8((u8 *)sym.info.Name, (i64)sym.info.NameLen));
+        } else {
+            s = str8_fmt(arena, "%S%s%X", s, k ? " <- " : "", (u64)(uintptr_t)frames[k]);
+        }
+    }
+    return s;
 }
 
 // ntdll's handle snapshot of this process (ProcessHandleInformation, Windows 8 and later) and each type's name
@@ -6006,9 +6063,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         return failed ? EXIT_TEST : EXIT_OK;
     }
     if (p->soak_events) { // headless: random key and mouse events through the app
-        i32 failures = test_soak(p->soak_events, p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+        i32 leaks = 0;
+        i32 failures = test_soak(p->soak_events, p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir), &leaks);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
-        return failures ? EXIT_TEST : EXIT_OK;
+        return failures ? EXIT_TEST : leaks ? EXIT_LEAK : EXIT_OK;
     }
     if (p->fuzz_count) { // headless: the seeded groups of --test over a range of seeds, in worker processes
         i32 code;
