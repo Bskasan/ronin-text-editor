@@ -246,6 +246,12 @@ typedef struct OsDevMemoryOwners { // committed private memory by owner (--memor
     u64 arenas, heaps, stacks, other, image_w, mapped_w;
 } OsDevMemoryOwners;
 void os_dev_memory_owners(OsDevMemoryOwners *out);
+typedef struct OsDevReservation {
+    void *base;
+    u64 committed;
+} OsDevReservation;
+i32     os_dev_reservations(OsDevReservation *out, i32 cap);   // our arenas' reservations now; the number filled
+String8 os_dev_reservation_origin(Arena *arena, void *base);    // "arena_create <- buffer_create <- ...": who made it
 String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
 void    os_dev_set_recovery_dir(String8 dir); // tests: the recovery directory from here on
 #endif
@@ -445,7 +451,7 @@ b32  app_dev_atlas_has_coverage(App *app);
 u8  *app_dev_atlas(App *app, i32 *size, i32 *rows); // RGBA8, size wide, rows high
 i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file tests; failures, details in the log
 i32  test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir); // --fuzz-seeds: the seeded groups over seeds
-i32  test_soak(u64 events, u64 seed, String8 tmp_dir); // --soak N: random key and mouse events through the headless app
+i32  test_soak(u64 events, u64 seed, String8 tmp_dir, i32 *leaks); // --soak N: random events through the headless app; failures (leaks: LEAK verdicts)
 i32  test_map_report(String8 map_path, String8 src_dir); // --map-report: the release exe's bytes by module (the log)
 // --leak-check (leak.c, Phase 16): the platform drives the shown window through these.
 typedef struct LeakHost {
