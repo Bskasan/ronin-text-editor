@@ -1795,7 +1795,7 @@ accepted); the exit check PASS.
 - [x] 15. Performance and size pass (including an optional CRT-free build)
 - [x] 16. Memory and resource leak audit
 - [x] 17. Repository and build-folder cleanup
-- [ ] 18. Modal overlay and the command list
+- [x] 18. Modal overlay and the command list
 
 ## Decisions
 
