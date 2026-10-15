@@ -1866,7 +1866,7 @@ String8 app_dev_text(App *app, Arena *arena) {
 
 String8 app_dev_binding(App *app, Arena *arena, i32 keymap, i32 index, const char **command) {
     Keymap *map = keymap == 0 ? &app->config->global : keymap == 1 ? &app->config->minibuffer : keymap == 2 ? &app->config->isearch
-                : keymap == 3 ? &app->config->search_results : &app->config->compilation;
+                : keymap == 3 ? &app->config->search_results : keymap == 4 ? &app->config->compilation : &app->config->command_list;
     if (index < 0 || index >= map->count) return str8(NULL, 0);
     *command = map->bindings[index].command->name;
     u8 *text = PUSH_ARRAY(arena, u8, KEY_SEQ_TEXT_CAP);

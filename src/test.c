@@ -5196,6 +5196,29 @@ static b32 test_config(Test *t, u64 seed) {
         TEST_CHECK(t, follows && clamped && kept, "config: derived inactive mode line colors (%d %d %d), startup_windows clamped",
                    follows, clamped, kept);
     }
+    // The modal colors (Phase 18; past the 32nd color): their defaults, the two derived ones, one set and kept; the
+    // [keys command-list] section binds in its own map.
+    {
+        u64 mark = arena_pos(&t->arena);
+        Config *w = PUSH_STRUCT(&t->arena, Config);
+        config_init(w);
+        config_parse(w, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+        Theme *m = &w->theme;
+        b32 defaults = m->modal_background == 0x0c3434 && m->modal_border == 0x2e8b8b && m->modal_description == 0xa8977a &&
+                       m->modal_selection == 0x0000ff && m->modal_key == 0x7ad0c6;
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nselection = #111111\nnumber = #222222\nmodal_key = #333333\n"
+                                            "[keys command-list]\nC-n next-line\n"), STR8_LIT("a.conf"));
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nnumber = #444444\n"), STR8_LIT("b.conf"));
+        KeySeq seq;
+        const char *error;
+        key_seq_parse(STR8_LIT("C-n"), &seq, &error);
+        b32 derived = m->modal_selection == 0x111111 && m->modal_key == 0x333333 && m->search_line_number == 0x444444;
+        b32 keys = keymap_get(&w->command_list, &seq) == &CMD_NEXT_LINE && w->command_list.count == 1 &&
+                   str8_equal(str8_cstr(w->command_list.name), STR8_LIT("command-list")) && w->diags.errors == 0;
+        arena_pop_to(&t->arena, mark);
+        TEST_CHECK(t, defaults && derived && keys, "config: modal colors: defaults %d, derived and kept %d, [keys command-list] %d",
+                   defaults, derived, keys);
+    }
 
     // Parse time of the built-in config (about as large as a full user file), for the log.
     u64 t0 = os_time_us();
@@ -5253,7 +5276,7 @@ static b32 test_config(Test *t, u64 seed) {
         "font = x\n");                        // 25: a key sequence "font =", command "x"
     config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
     static const char *expected[] = {
-        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results] or [keys compilation])",
+        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])",
         "t.conf:3: font_size: 'big' is not a number",
         "t.conf:4: unknown setting 'nosuch'",
         "t.conf:5: expected name = value",
@@ -5263,7 +5286,7 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:11: unknown command 'no-such-command'",
         "t.conf:12: expected a key sequence and a command",
         "t.conf:13: unknown section [bogus]",
-        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results] or [keys compilation])",
+        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])",
         "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
         "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
         "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",
