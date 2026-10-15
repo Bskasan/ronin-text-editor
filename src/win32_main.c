@@ -905,8 +905,7 @@ static Win32PoolThread *win32_pool_take(Platform *p) {
         n->go = CreateEventW(NULL, FALSE, FALSE, NULL);
         n->done = CreateEventW(NULL, TRUE, FALSE, NULL);
         n->thread = n->go && n->done ? CreateThread(NULL, 0, win32_pool_main, n, 0, NULL) : NULL;
-        if (n->thread) {
-            WIN32_DEV_HANDLES(3);
+        if (n->thread) { // the slot's handles are not in the ledger: the slots are counted apart (bounded by WIN32_POOL_MAX)
             t = n;
         } else {
             if (n->go) CloseHandle(n->go);
@@ -976,7 +975,6 @@ void os_dev_thread_pool_end(void) {
         CloseHandle(t->go);
         CloseHandle(t->done);
         t->thread = t->go = t->done = NULL;
-        WIN32_DEV_HANDLES(-3);
     }
     ReleaseSRWLockExclusive(&p->pool_lock);
 }
@@ -1322,12 +1320,10 @@ i32 os_dev_live_threads(void) {
 
 void os_dev_thread_abandoned(void) {
     InterlockedDecrement(&g_platform->live_threads); // still running, but the process exit ends it: not a leak
-    WIN32_DEV_HANDLES(-3);                           // ... its slot's thread and events too
 }
 
 void os_dev_thread_reclaimed(void) {
     InterlockedIncrement(&g_platform->live_threads);
-    WIN32_DEV_HANDLES(3);
 }
 
 i32 os_dev_live_events(void) {
@@ -1397,6 +1393,10 @@ void os_dev_metrics(OsDevMetrics *m) {
     m->live_events = os_dev_live_events();
     m->live_processes = os_dev_live_processes();
     m->watches = os_dev_watch_count();
+    AcquireSRWLockExclusive(&g_platform->pool_lock);
+    for (i32 i = 0; i < g_platform->pool_count; i++) m->worker_slots += g_platform->pool[i].thread != NULL;
+    ReleaseSRWLockExclusive(&g_platform->pool_lock);
+    m->worker_slots_max = WIN32_POOL_MAX;
     Win32DevReservations *r = &win32_dev_reservations;
     AcquireSRWLockExclusive(&r->lock);
     m->reservations = r->count;
