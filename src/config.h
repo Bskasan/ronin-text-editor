@@ -63,6 +63,9 @@ typedef struct Theme { // 0xRRGGBB
     u32 mode_line_inactive_text;       // sets them, they are background and text
     u32 search_file, search_line_number; // a results line's file name and line:column (keyword and number unless set)
     u32 compilation_error, compilation_warning, compilation_info; // a build's kind words in *compilation*
+    u32 modal_background, modal_border; // a modal box (the command list): its inside and its frame and separators
+    u32 modal_selection;               // its selected row (selection unless set)
+    u32 modal_description, modal_key;  // the command list's descriptions and key bindings (number unless set)
 } Theme;
 
 typedef struct ConfigDiag {
@@ -85,7 +88,8 @@ typedef struct Config {
     Keymap isearch;    // [keys isearch]: searched before global while an isearch is active
     Keymap search_results; // [keys search-results]: before global in a results buffer (*search*, *occur*)
     Keymap compilation;    // [keys compilation]: before global in *compilation*
-    u32 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
+    Keymap command_list;   // [keys command-list]: before global while the command list is open
+    u64 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
     ConfigDiags diags;
 } Config;
 

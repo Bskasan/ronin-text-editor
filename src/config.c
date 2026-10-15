@@ -13,6 +13,7 @@ void config_init(Config *c) {
     c->isearch.name = "isearch";
     c->search_results.name = "search-results";
     c->compilation.name = "compilation";
+    c->command_list.name = "command-list";
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +252,13 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "compilation_error", offsetof(Theme, compilation_error) },
     { "compilation_warning", offsetof(Theme, compilation_warning) },
     { "compilation_info", offsetof(Theme, compilation_info) },
+    { "modal_background", offsetof(Theme, modal_background) },
+    { "modal_border", offsetof(Theme, modal_border) },
+    { "modal_selection", offsetof(Theme, modal_selection) },
+    { "modal_description", offsetof(Theme, modal_description) },
+    { "modal_key", offsetof(Theme, modal_key) },
 };
-_Static_assert(ARRAY_COUNT(config_colors) <= 32, "Config.colors_set has a bit per color");
+_Static_assert(ARRAY_COUNT(config_colors) <= 64, "Config.colors_set has a bit per color");
 
 // The colors whose default is another color: set by no file so far, they follow it.
 static void config_derived_colors(Config *c) {
@@ -261,10 +267,12 @@ static void config_derived_colors(Config *c) {
         { offsetof(Theme, mode_line_inactive_text), offsetof(Theme, text) },
         { offsetof(Theme, search_file), offsetof(Theme, keyword) },
         { offsetof(Theme, search_line_number), offsetof(Theme, number) },
+        { offsetof(Theme, modal_selection), offsetof(Theme, selection) },
+        { offsetof(Theme, modal_key), offsetof(Theme, number) },
     };
     for (i32 d = 0; d < ARRAY_COUNT(derived); d++) {
         for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {
-            if (config_colors[i].offset != derived[d].offset || (c->colors_set & (1u << i))) continue;
+            if (config_colors[i].offset != derived[d].offset || (c->colors_set & (1ull << i))) continue;
             *(u32 *)((u8 *)&c->theme + derived[d].offset) = *(u32 *)((u8 *)&c->theme + derived[d].from);
         }
     }
@@ -279,7 +287,7 @@ static void config_color(ConfigParser *p, String8 name, String8 value) {
             return;
         }
         *(u32 *)((u8 *)&p->config->theme + config_colors[i].offset) = rgb;
-        p->config->colors_set |= 1u << i;
+        p->config->colors_set |= 1ull << i;
         return;
     }
     config_diag(p, 0, "unknown color '%S'", config_quote(name));
@@ -358,7 +366,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         i32 header = config_header(line, &head);
         if (header) {
             if (header < 0) {
-                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results] or [keys compilation])");
+                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])");
                 section = CONFIG_SECTION_UNKNOWN;
                 continue;
             }
@@ -366,14 +374,15 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
                     : str8_equal(head, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
                     : CONFIG_SECTION_UNKNOWN;
             // [keys] and [keys global] bind in the global map, [keys minibuffer], [keys isearch],
-            // [keys search-results] and [keys compilation] in theirs.
+            // [keys search-results], [keys compilation] and [keys command-list] in theirs.
             if (str8_starts_with(head, STR8_LIT("keys")) && (head.len == 4 || config_is_blank(head.data[4]))) {
                 String8 map = config_trim(str8(head.data + 4, head.len - 4));
                 p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
                        : str8_equal(map, STR8_LIT("minibuffer"))       ? &c->minibuffer
                        : str8_equal(map, STR8_LIT("isearch"))          ? &c->isearch
                        : str8_equal(map, STR8_LIT("search-results"))   ? &c->search_results
-                       : str8_equal(map, STR8_LIT("compilation"))      ? &c->compilation : NULL;
+                       : str8_equal(map, STR8_LIT("compilation"))      ? &c->compilation
+                       : str8_equal(map, STR8_LIT("command-list"))     ? &c->command_list : NULL;
                 if (p.keys) section = CONFIG_SECTION_KEYS;
             }
             if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(head));
@@ -381,7 +390,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         }
         switch (section) {
         case CONFIG_SECTION_NONE:
-            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results] or [keys compilation])");
+            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])");
             break;
         case CONFIG_SECTION_UNKNOWN:
             break;
