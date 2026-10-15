@@ -5674,6 +5674,7 @@ static void win32_dev_dpi_send(Platform *p, u32 dpi) {
 }
 
 static i32 win32_dev_dpi_check(Platform *p) {
+    if (!os_make_dir(p->dpi_check)) return EXIT_OUTPUT_FILE; // made when missing (its parent must exist)
     app_dev_force_focus(p->app, 1);
     u32 dpi0 = p->dpi, dpi1 = dpi0 * 5 / 4;
     u8 *a, *b, *c;
