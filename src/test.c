@@ -8103,6 +8103,10 @@ static b32 test_scanner(Test *t, u64 seed) {
     r = s->result;
     project_scan_free(s);
     TEST_CHECK(t, r.limit && r.files == 5 && x.file_count == 5, "scanner: limit: %D files, limit %d", r.files, r.limit);
+    // The junction loop goes again (git status --ignored would walk into it); test_run removes it too, should a
+    // check above have returned first.
+    OsFileInfo loop_info;
+    TEST_CHECK(t, os_dev_remove_dir(loop) && os_file_info(loop, &loop_info) == OS_FILE_NOT_FOUND, "scanner: the junction was not removed");
 
     // A cancel in the middle: held after the first batch of the big tree, then cancelled.
     String8 big = test_big_tree(t);
@@ -12225,6 +12229,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_project_file(&t);
     arena_reset(&t.arena);
     test_scanner(&t, seed);
+    arena_reset(&t.arena);
+    os_dev_remove_dir(str8_fmt(&t.arena, "%S\\p11scan\\src\\loop", tmp_dir)); // the scanner's junction, whatever its checks did
     arena_reset(&t.arena);
     test_fuzzy(&t, seed);
     arena_reset(&t.arena);
