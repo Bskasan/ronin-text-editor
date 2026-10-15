@@ -12,14 +12,9 @@ changed.
 
 ## Status
 
-Version 0.1.0 ([CHANGELOG.md](CHANGELOG.md)). Early and experimental: ronin is a learning project (see
-[How this project is made](#how-this-project-is-made)). It was built in 16 phases (listed in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#roadmap)), all done: window and renderer, font, text buffer,
-views, commands and the config file, editing, the minibuffer, syntax highlighting, isearch and
-query-replace, window splitting, projects and fuzzy file open, project-wide search, building and jumping
-to errors, multiple cursors, a last pass over correctness, size, startup, latency and memory with a
-crash safety net, and an audit for memory and resource leaks (the fixes it led to are under "Unreleased" in
-the changelog). What may come next is under [Roadmap](#roadmap).
+Version 0.1.0 ([CHANGELOG.md](CHANGELOG.md)), a pre-release. Early and experimental: ronin is a learning
+project (see [How this project is made](#how-this-project-is-made)). What may come next is under
+[Roadmap](#roadmap).
 
 Windows 10 or later, x64; developed and tested on Windows 11 only.
 
@@ -147,18 +142,18 @@ Measured during development and recorded in [docs/ARCHITECTURE.md](docs/ARCHITEC
 "Measurements" sections). Machine: AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800
 window.
 
-| what | value | where |
-|---|---|---|
-| executable size (release) | 397,312 bytes, the icon and the version resource included (Phase 14: 482,304); no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) | Phase 15 |
-| startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms | Phase 15 |
-| typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* | Phases 11, 14 and 15 |
-| typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) | Phase 15 |
-| typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms | Phase 14 |
-| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build and with 10,000 cursors | Phases 13, 14 and 15 |
-| memory (private bytes, idle) | 57-59 MB with an empty buffer (Phase 14: 76-77), ~3 MB of it our arenas and the rest mostly Direct3D and the driver; 174-175 MB with a 100 MB file open | Phase 15 |
-| loading a 100 MB file | 35-40 ms | Phase 3 |
-| searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without | Phase 12 |
-| a build printing 100 MB as fast as it can | read into `*compilation*` in 0.33 s, no frame over 0.3 ms; typing meanwhile as fast as without | Phase 13 |
+| what | value |
+|---|---|
+| executable size (release) | 398,336 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
+| startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms |
+| typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* |
+| typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) |
+| typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms |
+| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build and with 10,000 cursors |
+| memory (private bytes, idle) | 57-59 MB with an empty buffer, ~3 MB of it our arenas and the rest mostly Direct3D and the driver; 174-175 MB with a 100 MB file open |
+| loading a 100 MB file | 35-40 ms |
+| searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without |
+| a build printing 100 MB as fast as it can | read into `*compilation*` in 0.33 s, no frame over 0.3 ms; typing meanwhile as fast as without |
 
 The time to the screen is measured to the vertical blank that shows the frame (DXGI's frame statistics,
 `--bench-latency`); the display's own scan-out and response come after it.
@@ -188,6 +183,12 @@ cmd //c ".\build.bat release"
 | `build.bat` | `build\ronin_debug.exe` | debug, with the dev flags and the D3D11 debug layer |
 | `build.bat release` | `build\ronin.exe` | optimized, no dev code |
 | `build.bat bench` | `build\ronin_bench.exe` | optimized, with the dev flags (tests and benchmarks) |
+| `build.bat clean` | nothing | removes `build\` and `dist\`, everything generated, and nothing else |
+
+Everything a build, the tests or `dist.bat` make goes to `build\` or `dist\`; nothing else in the
+repository is generated, and a fresh clone needs only `build.bat`. `build.bat clean` refuses (exit code 10,
+nothing removed) when it is not in ronin's repository root or when `build\` or `dist\` is a junction or a
+link.
 
 The build is a single unity translation unit (`src/ronin.c`) plus one C++ file for DirectWrite. The
 icon is drawn by a small program, `tools/make_icon.c`, that every build compiles and runs; with the
@@ -208,6 +209,9 @@ ronin <directory> [[+LINE[:COLUMN]] file ...]
 - A file that does not exist is opened as an empty buffer and created when saved.
 - `ronin --version` prints "ronin 0.1.0" and exits.
 - An unknown argument starting with `--` makes ronin exit at once with code 10.
+
+`samples/` has one small file per language (C, C++, C#, JavaScript, TypeScript and Jai) to try the
+highlighting and the indentation on, e.g. `ronin samples\ring.c`.
 
 The test and benchmark flags of the dev builds are listed in [CLAUDE.md](CLAUDE.md).
 
@@ -345,7 +349,8 @@ The full list is the "Later" section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE
 
 ## Roadmap
 
-The 15 phases are done; nothing more is scheduled. What would come next, from the "Later" list:
+What is planned, from the "Later" list in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later); none of it has
+a date.
 
 Likely, in no fixed order:
 - Editing: auto-save, prefix arguments (`C-u`), the mark ring, rectangles, `ESC` as Meta.
@@ -360,7 +365,7 @@ Likely, in no fixed order:
 - Windows: window configurations (undo of window changes).
 
 Not planned (by design): a language server or tree-sitter, proportional fonts, ligatures, bold and
-italic, tabs, menus, toolbars and scroll bars. Tried in Phase 15 and left out because they measured no
+italic, tabs, menus, toolbars and scroll bars. Tried and left out because they measured no
 better: a waitable swap chain and Present(0, 0) for input latency, other `D3D11CreateDevice` options for
 startup.
 
@@ -396,8 +401,9 @@ Testing is built into the dev builds:
   leaks (processes, threads and handles too).
 - Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans, the
   project-wide search, a build's output and typing at up to 10,000 cursors on a 100 MB file or tree.
-- `verify.bat` builds the three configurations, runs the smoke and the tests, checks the release exe's
-  imported DLLs against a committed list and prints one PASS or FAIL line; it is the gate before every
+- `verify.bat` builds the three configurations, checks `build.bat clean` on a scratch tree, runs the
+  smoke and the tests, checks the release exe's imported DLLs against a committed list and prints one
+  PASS or FAIL line; it is the gate before every
   commit. `verify.bat phase` adds the seed sweep, the soak and the leak check.
 
 The design, the decisions and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);

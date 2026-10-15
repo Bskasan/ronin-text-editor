@@ -5,7 +5,7 @@ ideas from Focus and 4coder. Emacs look and model (no tabs, scrollbars, menus or
 side-by-side windows, inverse-video mode line, minibuffer, block cursor, point/mark, kill
 ring, isearch, M-x), pure Emacs default keys rebindable from a hot-reloaded text config.
 Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no LSP, no
-tree-sitter). Built in 15 phases; see docs/ARCHITECTURE.md for the roadmap, module map,
+tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
 decisions and the "Later" list. Implement only the phase you are asked for.
 
 **Priorities, in order:** (1) input latency and speed, (2) small and simple, (3) features.
@@ -60,7 +60,8 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - Scope discipline: build only what the current phase asks for. No speculative
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
-  configurations (each with the macro check), runs `--smoke` on the debug and the bench build and
+  configurations (each with the macro check), checks `build.bat clean` on a scratch tree
+  (clean-check), runs `--smoke` on the debug and the bench build and
   `--test` on the bench build (the optimized build runs the fuzz tests quickly), checks the release
   exe's imports (`--check-imports`) and its `--version`, checks every exit code and prints one last
   line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts: never run the steps
@@ -105,9 +106,11 @@ the explicit `.\`):
     cmd //c ".\build.bat"            # build\ronin_debug.exe  (/Od /Zi /MTd, RONIN_DEV=1)
     cmd //c ".\build.bat release"    # build\ronin.exe        (/O2 /GL ..., RONIN_DEV=0, no CRT)
     cmd //c ".\build.bat bench"      # build\ronin_bench.exe  (/O2, RONIN_DEV=1, no CRT, no D3D debug layer)
+    cmd //c ".\build.bat clean"      # removes build\ and dist\ entirely, nothing else; refuses (exit 10) outside
+                                     # the repository root or when either is a junction, a link or a file
 
-    cmd //c ".\verify.bat"           # the gate: three builds, smoke (debug, bench), test (bench), imports,
-                                     # --version; one PASS / FAIL line
+    cmd //c ".\verify.bat"           # the gate: three builds, clean-check, smoke (debug, bench), test (bench),
+                                     # imports, --version; one PASS / FAIL line
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (once per phase)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
@@ -257,7 +260,9 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # 4): one table a scenario in the log, LEAK -> exit 6, a cycle
                                                           # leaving another state -> 9, a screenshot that differs -> 3;
                                                           # files in build\tmp\leak (made once), its own leak.conf;
-                                                          # the window is never shown
+                                                          # the window is never shown. Verdicts are meaningful only
+                                                          # at --cycles 200 or more (fewer can flag the results
+                                                          # arena's bounded growth)
     build/ronin_debug.exe --map-report build\ronin.map    # the release exe's bytes by module (its linker map; src\ scanned)
     build/ronin_debug.exe --check-imports build\ronin.exe res\imports.txt   # its DLLs must equal the list, no CRT DLL
     build/ronin_bench.exe --memory-report                 # shown without activation; private bytes by owner (our
@@ -281,8 +286,8 @@ screenshot runs take the workers' results (project scans, searches, builds' outp
 
 The smoke, the benches and the measurement flags (--memory-report, --bench-latency,
 --startup-capture), --type-ahead-check and --leak-check read only the built-in config (deterministic)
-unless --config is given (win32_dev_user_config); every other run reads the user's ronin.conf as usual. Use --config build\tmp\... for
-checks, so open-config never touches the real %APPDATA%\ronin\ronin.conf. The benches report
+unless --config is given (win32_dev_user_config); every other run reads the user's ronin.conf as
+usual. Use --config build\tmp\... for checks, so open-config never touches the real %APPDATA%\ronin\ronin.conf. The benches report
 the final flush and the Present separately, the Presents that waited a vertical blank (>= 5 ms)
 and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait
 one refresh interval with two buffers; that is not CPU work of ours. --test, the smoke, the
@@ -484,6 +489,26 @@ dev ASSERT logs its file, line and condition before breaking, so a crash shows u
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
 check exact colors with an independent decoder, e.g. PowerShell `System.Drawing.Bitmap`.
 When touching rasterization, check that the three render modes still produce different files.
+
+## Generated files
+
+Everything generated lives under build\ (and dist\ at the root); none of it is tracked, all of it comes
+back by itself, and `build.bat clean` removes both. In build\:
+
+| path | made by |
+|---|---|
+| `ronin_debug.exe`, `ronin.exe`, `ronin_bench.exe`, their `.obj`, `.pdb`, `*_cl.pdb`, `*_dwrite.obj` | build.bat (debug, release, bench) |
+| `ronin.map` | build.bat release (the linker's /MAP; read by --map-report) |
+| `make_icon.exe`, `make_icon.obj` | build.bat (tools\make_icon.c) |
+| `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\shaders\quad.hlsl) |
+| `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
+| `ronin.log`, `crash.log` | every dev run; --crash |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec) and verify's clean-check (tmp\clean_check, removed after it) |
+| `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
+| `fuzz\` | --fuzz-seeds (the workers' logs) |
+| `verify\` | verify.bat (each step's log) |
+| `dist\` | dist.bat (the staging folder; the zip goes to dist\ at the root) |
+| `proof\` | scratch copies of the repository for a proof, made by hand; never required |
 
 ## Theme (the built-in defaults: src/config_default.h, [colors])
 
