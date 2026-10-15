@@ -2823,8 +2823,6 @@ tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin
   error paths that still do not resolve.
 - `--bench-latency` exited 9 once in six runs: 482 of the 500 keys had no Present of their own (Phase 17; the
   cause not looked into).
-- `--test` leaves its junction loop (build\tmp\p11scan\src\loop); `git status --ignored` walks into it and
-  warns "Filename too long" (Phase 17). Removing it after the scanner test would keep build\ plain.
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.
