@@ -11201,6 +11201,37 @@ static b32 test_compile_kill(Test *t) {
 // Builds through the headless app
 
 // Frames until *compilation* holds `what` (or the timeout).
+// The build commands remembered per directory (Phase 16): 10,000 accepted prompts over three directories must not grow
+// their arenas past what the first 100 needed, and each directory keeps its last command.
+static b32 test_compile_remember_memory(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "compile remember: app_create failed");
+    app->compile_next_dir = STR8_LIT("C:\\leak\\project");
+    app->compile_next_root = STR8_LIT("C:\\leak\\project");
+    u64 committed_100 = 0;
+    for (i32 i = 1; i <= 10000; i++) {
+        u64 mark = arena_pos(&t->arena);
+        String8 key = str8_fmt(&t->arena, "C:\\leak\\project%d", i % 3);
+        String8 command = str8_fmt(&t->arena, "build.bat release %d", i % 7); // the same length each time
+        results_compile_remember(app, key, command);
+        arena_pop_to(&t->arena, mark);
+        if (i == 100) committed_100 = app->compile_arena.committed + app->compile_spare.committed;
+    }
+    u64 committed = app->compile_arena.committed + app->compile_spare.committed;
+    b32 kept = app->compile_command_count == 3;
+    for (i32 k = 0; k < 3 && kept; k++) {
+        String8 got = results_compile_remembered(app, str8_fmt(&t->arena, "C:\\leak\\project%d", k));
+        i32 last = 10000 - (10000 - k) % 3; // the last i with i % 3 == k
+        kept = str8_equal(got, str8_fmt(&t->arena, "build.bat release %d", last % 7));
+    }
+    TEST_CHECK(t, kept && str8_equal(app->compile_last_dir, STR8_LIT("C:\\leak\\project")), "compile remember: the commands kept are wrong");
+    TEST_CHECK(t, committed == committed_100, "compile remember: the arenas grew from %U to %U bytes between prompt 100 and 10,000",
+               committed_100, committed);
+    if (!test_app_destroy(t, app, "compile remember")) return 0;
+    LOG("test: ok: compile remember (10,000 prompts over 3 directories, %U bytes committed after 100 and after 10,000)", committed);
+    return 1;
+}
+
 static b32 test_compile_wait_text(Test *t, App *app, const char *what, u32 timeout_ms) {
     u64 start = os_time_us();
     while (os_time_us() - start < (u64)timeout_ms * 1000) {
@@ -12005,6 +12036,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_compile_resolve(&t);
     arena_reset(&t.arena);
     test_compile_config(&t);
+    arena_reset(&t.arena);
+    test_compile_remember_memory(&t);
     arena_reset(&t.arena);
     test_compile_clean(&t);
     arena_reset(&t.arena);
