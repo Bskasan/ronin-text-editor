@@ -33,6 +33,7 @@ if errorlevel 1 (
 
 if not exist build\gen mkdir build\gen
 if not exist build\tmp mkdir build\tmp
+if not exist build\shots mkdir build\shots
 
 rem --- shaders -> C headers --------------------------------------------------
 fxc /nologo /WX /O3 /T vs_4_0 /E vs_main /Vn quad_vs_bytes /Fh build\gen\quad_vs.h src\shaders\quad.hlsl >nul
