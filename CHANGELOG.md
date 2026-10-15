@@ -19,6 +19,14 @@ over a million random events; every dev exit checks that nothing of ronin's is l
   name in the buffer's memory (its 1 MB would have run out after a few thousand renames).
 - The font's atlas and glyph table are released at exit.
 
+A cleanup before the first public release (Phase 17):
+
+- A large project search no longer keeps its working memory for its pending results (several MB after tens of
+  thousands of matches) until *search* is killed: it goes back when the window is minimized. Each results
+  buffer (*search*, *occur*, *compilation*) keeps 768 KB for them once it has run, so repeated searches leave
+  the same memory behind.
+- Building: `build.bat clean` removes `build\` and `dist\`, everything generated, and nothing else.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).
