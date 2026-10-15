@@ -2322,7 +2322,8 @@ static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         i32 w = LOWORD(lp), h = HIWORD(lp);
         p->minimized = (wp == SIZE_MINIMIZED);
         if (p->minimized) {
-            if (p->renderer) r_resize(p->renderer, 0, 0);
+            if (p->renderer) r_resize(p->renderer, 0, 0); // the driver's temporary allocations go back (IDXGIDevice3::Trim)
+            if (p->app && !p->in_frame) app_trim(p->app);  // and what the app keeps only for speed
             return 0;
         }
         if (p->renderer) r_resize(p->renderer, w, h);

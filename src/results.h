@@ -27,6 +27,7 @@
 #define RESULTS_DYING_MAX 16         // cancelled searches still ending
 #define RESULTS_LINES_PER_CHECK 64   // lines written between two looks at the clock
 #define RESULTS_FLUSH_BYTES KB(256)  // added lines go into the buffer at the end of the frame's work, or at this size
+#define RESULTS_TRANSIENT_FLOOR KB(256) // held[0], held[1] and pend: committed at a buffer's first run, kept (results.c)
 
 typedef enum ResultsKind {
     RESULTS_PROJECT, // project-search: files under a root

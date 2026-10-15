@@ -35,6 +35,52 @@ static void results_drop_search(App *app, GrepSearch *s, b32 cancel) {
 
 static void results_drop_run(App *app, Results *r);
 
+// held[0], held[1] and pend serve a running search or build only, and how far they grow depends on timing (how far
+// the workers ran ahead of the writer, how many lines one frame wrote). Each is committed to RESULTS_TRANSIENT_FLOOR
+// at its buffer's first run and never given back below it, so a run that stays under the floor leaves the same
+// memory every time; what a larger run grew above it stays until the window is minimized (results_trim). Giving it
+// back at each run's end instead cost the last frame of a 52,000-match search 300-450 us (Measurements (Phase 17)).
+static Arena *results_transient(Results *r, i32 i) {
+    return i == 2 ? &r->pend : &r->held[i];
+}
+
+static void results_transient_floor(Results *r) {
+    for (i32 i = 0; i < 3; i++) {
+        Arena *a = results_transient(r, i);
+        if (a->committed >= RESULTS_TRANSIENT_FLOOR) continue;
+        if (!os_commit(a->base + a->committed, RESULTS_TRANSIENT_FLOOR - a->committed)) os_fatal(STR8_LIT("Out of memory (arena commit failed)."));
+        a->committed = RESULTS_TRANSIENT_FLOOR;
+    }
+}
+
+// Minimized (app_trim): the idle results buffers' transient arenas give back what they grew above their floor; no
+// frame pays for it. Only a slot that is not running is trimmed, and such a slot is detached from every producer
+// (r->grep, r->run and r->batches NULL: results_finish, results_compile_finish and results_stop clear them in the
+// same call that ends the run). These arenas are written only on the main thread, from a search drained into this
+// slot (results_wake) or from the batches this slot took from its build; a detached search's batches are drained
+// into nothing (results_wake), a detached build's are given back unread (results_drop_run). Its workers may still
+// be ending (the dying lists join them later; the main thread never waits), and none of them writes here.
+static void results_trim(App *app) {
+    for (i32 k = 0; k < RESULTS_MAX; k++) {
+        Results *r = &app->results[k];
+        if (!r->buffer || r->running) continue;
+        ASSERT(!r->grep && !r->run && !r->batches);
+        for (i32 i = 0; i < 3; i++) {
+            Arena *a = results_transient(r, i);
+            if (a->committed > RESULTS_TRANSIENT_FLOOR) os_decommit(a->base + RESULTS_TRANSIENT_FLOOR, a->committed - RESULTS_TRANSIENT_FLOOR);
+            a->committed = MIN(a->committed, (u64)RESULTS_TRANSIENT_FLOOR);
+            a->pos = 0; // the run is over: its records and lines are not read again (results_open resets them)
+        }
+        r->held_live = 0;
+        r->held_slot = 0;
+    }
+}
+
+// The window was minimized (the platform calls this outside any frame, beside the renderer's trim).
+void app_trim(App *app) {
+    results_trim(app);
+}
+
 // Stops what fills the buffer (workers, the list's feeding, a buffer being searched, a build).
 static void results_stop(App *app, Results *r) {
     if (r->grep) results_drop_search(app, r->grep, 1);
@@ -77,6 +123,7 @@ static Results *results_open(App *app, String8 name, ResultsKind kind) {
         Arena *arenas[RESULTS_ARENAS];
         results_arenas(r, arenas);
         for (i32 i = 0; i < RESULTS_ARENAS; i++) *arenas[i] = arena_create(GB(1));
+        results_transient_floor(r);
     }
     Buffer *buf = r->buffer;
     Arena keep[RESULTS_ARENAS], *arenas[RESULTS_ARENAS];
