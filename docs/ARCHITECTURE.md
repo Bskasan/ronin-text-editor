@@ -1573,7 +1573,7 @@ Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 
 - [x] 13. Build + jump to error
 - [x] 14. Multiple cursors
 - [x] 15. Performance and size pass (including an optional CRT-free build)
-- [ ] 16. Memory and resource leak audit
+- [x] 16. Memory and resource leak audit
 
 ## Decisions
 
