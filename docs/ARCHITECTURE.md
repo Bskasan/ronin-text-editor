@@ -1574,6 +1574,7 @@ Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 
 - [x] 14. Multiple cursors
 - [x] 15. Performance and size pass (including an optional CRT-free build)
 - [x] 16. Memory and resource leak audit
+- [ ] 17. Repository and build-folder cleanup
 
 ## Decisions
 
@@ -2555,6 +2556,28 @@ Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 
   here and asserted by a test instead. A verdict metric that moves for reasons outside ronin is taken out of the
   verdict only with the evidence (by-type handle counts, memory owners, isolated experiments) and the user's
   decision.
+
+### Repository and build-folder cleanup (Phase 17)
+
+- Tracked files: sources, scripts, documentation, samples, LICENSE and the files GitHub needs. Nothing
+  generated is tracked: no .exe, .obj, .pdb, .map, .ico, shader headers, logs, screenshots other than the
+  README images (docs/images), fixtures or scratch copies. A generated file found tracked leaves the index
+  (git rm --cached) and is ignored; history is never rewritten.
+- One ignore file, .gitignore at the root: build/, dist/ and every generated pattern. No per-directory ignore
+  files.
+- Everything generated lives under build\ or dist\. Fixtures (the 100 MB bench files, the leak check's
+  project, recovery directories, the tests' trees) are made on demand by the run that needs them, never
+  required beforehand; build.bat makes build\tmp and build\shots. Proof copies live under build\proof\.
+- `build.bat clean` removes build\ and dist\ entirely and nothing else; there is no partial clean. It acts on
+  the directory holding build.bat whatever the current directory, and refuses (exit 10, nothing removed) when
+  that directory is not ronin's repository root (src\ronin.c and verify.bat beside build.bat) or when build\ or
+  dist\ is a junction, a link or a file. `rd /s` removes the junctions inside the tree (the tests leave one, a
+  loop) without following them. verify.bat's clean-check proves each case on a scratch tree every run.
+- A fresh clone builds and passes verify.bat with build.bat as its only step: the test that no required file
+  is untracked or ignored.
+- Nothing outside the repository is deleted by the cleanup; leftovers there are reported to the owner.
+- The measurement flags (`--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`) read
+  only the built-in config unless `--config` is given, as the smoke and the other benches do.
 
 ## Later
 
