@@ -442,9 +442,9 @@ static void cmd_project_refresh(CommandContext *ctx) {
     finder_scan(app, p);
 }
 
-const Command CMD_PROJECT_FIND_FILE = { "project-find-file", cmd_project_find_file, COMMAND_ONCE };
-const Command CMD_PROJECT_FIND_FILE_OTHER_WINDOW = { "project-find-file-other-window", cmd_project_find_file_other_window, COMMAND_ONCE };
-const Command CMD_PROJECT_REFRESH = { "project-refresh", cmd_project_refresh, COMMAND_ONCE };
+const Command CMD_PROJECT_FIND_FILE = { "project-find-file", "Find a file of the project by fuzzy matching its path", cmd_project_find_file, COMMAND_ONCE };
+const Command CMD_PROJECT_FIND_FILE_OTHER_WINDOW = { "project-find-file-other-window", "Find a project file and open it in another window", cmd_project_find_file_other_window, COMMAND_ONCE };
+const Command CMD_PROJECT_REFRESH = { "project-refresh", "Scan the project's files again", cmd_project_refresh, COMMAND_ONCE };
 
 #if RONIN_DEV
 // Tests: waits for the workers' results until no scan runs (or the timeout); false on the timeout.

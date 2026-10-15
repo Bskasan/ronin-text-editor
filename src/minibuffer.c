@@ -328,7 +328,7 @@ static void cmd_minibuffer_done(CommandContext *ctx) {
 }
 
 // Internal: never bound, not in the command table.
-static const Command CMD_MINIBUFFER_DONE = { "minibuffer-done", cmd_minibuffer_done, COMMAND_ONCE };
+static const Command CMD_MINIBUFFER_DONE = { "minibuffer-done", "Run the continuation of an accepted prompt", cmd_minibuffer_done, COMMAND_ONCE };
 
 void minibuffer_after_command(CommandContext *ctx) {
     Minibuffer *mb = ctx->mini;
@@ -528,7 +528,7 @@ static void cmd_minibuffer_answer(CommandContext *ctx) {
     mb->result.key = ctx->codepoint;
 }
 
-static const Command CMD_MINIBUFFER_ANSWER = { "minibuffer-answer", cmd_minibuffer_answer, COMMAND_ONCE }; // internal
+static const Command CMD_MINIBUFFER_ANSWER = { "minibuffer-answer", "Answer a single-key prompt", cmd_minibuffer_answer, COMMAND_ONCE }; // internal
 
 void minibuffer_key(CommandContext *ctx, const Command *command, u32 chord_char) {
     Minibuffer *mb = ctx->mini;
@@ -599,12 +599,12 @@ static void cmd_minibuffer_backward_updir(CommandContext *ctx) {
     CMD_DELETE_BACKWARD_CHAR.fn(ctx);
 }
 
-const Command CMD_EXIT_MINIBUFFER           = { "exit-minibuffer", cmd_exit_minibuffer, COMMAND_ONCE };
-const Command CMD_EXIT_MINIBUFFER_INPUT     = { "exit-minibuffer-input", cmd_exit_minibuffer_input, COMMAND_ONCE };
-const Command CMD_ABORT_MINIBUFFERS         = { "abort-minibuffers", cmd_abort_minibuffers, COMMAND_ONCE | COMMAND_QUIT };
-const Command CMD_PREVIOUS_HISTORY_ELEMENT  = { "previous-history-element", cmd_previous_history_element, COMMAND_ONCE };
-const Command CMD_NEXT_HISTORY_ELEMENT      = { "next-history-element", cmd_next_history_element, COMMAND_ONCE };
-const Command CMD_MINIBUFFER_BACKWARD_UPDIR = { "minibuffer-backward-updir", cmd_minibuffer_backward_updir,
+const Command CMD_EXIT_MINIBUFFER           = { "exit-minibuffer", "Accept the selected candidate or the input", cmd_exit_minibuffer, COMMAND_ONCE };
+const Command CMD_EXIT_MINIBUFFER_INPUT     = { "exit-minibuffer-input", "Accept the input exactly as typed", cmd_exit_minibuffer_input, COMMAND_ONCE };
+const Command CMD_ABORT_MINIBUFFERS         = { "abort-minibuffers", "Abort the prompt and the commands waiting on it", cmd_abort_minibuffers, COMMAND_ONCE | COMMAND_QUIT };
+const Command CMD_PREVIOUS_HISTORY_ELEMENT  = { "previous-history-element", "Use the previous input from the prompt's history", cmd_previous_history_element, COMMAND_ONCE };
+const Command CMD_NEXT_HISTORY_ELEMENT      = { "next-history-element", "Use the next input from the prompt's history", cmd_next_history_element, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_BACKWARD_UPDIR = { "minibuffer-backward-updir", "Delete back a character, or a directory after a slash", cmd_minibuffer_backward_updir,
                                                 COMMAND_EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
 
 // ---------------------------------------------------------------------------
@@ -683,11 +683,11 @@ static void cmd_minibuffer_previous_completion(CommandContext *ctx) { minibuffer
 static void cmd_minibuffer_next_page(CommandContext *ctx) { minibuffer_move_selection(ctx, ctx->settings->completion_lines); }
 static void cmd_minibuffer_previous_page(CommandContext *ctx) { minibuffer_move_selection(ctx, -ctx->settings->completion_lines); }
 
-const Command CMD_MINIBUFFER_COMPLETE            = { "minibuffer-complete", cmd_minibuffer_complete, COMMAND_ONCE };
-const Command CMD_MINIBUFFER_NEXT_COMPLETION     = { "minibuffer-next-completion", cmd_minibuffer_next_completion, COMMAND_ONCE };
-const Command CMD_MINIBUFFER_PREVIOUS_COMPLETION = { "minibuffer-previous-completion", cmd_minibuffer_previous_completion, COMMAND_ONCE };
-const Command CMD_MINIBUFFER_NEXT_PAGE           = { "minibuffer-next-page", cmd_minibuffer_next_page, COMMAND_ONCE };
-const Command CMD_MINIBUFFER_PREVIOUS_PAGE       = { "minibuffer-previous-page", cmd_minibuffer_previous_page, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_COMPLETE            = { "minibuffer-complete", "Complete the input to the longest common part", cmd_minibuffer_complete, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_NEXT_COMPLETION     = { "minibuffer-next-completion", "Select the next candidate in the list", cmd_minibuffer_next_completion, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_PREVIOUS_COMPLETION = { "minibuffer-previous-completion", "Select the previous candidate in the list", cmd_minibuffer_previous_completion, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_NEXT_PAGE           = { "minibuffer-next-page", "Select the candidate one page down the list", cmd_minibuffer_next_page, COMMAND_ONCE };
+const Command CMD_MINIBUFFER_PREVIOUS_PAGE       = { "minibuffer-previous-page", "Select the candidate one page up the list", cmd_minibuffer_previous_page, COMMAND_ONCE };
 
 // ---------------------------------------------------------------------------
 // M-x
@@ -739,7 +739,7 @@ static void cmd_execute_extended_command(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
-const Command CMD_EXECUTE_EXTENDED_COMMAND = { "execute-extended-command", cmd_execute_extended_command, COMMAND_ONCE };
+const Command CMD_EXECUTE_EXTENDED_COMMAND = { "execute-extended-command", "Read a command name and run it", cmd_execute_extended_command, COMMAND_ONCE };
 
 // ---------------------------------------------------------------------------
 // goto-line: LINE or LINE:COLUMN, 1-based as on the command line (COLUMN is a visual column); both
@@ -758,4 +758,4 @@ static void cmd_goto_line(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
-const Command CMD_GOTO_LINE = { "goto-line", cmd_goto_line, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_GOTO_LINE = { "goto-line", "Go to a line number, and a column after a colon", cmd_goto_line, COMMAND_ONCE | COMMAND_SINGLE };
