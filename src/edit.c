@@ -46,8 +46,8 @@ static void cmd_undo_redo(CommandContext *ctx) {
     edit_undo_report(ctx, r, point, "Redo", "No further redo information");
 }
 
-const Command CMD_UNDO      = { "undo", "Undo the last change; repeat to undo more", cmd_undo, COMMAND_ONCE | COMMAND_EDIT };
-const Command CMD_UNDO_REDO = { "undo-redo", "Redo the last undone change", cmd_undo_redo, COMMAND_ONCE | COMMAND_EDIT };
+const Command CMD_UNDO      = { "undo", "Undo the last change; repeat to undo more", cmd_undo, COMMAND_ONCE | COMMAND_EDIT | COMMAND_FIELD };
+const Command CMD_UNDO_REDO = { "undo-redo", "Redo the last undone change", cmd_undo_redo, COMMAND_ONCE | COMMAND_EDIT | COMMAND_FIELD };
 
 // ---------------------------------------------------------------------------
 // Kill ring storage
@@ -472,14 +472,14 @@ static void cmd_yank_pop(CommandContext *ctx) {
 }
 
 #define KILL (COMMAND_KILL | COMMAND_EDIT)
-const Command CMD_KILL_REGION        = { "kill-region", "Kill the region, saving it in the kill ring", cmd_kill_region, KILL };
-const Command CMD_KILL_RING_SAVE     = { "kill-ring-save", "Copy the region to the kill ring and the clipboard", cmd_kill_ring_save, COMMAND_KILL };
-const Command CMD_KILL_LINE          = { "kill-line", "Kill the rest of the line, or the newline at its end", cmd_kill_line, KILL };
-const Command CMD_KILL_WORD          = { "kill-word", "Kill the characters to the end of the word", cmd_kill_word, KILL };
-const Command CMD_BACKWARD_KILL_WORD = { "backward-kill-word", "Kill the characters back to the start of the word", cmd_backward_kill_word, KILL | COMMAND_KILL_BACKWARD };
-const Command CMD_KILL_WHOLE_LINE    = { "kill-whole-line", "Kill the whole line, its newline included", cmd_kill_whole_line, KILL | COMMAND_LINE };
-const Command CMD_YANK               = { "yank", "Yank (paste) the last kill or the clipboard", cmd_yank, COMMAND_EDIT | COMMAND_REGION_REPLACE };
-const Command CMD_YANK_POP           = { "yank-pop", "Replace the text just yanked with an older kill", cmd_yank_pop, COMMAND_EDIT };
+const Command CMD_KILL_REGION        = { "kill-region", "Kill the region, saving it in the kill ring", cmd_kill_region, KILL | COMMAND_FIELD };
+const Command CMD_KILL_RING_SAVE     = { "kill-ring-save", "Copy the region to the kill ring and the clipboard", cmd_kill_ring_save, COMMAND_KILL | COMMAND_FIELD };
+const Command CMD_KILL_LINE          = { "kill-line", "Kill the rest of the line, or the newline at its end", cmd_kill_line, KILL | COMMAND_FIELD };
+const Command CMD_KILL_WORD          = { "kill-word", "Kill the characters to the end of the word", cmd_kill_word, KILL | COMMAND_FIELD };
+const Command CMD_BACKWARD_KILL_WORD = { "backward-kill-word", "Kill the characters back to the start of the word", cmd_backward_kill_word, KILL | COMMAND_KILL_BACKWARD | COMMAND_FIELD };
+const Command CMD_KILL_WHOLE_LINE    = { "kill-whole-line", "Kill the whole line, its newline included", cmd_kill_whole_line, KILL | COMMAND_LINE | COMMAND_FIELD };
+const Command CMD_YANK               = { "yank", "Yank (paste) the last kill or the clipboard", cmd_yank, COMMAND_EDIT | COMMAND_REGION_REPLACE | COMMAND_FIELD };
+const Command CMD_YANK_POP           = { "yank-pop", "Replace the text just yanked with an older kill", cmd_yank_pop, COMMAND_EDIT | COMMAND_FIELD };
 #undef KILL
 
 // ---------------------------------------------------------------------------
@@ -989,10 +989,10 @@ static void cmd_comment_line(CommandContext *ctx) {
 
 const Command CMD_OPEN_LINE               = { "open-line", "Insert a newline after point without moving point", cmd_open_line, COMMAND_EDIT };
 const Command CMD_DELETE_INDENTATION      = { "delete-indentation", "Join this line to the previous one", cmd_delete_indentation, COMMAND_EDIT | COMMAND_LINE };
-const Command CMD_DELETE_HORIZONTAL_SPACE = { "delete-horizontal-space", "Delete the spaces and tabs around point", cmd_delete_horizontal_space, COMMAND_EDIT };
-const Command CMD_JUST_ONE_SPACE          = { "just-one-space", "Replace the spaces and tabs around point with one space", cmd_just_one_space, COMMAND_EDIT };
-const Command CMD_TRANSPOSE_CHARS         = { "transpose-chars", "Transpose the two characters around point", cmd_transpose_chars, COMMAND_EDIT };
-const Command CMD_UPCASE_WORD             = { "upcase-word", "Convert the next word to uppercase", cmd_upcase_word, COMMAND_EDIT };
-const Command CMD_DOWNCASE_WORD           = { "downcase-word", "Convert the next word to lowercase", cmd_downcase_word, COMMAND_EDIT };
-const Command CMD_CAPITALIZE_WORD         = { "capitalize-word", "Capitalize the next word", cmd_capitalize_word, COMMAND_EDIT };
+const Command CMD_DELETE_HORIZONTAL_SPACE = { "delete-horizontal-space", "Delete the spaces and tabs around point", cmd_delete_horizontal_space, COMMAND_EDIT | COMMAND_FIELD };
+const Command CMD_JUST_ONE_SPACE          = { "just-one-space", "Replace the spaces and tabs around point with one space", cmd_just_one_space, COMMAND_EDIT | COMMAND_FIELD };
+const Command CMD_TRANSPOSE_CHARS         = { "transpose-chars", "Transpose the two characters around point", cmd_transpose_chars, COMMAND_EDIT | COMMAND_FIELD };
+const Command CMD_UPCASE_WORD             = { "upcase-word", "Convert the next word to uppercase", cmd_upcase_word, COMMAND_EDIT | COMMAND_FIELD };
+const Command CMD_DOWNCASE_WORD           = { "downcase-word", "Convert the next word to lowercase", cmd_downcase_word, COMMAND_EDIT | COMMAND_FIELD };
+const Command CMD_CAPITALIZE_WORD         = { "capitalize-word", "Capitalize the next word", cmd_capitalize_word, COMMAND_EDIT | COMMAND_FIELD };
 const Command CMD_COMMENT_LINE            = { "comment-line", "Comment or uncomment the line, or the region's lines", cmd_comment_line, COMMAND_EDIT | COMMAND_LINE };
