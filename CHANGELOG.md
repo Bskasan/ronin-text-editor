@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+A memory and resource leak audit (Phase 16): `--leak-check` repeats 22 operations hundreds of times and
+checks memory, handles, threads, the glyph atlas and Direct3D objects for growth; the soak checks the same
+over a million random events; every dev exit checks that nothing of ronin's is left. What it found, fixed:
+
+- A finished project scan, search or build now shows its results while ronin is idle. When the workers'
+  wake was what ended the main loop's wait, the wait had already reset it and the results stayed queued
+  (with their finished threads unjoined) until a wake came while a frame was due.
+- Worker threads are reused instead of ending after each task: with a hardware Direct3D device the GPU
+  driver kept ~215 bytes of memory for every thread that ended, and ronin started one for every scan,
+  search worker and build.
+- The build commands remembered per directory no longer grow their memory with every build (a long session
+  would have run out of the 64 MB reserved for them).
+- Project searches and occur no longer leave their header's text behind.
+- Saving a buffer under a new name (and names made unique, "name<dir>") no longer keeps the old path and
+  name in the buffer's memory (its 1 MB would have run out after a few thousand renames).
+- The font's atlas and glyph table are released at exit.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).

@@ -34,11 +34,12 @@
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger) and the `--bench-buffer` core |
+| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
 | `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
@@ -78,7 +79,9 @@ additionally calls `font_backend.h`. The scanner's worker (project.c), the searc
    directory watches (a project's tree watch only while armed) and the wake event of the workers, with
    no timeout unless the app asks for one (`app_wait_ms`: only while a config read is to be retried).
    Signalled watches become `EVENT_DIR_CHANGED`; the wake event makes the loop call `app_wake`, which
-   takes the scans' batches and asks for a frame only when something shown changed. Drain every queued
+   takes the workers' batches and asks for a frame only when something shown changed (also when the wake
+   itself ended the wait, which resets that auto-reset event: until Phase 16 those results waited for the
+   next wake that came while a frame was due). Drain every queued
    message; the window procedure turns them into `Event`s in a fixed array (consecutive
    mouse-move and resize events are coalesced). If the array is nearly full, run a frame
    mid-drain instead of dropping anything. If anything requested a redraw, run exactly one
@@ -689,6 +692,866 @@ its startup from the Phase 1 notes):
 | typing, command + frame | (no editor) | 8-24 us | 8-24 us; arrival to screen p50 17 ms composed, 4.4-4.9 overlay |
 | idle memory | not measured | 76-77 MB | 57-59 MB |
 | allocation per keystroke or frame | none (rule) | none | none |
+
+## Measurements (Phase 16)
+
+Same machine (AMD Ryzen 7 7700X, NVIDIA GPU, 2560x1440 at 144 Hz), the debug build (D3D11 debug layer on) for
+`--leak-check`, the bench and the debug build for the soak. The tables below are the `--leak-check all` of the last
+`verify.bat phase` (build\verify\leak-check.log), copied by a script from the log.
+
+### What was found and fixed
+
+| leak | module | cause | fix |
+|---|---|---|---|
+| a finished scan's, search's or build's results not taken while idle, its workers not joined | platform (win32_main.c) | the workers' wake is an auto-reset event in the main loop's wait: when it ended the wait, the wait reset it and the look after it found nothing, so app_wake did not run until a wake came while a frame was due. Found by finder-, grep- and compile-cycle never settling; confirmed in the real main loop (the wait ended by the wake three times, app_wake never called) | e335924 |
+| ~215 bytes of process heap per worker thread that ended | platform (win32_main.c) | with a hardware D3D11 device the NVIDIA driver keeps that much for every thread that ends (0 with nothing loaded, with only d3d11.dll and dxgi.dll, or with WARP: 2,000 threads each); ronin started a thread for every scan, search worker and build (finder-cycle/rescan, grep-cycle/cancel: ~700 bytes a cycle over 800 cycles) | e11ba96 (threads reused) |
+| the remembered build commands' arena grew on every accepted compile prompt | results.c | results_compile_remember copied the command, the key and recompile's directory and root into an append-only arena (compile-cycle: ~160 bytes a cycle; 64 MB reserved, then os_fatal) | 11e4ab5 |
+| files_arena grew on every project search and occur | results.c | their header's text was built there and only the file commands reset it (grep-cycle/done: ~330 bytes a cycle) | 6840e88 |
+| a buffer's meta arena grew on every write-file under a new name and every name made unique | buffer.c, app.c | the old path and the names tried stayed after the struct (1 MB reserved, then os_fatal) | 0507553 |
+| the font's atlas and glyph table never released | font.c | font_shutdown closed DirectWrite only (once a process; the exit check requires every arena released) | 338173e |
+
+Each fix has a regression test shown to fail on a scratch copy with the fix reverted: "wake (the wait ended by the
+wake, app_wake called 0 time(s))"; "thread reuse (2,000 tasks with the GPU driver loaded: 2000 ran, the process
+heaps grew 417792 bytes)"; "compile remember: the arenas grew from 8192 to 524288 bytes between prompt 100 and
+10,000"; "results files_arena: occur grew it from 16384 to 131072 bytes between run 100 and 1,000"; "write-file
+meta: the buffer's meta arena grew from 16384 to 131072 bytes between rename 100 and 1000" (all `--test`, exit 9);
+the smoke's "2 of the font's arenas (atlas, glyph table) still reserved after close" (exit 6).
+
+### What moved and is not ronin's (measured, then decided)
+
+- The process handle count read right after a frame is +2 in about one sample in ten (the graphics stack holds a
+  handle or two for microseconds; never in the handle snapshot taken next): the sample reads it until two reads
+  1 ms apart agree.
+- Private commit: one 68 KB step of the process heap in one window, then flat (about 1 run in 5 of the 5-cycle
+  100 MB scenario; the heap commits a chunk, most likely for threads Windows starts in the process, which the
+  driver charges): a STEP, not a LEAK (decision above).
+- The process handle total and USER objects follow Windows' thread pool, RPC runtime and graphics stack: over 2,000
+  config reloads 490, 496, 498, 494, 494 handles (Event, IoCompletion, Timer, Thread, Semaphore, ALPC Port) and USER
+  objects 9 -> 11, the ledger and our counters exactly flat: informational.
+- Builds with the device present: process creation moves the process heap irregularly (300 builds: +16 KB, +86 KB,
+  0; headless +37 KB, 0, +4 KB): within the private commit rule, in compile-cycle 37-53 KB a window over 800 cycles.
+- The soak's memory: the random walk raises the high-water marks of the minibuffer (+1.8 MB once), the starting
+  buffers, *Messages*, the kill ring and the dev clipboard fake, and leaves a different set of buffers (7 to 9
+  arenas each) at each checkpoint: informational in the soak (decision above).
+- `--cycles 40` (windows of 10) can flag a high-water mark reached after the warm-up (*search*'s results arena,
+  +48 KB once); at the default 200 it is OK.
+
+### The leak check (`--leak-check all`)
+
+The run of the last `verify.bat phase`: 22 scenarios, 0 LEAK, 0 failures, the four screenshot pairs equal pixel for pixel
+(window-cycle and config-reload-cycle; also by an independent decoder, System.Drawing: 0 differing pixels of
+1280x800 each). 119 s of scenarios, about 2 minutes for the whole run (`time`: 1 min 59 s for the final
+code alone; 2 min 2-3 s for the detector-proof copies); the phase gate took 6 min 19 s with it. WATCH and STEP:
+config-reload-cycle/color's private commit (one step) and working set. undo-cycle's log reached its 1 MB cap in cycle 4 (888,800 bytes of records), inside the warm-up.
+
+Per scenario (our committed bytes jump between scenarios, never within one: the frames read back for the
+screenshots go into the permanent arena, 4 MB each, which keeps its high-water mark, and the 10,000-file project's
+index is made by the first project scenario):
+
+| scenario | cycles | time | private commit, MB (warm-up -> window 4) | our committed, MB | ledger | D3D11 objects | worker slots | verdict |
+|---|---|---|---|---|---|---|---|---|
+| file-cycle | 220 | 1.8 s | 62.6 -> 62.6 | 4.8 -> 4.8 | 2 -> 2 | 13 -> 13 | 0 -> 0 | OK |
+| file-cycle-100mb | 5 | 0.5 s | 62.6 -> 62.6 | 4.8 -> 4.8 | 2 -> 2 | 13 -> 13 | 0 -> 0 | OK |
+| window-cycle/split | 220 | 0.6 s | 70.7 -> 70.7 | 8.8 -> 8.8 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| window-cycle/one | 220 | 1.4 s | 79.1 -> 79.1 | 17.2 -> 17.2 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| minibuffer-cycle/mx | 220 | 0.6 s | 79.1 -> 79.1 | 17.2 -> 17.2 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| minibuffer-cycle/find-file | 220 | 0.3 s | 79.1 -> 79.1 | 17.2 -> 17.2 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| minibuffer-cycle/goto-line | 220 | 0.4 s | 79.1 -> 79.1 | 17.2 -> 17.2 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| minibuffer-cycle/switch | 220 | 0.6 s | 79.1 -> 79.1 | 17.2 -> 17.2 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| isearch-cycle/lazy | 220 | 0.5 s | 78.8 -> 78.8 | 17.3 -> 17.3 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| isearch-cycle/query-replace | 220 | 1.5 s | 78.7 -> 78.7 | 17.2 -> 17.2 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| multi-cursor-cycle | 220 | 1.5 s | 78.7 -> 78.7 | 17.3 -> 17.3 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| undo-cycle | 220 | 1.7 s | 80.0 -> 80.0 | 18.6 -> 18.6 | 2 -> 2 | 14 -> 14 | 0 -> 0 | OK |
+| finder-cycle/open | 220 | 1.6 s | 79.3 -> 79.3 | 17.7 -> 17.7 | 3 -> 3 | 14 -> 14 | 1 -> 1 | OK |
+| finder-cycle/cancel | 220 | 1.4 s | 79.3 -> 79.3 | 17.7 -> 17.7 | 3 -> 3 | 14 -> 14 | 1 -> 1 | OK |
+| finder-cycle/rescan | 220 | 9.7 s | 79.4 -> 79.4 | 17.7 -> 17.7 | 3 -> 3 | 14 -> 14 | 2 -> 2 | OK |
+| grep-cycle/done | 220 | 25.7 s | 80.1 -> 80.1 | 18.1 -> 18.1 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+| grep-cycle/cancel | 220 | 1.0 s | 79.6 -> 79.6 | 17.7 -> 17.7 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+| compile-cycle/echo | 220 | 5.4 s | 79.7 -> 79.8 | 17.7 -> 17.7 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+| compile-cycle/error | 220 | 7.6 s | 79.8 -> 79.7 | 17.7 -> 17.7 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+| config-reload-cycle/color | 220 | 27.7 s | 79.8 -> 79.9 | 17.8 -> 17.8 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+| config-reload-cycle/scale | 220 | 0.6 s | 81.0 -> 81.0 | 17.8 -> 17.8 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+| external-change-cycle | 220 | 27.9 s | 81.1 -> 81.1 | 17.8 -> 17.8 | 3 -> 3 | 14 -> 14 | 4 -> 4 | OK |
+
+### The soak
+
+`--soak 1000000` in the same phase gate: bench 9.2 s, debug 12.5 s, both PASS. The checkpoints from 500,000 to
+1,000,000 events (bench; the debug build's verdict rows are the same):
+
+| metric | 500k | 600k | 700k | 800k | 900k | 1M | verdict |
+|---|---|---|---|---|---|---|---|
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 3 | OK |
+| GDI objects | 0 | 0 | 0 | 0 | 0 | 0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 3 | OK |
+| worker thread slots | 6 | 8 | 8 | 8 | 8 | 8 | OK (under its cap) |
+| private commit without the undo logs (bytes) | 8945792 | 9322624 | 9433184 | 9375968 | 9547968 | 9990304 |  |
+| our committed bytes without the undo logs | 4141184 | 4173952 | 4284512 | 4247776 | 4366528 | 4825248 |  |
+| our reservations | 103 | 104 | 104 | 103 | 101 | 101 |  |
+| process handles | 123 | 129 | 129 | 129 | 129 | 129 |  |
+| USER objects | 1 | 1 | 1 | 1 | 1 | 1 |  |
+| working set (bytes) | 14913536 | 15757312 | 16801792 | 16273408 | 15532032 | 16494592 |  |
+| process threads (Toolhelp) | 10 | 12 | 12 | 12 | 12 | 12 |  |
+
+The memory rows grow with the random walk's high-water marks: from 500,000 events to the end the largest growth was in
+the starting buffers (+0.85 MB, +0.72 MB: buffer_create_reserve <- app_find_file <- app_create), buffers visited
+during the walk and the minibuffer (+0.26 MB: minibuffer_init); 25 reservations released and 23 made (buffers
+replaced). The existing settled-growth check (2 MB) passes.
+
+### The exit check
+
+The smoke and the leak check's exit: ReportLiveDeviceObjects lists 1 live object with everything else released, the
+device itself (refcount 4: the debug interfaces' references), none other; 0 arenas besides the permanent one and the
+frame scratch; the handle ledger 0. The process's handle total: 147 after the window was created, 484 after the first
+frame, 256 at the smoke's exit (150, 487 and 257 in the leak check); by type, at exit against the window's creation:
+EtwRegistration 47 -> 119, Semaphore 4 -> 16, Event 23 -> 29, File 17 -> 22, Key 10 -> 15, Mutant 4 -> 9, Section
+12 -> 15, ALPC Port 4 -> 6, WaitCompletionPacket 6 -> 7, IoCompletion 4 -> 3, Thread 3 -> 2: the loaded DLLs' (the
+driver, the D3D runtime, DirectWrite) for the life of the process.
+
+### The detector proof
+
+A scratch copy (build\proof\detector2, never committed) of the final code with two deliberate leaks, 64 KB committed
+with VirtualAlloc and never freed in split-window-right only, and the pipe handle never closed in os_process_close.
+`--leak-check all` exits 6:
+
+```
+leak: file-cycle: OK, 1768 ms
+leak: file-cycle-100mb: OK, 473 ms
+leak: | private commit (bytes) | 76677120 | 79958016 | 83243008 | 86528000 | 89808896 | 65672.5 | LEAK |
+leak: window-cycle/split: LEAK, 628 ms
+leak: | private commit (bytes) | 102629376 | 112435200 | 122277888 | 132124672 | 141991936 | 197044.9 | LEAK |
+leak: window-cycle/one: LEAK, 1314 ms
+leak: minibuffer-cycle/mx: OK, 505 ms
+leak: minibuffer-cycle/find-file: OK, 298 ms
+leak: minibuffer-cycle/goto-line: OK, 360 ms
+leak: minibuffer-cycle/switch: OK, 594 ms
+leak: isearch-cycle/lazy: OK, 497 ms
+leak: isearch-cycle/query-replace: OK, 1475 ms
+leak: multi-cursor-cycle: OK, 1471 ms
+leak: undo-cycle: OK, 1601 ms
+leak: finder-cycle/open: OK, 1575 ms
+leak: finder-cycle/cancel: OK, 1276 ms
+leak: finder-cycle/rescan: OK, 9342 ms
+leak: grep-cycle/done: OK, 24826 ms
+leak: grep-cycle/cancel: OK, 988 ms
+leak: | handle ledger (ours) | 23 | 73 | 123 | 173 | 223 | 1.0 | LEAK |
+leak: compile-cycle/echo: LEAK, 5441 ms
+leak: | handle ledger (ours) | 243 | 293 | 343 | 393 | 443 | 1.0 | LEAK |
+leak: compile-cycle/error: LEAK, 7633 ms
+leak: config-reload-cycle/color: OK, 27729 ms
+leak: config-reload-cycle/scale: OK, 580 ms
+leak: external-change-cycle: OK, 27733 ms
+leak: FAIL: 22 scenario(s), 4 LEAK, 0 failure(s), 0 screenshot mismatch(es), 118 s; WATCH and STEP: window-cycle/split: working set (bytes) (WATCH); window-cycle/one: working set (bytes) (WATCH); compile-cycle/echo: process handles (WATCH); compile-cycle/error: process handles (WATCH); config-reload-cycle/color: private commit (bytes) (STEP)
+exit-check: FAIL: 440 handle(s) the os_* layer opened are still open
+exit-check: FAIL: 0 arena(s) besides the permanent one and the frame scratch, the handle ledger at 440
+leak-check: FAIL (exit 6, 147424 frames)
+```
+
+LEAK exactly for the four scenarios that run C-x 3 or a build (private commit +65,672 bytes a cycle with one C-x 3,
++197,045 with three; the ledger +1.0 a cycle); every other scenario OK, and the exit check fails too (440 handles still
+open).
+
+### Size and imports
+
+Release exe 398,336 bytes (397,312 after Phase 15: +1,024, the fixes); the same three DLLs (KERNEL32, USER32, GDI32)
+and the same 145 imported functions (dumpbin /imports against the Phase 15 build, d81c785). Everything else of the
+phase is in the dev builds only.
+
+### Every scenario
+**file-cycle** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 65609728 | 65609728 | 65609728 | 65609728 | 65609728 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 5009408 | 5009408 | 5009408 | 5009408 | 5009408 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 13 | 13 | 13 | 13 | 13 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 51515392 | 51539968 | 51539968 | 51539968 | 51539968 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16916480 | 16916480 | 16916480 | 16916480 | 16916480 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+file-cycle: OK in 1782 ms.
+
+**file-cycle-100mb** (5 cycles: 1 warm-up, 4 windows of 1)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 65654784 | 65654784 | 65654784 | 65654784 | 65654784 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 5054464 | 5054464 | 5054464 | 5054464 | 5054464 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 13 | 13 | 13 | 13 | 13 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 51572736 | 51572736 | 51572736 | 51572736 | 51572736 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16916480 | 16916480 | 16916480 | 16916480 | 16916480 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+file-cycle-100mb: OK in 469 ms.
+
+**window-cycle/split** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 74129408 | 74129408 | 74129408 | 74129408 | 74129408 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 9179136 | 9179136 | 9179136 | 9179136 | 9179136 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 59981824 | 59981824 | 59981824 | 59981824 | 59981824 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+window-cycle/split: OK in 626 ms.
+
+**window-cycle/one** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82993152 | 82948096 | 82948096 | 82948096 | 82948096 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 18026496 | 18026496 | 18026496 | 18026496 | 18026496 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68837376 | 68837376 | 68837376 | 68837376 | 68837376 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+window-cycle/one: OK in 1350 ms.
+
+**minibuffer-cycle/mx** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82960384 | 82960384 | 82960384 | 82960384 | 82960384 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 18038784 | 18038784 | 18038784 | 18038784 | 18038784 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68849664 | 68849664 | 68849664 | 68849664 | 68849664 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+minibuffer-cycle/mx: OK in 564 ms.
+
+**minibuffer-cycle/find-file** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82960384 | 82960384 | 82960384 | 82960384 | 82960384 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 18038784 | 18038784 | 18038784 | 18038784 | 18038784 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68898816 | 68898816 | 68898816 | 68898816 | 68898816 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+minibuffer-cycle/find-file: OK in 298 ms.
+
+**minibuffer-cycle/goto-line** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82960384 | 82960384 | 82960384 | 82960384 | 82960384 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 18038784 | 18038784 | 18038784 | 18038784 | 18038784 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68898816 | 68898816 | 68898816 | 68898816 | 68898816 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+minibuffer-cycle/goto-line: OK in 376 ms.
+
+**minibuffer-cycle/switch** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82964480 | 82964480 | 82964480 | 82964480 | 82964480 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 18042880 | 18042880 | 18042880 | 18042880 | 18042880 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68902912 | 68902912 | 68902912 | 68902912 | 68902912 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+minibuffer-cycle/switch: OK in 644 ms.
+
+**isearch-cycle/lazy** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82587648 | 82587648 | 82587648 | 82587648 | 82587648 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 66 | 66 | 66 | 66 | 66 | 0.0 | OK |
+| our committed bytes | 18137088 | 18137088 | 18137088 | 18137088 | 18137088 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68489216 | 68489216 | 68489216 | 68489216 | 68489216 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+isearch-cycle/lazy: OK in 503 ms.
+
+**isearch-cycle/query-replace** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82477056 | 82477056 | 82477056 | 82477056 | 82477056 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 59 | 59 | 59 | 59 | 59 | 0.0 | OK |
+| our committed bytes | 18059264 | 18059264 | 18059264 | 18059264 | 18059264 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68415488 | 68415488 | 68415488 | 68415488 | 68415488 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+isearch-cycle/query-replace: OK in 1488 ms.
+
+**multi-cursor-cycle** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 82554880 | 82489344 | 82489344 | 82489344 | 82489344 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 60 | 60 | 60 | 60 | 60 | 0.0 | OK |
+| our committed bytes | 18128896 | 18128896 | 18128896 | 18128896 | 18128896 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68472832 | 68407296 | 68407296 | 68407296 | 68407296 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+multi-cursor-cycle: OK in 1537 ms.
+
+**undo-cycle** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83881984 | 83881984 | 83881984 | 83881984 | 83881984 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 2 | 2 | 2 | 2 | 2 | 0.0 | OK |
+| our reservations | 67 | 67 | 67 | 67 | 67 | 0.0 | OK |
+| our committed bytes | 19464192 | 19464192 | 19464192 | 19464192 | 19464192 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| undo log (bytes) | 1031200 | 983680 | 936800 | 889600 | 842240 | -942.9 | OK (cap 1048576) |
+| worker thread slots | 0 | 0 | 0 | 0 | 0 | 0.0 | OK (cap 256) |
+| process handles | 494 | 494 | 494 | 494 | 494 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 69689344 | 69689344 | 69689344 | 69689344 | 69689344 | 0.0 |  |
+| process threads (Toolhelp) | 60 | 60 | 60 | 60 | 60 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+undo-cycle: OK in 1651 ms.
+
+**finder-cycle/open** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83144704 | 83144704 | 83144704 | 83144704 | 83144704 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 70 | 70 | 70 | 70 | 70 | 0.0 | OK |
+| our committed bytes | 18583552 | 18583552 | 18583552 | 18583552 | 18583552 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 1 | 1 | 1 | 1 | 1 | 0.0 | OK (cap 256) |
+| process handles | 500 | 500 | 500 | 500 | 500 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68939776 | 68939776 | 68939776 | 68939776 | 68939776 | 0.0 |  |
+| process threads (Toolhelp) | 61 | 61 | 61 | 61 | 61 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  handles of type DxgkCompositionObject: 1 | 2 | 1 | 1 | 1
+
+  handles of type DxgkSharedSyncObject: 1 | 2 | 1 | 1 | 1
+
+finder-cycle/open: OK in 1599 ms.
+
+**finder-cycle/cancel** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83144704 | 83144704 | 83144704 | 83144704 | 83144704 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 70 | 70 | 70 | 70 | 70 | 0.0 | OK |
+| our committed bytes | 18583552 | 18583552 | 18583552 | 18583552 | 18583552 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 1 | 1 | 1 | 1 | 1 | 0.0 | OK (cap 256) |
+| process handles | 500 | 500 | 500 | 500 | 500 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68939776 | 68939776 | 68939776 | 68939776 | 68939776 | 0.0 |  |
+| process threads (Toolhelp) | 61 | 61 | 61 | 61 | 61 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+finder-cycle/cancel: OK in 1351 ms.
+
+**finder-cycle/rescan** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83238912 | 83238912 | 83238912 | 83267584 | 83267584 | 191.1 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 70 | 70 | 70 | 70 | 70 | 0.0 | OK |
+| our committed bytes | 18583552 | 18583552 | 18583552 | 18583552 | 18583552 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 2 | 2 | 2 | 2 | 2 | 0.0 | OK (cap 256) |
+| process handles | 505 | 505 | 505 | 507 | 507 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 68980736 | 68980736 | 68980736 | 69013504 | 69013504 | 218.4 |  |
+| process threads (Toolhelp) | 62 | 62 | 62 | 63 | 63 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  private memory, our arenas: 18583552 | 18583552 | 18583552 | 18583552 | 18583552
+
+  private memory, process heaps: 6766592 | 6766592 | 6766592 | 6766592 | 6766592
+
+  private memory, thread stacks: 1642496 | 1642496 | 1642496 | 1662976 | 1662976
+
+  private memory, other private (driver, runtime): 18173952 | 18173952 | 18173952 | 18182144 | 18182144
+
+  private memory, writable image pages: 35676160 | 35676160 | 35676160 | 35676160 | 35676160
+
+  private memory, writable mapped views: 1155072 | 1155072 | 1155072 | 1155072 | 1155072
+
+  handles of type Semaphore: 76 | 76 | 76 | 77 | 77
+
+  handles of type DxgkCompositionObject: 1 | 1 | 2 | 1 | 1
+
+  handles of type Timer: 57 | 57 | 57 | 58 | 58
+
+  handles of type DxgkSharedSyncObject: 1 | 1 | 2 | 1 | 1
+
+finder-cycle/rescan: OK in 9685 ms.
+
+**grep-cycle/done** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83955712 | 83947520 | 83947520 | 83951616 | 83951616 | 27.3 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 84 | 84 | 84 | 84 | 84 | 0.0 | OK |
+| our committed bytes | 18968576 | 18968576 | 18968576 | 18968576 | 18968576 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 517 | 517 | 517 | 517 | 517 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 69509120 | 69558272 | 69566464 | 69570560 | 69570560 | 81.9 |  |
+| process threads (Toolhelp) | 65 | 65 | 65 | 65 | 65 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  private memory, our arenas: 18968576 | 18968576 | 18968576 | 18968576 | 18968576
+
+  private memory, process heaps: 6770688 | 6770688 | 6770688 | 6774784 | 6774784
+
+  private memory, thread stacks: 1859584 | 1847296 | 1847296 | 1847296 | 1847296
+
+  private memory, other private (driver, runtime): 18198528 | 18198528 | 18198528 | 18198528 | 18198528
+
+  private memory, writable image pages: 35676160 | 35676160 | 35676160 | 35676160 | 35676160
+
+  private memory, writable mapped views: 1159168 | 1159168 | 1159168 | 1159168 | 1159168
+
+  handles of type ALPC Port: 6 | 4 | 4 | 4 | 4
+
+  handles of type Semaphore: 79 | 80 | 80 | 80 | 80
+
+  handles of type Timer: 60 | 61 | 61 | 61 | 61
+
+grep-cycle/done: OK in 25728 ms.
+
+**grep-cycle/cancel** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83439616 | 83439616 | 83439616 | 83439616 | 83439616 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 70 | 70 | 70 | 70 | 70 | 0.0 | OK |
+| our committed bytes | 18522112 | 18522112 | 18522112 | 18522112 | 18522112 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 517 | 517 | 517 | 517 | 517 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 69193728 | 69193728 | 69193728 | 69193728 | 69193728 | 0.0 |  |
+| process threads (Toolhelp) | 65 | 65 | 65 | 65 | 65 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+grep-cycle/cancel: OK in 1003 ms.
+
+**compile-cycle/echo** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83566592 | 83603456 | 83603456 | 83640320 | 83640320 | 245.7 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 87 | 87 | 87 | 87 | 87 | 0.0 | OK |
+| our committed bytes | 18567168 | 18567168 | 18567168 | 18567168 | 18567168 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 519 | 519 | 519 | 519 | 519 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 69382144 | 69423104 | 69423104 | 69455872 | 69455872 | 218.4 |  |
+| process threads (Toolhelp) | 65 | 65 | 65 | 65 | 65 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  private memory, our arenas: 18567168 | 18567168 | 18567168 | 18567168 | 18567168
+
+  private memory, process heaps: 6791168 | 6828032 | 6828032 | 6864896 | 6864896
+
+  private memory, thread stacks: 1847296 | 1847296 | 1847296 | 1847296 | 1847296
+
+  private memory, other private (driver, runtime): 18198528 | 18198528 | 18198528 | 18198528 | 18198528
+
+  private memory, writable image pages: 35676160 | 35676160 | 35676160 | 35676160 | 35676160
+
+  private memory, writable mapped views: 1159168 | 1159168 | 1159168 | 1159168 | 1159168
+
+compile-cycle/echo: OK in 5396 ms.
+
+**compile-cycle/error** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83652608 | 83652608 | 83591168 | 83591168 | 83591168 | -409.6 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 87 | 87 | 87 | 87 | 87 | 0.0 | OK |
+| our committed bytes | 18571264 | 18571264 | 18571264 | 18571264 | 18571264 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 519 | 519 | 520 | 520 | 520 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 9 | 9 | 0.0 |  |
+| working set (bytes) | 69459968 | 69459968 | 69435392 | 69435392 | 69435392 | -163.8 |  |
+| process threads (Toolhelp) | 65 | 65 | 62 | 62 | 62 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  private memory, our arenas: 18571264 | 18571264 | 18571264 | 18571264 | 18571264
+
+  private memory, process heaps: 6864896 | 6864896 | 6901760 | 6901760 | 6901760
+
+  private memory, thread stacks: 1847296 | 1847296 | 1777664 | 1777664 | 1777664
+
+  private memory, other private (driver, runtime): 18198528 | 18198528 | 18173952 | 18173952 | 18173952
+
+  private memory, writable image pages: 35676160 | 35676160 | 35676160 | 35676160 | 35676160
+
+  private memory, writable mapped views: 1159168 | 1159168 | 1159168 | 1159168 | 1159168
+
+  handles of type Event: 87 | 87 | 88 | 88 | 88
+
+  handles of type ALPC Port: 4 | 4 | 3 | 3 | 3
+
+  handles of type Thread: 61 | 61 | 62 | 62 | 62
+
+compile-cycle/error: OK in 7597 ms.
+
+**config-reload-cycle/color** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 83623936 | 83623936 | 83623936 | 83738624 | 83738624 | 764.5 | STEP |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 80 | 80 | 80 | 80 | 80 | 0.0 | OK |
+| our committed bytes | 18636800 | 18636800 | 18636800 | 18636800 | 18636800 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 520 | 520 | 520 | 522 | 522 | 0.0 |  |
+| USER objects | 9 | 9 | 9 | 10 | 10 | 0.0 |  |
+| working set (bytes) | 69500928 | 69500928 | 69505024 | 69599232 | 69603328 | 682.6 | WATCH |
+| process threads (Toolhelp) | 62 | 62 | 62 | 62 | 62 | 0.0 |  |
+| video memory, local (bytes) | 16982016 | 16982016 | 16982016 | 16982016 | 16982016 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  private memory, our arenas: 18636800 | 18636800 | 18636800 | 18636800 | 18636800
+
+  private memory, process heaps: 6901760 | 6901760 | 6901760 | 7016448 | 7016448
+
+  private memory, thread stacks: 1777664 | 1777664 | 1777664 | 1777664 | 1777664
+
+  private memory, other private (driver, runtime): 18173952 | 18173952 | 18173952 | 18173952 | 18173952
+
+  private memory, writable image pages: 35676160 | 35676160 | 35676160 | 35676160 | 35676160
+
+  private memory, writable mapped views: 1159168 | 1159168 | 1159168 | 1159168 | 1159168
+
+  handles of type Event: 88 | 88 | 88 | 89 | 89
+
+  handles of type IoCompletion: 6 | 6 | 6 | 7 | 7
+
+  handles of type DxgkCompositionObject: 1 | 1 | 1 | 2 | 1
+
+  handles of type DxgkSharedSyncObject: 1 | 1 | 1 | 2 | 1
+
+config-reload-cycle/color: OK in 27725 ms.
+
+**config-reload-cycle/scale** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 84901888 | 84901888 | 84901888 | 84901888 | 84901888 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 80 | 80 | 80 | 80 | 80 | 0.0 | OK |
+| our committed bytes | 18702336 | 18702336 | 18702336 | 18702336 | 18702336 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 522 | 522 | 522 | 522 | 522 | 0.0 |  |
+| USER objects | 10 | 10 | 10 | 10 | 10 | 0.0 |  |
+| working set (bytes) | 70275072 | 70279168 | 70283264 | 70283264 | 70283264 | 27.3 |  |
+| process threads (Toolhelp) | 62 | 62 | 62 | 62 | 62 | 0.0 |  |
+| video memory, local (bytes) | 17506304 | 17506304 | 17506304 | 17506304 | 17506304 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+config-reload-cycle/scale: OK in 550 ms.
+
+**external-change-cycle** (220 cycles: 20 warm-up, 4 windows of 50)
+
+| metric | after warm-up | window 1 | window 2 | window 3 | window 4 | per cycle | verdict |
+|---|---|---|---|---|---|---|---|
+| private commit (bytes) | 84996096 | 84996096 | 84996096 | 84996096 | 84996096 | 0.0 | OK |
+| GDI objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| handle ledger (ours) | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our threads | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our events | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| our processes | 0 | 0 | 0 | 0 | 0 | 0.0 | OK |
+| directory watches | 3 | 3 | 3 | 3 | 3 | 0.0 | OK |
+| our reservations | 80 | 80 | 80 | 80 | 80 | 0.0 | OK |
+| our committed bytes | 18702336 | 18702336 | 18702336 | 18702336 | 18702336 | 0.0 | OK |
+| atlas used area (texels) | 15661 | 15661 | 15661 | 15661 | 15661 | 0.0 | OK |
+| cached glyphs | 96 | 96 | 96 | 96 | 96 | 0.0 | OK |
+| D3D11 live objects | 14 | 14 | 14 | 14 | 14 | 0.0 | OK |
+| atlas rows | 128 | 128 | 128 | 128 | 128 | 0.0 | OK (cap 1024) |
+| worker thread slots | 4 | 4 | 4 | 4 | 4 | 0.0 | OK (cap 256) |
+| process handles | 522 | 522 | 522 | 524 | 524 | 0.0 |  |
+| USER objects | 10 | 10 | 10 | 11 | 11 | 0.0 |  |
+| working set (bytes) | 70373376 | 70373376 | 70373376 | 70373376 | 70373376 | 0.0 |  |
+| process threads (Toolhelp) | 62 | 62 | 62 | 62 | 62 | 0.0 |  |
+| video memory, local (bytes) | 17506304 | 17506304 | 17506304 | 17506304 | 17506304 | 0.0 |  |
+| font resets | 1 | 1 | 1 | 1 | 1 | 0.0 |  |
+
+  handles of type Event: 89 | 89 | 89 | 90 | 90
+
+  handles of type IoCompletion: 7 | 7 | 7 | 8 | 8
+
+external-change-cycle: OK in 27890 ms.
+
+Summary: PASS: 22 scenario(s), 0 LEAK, 0 failure(s), 0 screenshot mismatch(es), 119 s; WATCH and STEP: config-reload-cycle/color: private commit (bytes) (STEP); config-reload-cycle/color: working set (bytes) (WATCH)
 
 ## Roadmap
 
@@ -1628,25 +2491,39 @@ its startup from the Phase 1 notes):
 
 - A leak is steady growth per cycle of a verdict metric while an operation that ends in the state it started
   from is repeated, measured after a warm-up. Bounded growth is not a leak: an arena may grow to a high-water
-  mark and stay there. Verdict metrics: private commit (64 KB tolerance between windows, OS noise); the process
-  handle count; GDI and USER objects (GetGuiResources); the handle ledger (below); our threads, events,
+  mark and stay there.
+- Verdict metrics: private commit; GDI objects (GetGuiResources); the handle ledger (below); our threads, events,
   processes and directory watches; the number of our reservations and their committed bytes (the registry
   `--memory-report` classifies by); the atlas's used area and cached glyphs; D3D11 live objects
-  (ReportLiveDeviceObjects). Every one but private commit must be exactly flat. Atlas rows (at most the atlas
-  width) and, in undo-cycle, the undo log (at most undo_limit_mb) are bounded: their verdict is the cap.
-- Informational metrics are logged in the same tables and never make a leak: the working set (OS trimming), the
-  process thread count from Toolhelp (driver and thread-pool threads), the DXGI video memory in use (driver
-  allocations) and the font's reset count (it rises by design when the text scale changes). One that rises in
-  each of the last three windows is marked WATCH and reported for a decision.
-- Method (`--leak-check [SCENARIO|all] [--cycles N]`, debug build only, N = 200 by default): per scenario, a
-  prime step that fills the bounded caches to their caps (*Messages*, minibuffer history, the kill ring, the
-  remembered build commands), 20 warm-up cycles, then 4 windows of N/4 cycles with every metric sampled at the
-  end of the warm-up and of each window. A verdict metric that grows from one window to the next in any of the
-  last three is LEAK; the run exits 6 then. Each cycle must return to the state it started from (a signature of
-  buffers, windows, point, the modified flags, prompts and workers), or the run exits 9. The caps of the bounded
-  caches are asserted by `--test`. It runs windowed (cloaked, never activated, keys through the --keys path) so
-  every scenario has the renderer and atlas metrics; the soak, headless, samples the same verdict and
-  informational metrics every 100,000 events and applies the rule over the last 500,000.
+  (ReportLiveDeviceObjects). Every one but private commit must be exactly flat. Private commit is a LEAK when it
+  grows by more than 64 KB in at least two of the three steps between the last windows; a single such step is a
+  STEP, listed with the WATCH verdicts but not failing the run (the process heap commits a chunk for threads
+  Windows starts in the process, which the GPU driver charges: ~68 KB once, then flat). Atlas rows (at most the
+  atlas width) and, in undo-cycle, the undo log (at most undo_limit_mb) are bounded: their verdict is the cap.
+- Informational metrics are logged in the same tables and never make a leak; one that rises in each of the last
+  three windows is marked WATCH and reported for a decision: the process handle total and USER objects (Windows'
+  thread pool, RPC runtime and graphics stack move them: up to +8 and back over 2,000 config reloads, while the
+  ledger and our own counters stay exactly flat, so those are the verdict on handles), the working set (OS
+  trimming), the process thread count from Toolhelp (driver and thread-pool threads), the DXGI video memory in use
+  (driver allocations) and the font's reset count (it rises by design when the text scale changes).
+- Method (`--leak-check [SCENARIO|all] [--cycles N]`, debug build only, N = 200 by default): per scenario, after a
+  prime step that fills the bounded caches to their caps once (*Messages*, every minibuffer history kind and its
+  arena past a compaction, the kill ring), 20 warm-up cycles, then 4 windows of N/4 cycles with every metric
+  sampled at the end of the warm-up and of each window. LEAK exits 6. Every cycle must leave the state the first
+  one left (a text of the buffers, windows, points, the modified flags, prompts and workers; undo-cycle compares
+  with the state before its first cycle, including the text's hash), or the run exits 9. It runs with the window
+  never shown, focused by a focus event, keys through the window's queue and the main loop's pass, so every
+  scenario has the renderer and atlas metrics. Where a cycle edits, it edits a buffer it visits and kills; only
+  undo-cycle keeps its buffer, and its log must reach the cap during the warm-up ("warm-up did not reach undo cap",
+  exit 9). When our memory moved, the reservations that grew are logged with the functions that made them
+  (os_reserve records its callers in dev builds; dbghelp.dll names them, loaded on use). The caps of the bounded
+  caches are asserted by `--test` (test_bounded_caps).
+- The soak (`--soak`, headless) samples the leak metrics every 100,000 events and judges the last 500,000 once
+  there are 600,000. Its exact verdicts are the ledger, GDI objects, our threads, events, processes and watches; its
+  memory (private commit, our committed bytes, our reservations) is informational: the random walk keeps raising
+  the high-water marks of the persistent arenas (the minibuffer, the kill ring, *Messages*) with the largest text
+  it happens to push through them, and leaves a different set of buffers at each checkpoint (7 to 9 arenas each).
+  The memory verdict comes from the deterministic `--leak-check` scenarios.
 - The exit-time handle check is a ledger, not the process total: the os_* layer counts every kernel handle it
   opens and closes (dev builds), and the ledger must be exactly 0 at exit. The process total is logged after the
   window is created, after the first frame and at exit, with the difference by handle type. Equality of the
@@ -1656,8 +2533,28 @@ its startup from the Phase 1 notes):
 - At exit (dev builds): ReportLiveDeviceObjects may list only the device and its immediate context, the
   reservation registry may hold only the permanent and the frame scratch arenas, and the handle ledger must be
   0; the smoke and `--leak-check` exit 6 otherwise.
+- Worker threads are reused: once a hardware D3D11 device exists, the GPU driver keeps ~215 bytes of the process
+  heap for every thread that ends (measured with an NVIDIA driver; 0 with WARP, with only d3d11.dll and dxgi.dll
+  loaded, or without a device). os_thread_start hands a task to a parked slot (a thread, a go and a done event),
+  making one only when none is free; a finished task's thread parks on its event (0% CPU); joining waits for the
+  task's end. Slots never move; their number is the most tasks ever running at once (at most 256); a task that
+  never ends (a worker abandoned at shutdown) keeps its slot. The slots' handles are not in the ledger (a new peak
+  of tasks would raise it): the slots are a bounded row of their own in the leak tables and the soak's, the cap
+  asserted. Dev builds end the parked threads before the exit check.
+- The main loop takes the workers' results when their wake event ended the wait: the wait resets that auto-reset
+  event, so the look after it no longer decides alone (win32_wait / win32_after_wait, shared with the leak check).
+- A buffer's path and name are rebuilt right after its struct in its meta arena when they change
+  (buffer_set_names); the remembered build commands are rebuilt into a spare arena at each change.
+- Bounded by design, with their caps: *Messages* (1,000 lines of at most 1,024 bytes), each minibuffer history
+  kind (100 entries; the arena compacted below max(64 KB, 2 x live)), the kill ring (kill_ring_max entries), the
+  remembered build commands (64), the root cache (256), the undo log (undo_limit_mb, trimmed to 3/4), the atlas
+  rows (at most its width), the worker thread slots (256), and every arena's commit (high-water, never decommitted). The dying lists of scans,
+  searches and builds (16 each) drop an object only when full and the oldest does not end within the shutdown
+  bound, which never happens in practice; left as it is.
 - A leak is fixed, never hidden by a wider tolerance; growth that is bounded by design gets its cap documented
-  here and asserted by a test instead.
+  here and asserted by a test instead. A verdict metric that moves for reasons outside ronin is taken out of the
+  verdict only with the evidence (by-type handle counts, memory owners, isolated experiments) and the user's
+  decision.
 
 ## Later
 
@@ -1726,6 +2623,8 @@ its startup from the Phase 1 notes):
 - Locations that follow later edits (markers in the visited buffers; now a location is its line and
   byte column as found, so an edit above it moves the target).
 - Columns in characters instead of bytes in results lines (now 1-based byte columns, as grep and ripgrep).
+- Worker thread slots stay until the exit (as many as tasks ever ran at once, each parked thread keeping its
+  stack); ending a slot idle for a while would give that back, at the GPU driver's per-thread cost (Phase 16).
 - Builds: run and debug commands; several named build commands per project; input to the process;
   "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
   line); a save question limited to the project's buffers; a unique-suffix lookup in the project index for
