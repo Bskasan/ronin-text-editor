@@ -164,6 +164,7 @@ typedef struct BufferUndo {
 
 typedef struct Buffer {
     Arena meta; // holds this struct, path and name
+    u64 meta_strings; // where the strings start in meta, after the struct (buffer_set_names rebuilds them there)
 
     // Text: [0, gap_start) and [gap_end, text_cap) of `text`. text_cap is the committed size.
     u8 *text;
@@ -339,6 +340,9 @@ OsFileStatus buffer_save(Buffer *buf);
 OsFileStatus buffer_save_opt(Buffer *buf, b32 flush); // flush = 0: no FlushFileBuffers (fsync_on_save = false)
 OsFileStatus buffer_save_as(Buffer *buf, String8 path);
 OsFileStatus buffer_save_as_opt(Buffer *buf, String8 path, b32 flush);
+// The buffer's path and name, copied right after its struct in meta; what meta held after it goes (either may point
+// into meta, e.g. a name made there; the old strings are invalid afterwards).
+void buffer_set_names(Buffer *buf, String8 path, String8 name);
 // The bytes a save writes (the buffer's encoding and line endings) to an open file, through the caller's chunk;
 // no allocation and the buffer is not changed (the gap stays where it is), so a crash handler may call it.
 OsFileStatus buffer_write_to(Buffer *buf, OsFile file, u8 *chunk, i64 cap);

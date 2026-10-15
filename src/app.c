@@ -947,7 +947,7 @@ static void app_uniquify(App *app, Buffer *buf) {
     String8 parent = buf->path.len ? config_file_name(str8(buf->path.data, MAX(buf->path.len - base.len - 1, 0))) : str8(NULL, 0);
     String8 name = parent.len ? str8_fmt(&buf->meta, "%S<%S>", base, parent) : base;
     for (i32 n = 2; app_name_taken(app, buf, name); n++) name = str8_fmt(&buf->meta, "%S<%d>", base, n);
-    buf->name = name;
+    buffer_set_names(buf, buf->path, name); // the tries made in meta go (they used to stay)
 }
 
 static Buffer *app_new_buffer(App *app, String8 name) {
