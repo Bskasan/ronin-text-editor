@@ -1715,7 +1715,7 @@ tests (%LOCALAPPDATA%\Microsoft\Windows\WER, not checked). %APPDATA%\ronin\ronin
 - [x] 14. Multiple cursors
 - [x] 15. Performance and size pass (including an optional CRT-free build)
 - [x] 16. Memory and resource leak audit
-- [ ] 17. Repository and build-folder cleanup
+- [x] 17. Repository and build-folder cleanup
 
 ## Decisions
 
