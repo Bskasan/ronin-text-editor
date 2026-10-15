@@ -1,9 +1,11 @@
 @echo off
 rem ronin build.  "build.bat" -> build\ronin_debug.exe   "build.bat release" -> build\ronin.exe
+rem "build.bat clean" removes build\ and dist\ (everything generated) and nothing else.
 rem From Git Bash: cmd //c ".\build.bat" [release]
 setlocal
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
+if /i "%~1"=="clean" goto clean
 
 set MODE=debug
 if /i "%~1"=="release" set MODE=release
@@ -92,4 +94,49 @@ exit /b 0
 echo ERROR: MSVC (cl.exe, x64) not found.
 echo Install Visual Studio 2022 or later, or the Build Tools for Visual Studio, with the
 echo "Desktop development with C++" workload (MSVC x64/x86 build tools + Windows SDK).
+exit /b 1
+
+rem --- clean: build\ and dist\ entirely, nothing else (no partial clean) ------------------------------------
+rem Acts on the directory holding this file, whatever the current directory. Refuses (exit 10, nothing removed)
+rem unless that is ronin's repository root, and when build\ or dist\ is a junction, a link or a file. rd /s
+rem removes the junctions inside the tree (the tests leave one, a loop) without following them.
+:clean
+if not exist "%ROOT%src\ronin.c" goto clean_not_root
+if not exist "%ROOT%verify.bat" goto clean_not_root
+call :clean_check build
+if errorlevel 1 exit /b 10
+call :clean_check dist
+if errorlevel 1 exit /b 10
+set CLEAN_ANY=0
+if exist "%ROOT%build" set CLEAN_ANY=1
+if exist "%ROOT%dist" set CLEAN_ANY=1
+if "%CLEAN_ANY%"=="0" (
+    echo clean: nothing to remove
+    exit /b 0
+)
+if exist "%ROOT%build" rd /s /q "%ROOT%build"
+if exist "%ROOT%dist" rd /s /q "%ROOT%dist"
+if exist "%ROOT%build" goto clean_failed
+if exist "%ROOT%dist" goto clean_failed
+echo clean: removed build\ and dist\
+exit /b 0
+
+:clean_not_root
+echo clean: refused: %ROOT% is not ronin's repository root (no src\ronin.c / verify.bat beside build.bat); nothing removed
+exit /b 10
+
+:clean_failed
+echo clean: FAIL: could not remove build\ or dist\ (a file in use?)
+exit /b 1
+
+rem --- clean_check <name>: fails when it exists and is not a plain directory (a junction or link is "l") -----
+:clean_check
+if not exist "%ROOT%%1" exit /b 0
+set "CLEAN_ATTR="
+for %%A in ("%ROOT%%1") do set "CLEAN_ATTR=%%~aA"
+if not "%CLEAN_ATTR:~0,1%"=="d" goto clean_bad
+if not "%CLEAN_ATTR:l=%"=="%CLEAN_ATTR%" goto clean_bad
+exit /b 0
+:clean_bad
+echo clean: refused: %1\ is a link or not a directory; nothing removed
 exit /b 1
