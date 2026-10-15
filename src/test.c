@@ -1622,8 +1622,8 @@ static b32 test_view_valid(Test *t, TestView *tv, const char *when) {
 // Driver probes: each bumps the goal column of the cursor it is given, so the counts show
 // which cursors a command ran for.
 static void test_bump_cursor(CommandContext *ctx) { ctx->cursor->goal_col++; }
-static const Command TEST_CMD_EACH = { "test-each", test_bump_cursor, 0 };
-static const Command TEST_CMD_ONCE = { "test-once", test_bump_cursor, COMMAND_ONCE };
+static const Command TEST_CMD_EACH = { "test-each", "Add one to the goal column of each cursor", test_bump_cursor, 0 };
+static const Command TEST_CMD_ONCE = { "test-once", "Add one to the goal column of the primary cursor", test_bump_cursor, COMMAND_ONCE };
 
 // Three cursors, every command through view_run_command.
 static b32 test_multi_cursor(Test *t) {
@@ -4544,6 +4544,58 @@ static b32 test_commands(Test *t) {
     TEST_CHECK(t, !command_find(STR8_LIT("no-such-command")) && !command_find(STR8_LIT("")) &&
                   !command_find(STR8_LIT("forward-cha")), "commands: unknown names must not be found");
     LOG("test: ok: commands, %d in the table", n);
+    return 1;
+}
+
+// The rules of a description (Phase 18): one line of English, at most 60 bytes, printable ASCII, starting with an
+// uppercase verb from this list, no trailing period, no leading or trailing space. Returns the broken rule, or NULL.
+static const char *test_description_rule(String8 d) {
+    static const char *const verbs[] = {
+        "Abort", "Accept", "Add", "Answer", "Balance", "Cancel", "Capitalize", "Comment", "Complete", "Convert", "Copy",
+        "Delete", "Describe", "End", "Enlarge", "Exchange", "Find", "Go", "Indent", "Insert", "Join", "Kill", "List",
+        "Make", "Mark", "Move", "Open", "Quit", "Read", "Recover", "Redo", "Reload", "Remove", "Replace", "Reset",
+        "Revert", "Run", "Save", "Scan", "Scroll", "Search", "Select", "Set", "Show", "Shrink", "Skip", "Split", "Stop",
+        "Switch", "Toggle", "Transpose", "Undo", "Use", "Visit", "Write", "Yank",
+    };
+    if (d.len == 0) return "empty";
+    if (d.len > 60) return "longer than 60 bytes";
+    for (i64 i = 0; i < d.len; i++) {
+        if (d.data[i] < 0x20 || d.data[i] > 0x7e) return "not printable ASCII";
+    }
+    if (d.data[0] == ' ' || d.data[d.len - 1] == ' ') return "a leading or trailing space";
+    if (d.data[d.len - 1] == '.') return "a trailing period";
+    if (d.data[0] < 'A' || d.data[0] > 'Z') return "not starting with an uppercase letter";
+    i64 w = 0;
+    while (w < d.len && d.data[w] != ' ') w++;
+    String8 first = str8(d.data, w);
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(verbs); i++) {
+        if (str8_equal(first, str8_cstr(verbs[i]))) return NULL;
+    }
+    return "not starting with a verb of the list";
+}
+
+// Every command of the table has a description that keeps the rules; the rules themselves refuse what they must.
+static b32 test_command_descriptions(Test *t) {
+    i32 n = command_count();
+    i64 longest = 0;
+    for (i32 i = 0; i < n; i++) {
+        const Command *c = command_at(i);
+        String8 d = str8_cstr(c->description ? c->description : "");
+        const char *broken = test_description_rule(d);
+        TEST_CHECK(t, !broken, "descriptions: '%s': \"%S\": %s", c->name, d, broken);
+        longest = MAX(longest, d.len);
+    }
+    static const char *const bad[] = {
+        "", "move point forward one character", "Move point forward one character.", " Move point", "Move point ",
+        "Moves point forward one character", "Move point forward one character, then another one and one more",
+        "Move point\tforward",
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(bad); i++) {
+        TEST_CHECK(t, test_description_rule(str8_cstr(bad[i])), "descriptions: \"%s\" must break a rule", bad[i]);
+    }
+    TEST_CHECK(t, !test_description_rule(STR8_LIT("Move point forward one character")), "descriptions: a good one refused");
+    LOG("test: ok: command descriptions (%d commands, the longest %D bytes; %d broken ones refused)", n, longest,
+        (i32)ARRAY_COUNT(bad));
     return 1;
 }
 
@@ -12175,6 +12227,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_undo_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_commands(&t);
+    arena_reset(&t.arena);
+    test_command_descriptions(&t);
     arena_reset(&t.arena);
     test_kbd(&t, seed);
     arena_reset(&t.arena);

@@ -1722,15 +1722,15 @@ static void results_dev_release(App *app) {
 }
 #endif
 
-const Command CMD_PROJECT_SEARCH = { "project-search", cmd_project_search, COMMAND_ONCE };
-const Command CMD_NEXT_ERROR = { "next-error", cmd_next_error, COMMAND_ONCE };
-const Command CMD_PREVIOUS_ERROR = { "previous-error", cmd_previous_error, COMMAND_ONCE };
-const Command CMD_COMPILE_GOTO_ERROR = { "compile-goto-error", cmd_compile_goto_error, COMMAND_ONCE };
-const Command CMD_NEXT_ERROR_NO_SELECT = { "next-error-no-select", cmd_next_error_no_select, COMMAND_ONCE };
-const Command CMD_PREVIOUS_ERROR_NO_SELECT = { "previous-error-no-select", cmd_previous_error_no_select, COMMAND_ONCE };
-const Command CMD_RECOMPILE = { "recompile", cmd_recompile, COMMAND_ONCE };
-const Command CMD_QUIT_WINDOW = { "quit-window", cmd_quit_window, COMMAND_ONCE };
-const Command CMD_OCCUR = { "occur", cmd_occur, COMMAND_ONCE };
-const Command CMD_PROJECT_COMPILE = { "project-compile", cmd_project_compile, COMMAND_ONCE };
-const Command CMD_COMPILE = { "compile", cmd_compile, COMMAND_ONCE };
-const Command CMD_KILL_COMPILATION = { "kill-compilation", cmd_kill_compilation, COMMAND_ONCE };
+const Command CMD_PROJECT_SEARCH = { "project-search", "Search every file of the project for a literal text", cmd_project_search, COMMAND_ONCE };
+const Command CMD_NEXT_ERROR = { "next-error", "Go to the next location of the latest results", cmd_next_error, COMMAND_ONCE };
+const Command CMD_PREVIOUS_ERROR = { "previous-error", "Go to the previous location of the latest results", cmd_previous_error, COMMAND_ONCE };
+const Command CMD_COMPILE_GOTO_ERROR = { "compile-goto-error", "Visit the location on this results line", cmd_compile_goto_error, COMMAND_ONCE };
+const Command CMD_NEXT_ERROR_NO_SELECT = { "next-error-no-select", "Show the next location in another window", cmd_next_error_no_select, COMMAND_ONCE };
+const Command CMD_PREVIOUS_ERROR_NO_SELECT = { "previous-error-no-select", "Show the previous location in another window", cmd_previous_error_no_select, COMMAND_ONCE };
+const Command CMD_RECOMPILE = { "recompile", "Run the last build or search again", cmd_recompile, COMMAND_ONCE };
+const Command CMD_QUIT_WINDOW = { "quit-window", "Quit the results window", cmd_quit_window, COMMAND_ONCE };
+const Command CMD_OCCUR = { "occur", "List the lines of the buffer that contain a text", cmd_occur, COMMAND_ONCE };
+const Command CMD_PROJECT_COMPILE = { "project-compile", "Run a build command in the project's root", cmd_project_compile, COMMAND_ONCE };
+const Command CMD_COMPILE = { "compile", "Run a build command in the buffer's directory", cmd_compile, COMMAND_ONCE };
+const Command CMD_KILL_COMPILATION = { "kill-compilation", "Stop the running build", cmd_kill_compilation, COMMAND_ONCE };

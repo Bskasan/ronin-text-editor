@@ -285,11 +285,11 @@ static void cmd_edit_lines(CommandContext *ctx) { cursors_edit_lines(ctx, 0); }
 static void cmd_edit_ends_of_lines(CommandContext *ctx) { cursors_edit_lines(ctx, 1); }
 static void cmd_edit_beginnings_of_lines(CommandContext *ctx) { cursors_edit_lines(ctx, 2); }
 
-const Command CMD_MARK_NEXT_LIKE_THIS      = { "mark-next-like-this", cmd_mark_next_like_this, COMMAND_ONCE };
-const Command CMD_MARK_PREVIOUS_LIKE_THIS  = { "mark-previous-like-this", cmd_mark_previous_like_this, COMMAND_ONCE };
-const Command CMD_MARK_ALL_LIKE_THIS       = { "mark-all-like-this", cmd_mark_all_like_this, COMMAND_ONCE };
-const Command CMD_SKIP_TO_NEXT_LIKE_THIS   = { "skip-to-next-like-this", cmd_skip_to_next_like_this, COMMAND_ONCE };
-const Command CMD_UNMARK_NEXT_LIKE_THIS    = { "unmark-next-like-this", cmd_unmark_next_like_this, COMMAND_ONCE };
-const Command CMD_EDIT_LINES               = { "edit-lines", cmd_edit_lines, COMMAND_ONCE };
-const Command CMD_EDIT_ENDS_OF_LINES       = { "edit-ends-of-lines", cmd_edit_ends_of_lines, COMMAND_ONCE };
-const Command CMD_EDIT_BEGINNINGS_OF_LINES = { "edit-beginnings-of-lines", cmd_edit_beginnings_of_lines, COMMAND_ONCE };
+const Command CMD_MARK_NEXT_LIKE_THIS      = { "mark-next-like-this", "Add a cursor at the region's next match, or a line below", cmd_mark_next_like_this, COMMAND_ONCE };
+const Command CMD_MARK_PREVIOUS_LIKE_THIS  = { "mark-previous-like-this", "Add a cursor at the region's previous match, or a line above", cmd_mark_previous_like_this, COMMAND_ONCE };
+const Command CMD_MARK_ALL_LIKE_THIS       = { "mark-all-like-this", "Add a cursor at every match of the region's text", cmd_mark_all_like_this, COMMAND_ONCE };
+const Command CMD_SKIP_TO_NEXT_LIKE_THIS   = { "skip-to-next-like-this", "Move the newest cursor to the next match of the region", cmd_skip_to_next_like_this, COMMAND_ONCE };
+const Command CMD_UNMARK_NEXT_LIKE_THIS    = { "unmark-next-like-this", "Remove the newest cursor", cmd_unmark_next_like_this, COMMAND_ONCE };
+const Command CMD_EDIT_LINES               = { "edit-lines", "Add a cursor on every line of the region", cmd_edit_lines, COMMAND_ONCE };
+const Command CMD_EDIT_ENDS_OF_LINES       = { "edit-ends-of-lines", "Add a cursor at the end of every line of the region", cmd_edit_ends_of_lines, COMMAND_ONCE };
+const Command CMD_EDIT_BEGINNINGS_OF_LINES = { "edit-beginnings-of-lines", "Add a cursor at the start of every line of the region", cmd_edit_beginnings_of_lines, COMMAND_ONCE };

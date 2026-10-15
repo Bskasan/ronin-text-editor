@@ -1022,28 +1022,28 @@ static void cmd_recenter_top_bottom(CommandContext *ctx) {
 
 #define MOTION COMMAND_MOTION
 #define EDIT COMMAND_EDIT
-const Command CMD_FORWARD_CHAR           = { "forward-char", cmd_forward_char, MOTION };
-const Command CMD_BACKWARD_CHAR          = { "backward-char", cmd_backward_char, MOTION };
-const Command CMD_NEXT_LINE              = { "next-line", cmd_next_line, MOTION };
-const Command CMD_PREVIOUS_LINE          = { "previous-line", cmd_previous_line, MOTION };
-const Command CMD_MOVE_BEGINNING_OF_LINE = { "move-beginning-of-line", cmd_move_beginning_of_line, MOTION };
-const Command CMD_MOVE_END_OF_LINE       = { "move-end-of-line", cmd_move_end_of_line, MOTION };
-const Command CMD_FORWARD_WORD           = { "forward-word", cmd_forward_word, MOTION };
-const Command CMD_BACKWARD_WORD          = { "backward-word", cmd_backward_word, MOTION };
-const Command CMD_FORWARD_PARAGRAPH      = { "forward-paragraph", cmd_forward_paragraph, MOTION };
-const Command CMD_BACKWARD_PARAGRAPH     = { "backward-paragraph", cmd_backward_paragraph, MOTION };
-const Command CMD_BEGINNING_OF_BUFFER    = { "beginning-of-buffer", cmd_beginning_of_buffer, MOTION };
-const Command CMD_END_OF_BUFFER          = { "end-of-buffer", cmd_end_of_buffer, MOTION };
-const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", cmd_scroll_up_command, COMMAND_ONCE | MOTION };
-const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", cmd_scroll_down_command, COMMAND_ONCE | MOTION };
-const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
-const Command CMD_SELF_INSERT            = { "self-insert-command", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE,
+const Command CMD_FORWARD_CHAR           = { "forward-char", "Move point forward one character", cmd_forward_char, MOTION };
+const Command CMD_BACKWARD_CHAR          = { "backward-char", "Move point back one character", cmd_backward_char, MOTION };
+const Command CMD_NEXT_LINE              = { "next-line", "Move point down one line", cmd_next_line, MOTION };
+const Command CMD_PREVIOUS_LINE          = { "previous-line", "Move point up one line", cmd_previous_line, MOTION };
+const Command CMD_MOVE_BEGINNING_OF_LINE = { "move-beginning-of-line", "Move point to the beginning of the line", cmd_move_beginning_of_line, MOTION };
+const Command CMD_MOVE_END_OF_LINE       = { "move-end-of-line", "Move point to the end of the line", cmd_move_end_of_line, MOTION };
+const Command CMD_FORWARD_WORD           = { "forward-word", "Move point forward to the end of a word", cmd_forward_word, MOTION };
+const Command CMD_BACKWARD_WORD          = { "backward-word", "Move point back to the beginning of a word", cmd_backward_word, MOTION };
+const Command CMD_FORWARD_PARAGRAPH      = { "forward-paragraph", "Move point forward to the end of the paragraph", cmd_forward_paragraph, MOTION };
+const Command CMD_BACKWARD_PARAGRAPH     = { "backward-paragraph", "Move point back to the start of the paragraph", cmd_backward_paragraph, MOTION };
+const Command CMD_BEGINNING_OF_BUFFER    = { "beginning-of-buffer", "Move point to the beginning of the buffer", cmd_beginning_of_buffer, MOTION };
+const Command CMD_END_OF_BUFFER          = { "end-of-buffer", "Move point to the end of the buffer", cmd_end_of_buffer, MOTION };
+const Command CMD_SCROLL_UP_COMMAND      = { "scroll-up-command", "Scroll the window forward by one screen", cmd_scroll_up_command, COMMAND_ONCE | MOTION };
+const Command CMD_SCROLL_DOWN_COMMAND    = { "scroll-down-command", "Scroll the window back by one screen", cmd_scroll_down_command, COMMAND_ONCE | MOTION };
+const Command CMD_RECENTER_TOP_BOTTOM    = { "recenter-top-bottom", "Scroll point's line to the middle, top, then bottom", cmd_recenter_top_bottom, COMMAND_ONCE };
+const Command CMD_SELF_INSERT            = { "self-insert-command", "Insert the character of the key that was typed", cmd_self_insert, EDIT | COMMAND_MERGE_INSERT | COMMAND_REGION_REPLACE,
                                              cmd_self_insert_after };
-const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
-const Command CMD_DELETE_CHAR            = { "delete-char", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
-const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", cmd_keyboard_quit, COMMAND_ONCE | COMMAND_QUIT };
-const Command CMD_SET_MARK_COMMAND       = { "set-mark-command", cmd_set_mark_command, 0 };
-const Command CMD_EXCHANGE_POINT_AND_MARK = { "exchange-point-and-mark", cmd_exchange_point_and_mark, 0 };
-const Command CMD_MARK_WHOLE_BUFFER      = { "mark-whole-buffer", cmd_mark_whole_buffer, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_DELETE_BACKWARD_CHAR   = { "delete-backward-char", "Delete the character before point, or the region", cmd_delete_backward_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
+const Command CMD_DELETE_CHAR            = { "delete-char", "Delete the character after point, or the region", cmd_delete_char, EDIT | COMMAND_MERGE_DELETE | COMMAND_REGION_DELETE };
+const Command CMD_KEYBOARD_QUIT          = { "keyboard-quit", "Cancel the key sequence, the mark or the extra cursors", cmd_keyboard_quit, COMMAND_ONCE | COMMAND_QUIT };
+const Command CMD_SET_MARK_COMMAND       = { "set-mark-command", "Set the mark at point and activate it", cmd_set_mark_command, 0 };
+const Command CMD_EXCHANGE_POINT_AND_MARK = { "exchange-point-and-mark", "Exchange point and the mark", cmd_exchange_point_and_mark, 0 };
+const Command CMD_MARK_WHOLE_BUFFER      = { "mark-whole-buffer", "Mark the whole buffer as the region", cmd_mark_whole_buffer, COMMAND_ONCE | COMMAND_SINGLE };
 #undef MOTION
 #undef EDIT

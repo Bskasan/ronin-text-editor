@@ -367,20 +367,20 @@ i64 isearch_fail_pos(Isearch *is) {
     return 0;
 }
 
-const Command CMD_ISEARCH_FORWARD          = { "isearch-forward", cmd_isearch_forward, COMMAND_ONCE | COMMAND_SINGLE };
-const Command CMD_ISEARCH_BACKWARD         = { "isearch-backward", cmd_isearch_backward, COMMAND_ONCE | COMMAND_SINGLE };
-const Command CMD_ISEARCH_REPEAT_FORWARD   = { "isearch-repeat-forward", cmd_isearch_repeat_forward, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_REPEAT_BACKWARD  = { "isearch-repeat-backward", cmd_isearch_repeat_backward, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_DELETE_CHAR      = { "isearch-delete-char", cmd_isearch_delete_char, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_EXIT             = { "isearch-exit", cmd_isearch_exit, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_ABORT            = { "isearch-abort", cmd_isearch_abort, COMMAND_ONCE | COMMAND_ISEARCH | COMMAND_QUIT };
-const Command CMD_ISEARCH_YANK_WORD        = { "isearch-yank-word", cmd_isearch_yank_word, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_YANK_KILL        = { "isearch-yank-kill", cmd_isearch_yank_kill, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_RING_RETREAT     = { "isearch-ring-retreat", cmd_isearch_ring_retreat, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_RING_ADVANCE     = { "isearch-ring-advance", cmd_isearch_ring_advance, COMMAND_ONCE | COMMAND_ISEARCH };
-const Command CMD_ISEARCH_TOGGLE_CASE_FOLD = { "isearch-toggle-case-fold", cmd_isearch_toggle_case_fold, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_FORWARD          = { "isearch-forward", "Search forward incrementally as you type", cmd_isearch_forward, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_ISEARCH_BACKWARD         = { "isearch-backward", "Search backward incrementally as you type", cmd_isearch_backward, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_ISEARCH_REPEAT_FORWARD   = { "isearch-repeat-forward", "Search for the next match of the search string", cmd_isearch_repeat_forward, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_REPEAT_BACKWARD  = { "isearch-repeat-backward", "Search for the previous match of the search string", cmd_isearch_repeat_backward, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_DELETE_CHAR      = { "isearch-delete-char", "Undo the last change to the search string", cmd_isearch_delete_char, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_EXIT             = { "isearch-exit", "End the search at the current match", cmd_isearch_exit, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_ABORT            = { "isearch-abort", "Abort the search and go back to where it started", cmd_isearch_abort, COMMAND_ONCE | COMMAND_ISEARCH | COMMAND_QUIT };
+const Command CMD_ISEARCH_YANK_WORD        = { "isearch-yank-word", "Add the next word of the buffer to the search string", cmd_isearch_yank_word, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_YANK_KILL        = { "isearch-yank-kill", "Add the last kill to the search string", cmd_isearch_yank_kill, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_RING_RETREAT     = { "isearch-ring-retreat", "Use the previous search string from the history", cmd_isearch_ring_retreat, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_RING_ADVANCE     = { "isearch-ring-advance", "Use the next search string from the history", cmd_isearch_ring_advance, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_TOGGLE_CASE_FOLD = { "isearch-toggle-case-fold", "Toggle case sensitivity of the search", cmd_isearch_toggle_case_fold, COMMAND_ONCE | COMMAND_ISEARCH };
 // Internal (not in the command table): a plain character typed while searching.
-const Command CMD_ISEARCH_PRINTING_CHAR    = { "isearch-printing-char", cmd_isearch_printing_char, COMMAND_ONCE | COMMAND_ISEARCH };
+const Command CMD_ISEARCH_PRINTING_CHAR    = { "isearch-printing-char", "Add a typed character to the search string", cmd_isearch_printing_char, COMMAND_ONCE | COMMAND_ISEARCH };
 
 // ---------------------------------------------------------------------------
 // query-replace and replace-string
@@ -650,8 +650,8 @@ static void cmd_replace_quit(CommandContext *ctx) {
 }
 
 // Internal (not in the command table). Both continue the session's undo group.
-static const Command CMD_REPLACE_ANSWER = { "replace-answer", cmd_replace_answer, COMMAND_ONCE | COMMAND_UNDO_CONTINUE };
-static const Command CMD_REPLACE_QUIT   = { "replace-quit", cmd_replace_quit, COMMAND_ONCE | COMMAND_UNDO_CONTINUE };
+static const Command CMD_REPLACE_ANSWER = { "replace-answer", "Answer a query-replace question", cmd_replace_answer, COMMAND_ONCE | COMMAND_UNDO_CONTINUE };
+static const Command CMD_REPLACE_QUIT   = { "replace-quit", "Stop the query-replace session", cmd_replace_quit, COMMAND_ONCE | COMMAND_UNDO_CONTINUE };
 
 b32 replace_key(CommandContext *ctx, const Command *command, u32 answer) {
     Replace *rp = ctx->replace;
@@ -673,5 +673,5 @@ b32 replace_key(CommandContext *ctx, const Command *command, u32 answer) {
     return 0;
 }
 
-const Command CMD_QUERY_REPLACE  = { "query-replace", cmd_query_replace, COMMAND_ONCE | COMMAND_SINGLE };
-const Command CMD_REPLACE_STRING = { "replace-string", cmd_replace_string, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_QUERY_REPLACE  = { "query-replace", "Replace a text from point, asking at each match", cmd_query_replace, COMMAND_ONCE | COMMAND_SINGLE };
+const Command CMD_REPLACE_STRING = { "replace-string", "Replace a text from point without asking", cmd_replace_string, COMMAND_ONCE | COMMAND_SINGLE };

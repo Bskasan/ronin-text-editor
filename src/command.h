@@ -36,7 +36,8 @@ enum {
 };
 
 typedef struct Command {
-    const char *name; // the Emacs name
+    const char *name;        // the Emacs name
+    const char *description; // one line, at most 60 bytes, starting with a verb, no period (the command list shows it)
     CommandFn *fn;
     u32 flags;
     // Optional, run by the driver after fn at the same cursor; with several cursors, in a second ordered pass once

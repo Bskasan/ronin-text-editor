@@ -1500,16 +1500,16 @@ static void cmd_set_language(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
-const Command CMD_SET_LANGUAGE               = { "set-language", cmd_set_language, COMMAND_ONCE };
-const Command CMD_NEXT_BUFFER                = { "next-buffer", cmd_next_buffer, COMMAND_ONCE };
-const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", cmd_previous_buffer, COMMAND_ONCE };
-const Command CMD_OPEN_CONFIG                = { "open-config", cmd_open_config, COMMAND_ONCE };
-const Command CMD_RELOAD_CONFIG              = { "reload-config", cmd_reload_config, COMMAND_ONCE };
-const Command CMD_TEXT_SCALE_INCREASE        = { "text-scale-increase", cmd_text_scale_increase, COMMAND_ONCE };
-const Command CMD_TEXT_SCALE_DECREASE        = { "text-scale-decrease", cmd_text_scale_decrease, COMMAND_ONCE };
-const Command CMD_TEXT_SCALE_RESET           = { "text-scale-reset", cmd_text_scale_reset, COMMAND_ONCE };
-const Command CMD_DESCRIBE_KEY               = { "describe-key", cmd_describe_key, COMMAND_ONCE };
-const Command CMD_QUOTED_INSERT              = { "quoted-insert", cmd_quoted_insert, COMMAND_ONCE };
+const Command CMD_SET_LANGUAGE               = { "set-language", "Set the buffer's language for highlighting", cmd_set_language, COMMAND_ONCE };
+const Command CMD_NEXT_BUFFER                = { "next-buffer", "Switch to the next buffer in the buffer list", cmd_next_buffer, COMMAND_ONCE };
+const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", "Switch to the previous buffer in the buffer list", cmd_previous_buffer, COMMAND_ONCE };
+const Command CMD_OPEN_CONFIG                = { "open-config", "Open the configuration file, creating it if missing", cmd_open_config, COMMAND_ONCE };
+const Command CMD_RELOAD_CONFIG              = { "reload-config", "Reload the configuration file now", cmd_reload_config, COMMAND_ONCE };
+const Command CMD_TEXT_SCALE_INCREASE        = { "text-scale-increase", "Make the text larger for this session", cmd_text_scale_increase, COMMAND_ONCE };
+const Command CMD_TEXT_SCALE_DECREASE        = { "text-scale-decrease", "Make the text smaller for this session", cmd_text_scale_decrease, COMMAND_ONCE };
+const Command CMD_TEXT_SCALE_RESET           = { "text-scale-reset", "Reset the text size to the configured font size", cmd_text_scale_reset, COMMAND_ONCE };
+const Command CMD_DESCRIBE_KEY               = { "describe-key", "Describe the command a key sequence runs", cmd_describe_key, COMMAND_ONCE };
+const Command CMD_QUOTED_INSERT              = { "quoted-insert", "Insert the next character typed literally", cmd_quoted_insert, COMMAND_ONCE };
 
 // ---------------------------------------------------------------------------
 // Windows (COMMAND_ONCE). The minibuffer is not a window of the tree: the commands that would act on
@@ -1710,18 +1710,18 @@ static void cmd_view_echo_area_messages(CommandContext *ctx) {
     view_ensure_visible(v);
 }
 
-const Command CMD_SPLIT_WINDOW_BELOW            = { "split-window-below", cmd_split_window_below, COMMAND_ONCE };
-const Command CMD_SPLIT_WINDOW_RIGHT            = { "split-window-right", cmd_split_window_right, COMMAND_ONCE };
-const Command CMD_OTHER_WINDOW                  = { "other-window", cmd_other_window, COMMAND_ONCE };
-const Command CMD_DELETE_WINDOW                 = { "delete-window", cmd_delete_window, COMMAND_ONCE };
-const Command CMD_DELETE_OTHER_WINDOWS          = { "delete-other-windows", cmd_delete_other_windows, COMMAND_ONCE };
-const Command CMD_BALANCE_WINDOWS               = { "balance-windows", cmd_balance_windows, COMMAND_ONCE };
-const Command CMD_ENLARGE_WINDOW                = { "enlarge-window", cmd_enlarge_window, COMMAND_ONCE };
-const Command CMD_ENLARGE_WINDOW_HORIZONTALLY   = { "enlarge-window-horizontally", cmd_enlarge_window_horizontally, COMMAND_ONCE };
-const Command CMD_SHRINK_WINDOW_HORIZONTALLY    = { "shrink-window-horizontally", cmd_shrink_window_horizontally, COMMAND_ONCE };
-const Command CMD_SCROLL_OTHER_WINDOW           = { "scroll-other-window", cmd_scroll_other_window, COMMAND_ONCE };
-const Command CMD_SCROLL_OTHER_WINDOW_DOWN      = { "scroll-other-window-down", cmd_scroll_other_window_down, COMMAND_ONCE };
-const Command CMD_VIEW_ECHO_AREA_MESSAGES       = { "view-echo-area-messages", cmd_view_echo_area_messages, COMMAND_ONCE };
+const Command CMD_SPLIT_WINDOW_BELOW            = { "split-window-below", "Split the selected window into two, one above the other", cmd_split_window_below, COMMAND_ONCE };
+const Command CMD_SPLIT_WINDOW_RIGHT            = { "split-window-right", "Split the selected window into two side by side", cmd_split_window_right, COMMAND_ONCE };
+const Command CMD_OTHER_WINDOW                  = { "other-window", "Select the next window in the cyclic order", cmd_other_window, COMMAND_ONCE };
+const Command CMD_DELETE_WINDOW                 = { "delete-window", "Delete the selected window", cmd_delete_window, COMMAND_ONCE };
+const Command CMD_DELETE_OTHER_WINDOWS          = { "delete-other-windows", "Delete every window but the selected one", cmd_delete_other_windows, COMMAND_ONCE };
+const Command CMD_BALANCE_WINDOWS               = { "balance-windows", "Balance the windows to equal sizes", cmd_balance_windows, COMMAND_ONCE };
+const Command CMD_ENLARGE_WINDOW                = { "enlarge-window", "Enlarge the selected window by one line", cmd_enlarge_window, COMMAND_ONCE };
+const Command CMD_ENLARGE_WINDOW_HORIZONTALLY   = { "enlarge-window-horizontally", "Enlarge the selected window by one column", cmd_enlarge_window_horizontally, COMMAND_ONCE };
+const Command CMD_SHRINK_WINDOW_HORIZONTALLY    = { "shrink-window-horizontally", "Shrink the selected window by one column", cmd_shrink_window_horizontally, COMMAND_ONCE };
+const Command CMD_SCROLL_OTHER_WINDOW           = { "scroll-other-window", "Scroll the next window forward by one screen", cmd_scroll_other_window, COMMAND_ONCE };
+const Command CMD_SCROLL_OTHER_WINDOW_DOWN      = { "scroll-other-window-down", "Scroll the next window back by one screen", cmd_scroll_other_window_down, COMMAND_ONCE };
+const Command CMD_VIEW_ECHO_AREA_MESSAGES       = { "view-echo-area-messages", "Show the *Messages* buffer in another window", cmd_view_echo_area_messages, COMMAND_ONCE };
 
 // The driver orders and merges the cursors of the view a command ran in; a command (or the background work)
 // that moves the point of another window's view (view-echo-area-messages, next-error, a build's output

@@ -269,7 +269,7 @@ static void cmd_revert_buffer(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
-const Command CMD_REVERT_BUFFER = { "revert-buffer", cmd_revert_buffer, COMMAND_ONCE };
+const Command CMD_REVERT_BUFFER = { "revert-buffer", "Revert the buffer to its file's contents on disk", cmd_revert_buffer, COMMAND_ONCE };
 
 // ---------------------------------------------------------------------------
 // save-some-buffers and quitting. One chain walks the buffer list: state.index is the next entry to
@@ -510,11 +510,11 @@ static void files_report_unsaved(App *app) {
 // "Modified buffers exist; exit anyway?" if some are left.
 static void cmd_save_buffers_kill_terminal(CommandContext *ctx) { files_save_some_start(ctx, FILES_QUIT); }
 
-const Command CMD_SAVE_BUFFER = { "save-buffer", cmd_save_buffer, COMMAND_ONCE };
-const Command CMD_SAVE_SOME_BUFFERS = { "save-some-buffers", cmd_save_some_buffers, COMMAND_ONCE };
-const Command CMD_SAVE_BUFFERS_KILL_TERMINAL = { "save-buffers-kill-terminal", cmd_save_buffers_kill_terminal, COMMAND_ONCE };
-const Command CMD_FIND_FILE   = { "find-file", cmd_find_file, COMMAND_ONCE };
-const Command CMD_WRITE_FILE  = { "write-file", cmd_write_file, COMMAND_ONCE };
+const Command CMD_SAVE_BUFFER = { "save-buffer", "Save the buffer to its file", cmd_save_buffer, COMMAND_ONCE };
+const Command CMD_SAVE_SOME_BUFFERS = { "save-some-buffers", "Save the modified buffers, asking about each", cmd_save_some_buffers, COMMAND_ONCE };
+const Command CMD_SAVE_BUFFERS_KILL_TERMINAL = { "save-buffers-kill-terminal", "Quit ronin, asking to save modified buffers first", cmd_save_buffers_kill_terminal, COMMAND_ONCE };
+const Command CMD_FIND_FILE   = { "find-file", "Open a file in the selected window", cmd_find_file, COMMAND_ONCE };
+const Command CMD_WRITE_FILE  = { "write-file", "Write the buffer to another file and visit that", cmd_write_file, COMMAND_ONCE };
 
 // ---------------------------------------------------------------------------
 // Buffers
@@ -693,11 +693,11 @@ static void cmd_kill_buffer_and_window(CommandContext *ctx) {
     files_kill_and_delete(ctx, buf);
 }
 
-const Command CMD_SWITCH_TO_BUFFER = { "switch-to-buffer", cmd_switch_to_buffer, COMMAND_ONCE };
-const Command CMD_KILL_BUFFER      = { "kill-buffer", cmd_kill_buffer, COMMAND_ONCE };
-const Command CMD_FIND_FILE_OTHER_WINDOW        = { "find-file-other-window", cmd_find_file_other_window, COMMAND_ONCE };
-const Command CMD_SWITCH_TO_BUFFER_OTHER_WINDOW = { "switch-to-buffer-other-window", cmd_switch_to_buffer_other_window, COMMAND_ONCE };
-const Command CMD_KILL_BUFFER_AND_WINDOW        = { "kill-buffer-and-window", cmd_kill_buffer_and_window, COMMAND_ONCE };
+const Command CMD_SWITCH_TO_BUFFER = { "switch-to-buffer", "Switch the selected window to another buffer", cmd_switch_to_buffer, COMMAND_ONCE };
+const Command CMD_KILL_BUFFER      = { "kill-buffer", "Kill a buffer, asking to save it if modified", cmd_kill_buffer, COMMAND_ONCE };
+const Command CMD_FIND_FILE_OTHER_WINDOW        = { "find-file-other-window", "Open a file in another window", cmd_find_file_other_window, COMMAND_ONCE };
+const Command CMD_SWITCH_TO_BUFFER_OTHER_WINDOW = { "switch-to-buffer-other-window", "Switch another window to a buffer and select it", cmd_switch_to_buffer_other_window, COMMAND_ONCE };
+const Command CMD_KILL_BUFFER_AND_WINDOW        = { "kill-buffer-and-window", "Kill the buffer and delete its window", cmd_kill_buffer_and_window, COMMAND_ONCE };
 
 // ---------------------------------------------------------------------------
 // Crash recovery (Phase 15). The platform's unhandled-exception filter calls app_crash_write for every buffer,
@@ -818,4 +818,4 @@ static void cmd_recover_file(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
-const Command CMD_RECOVER_FILE = { "recover-file", cmd_recover_file, COMMAND_ONCE };
+const Command CMD_RECOVER_FILE = { "recover-file", "Recover a file from its crash recovery copy", cmd_recover_file, COMMAND_ONCE };
