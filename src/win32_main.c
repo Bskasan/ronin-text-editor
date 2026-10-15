@@ -1475,12 +1475,29 @@ static void win32_poll_watches(Platform *p) {
     }
 }
 
-// The handles the main loop waits on besides the messages: the armed watches and the wake event.
+// The handles the main loop waits on besides the messages: the armed watches and the wake event (last).
 static DWORD win32_wait_handles(Platform *p, HANDLE *out) {
     DWORD n = 0;
     for (i32 i = 0; i < WIN32_MAX_WATCHES; i++) if (p->watches[i] && !p->watch_fired[i]) out[n++] = p->watches[i];
     if (p->wake) out[n++] = p->wake;
     return n;
+}
+
+// Blocks until a message, a watch, the workers' wake or the timeout. Returns whether the wake ended the wait:
+// the wait has then reset that auto-reset event, so it is not set any more for the look after it.
+static b32 win32_wait(Platform *p, DWORD timeout, b32 *timed_out) {
+    HANDLE handles[WIN32_MAX_WATCHES + 1];
+    DWORD count = win32_wait_handles(p, handles);
+    DWORD w = MsgWaitForMultipleObjectsEx(count, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    *timed_out = w == WAIT_TIMEOUT;
+    return p->wake && count && w == WAIT_OBJECT_0 + count - 1;
+}
+
+// After the wait (or none, while a frame is due): the watches' events, then the workers' results when the wake
+// ended the wait or is set now. The app takes them without a frame unless something shown changed.
+static void win32_after_wait(Platform *p, b32 woken) {
+    win32_poll_watches(p);
+    if (p->wake && (woken || WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0) && app_wake(p->app)) p->redraw = 1;
 }
 
 #if RONIN_DEV
@@ -2678,6 +2695,33 @@ static b32 win32_dev_fake_mods(void) {
         return 1;
     }
     return 0;
+}
+
+// The workers' wake ending the main loop's wait: the wait resets that auto-reset event, and the results are taken
+// all the same (until Phase 16 they were not while the app was idle: a finished scan, search or build stayed in its
+// queue, unjoined, until a wake came while a frame was due).
+static i32 win32_dev_test_wake(Platform *p) {
+    AppArgs args = { .dpi_scale = 1.0f, .headless = 1 };
+    App *app = app_create(&p->perm, &args);
+    if (!app) {
+        LOG("test: FAIL: wake: app_create failed");
+        return 1;
+    }
+    p->app = app;
+    while (WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0) {} // nothing left over
+    u64 before = app_dev_wakes(app);
+    os_wake_main();
+    b32 timed_out;
+    b32 woken = win32_wait(p, 2000, &timed_out);
+    win32_after_wait(p, woken);
+    u64 taken = app_dev_wakes(app) - before;
+    i32 leaks = app_shutdown(app);
+    p->app = NULL;
+    p->event_count = 0;
+    b32 ok = !timed_out && taken == 1 && leaks == 0;
+    LOG("test: %s: wake (the wait ended by %s, app_wake called %U time(s), %d leak(s))", ok ? "ok" : "FAIL",
+        woken ? "the wake" : timed_out ? "its timeout" : "a message", taken, leaks);
+    return !ok;
 }
 
 static i32 win32_dev_test_shield(void) {
@@ -5447,19 +5491,17 @@ static void win32_leak_feed(void *ctx, Event *events, i32 count, b32 frame_each)
 
 static b32 win32_leak_pump(void *ctx, u32 wait_ms) {
     Platform *p = (Platform *)ctx;
-    HANDLE handles[WIN32_MAX_WATCHES + 1];
-    DWORD count = win32_wait_handles(p, handles);
     DWORD app_wait = app_wait_ms(p->app);
-    DWORD w = MsgWaitForMultipleObjectsEx(count, handles, MIN((DWORD)wait_ms, app_wait), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-    b32 did = w != WAIT_TIMEOUT;
-    if (w == WAIT_TIMEOUT && wait_ms >= app_wait) { // the app's own timeout, as in the main loop
+    b32 timed_out;
+    b32 woken = win32_wait(p, MIN((DWORD)wait_ms, app_wait), &timed_out);
+    b32 did = !timed_out;
+    if (timed_out && wait_ms >= app_wait) { // the app's own timeout, as in the main loop
         Event e = { .kind = EVENT_WAKEUP };
         win32_push_event(p, e);
         p->redraw = 1;
         did = 1;
     }
-    win32_poll_watches(p);
-    if (p->wake && WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0 && app_wake(p->app)) p->redraw = 1;
+    win32_after_wait(p, woken);
     MSG msg;
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (p->event_count > EVENT_CAPACITY - EVENT_RESERVE) win32_frame(p);
@@ -5934,6 +5976,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->test) { // headless: no window, no device, no font
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
+        failures += win32_dev_test_wake(p);
         failures += win32_dev_test_shield();
         failures += win32_dev_test_mods(p);
         failures += win32_dev_test_args(p);
@@ -6240,19 +6283,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     while (!p->quit) {
         // Block until there is something to do: 0% CPU when idle. The directory watches are part of
         // the wait; a timeout only while the app asks for one (a config read to retry).
+        b32 woken = 0;
         if (!p->redraw) {
-            HANDLE handles[WIN32_MAX_WATCHES + 1];
-            DWORD count = win32_wait_handles(p, handles);
-            DWORD timeout = app_wait_ms(p->app);
-            if (MsgWaitForMultipleObjectsEx(count, handles, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_TIMEOUT) {
+            b32 timed_out;
+            woken = win32_wait(p, app_wait_ms(p->app), &timed_out);
+            if (timed_out) {
                 Event e = { .kind = EVENT_WAKEUP };
                 win32_push_event(p, e);
                 p->redraw = 1;
             }
         }
-        win32_poll_watches(p);
-        // Workers' results: the app takes them without a frame unless something shown changed.
-        if (p->wake && WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0 && app_wake(p->app)) p->redraw = 1;
+        win32_after_wait(p, woken);
 #if RONIN_DEV
         p->idle_wakeups++;
 #endif
