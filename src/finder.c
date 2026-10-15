@@ -157,6 +157,9 @@ static void finder_scan_ended(App *app, Project *p) {
 b32 app_wake(App *app) {
     Finder *f = &app->finder;
     b32 frame = 0;
+#if RONIN_DEV
+    app->dev_wakes++;
+#endif
     for (i32 i = 0; i < PROJECT_KEPT; i++) {
         Project *p = &f->projects[i];
         if (!p->scan) continue;
@@ -575,6 +578,10 @@ void app_dev_bench_scan_close(App *app, String8 root) {
     Project *p = finder_project(app, root);
     finder_close_project(app, p);
     finder_dev_wait(app, 60000); // the cancelled scan ends
+}
+
+u64 app_dev_wakes(App *app) {
+    return app->dev_wakes;
 }
 
 // Releases every held scan (--scan-hold).

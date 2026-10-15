@@ -512,6 +512,7 @@ b32  app_dev_isearch_failing(App *app);                        // an isearch is 
 void app_dev_cell(App *app, i32 *w, i32 *h);                  // the text cell in pixels
 void app_dev_log_keys(App *app, b32 on);                      // --log-keys: log every key and text event's result
 String8 app_dev_echo(App *app);                               // the echo area's text
+u64  app_dev_wakes(App *app);                                 // app_wake calls so far
 String8 app_dev_text(App *app, Arena *arena);                 // the active view's buffer text
 // The index-th binding of a keymap (0 [keys], 1 [keys minibuffer], 2 [keys isearch], 3 [keys search-results], 4 [keys compilation])
 // in kbd notation, its command's name in *command; empty past the last one.

@@ -102,6 +102,7 @@ struct App {
     i32 dev_claim_ahead;         // tests: the claim window instead of RESULTS_CLAIM_AHEAD (0 = it)
     u64 dev_held_max;            // tests: the held records' limit instead of RESULTS_HELD_MAX (0 = it)
     u64 dev_results_max_us;      // benches: the longest results_work of a frame since it was last read
+    u64 dev_wakes;               // app_wake calls (the main loop's wake test)
 #endif
 #if RONIN_DEV
     i32 force_focus;  // -1: follow focus events; 0 / 1: forced (smoke, screenshots)
