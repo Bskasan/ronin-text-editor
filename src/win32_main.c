@@ -90,6 +90,9 @@ typedef struct Platform {
     HANDLE log_file;
     b32 smoke;
     b32 test;
+    b32 leak_check;     // --leak-check [SCENARIO|all] [--cycles N] (debug build): the leak audit (leak.c)
+    String8 leak_which;
+    i32 leak_cycles;
 
     u64 seed;
     u64 fuzz_first, fuzz_count; // --fuzz-seeds FIRST COUNT
@@ -1291,7 +1294,6 @@ static u64 win32_dev_reservation_committed(void *base) {
 
 void os_dev_metrics(OsDevMetrics *m) {
     memset(m, 0, sizeof(*m));
-    m->handles = os_dev_handle_count(); // first: the Toolhelp snapshot below is a handle of its own
     PROCESS_MEMORY_COUNTERS_EX pmc = { .cb = sizeof(pmc) };
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) {
         m->private_bytes = pmc.PrivateUsage;
@@ -1316,6 +1318,82 @@ void os_dev_metrics(OsDevMetrics *m) {
         for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) m->process_threads += te.th32OwnerProcessID == pid;
         CloseHandle(snap);
     }
+    // Last, once two reads 1 ms apart agree: right after a frame the graphics stack holds a handle or two for a few
+    // microseconds (seen as +2 in about one sample in ten, never in the handle snapshot taken next); a leak stays.
+    m->handles = os_dev_handle_count();
+    for (i32 i = 0; i < 20; i++) {
+        Sleep(1);
+        i32 again = os_dev_handle_count();
+        if (again == m->handles) break;
+        m->handles = again;
+    }
+}
+
+// ntdll's handle snapshot of this process (ProcessHandleInformation, Windows 8 and later) and each type's name
+// (ObjectTypeInformation): their layouts, spelled out here as the driver kit has them.
+typedef struct Win32DevHandleEntry {
+    HANDLE handle;
+    SIZE_T handle_count, pointer_count;
+    ULONG granted_access, type_index, attributes, reserved;
+} Win32DevHandleEntry;
+typedef struct Win32DevHandleSnapshot {
+    SIZE_T count;
+    SIZE_T reserved;
+    Win32DevHandleEntry entries[1];
+} Win32DevHandleSnapshot;
+typedef struct Win32DevTypeName {
+    USHORT length, maximum_length;
+    WCHAR *buffer;
+} Win32DevTypeName;
+typedef LONG (NTAPI *Win32DevNtQueryInformationProcess)(HANDLE, ULONG, void *, ULONG, ULONG *);
+typedef LONG (NTAPI *Win32DevNtQueryObject)(HANDLE, ULONG, void *, ULONG, ULONG *);
+#define WIN32_DEV_PROCESS_HANDLE_INFORMATION 51
+#define WIN32_DEV_OBJECT_TYPE_INFORMATION 2
+
+i32 os_dev_handle_types(OsDevHandleType *out, i32 cap) {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    Win32DevNtQueryInformationProcess query_process =
+        ntdll ? (Win32DevNtQueryInformationProcess)(void *)GetProcAddress(ntdll, "NtQueryInformationProcess") : NULL;
+    Win32DevNtQueryObject query_object = ntdll ? (Win32DevNtQueryObject)(void *)GetProcAddress(ntdll, "NtQueryObject") : NULL;
+    if (!query_process || !query_object) return 0;
+    // Its own pages, outside the arenas, so the sample does not count itself.
+    ULONG size = 1 << 16;
+    Win32DevHandleSnapshot *snap = NULL;
+    for (i32 attempt = 0; attempt < 8; attempt++) {
+        snap = (Win32DevHandleSnapshot *)VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!snap) return 0;
+        ULONG needed = 0;
+        LONG status = query_process(GetCurrentProcess(), WIN32_DEV_PROCESS_HANDLE_INFORMATION, snap, size, &needed);
+        if (status >= 0) break;
+        VirtualFree(snap, 0, MEM_RELEASE);
+        snap = NULL;
+        size = MAX(size * 2, needed + 4096);
+    }
+    if (!snap) return 0;
+    i32 types = 0;
+    i32 index_of[256];
+    for (i32 i = 0; i < 256; i++) index_of[i] = -1;
+    for (SIZE_T i = 0; i < snap->count; i++) {
+        ULONG type = snap->entries[i].type_index & 0xFF;
+        if (index_of[type] < 0) {
+            if (types == cap) continue;
+            OsDevHandleType *t = &out[types];
+            memset(t, 0, sizeof(*t));
+            union { Win32DevTypeName name; u8 bytes[1024]; } info;
+            ULONG got = 0;
+            if (query_object(snap->entries[i].handle, WIN32_DEV_OBJECT_TYPE_INFORMATION, &info, sizeof(info), &got) >= 0 && info.name.buffer) {
+                i32 n = MIN((i32)(info.name.length / 2), (i32)sizeof(t->name) - 1);
+                for (i32 k = 0; k < n; k++) t->name[k] = info.name.buffer[k] < 128 ? (u8)info.name.buffer[k] : '?';
+                t->name_len = n;
+            } else {
+                t->name_len = (i32)fmt_buf(t->name, sizeof(t->name), "type %u", (u32)type);
+            }
+            index_of[type] = types++;
+        }
+        out[index_of[type]].count++;
+    }
+    VirtualFree(snap, 0, MEM_RELEASE);
+    return types;
 }
 
 String8 os_dev_exe_path(Arena *arena) {
@@ -1690,7 +1768,7 @@ void os_fatal(String8 message) {
     b32 interactive = 1;
 #if RONIN_DEV
     LOG("fatal: %S", message);
-    if (g_platform && (g_platform->smoke || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
+    if (g_platform && (g_platform->smoke || g_platform->leak_check || g_platform->screenshot_path.len || g_platform->atlas_path.len ||
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
                        g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
                        g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile || g_platform->bench_cursors)) interactive = 0;
@@ -5355,8 +5433,72 @@ static i32 win32_dev_dpi_check(Platform *p) {
     return pass ? EXIT_OK : EXIT_PIXEL_MISMATCH;
 }
 
+#if RONIN_D3D_DEBUG
+// --leak-check (leak.c): the window is never shown (as a screenshot run); keys go through the queue, the loop's
+// pass is the main loop's.
+static void win32_leak_feed(void *ctx, Event *events, i32 count, b32 frame_each) {
+    Platform *p = (Platform *)ctx;
+    for (i32 i = 0; i < count && !p->quit; i++) {
+        win32_push_event(p, events[i]);
+        if (frame_each) win32_frame(p);
+    }
+    if (p->event_count) win32_frame(p);
+}
+
+static b32 win32_leak_pump(void *ctx, u32 wait_ms) {
+    Platform *p = (Platform *)ctx;
+    HANDLE handles[WIN32_MAX_WATCHES + 1];
+    DWORD count = win32_wait_handles(p, handles);
+    DWORD app_wait = app_wait_ms(p->app);
+    DWORD w = MsgWaitForMultipleObjectsEx(count, handles, MIN((DWORD)wait_ms, app_wait), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    b32 did = w != WAIT_TIMEOUT;
+    if (w == WAIT_TIMEOUT && wait_ms >= app_wait) { // the app's own timeout, as in the main loop
+        Event e = { .kind = EVENT_WAKEUP };
+        win32_push_event(p, e);
+        p->redraw = 1;
+        did = 1;
+    }
+    win32_poll_watches(p);
+    if (p->wake && WaitForSingleObject(p->wake, 0) == WAIT_OBJECT_0 && app_wake(p->app)) p->redraw = 1;
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (p->event_count > EVENT_CAPACITY - EVENT_RESERVE) win32_frame(p);
+        if (msg.message == WM_QUIT) {
+            p->quit = 1;
+            break;
+        }
+        win32_translate(&msg);
+        DispatchMessageW(&msg);
+        did = 1;
+    }
+    if (p->redraw || p->event_count) {
+        win32_frame(p);
+        did = 1;
+    }
+    return did;
+}
+
+static u8 *win32_leak_capture(void *ctx, Arena *arena, i32 *w, i32 *h) {
+    Platform *p = (Platform *)ctx;
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    return r_read_capture(p->renderer, arena, w, h);
+}
+
+static b32 win32_leak_write_png(void *ctx, String8 path, u8 *bgra, i32 w, i32 h) {
+    return win32_write_png((Platform *)ctx, path, bgra, w, h);
+}
+
+static i32 win32_leak_check(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    LeakHost host = { .ctx = p, .renderer = p->renderer, .feed = win32_leak_feed, .pump = win32_leak_pump,
+                      .capture = win32_leak_capture, .write_png = win32_leak_write_png };
+    return leak_check(p->app, &host, p->leak_which, p->leak_cycles, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir), &p->perm);
+}
+#endif
+
 static b32 win32_dev_batch_mode(Platform *p) {
-    return p->smoke || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
+    return p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
            p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
            p->screenshot_path.len ||
            p->atlas_path.len;
@@ -5606,6 +5748,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->wake = CreateEventW(NULL, FALSE, FALSE, NULL); // os_wake_main (auto-reset); none: workers' results wait for input
 #if RONIN_DEV
     p->seed = 0x7ea1;
+    p->leak_cycles = 200;
 #endif
     g_platform = p;
     SetUnhandledExceptionFilter(win32_crash_filter); // modified files to the recovery directory, then the crash goes on
@@ -5629,6 +5772,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         b32 has_value = i + 1 < arg_count;
         if (str8_equal(a, STR8_LIT("--smoke"))) { p->smoke = 1; continue; }
         if (str8_equal(a, STR8_LIT("--test"))) { p->test = 1; continue; }
+#if RONIN_D3D_DEBUG
+        if (str8_equal(a, STR8_LIT("--leak-check"))) {
+            p->leak_check = 1;
+            p->leak_which = STR8_LIT("all");
+            if (has_value && !(args[i + 1].len >= 2 && args[i + 1].data[0] == '-' && args[i + 1].data[1] == '-')) p->leak_which = args[++i];
+            if (leak_scenario_known(p->leak_which)) continue;
+        }
+        if (str8_equal(a, STR8_LIT("--cycles")) && has_value) {
+            p->leak_cycles = win32_parse_i32(args[++i]);
+            if (p->leak_cycles >= 8 && p->leak_cycles % 4 == 0) continue;
+        }
+#endif
 
         if (str8_equal(a, STR8_LIT("--seed")) && has_value) { p->seed = win32_parse_u64(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--fuzz-seeds")) && i + 2 < arg_count) {
@@ -5736,7 +5891,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->map_report.len ? "map-report" : p->check_exe.len ? "check-imports" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->leak_check ? "leak-check" : p->map_report.len ? "map-report" : p->check_exe.len ? "check-imports" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_longline ? "bench-longline" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
@@ -5863,12 +6018,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     AppArgs app_args = { .dpi_scale = scale, .render_mode_forced = p->render_mode_forced, .render_mode = p->render_mode,
                          .files = p->files, .file_count = p->file_count };
 #if RONIN_DEV
+#if RONIN_D3D_DEBUG
+    if (p->leak_check) { // its files (made once) and its config, unless --config names one
+        String8 conf = leak_prepare(&p->perm, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir));
+        if (!p->config_path.len) p->config_path = conf;
+    }
+#endif
     app_args.config_path = p->config_path;
     app_args.scan_hold = p->scan_hold;
     app_args.grep_hold = p->grep_hold;
     app_args.user_config = !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
                              p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
-                             p->bench_compile || p->bench_cursors || p->type_ahead_check); // defaults
+                             p->bench_compile || p->bench_cursors || p->type_ahead_check || p->leak_check); // defaults
 #endif
 #if RONIN_DEV
     LOG("memory: private bytes before the app: %U KB", os_dev_private_bytes() / 1024);
@@ -5907,7 +6068,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors;
-    show_early = show_early && !(p->smoke || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
+    show_early = show_early && !(p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early && !p->shown_early) {
         BOOL cloak = TRUE;
@@ -5972,6 +6133,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         p->exit_code = win32_dev_dpi_check(p);
         p->quit = 1;
     }
+#if RONIN_D3D_DEBUG
+    if (p->leak_check && !p->quit) {
+        p->exit_code = win32_leak_check(p);
+        p->quit = 1;
+    }
+#endif
 #endif
 
     if (!p->quit) {
@@ -6230,25 +6397,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 
 #if RONIN_DEV
     LOG("app: resources still held after close (DirectWrite references, buffers): %d", font_refs);
-    if (p->smoke) {
+    if (p->smoke || p->leak_check) {
+        const char *what = p->smoke ? "smoke" : "leak-check";
         i32 code = p->exit_code;
 #if RONIN_D3D_DEBUG
         if (code == EXIT_OK && !r_dev_debug_layer_active(p->renderer)) {
-            LOG("smoke: FAIL: D3D11 debug layer is not active");
+            LOG("%s: FAIL: D3D11 debug layer is not active", what);
             code = EXIT_NO_DEBUG_LAYER;
         }
 #else
-        LOG("smoke: skip: the D3D11 debug layer is off in this build");
+        LOG("%s: skip: the D3D11 debug layer is off in this build", what);
 #endif
         if (code == EXIT_OK && r_dev_message_count(p->renderer) != 0) {
-            LOG("smoke: FAIL: %u debug-layer message(s)", r_dev_message_count(p->renderer));
+            LOG("%s: FAIL: %u debug-layer message(s)", what, r_dev_message_count(p->renderer));
             code = EXIT_DEBUG_MESSAGES;
         }
         if (code == EXIT_OK && (leaks != 0 || font_refs != 0)) {
-            LOG("smoke: FAIL: %u leaked D3D reference(s) / live object(s), %d app resource(s) (DirectWrite, buffers)", leaks, font_refs);
+            LOG("%s: FAIL: %u leaked D3D reference(s) / live object(s), %d app resource(s) (DirectWrite, buffers)", what, leaks, font_refs);
             code = EXIT_LEAK;
         }
-        LOG("smoke: %s (exit %d, %D frames)", code == EXIT_OK ? "PASS" : "FAIL", code, p->frame_count);
+        LOG("%s: %s (exit %d, %D frames)", what, code == EXIT_OK ? "PASS" : "FAIL", code, p->frame_count);
         p->exit_code = code;
     }
     if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);

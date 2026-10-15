@@ -69,6 +69,7 @@
 #include "command.c"
 #pragma optimize("", on)
 #include "test.c" // RONIN_DEV only
+#include "leak.c" // RONIN_DEV only: --leak-check
 
 #include "render_d3d11.c"
 #include "win32_main.c"
