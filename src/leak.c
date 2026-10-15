@@ -816,6 +816,9 @@ static void leak_run(Leak *L, const LeakScenario *s, i32 cycles) {
         if (s->shots) leak_compare_shots(L, s->name, before, bw, bh, after, aw, ah);
     }
     if (s->teardown) s->teardown(L);
+    // Every scenario leaves the next one home.txt in one window (a teardown that kills a buffer shows another one).
+    if (window_count(&L->app->windows) > 1) leak_keys(L, "C-x 1");
+    if (leak_current(L) != L->home) app_switch_buffer(L->app, app_selected_view(L->app), L->home);
     leak_settle(L);
     if (L->failed == failed) {
         i32 leaks = leak_verdict(L, s->name, v, caps, per);
