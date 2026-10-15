@@ -379,11 +379,110 @@ static b32 leak_window_one_cycle(Leak *L) {
     return window_count(&L->app->windows) == 1;
 }
 
+static b32 leak_mx_cycle(Leak *L) {
+    return leak_keys(L, "M-x m i n i b") && L->app->mini.active && leak_keys(L, "C-g") && !L->app->mini.active;
+}
+
+static b32 leak_find_file_prompt_cycle(Leak *L) {
+    return leak_keys(L, "C-x C-f") && L->app->mini.active && L->app->mini.match_count > 0 && leak_keys(L, "C-g") && !L->app->mini.active;
+}
+
+static b32 leak_goto_line_cycle(Leak *L) {
+    return leak_keys(L, "M-g g 2 RET") && !L->app->mini.active && leak_keys(L, "M-<");
+}
+
+static b32 leak_switch_cycle(Leak *L) {
+    if (!leak_keys(L, "C-x b * M e s RET") || leak_current(L) != L->app->messages) return 0;
+    return leak_keys(L, "C-x b RET") && leak_current(L) == L->home;
+}
+
+// isearch over a buffer with a match on every line (the lazy highlight), then C-g.
+static b32 leak_isearch_setup(Leak *L) {
+    return app_dev_visit(L->app, str8_fmt(L->arena, "%S\\search.txt", L->dir));
+}
+
+static b32 leak_isearch_cycle(Leak *L) {
+    return leak_keys(L, "C-s w o r d") && L->app->isearch.active && leak_keys(L, "C-g") && !L->app->isearch.active;
+}
+
+static void leak_kill_teardown(Leak *L) {
+    leak_kill_current(L);
+}
+
+static b32 leak_query_replace_cycle(Leak *L) {
+    if (!leak_find_file(L, "replace.txt")) return 0;
+    if (!leak_keys(L, "M-% f o o RET b a r RET") || L->app->replace.state != REPLACE_ASKING) return 0;
+    if (!leak_keys(L, "y q") || L->app->replace.state != REPLACE_OFF || !leak_current(L)->modified) return 0;
+    if (!leak_keys(L, "C-/") || leak_current(L)->modified) return 0;
+    return leak_kill_current(L) && leak_current(L) == L->home;
+}
+
+// mark-all-like-this on a word with 1,000 occurrences, a character typed at every cursor, undone, the cursors gone.
+static b32 leak_cursors_cycle(Leak *L) {
+    if (!leak_find_file(L, "cursors.txt")) return 0;
+    if (!leak_keys(L, "M-< C-SPC M-f C-c C-<") || app_selected_view(L->app)->cursor_count != 1000) return 0;
+    if (!leak_keys(L, "z") || !leak_current(L)->modified) return 0;
+    if (!leak_keys(L, "C-/") || leak_current(L)->modified) return 0;
+    if (!leak_keys(L, "C-g C-g") || app_selected_view(L->app)->cursor_count != 1) return 0;
+    return leak_kill_current(L) && leak_current(L) == L->home;
+}
+
+// undo-cycle keeps its buffer across cycles: what it measures is the undo log at its cap (undo_limit_mb = 1 in
+// leak.conf). LEAK_UNDO_INSERTS self-inserts (groups of 20), undone to the saved state, undone again with
+// undo-redo, and undone to the saved state once more.
+#define LEAK_UNDO_INSERTS 2000
+#define LEAK_UNDO_GROUPS (LEAK_UNDO_INSERTS / 20)
+
+static b32 leak_undo_setup(Leak *L) {
+    if (!app_dev_visit(L->app, str8_fmt(L->arena, "%S\\undo.txt", L->dir))) return 0;
+    L->undo_buffer = leak_current(L);
+    return 1;
+}
+
+static b32 leak_repeat(Leak *L, const char *key, i32 count) {
+    u64 mark = arena_pos(L->arena);
+    String8 k = str8_cstr(key);
+    u8 *keys = PUSH_ARRAY(L->arena, u8, (k.len + 1) * count);
+    i64 n = 0;
+    for (i32 i = 0; i < count; i++) {
+        memcpy(keys + n, k.data, (size_t)k.len);
+        n += k.len;
+        keys[n++] = ' ';
+    }
+    leak_feed(L, str8(keys, n), 0); // one batch: the frames run as the queue fills
+    arena_pop_to(L->arena, mark);
+    return leak_settle(L);
+}
+
+static b32 leak_undo_cycle(Leak *L) {
+    Buffer *b = L->undo_buffer;
+    if (leak_current(L) != b || b->modified) return 0;
+    i64 size = buffer_size(b);
+    if (!leak_repeat(L, "x", LEAK_UNDO_INSERTS) || buffer_size(b) != size + LEAK_UNDO_INSERTS) return 0;
+    if (!leak_repeat(L, "C-/", LEAK_UNDO_GROUPS) || b->modified || buffer_size(b) != size) return 0;
+    if (!leak_repeat(L, "C-?", LEAK_UNDO_GROUPS) || buffer_size(b) != size + LEAK_UNDO_INSERTS) return 0;
+    if (!leak_keys(L, "C-f C-b")) return 0; // another command between: the next undo starts a new chain
+    return leak_repeat(L, "C-/", LEAK_UNDO_GROUPS) && !b->modified && buffer_size(b) == size;
+}
+
+static void leak_undo_teardown(Leak *L) {
+    leak_kill_current(L);
+    L->undo_buffer = NULL;
+}
+
 static const LeakScenario leak_scenarios[] = {
     { "file-cycle", NULL, leak_file_cycle, NULL, 0, 0, 0 },
     { "file-cycle-100mb", NULL, leak_file_100mb_cycle, NULL, 1, 0, 0 },
     { "window-cycle/split", NULL, leak_window_split_cycle, NULL, 0, 1, 1 },
     { "window-cycle/one", NULL, leak_window_one_cycle, NULL, 0, 1, 1 },
+    { "minibuffer-cycle/mx", NULL, leak_mx_cycle, NULL, 0, 0, 0 },
+    { "minibuffer-cycle/find-file", NULL, leak_find_file_prompt_cycle, NULL, 0, 0, 0 },
+    { "minibuffer-cycle/goto-line", NULL, leak_goto_line_cycle, NULL, 0, 0, 0 },
+    { "minibuffer-cycle/switch", NULL, leak_switch_cycle, NULL, 0, 0, 0 },
+    { "isearch-cycle/lazy", leak_isearch_setup, leak_isearch_cycle, leak_kill_teardown, 0, 0, 0 },
+    { "isearch-cycle/query-replace", NULL, leak_query_replace_cycle, NULL, 0, 0, 0 },
+    { "multi-cursor-cycle", NULL, leak_cursors_cycle, NULL, 0, 0, 0 },
+    { "undo-cycle", leak_undo_setup, leak_undo_cycle, leak_undo_teardown, 0, 0, 1 },
 };
 
 // "all", a scenario's whole name, or the part before '/' (all its sub-cycles).
@@ -417,6 +516,18 @@ String8 leak_prepare(Arena *arena, String8 tmp_dir) {
                                    "    for (int i = 0; i < 10; i++) total += i * i;\n    printf(\"%d\\n\", total);\n    return 0;\n}\n"));
     String8 conf = str8_fmt(arena, "%S\\conf\\leak.conf", dir);
     leak_write_if_changed(arena, conf, STR8_LIT("[settings]\nundo_limit_mb = 1\nsearch_workers = 4\n"));
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\replace.txt", dir), STR8_LIT("foo one\nfoo two\nfoo three\n"));
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\undo.txt", dir), STR8_LIT("undo-cycle types before this line\n"));
+    // search.txt: "word" on each of 2,000 lines; cursors.txt: "needle" 1,000 times, once a line.
+    u64 mark = arena_pos(arena);
+    i64 cap = KB(128), n = 0;
+    u8 *text = PUSH_ARRAY(arena, u8, cap);
+    for (i32 i = 0; i < 2000; i++) n += fmt_buf(text + n, cap - n, "line %d has the word in it\n", i);
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\search.txt", dir), str8(text, n));
+    n = 0;
+    for (i32 i = 0; i < 1000; i++) n += fmt_buf(text + n, cap - n, "needle %d\n", i);
+    leak_write_if_changed(arena, str8_fmt(arena, "%S\\cursors.txt", dir), str8(text, n));
+    arena_pop_to(arena, mark);
     test_bench_buffer_file(arena, tmp_dir); // the 100 MB file, made once
     return conf;
 }
@@ -469,7 +580,7 @@ static void leak_run(Leak *L, const LeakScenario *s, i32 cycles) {
     u8 *before = s->shots ? leak_shot(L, L->arena, &bw, &bh) : NULL;
     String8 state0 = s->from_start ? leak_state(L, L->arena) : str8(NULL, 0);
     i64 v[LEAK_WINDOWS + 1][LEAK_M_COUNT], caps[LEAK_M_COUNT] = { 0 };
-    i32 total = warm + LEAK_WINDOWS * per;
+    i32 total = warm + LEAK_WINDOWS * per, first_trim = 0;
     for (i32 c = 0; c < total && L->failed == failed; c++) {
         b32 ok = s->cycle(L) && leak_settle(L);
         if (!ok) {
@@ -488,6 +599,14 @@ static void leak_run(Leak *L, const LeakScenario *s, i32 cycles) {
         }
         arena_pop_to(L->arena, mark);
         i32 done = c + 1;
+        if (L->undo_buffer && !first_trim && buffer_dev_undo_trims(L->undo_buffer)) {
+            first_trim = done;
+            LOG("leak: %s: the undo log reached its cap in cycle %d (%U bytes of records now)", s->name, done, buffer_dev_undo_used(L->undo_buffer));
+        }
+        if (done == warm && L->undo_buffer && !first_trim) { // growth inside the windows would be the cap being reached
+            leak_fail(L, s->name, STR8_LIT("warm-up did not reach undo cap"));
+            break;
+        }
         if (done == warm) leak_sample(L, 0, v[0], caps);
         else if (done > warm && (done - warm) % per == 0) leak_sample(L, (done - warm) / per, v[(done - warm) / per], caps);
     }
