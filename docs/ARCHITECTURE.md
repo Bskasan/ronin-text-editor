@@ -710,6 +710,7 @@ its startup from the Phase 1 notes):
 - [x] 13. Build + jump to error
 - [x] 14. Multiple cursors
 - [x] 15. Performance and size pass (including an optional CRT-free build)
+- [ ] 16. Memory and resource leak audit
 
 ## Decisions
 
@@ -1622,6 +1623,41 @@ its startup from the Phase 1 notes):
 - Tried and not kept (numbers under "Measurements (Phase 15)"): a waitable swap chain and Present(0, 0)
   for the key's frame, four `D3D11CreateDevice` variants, the walk's stack without zeroing, a 1 x 1 swap
   chain while minimized, trimming on focus loss, /O1 or "s" for compile.c, results.c and project.c.
+
+### Memory and resource leak audit (Phase 16)
+
+- A leak is steady growth per cycle of a verdict metric while an operation that ends in the state it started
+  from is repeated, measured after a warm-up. Bounded growth is not a leak: an arena may grow to a high-water
+  mark and stay there. Verdict metrics: private commit (64 KB tolerance between windows, OS noise); the process
+  handle count; GDI and USER objects (GetGuiResources); the handle ledger (below); our threads, events,
+  processes and directory watches; the number of our reservations and their committed bytes (the registry
+  `--memory-report` classifies by); the atlas's used area and cached glyphs; D3D11 live objects
+  (ReportLiveDeviceObjects). Every one but private commit must be exactly flat. Atlas rows (at most the atlas
+  width) and, in undo-cycle, the undo log (at most undo_limit_mb) are bounded: their verdict is the cap.
+- Informational metrics are logged in the same tables and never make a leak: the working set (OS trimming), the
+  process thread count from Toolhelp (driver and thread-pool threads), the DXGI video memory in use (driver
+  allocations) and the font's reset count (it rises by design when the text scale changes). One that rises in
+  each of the last three windows is marked WATCH and reported for a decision.
+- Method (`--leak-check [SCENARIO|all] [--cycles N]`, debug build only, N = 200 by default): per scenario, a
+  prime step that fills the bounded caches to their caps (*Messages*, minibuffer history, the kill ring, the
+  remembered build commands), 20 warm-up cycles, then 4 windows of N/4 cycles with every metric sampled at the
+  end of the warm-up and of each window. A verdict metric that grows from one window to the next in any of the
+  last three is LEAK; the run exits 6 then. Each cycle must return to the state it started from (a signature of
+  buffers, windows, point, the modified flags, prompts and workers), or the run exits 9. The caps of the bounded
+  caches are asserted by `--test`. It runs windowed (cloaked, never activated, keys through the --keys path) so
+  every scenario has the renderer and atlas metrics; the soak, headless, samples the same verdict and
+  informational metrics every 100,000 events and applies the rule over the last 500,000.
+- The exit-time handle check is a ledger, not the process total: the os_* layer counts every kernel handle it
+  opens and closes (dev builds), and the ledger must be exactly 0 at exit. The process total is logged after the
+  window is created, after the first frame and at exit, with the difference by handle type. Equality of the
+  process total with a startup baseline cannot hold: the device thread loads d3d11 and the driver while the
+  window is created (the baseline depends on timing), and the driver and DirectWrite's shared factory keep
+  handles for the life of the process after ronin released everything.
+- At exit (dev builds): ReportLiveDeviceObjects may list only the device and its immediate context, the
+  reservation registry may hold only the permanent and the frame scratch arenas, and the handle ledger must be
+  0; the smoke and `--leak-check` exit 6 otherwise.
+- A leak is fixed, never hidden by a wider tolerance; growth that is bounded by design gets its cap documented
+  here and asserted by a test instead.
 
 ## Later
 
