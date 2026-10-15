@@ -10369,6 +10369,45 @@ static b32 test_results(Test *t) {
 
 // occur: *occur* for one buffer (unsaved text too), searched on the main thread in slices; its keys and
 // next-error; g; a large buffer over many frames; the searched buffer killed meanwhile.
+// The results headers' text (Phase 16): 1,000 occur runs and 200 project searches must not grow files_arena past what
+// the first ones needed (each run used to leave its header there).
+static b32 test_results_files_arena(Test *t) {
+    App *app = test_search_app(t, STR8_LIT("foo\nbar Foo\nnone\n"), 0);
+    TEST_CHECK(t, app, "results files_arena: app_create failed");
+    u64 committed_100 = 0;
+    for (i32 i = 1; i <= 1000; i++) {
+        app_dev_feed(app, "M-s o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 5000), "results files_arena: occur %d did not end", i);
+        app_dev_feed(app, "q", &t->arena);
+        if (i == 100) committed_100 = app->files_arena.committed;
+    }
+    u64 occur_committed = app->files_arena.committed;
+    TEST_CHECK(t, occur_committed == committed_100, "results files_arena: occur grew it from %U to %U bytes between run 100 and 1,000",
+               committed_100, occur_committed);
+    if (!test_app_destroy(t, app, "results files_arena")) return 0;
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p16grep", t->tmp_dir));
+    os_make_dir(root);
+    os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), STR8_LIT("# results files_arena\n"));
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", root);
+    os_write_file(a_c, STR8_LIT("int foo;\n"));
+    app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p16grep.conf", "[settings]\nsearch_workers = 2\n"));
+    TEST_CHECK(t, app, "results files_arena: the project app failed");
+    u64 committed_20 = 0;
+    for (i32 i = 1; i <= 200; i++) {
+        app_dev_feed(app, "C-x p g C-a C-k f o o RET", &t->arena);
+        TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results files_arena: search %d did not end", i);
+        app_dev_feed(app, "q", &t->arena);
+        if (i == 20) committed_20 = app->files_arena.committed;
+    }
+    u64 search_committed = app->files_arena.committed;
+    TEST_CHECK(t, search_committed == committed_20, "results files_arena: project-search grew it from %U to %U bytes between search 20 and 200",
+               committed_20, search_committed);
+    if (!test_app_destroy(t, app, "results files_arena")) return 0;
+    LOG("test: ok: results files_arena (1,000 occur runs: %U bytes after 100 and after 1,000; 200 project searches: %U after 20 and 200)",
+        occur_committed, search_committed);
+    return 1;
+}
+
 static b32 test_occur(Test *t) {
     App *app = test_search_app(t, STR8_LIT("foo\nbar Foo\n\tfoo foo\nnone\n"), 0);
     TEST_CHECK(t, app, "occur: app_create failed");
@@ -12026,6 +12065,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_results(&t);
     arena_reset(&t.arena);
     test_occur(&t);
+    arena_reset(&t.arena);
+    test_results_files_arena(&t);
     arena_reset(&t.arena);
     test_landing(&t);
     arena_reset(&t.arena);
