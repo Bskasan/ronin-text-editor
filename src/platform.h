@@ -242,6 +242,10 @@ typedef struct OsDevHandleType {
     i32 count;
 } OsDevHandleType;
 i32  os_dev_handle_types(OsDevHandleType *out, i32 cap); // the process's handles by type; the number of types (0: unavailable)
+typedef struct OsDevMemoryOwners { // committed private memory by owner (--memory-report's rows), bytes
+    u64 arenas, heaps, stacks, other, image_w, mapped_w;
+} OsDevMemoryOwners;
+void os_dev_memory_owners(OsDevMemoryOwners *out);
 String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
 void    os_dev_set_recovery_dir(String8 dir); // tests: the recovery directory from here on
 #endif

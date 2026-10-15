@@ -5196,9 +5196,22 @@ static b32 win32_dev_in_ranges(Win32DevRange *ranges, i32 count, u8 *p) {
     return 0;
 }
 
-static void win32_dev_memory_report(Platform *p) {
-    Arena *scratch = &p->scratch;
-    u64 mark = arena_pos(scratch);
+// The committed private memory by owner: --memory-report's table, and the leak check's look at what grew. The
+// ranges live in scratch (the caller pops it).
+typedef struct Win32DevBytes {
+    void *base;
+    u64 bytes;
+} Win32DevBytes;
+
+typedef struct Win32DevMemory {
+    u64 arenas, heaps, stacks, other, image_w, mapped_w, other_regions, other_largest;
+    u32 heap_count;
+    i32 our_count, stack_count, mod_count, res_count;
+    Win32DevRange *ours;
+    Win32DevBytes mods[64], res[64]; // the modules with the most writable image pages, our reservations with the most committed
+} Win32DevMemory;
+
+static void win32_dev_memory_classify(Arena *scratch, Win32DevMemory *out) {
     // Our reservations, as ranges.
     Win32DevReservations *r = &win32_dev_reservations;
     Win32DevRange *ours = PUSH_ARRAY(scratch, Win32DevRange, ARRAY_COUNT(r->base));
@@ -5240,8 +5253,8 @@ static void win32_dev_memory_report(Platform *p) {
         if ((u8 *)m.BaseAddress + m.RegionSize < a) break;
     }
     u64 arenas = 0, heaps_b = 0, stack_b = 0, other = 0, image_w = 0, mapped_w = 0, other_regions = 0, other_largest = 0;
-    // The modules with the most writable image pages, and our reservations with the most committed.
-    struct { void *base; u64 bytes; } mods[64] = { 0 }, res[64] = { 0 };
+    memset(out, 0, sizeof(*out));
+    Win32DevBytes *mods = out->mods, *res = out->res;
     i32 mod_count = 0, res_count = 0;
     for (u8 *a = 0; VirtualQuery(a, &m, sizeof(m)); a = (u8 *)m.BaseAddress + m.RegionSize) {
         if ((u8 *)m.BaseAddress + m.RegionSize < a) break;
@@ -5276,6 +5289,42 @@ static void win32_dev_memory_report(Platform *p) {
             }
         }
     }
+    out->arenas = arenas;
+    out->heaps = heaps_b;
+    out->stacks = stack_b;
+    out->other = other;
+    out->image_w = image_w;
+    out->mapped_w = mapped_w;
+    out->other_regions = other_regions;
+    out->other_largest = other_largest;
+    out->heap_count = heap_count;
+    out->our_count = our_count;
+    out->stack_count = stack_count;
+    out->mod_count = mod_count;
+    out->res_count = res_count;
+    out->ours = ours;
+}
+
+void os_dev_memory_owners(OsDevMemoryOwners *out) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    Win32DevMemory mem;
+    win32_dev_memory_classify(scratch, &mem);
+    *out = (OsDevMemoryOwners){ mem.arenas, mem.heaps, mem.stacks, mem.other, mem.image_w, mem.mapped_w };
+    arena_pop_to(scratch, mark);
+}
+
+static void win32_dev_memory_report(Platform *p) {
+    Arena *scratch = &p->scratch;
+    u64 mark = arena_pos(scratch);
+    Win32DevMemory mem;
+    win32_dev_memory_classify(scratch, &mem);
+    u64 arenas = mem.arenas, heaps_b = mem.heaps, stack_b = mem.stacks, other = mem.other, image_w = mem.image_w, mapped_w = mem.mapped_w;
+    u64 other_regions = mem.other_regions, other_largest = mem.other_largest;
+    u32 heap_count = mem.heap_count;
+    i32 our_count = mem.our_count, stack_count = mem.stack_count, mod_count = mem.mod_count, res_count = mem.res_count;
+    Win32DevRange *ours = mem.ours;
+    Win32DevBytes *mods = mem.mods, *res = mem.res;
     u64 bytes = os_dev_private_bytes();
     LOG("memory-report: private bytes %U KB (%U MB), %d threads alive of ours", bytes >> 10, bytes >> 20, os_dev_live_threads());
     LOG("memory-report: | owner | KB |");
