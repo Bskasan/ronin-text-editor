@@ -243,6 +243,8 @@ i32  os_dev_live_handles(void);        // the ledger: kernel handles the os_* la
 String8 os_dev_last_launch(void);      // os_process_launch's last outcome, as it logged it ("launch: ... (breakaway)")
 b32  os_dev_batch_run(void);           // --test, --smoke, a bench, --soak, --fuzz-seeds, --leak-check, a screenshot ...: no
                                        // real terminal or git may start (Phase 20's guard)
+void os_dev_real_refused_add(i32 n);   // ... the guard refused one (n = 1); a test that meant it takes it back (-1)
+i32  os_dev_real_refused(void);        // ... refused so far in this process: 0 at the end of every run
 // The leak check's sample (Phase 16). Verdict metrics first, then the informational ones.
 typedef struct OsDevMetrics {
     u64 private_bytes;   // committed private memory

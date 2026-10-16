@@ -11352,12 +11352,12 @@ static b32 test_terminal(Test *t) {
                "terminal: a program that cannot start: '%S'", test_echo(app));
     // The guard: no fake in a test run, nothing starts, counted once.
     app->terminal.dev_program = str8(NULL, 0);
-    u64 refused = app->dev_real_refused;
+    i32 refused = os_dev_real_refused();
     before = app->terminal.dev_launches;
     app_dev_feed(app, "C-c a", &t->arena);
-    TEST_CHECK(t, test_app_echo_is(app, "terminal: no real terminal in a test run") && app->dev_real_refused == refused + 1 &&
-                      app->terminal.dev_launches == before, "terminal: the guard: '%S', refused %U", test_echo(app), app->dev_real_refused);
-    app->dev_real_refused = refused;
+    TEST_CHECK(t, test_app_echo_is(app, "terminal: no real terminal in a test run") && os_dev_real_refused() == refused + 1 &&
+                      app->terminal.dev_launches == before, "terminal: the guard: '%S', refused %d", test_echo(app), os_dev_real_refused());
+    os_dev_real_refused_add(-1); // this one was meant
     app->terminal.dev_program = fake;
     // Refused in the minibuffer and in the command list.
     app_dev_feed(app, "M-x C-c t", &t->arena);
@@ -13201,11 +13201,17 @@ static i32 test_cmdlist_reference(Arena *a, CmdList *cl, String8 text, i32 *out)
 // rows and in the field, a click outside, C-g, ESC, RET and double clicks running whatever is selected. While open:
 // the selection and the top in range, the shown order equal to the slow ranking of the field's text, the arena where
 // the open left it. Closed by C-g, ESC or a click outside: the window underneath as before the open.
+static String8 test_git_fake(Test *t, const char *name, const char *const *pairs, i32 count);
+static void test_git_use_fake(Test *t, App *app, String8 dir);
+
 static b32 test_modal_fuzz(Test *t, u64 seed) {
     t->rng = seed ^ 0x6d6f64616cull;
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "modal fuzz: no app");
     app->ctx.dev_soak = 1;
+    // RET runs whatever command is selected: never a real git or terminal (the fakes; git's answers none: it opens nothing).
+    test_git_use_fake(t, app, test_git_fake(t, "modal_fuzz", NULL, 0));
+    test_terminal_fake(t, app, "modal_fuzz");
     app_dev_show_scratch(app, STR8_LIT("int main(void) {\n    return 0;\n}\n"));
     static const char chars[] = "abcdefgilnoprstuwxyz-";
     static const char *moves[] = { "<down>", "<up>", "C-n", "C-p", "C-v", "M-v", "<next>", "<prior>" };
@@ -14156,11 +14162,19 @@ static b32 test_git_changes_errors(Test *t) {
     String8 nowhere = str8_fmt(&t->arena, "git not found: %S", app->git.dev_program);
     for (i64 k = 0; k < nowhere.len; k++) if (nowhere.data[k] == '\\') nowhere.data[k] = '/'; // as files_echo shows paths
     TEST_CHECK(t, !modal_active(app) && str8_equal(test_echo(app), nowhere), "git errors: git_path nowhere: '%S'", test_echo(app));
+    // The guard (Phase 20): no git chosen in a test run, nothing starts, counted once.
     app->git.dev_program = str8(NULL, 0);
+    i32 refused = os_dev_real_refused();
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, !app->git.pending && !modal_active(app) && test_app_echo_is(app, "git: no real git in a test run") &&
+                      os_dev_real_refused() == refused + 1, "git errors: the guard: '%S', refused %d", test_echo(app), os_dev_real_refused());
+    os_dev_real_refused_add(-1); // this one was meant
     String8 old_path = os_get_env(&t->arena, STR8_LIT("PATH"));
     os_dev_set_env(STR8_LIT("PATH"), dir, 0);
+    app->git.dev_allow_real = 1; // PATH's git, and PATH holds none
     app_dev_feed(app, "C-x g", &t->arena);
     test_git_wait(t, app, 10000);
+    app->git.dev_allow_real = 0;
     os_dev_set_env(STR8_LIT("PATH"), old_path, 0);
     TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, "git not found on PATH (set git_path in [settings])"), "git errors: no git on PATH: '%S'",
                test_echo(app));
@@ -14506,6 +14520,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_leak_metrics(&t, ledger0);
     arena_reset(&t.arena);
+    if (os_dev_real_refused()) { // a test reached a real terminal or git without choosing it (the guard refused it)
+        LOG("test: FAIL: a real terminal or git refused %d time(s) (\"no real ... in a test run\" in this log)", os_dev_real_refused());
+        t.failures++;
+    }
 
     LOG("test: %s, %d failure(s), %U ms", t.failures ? "FAIL" : "PASS", t.failures, (os_time_us() - t0) / 1000);
     os_release(t.arena.base);
@@ -14998,7 +15016,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
         big_len += fmt_buf(big + big_len, 160, "int f%d(int a) {\n    switch (a) {\n    case %d: return a + 1; // one\n    default:\n"
                                                "        return \"s%d\"[0];\n    }\n}\n\n", i, i, i);
     }
-    soak_file(&t, s.dir, ".ronin-project", STR8_LIT("[ignore]\n*.log\ngit/*.txt\n")); // the fake git's scripts and calls
+    soak_file(&t, s.dir, ".ronin-project", STR8_LIT("[ignore]\n*.log\ngit/*.txt\nterm/*.txt\n")); // the fakes' scripts and calls
     String8 files[] = {
         soak_file(&t, s.dir, "a.c", STR8_LIT("#include <stdio.h>\n\nint main(void) {\n    int x = 1;\n    if (x) {\n        printf(\"%d\\n\", x);\n"
                                             "    }\n    return 0;\n}\n")),
@@ -15034,6 +15052,13 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     soak_file(&t, git_dir, "map.txt", STR8_LIT("rev-parse\trev.txt\nstatus\tstatus.txt\n-- a.c\ta.txt\n-- b.c\tb.txt\nnew.txt\tnew.txt\n"));
     app->git.dev_program = os_dev_exe_path(&t.arena);
     app->git.dev_prefix = str8_fmt(&t.arena, "--fake-git \"%S\"", git_dir);
+    // The fake terminal (soak\term, its calls.txt): the random keys reach C-c t and C-c a.
+    String8 term_dir = str8_fmt(&t.arena, "%S\\term", s.dir);
+    os_make_dir(term_dir);
+    soak_file(&t, term_dir, "calls.txt", str8(NULL, 0));
+    app->terminal.dev_program = os_dev_exe_path(&t.arena);
+    app->terminal.dev_prefix = str8_fmt(&t.arena, "--fake-terminal \"%S\"", term_dir);
+    app->terminal.dev_wt_present = 1;
     os_dev_write_root(s.dir);
     app_dev_feed_events(app, NULL, 0, &t.arena);
     s.seqs = PUSH_ARRAY(&t.arena, String8, 6 * KEYMAP_CAP);
@@ -15167,6 +15192,40 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     }
     u64 refused = os_dev_writes_refused();
     for (i32 i = 0; i < 10 && soak_busy(app); i++) soak_keys(&s, STR8_LIT("C-g"), 0);
+    // The terminals: one call each (10 s for the last ones to write), in the window's directory, wt's command lines.
+    {
+        i64 launches = (i64)app->terminal.dev_launches, lines = 0, kinds[3] = { 0 };
+        String8 calls = test_terminal_calls(&t, term_dir, launches, &lines);
+        String8 qcmd = terminal_quote_arg(&t.arena, os_system_program(&t.arena, STR8_LIT("cmd.exe")));
+        for (i64 at = 0; at < calls.len;) {
+            i64 end = at;
+            while (end < calls.len && calls.data[end] != '\n') end++;
+            String8 line = str8(calls.data + at, end - at), cwd = line;
+            at = end + 1;
+            for (i64 i = 0; i < line.len; i++) {
+                if (line.data[i] == '|') {
+                    cwd = str8(line.data, i);
+                    break;
+                }
+            }
+            String8 q = terminal_quote_arg(&t.arena, cwd);
+            OsFileInfo info;
+            b32 dir_ok = os_file_info(cwd, &info) == OS_FILE_OK && info.exists && info.is_dir;
+            if (dir_ok && str8_equal(line, str8_fmt(&t.arena, "%S|wt.exe|0|-d %S", cwd, q))) kinds[0]++;
+            else if (dir_ok && str8_equal(line, str8_fmt(&t.arena, "%S|wt.exe|0|-d %S %S /s /k \"claude\"", cwd, q, qcmd))) kinds[1]++;
+            else if (kinds[2]++ < 3) LOG("soak: a terminal call not as expected: '%S'", line);
+        }
+        if (lines != launches || kinds[2]) {
+            LOG("test: FAIL: soak: %D terminals started, %D calls (%D other)", launches, lines, kinds[2]);
+            t.failures++;
+        } else {
+            LOG("soak: terminals: %D started (%D open-terminal, %D open-ai-terminal), every call as expected", launches, kinds[0], kinds[1]);
+        }
+        if (os_dev_real_refused()) {
+            LOG("test: FAIL: soak: a real terminal or git refused %d time(s)", os_dev_real_refused());
+            t.failures++;
+        }
+    }
     i32 leaks = app_shutdown(app);
     if (leaks) {
         LOG("test: FAIL: soak: %d leak(s) at shutdown", leaks);
@@ -15517,6 +15576,10 @@ i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
         }
         if (!t.failures) done++;
         last = seed;
+    }
+    if (os_dev_real_refused()) {
+        LOG("test: FAIL: fuzz-seeds: a real terminal or git refused %d time(s)", os_dev_real_refused());
+        t.failures++;
     }
     for (i32 g = 0; g < (i32)ARRAY_COUNT(groups); g++) {
         LOG("fuzz-seeds: %s: %U ms in all, %U ms a seed", groups[g].name, group_us[g] / 1000, done ? group_us[g] / 1000 / done : 0);

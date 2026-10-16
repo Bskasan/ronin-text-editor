@@ -500,6 +500,14 @@ static void cmd_show_git_changes(CommandContext *ctx) {
         echo_set(ctx->echo, STR8_LIT(GIT_RUNNING));
         return;
     }
+#if RONIN_DEV
+    // A batch run starts git only when a test chose it: the fake git, or the real one with its configuration shut out.
+    if (!g->dev_program.len && !g->dev_allow_real && os_dev_batch_run()) {
+        os_dev_real_refused_add(1);
+        echo_message(ctx->echo, "git: no real git in a test run");
+        return;
+    }
+#endif
     if (g->dying_count > GIT_DYING_MAX - 4) { // room for this job and the open's two
         echo_message(ctx->echo, "git is still stopping; try again");
         return;

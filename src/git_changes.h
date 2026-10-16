@@ -24,6 +24,7 @@ typedef struct GitChanges {
     b32 work_pending;            // a diff is being copied into the box: another frame
 #if RONIN_DEV
     String8 dev_program, dev_prefix, dev_env; // tests: the fake git, or the real one with an isolated configuration
+    b32 dev_allow_real;          // tests: PATH's git though a batch run (a PATH without one: nothing real can start)
     i32 dev_abandoned;           // workers left to the process exit by the shutdown
     u64 dev_diff_jobs;           // diff jobs started (the cache: once per file per open)
     u64 dev_copy_max_us;         // the longest copy slice since it was last read (--bench-git)

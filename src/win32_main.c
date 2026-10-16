@@ -59,6 +59,7 @@ typedef struct Platform {
     volatile LONG live_events;         // os_event_create minus destroyed
     volatile LONG live_processes;      // os_process_start minus os_process_close
     volatile LONG live_handles;        // the ledger: kernel handles opened by the os_* layer and not closed
+    volatile LONG real_refused;        // a real terminal or git a batch run would have started (os_dev_real_refused)
     u8 last_launch[600];               // os_process_launch's last outcome (its log line), os_dev_last_launch
     i64 last_launch_len;
     i32 exit_handles_window, exit_handles_frame; // the process's handles after the window was created, after the first frame
@@ -1599,6 +1600,14 @@ String8 os_dev_last_launch(void) {
 b32 os_dev_batch_run(void) {
     Platform *p = g_platform;
     return p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p);
+}
+
+void os_dev_real_refused_add(i32 n) {
+    InterlockedAdd(&g_platform->real_refused, n);
+}
+
+i32 os_dev_real_refused(void) {
+    return (i32)InterlockedOr(&g_platform->real_refused, 0);
 }
 
 // The committed bytes of one os_reserve range: its regions while they belong to that allocation.
