@@ -44,6 +44,9 @@ dev builds; they are not part of the repository.
 | crash test | The `--test` group logged as "test: ok: crash recovery" (Phase 15): a child crashing on purpose after edits (`--crash`), its recovery files against a save, the notice, recover-file. |
 | `--startup-capture` / `--bench-latency` / `--bench-longline` / `--memory-report` | Phase 15 measurements, never taking the focus: the early window on screen after each composition; key arrival to Present and to the vertical blank that showed it; a 5 MB line; private bytes by owner. |
 | `--leak-check` | Phase 16, debug build, in `verify.bat phase`: every scenario repeated after a prime step and 20 warm-up cycles, 4 windows of 50 cycles, one table a scenario in build\ronin.log (LEAK exits 6); the window never shown. The "exit-check:" block ends every dev exit with a window. |
+| `--fake-git DIR ARGS` | Phase 19, dev builds: the tests' git. It appends its arguments to DIR\calls.txt and runs the `--child` script DIR\map.txt names for the first key found in them. |
+| git tests | The `--test` groups logged as "test: ok: programs", "git parse", "git job", "git changes", "git errors", "git real" (or "test: skip: git real" without git on PATH) and the seeded "git fuzz" (Phase 19). |
+| `--bench-git` | Phase 19: git's status and diff parsed from memory (5,000 files, 50,000 lines), and a 20,000-line diff copied into the open view: frames, the longest slice and frame build. Never takes the focus. |
 | verify checks | `verify.bat`'s steps "check-imports" (the release exe's DLLs equal res\imports.txt, no CRT DLL) and "version" (`ronin.exe --version` prints "ronin X.Y.Z"). |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
@@ -492,6 +495,30 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | T21 | On the real keyboard in the release exe: C-S-p, a filter, RET runs it; a click outside and ESC close it | HUMAN | real input and focus; HUMAN step 39. |
 | T22 | `--test` leaves no junction behind (`git status --ignored` without "Filename too long") | AUTOMATED-NEW | "test: ok: scanner" removes build\tmp\p11scan\src\loop and checks it is gone; test_run removes it again after the group. |
 
+## U. The git changes view (Phase 19)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| U1 | C-x g in a git work tree opens a two-pane box (90% x 80%, the files 30%) once git has answered: the changed files with git's two-letter status in its order, the status line "<branch>: N changed files" | AUTOMATED-NEW | "test: ok: git changes" (nothing open before rev-parse answered, the 8 rows of the canned repository, "main: 8 changed files"); "test: ok: git real" on build\tmp\gitrepo\repo; smoke stage 12. |
+| U2 | The selected file's diff on the right: added green, removed red, @@ lines and headers in their colors | AUTOMATED-NEW | smoke stage 12 (diff_header, diff_hunk, diff_removed, diff_added, git_status pixels with the real git); "test: ok: git parse" (the kinds of every line). Tabs and the cut at the pane's edge have no pixel probe: U18. |
+| U3 | Every kind of change: modified, added, deleted, renamed (with its source), untracked (in full), binary, a UTF-8 path, CRLF lines, no commits yet | AUTOMATED-NEW | "test: ok: git parse" (goldens of each); "test: ok: git job" (the three diff command lines exactly, --no-index's exit 1); "test: ok: git changes" (the canned rename, untracked, deleted, ğ.c, binary and CRLF files). |
+| U4 | A diff is fetched once per file per open; keys that pass over files fetch none of them | AUTOMATED-NEW | "test: ok: git changes" (calls.txt: each diff once, the two files passed over never); the seeded "git fuzz" (no diff twice since the open or g); shown to fail with a cache that fetches again (Measurements (Phase 19)). |
+| U5 | The movement keys select a file; TAB moves to the diff, where they scroll it; TAB back; the wheel scrolls the pane under the pointer | AUTOMATED-NEW | "test: ok: git changes" (TAB, <down>, C-v a page, the wheel on the diff pane, TAB back); "test: ok: modal layer" (the scroll pane). |
+| U6 | RET visits the selected file in the selected window at its first change; on a deleted file it says so and the box stays | AUTOMATED-NEW | "test: ok: git changes" (a.c at line 3, the untracked file and the renamed one at line 1, a binary one as find-file; "gone.c is deleted in the working tree"); smoke stage 12 (a.c at line 2 with the real git). |
+| U7 | g runs git status again and forgets every diff | AUTOMATED-NEW | "test: ok: git changes" (status called again, big.c's diff gone, a.c fetched again). |
+| U8 | C-g, ESC and a click outside close the box at once, also while git still runs; the git stops, nothing is waited for; the frame underneath is as before | AUTOMATED-NEW | "test: ok: git errors" (C-g under 50 ms with a hanging status, the process gone within 2 s, a click outside); `--leak-check git-cycle/cancel`; smoke stage 12 (the frame after C-g equal to the one before, byte for byte). |
+| U9 | No git: a clear message, nothing opens; not a work tree: the same; a refusal of git's in git's own words | AUTOMATED-NEW | "test: ok: git errors" ("git not found: ...", "git not found on PATH (set git_path in [settings])", "Not a git work tree: ...", "git: fatal: detected dubious ownership in repository at 'C:/x/y'"); "test: ok: git job". |
+| U10 | A failing status or diff shows git's line in the status line (the diff's output in the pane); a silent git is stopped after git_timeout_ms ("git timed out") | AUTOMATED-NEW | "test: ok: git errors" ("git: fatal: unable to read index", "git: fatal: bad object HEAD", the timeout before and after the open); "test: ok: git parse" (the line picked, its 120-byte cut). |
+| U11 | Limits: a diff over 20,000 lines and a list over 5,000 files are cut with a last line saying so; git is stopped there | AUTOMATED-NEW | "test: ok: git parse" (both limits); "test: ok: git job" (git stopped past the line limit, not read to its end); "test: ok: git changes" (big.c's cut line). The list's cut row is drawn from the parser's cut flag; no test opens the view on more than 5,000 files. |
+| U12 | The editor stays responsive while git runs: typing never waits; a 20,000-line diff is shown within one frame budget | AUTOMATED-NEW | git runs on a worker and the main thread never waits for it ("test: ok: git errors": C-g under 50 ms with git hanging); `--bench-git` (the copy in one frame, its longest slice 69-131 us; exit 9 over 2.5 ms); "test: ok: git changes" (the copy sliced at 4,096 lines a frame). |
+| U13 | Idle with the box open after the diff arrived: 0 frames, 0% CPU | AUTOMATED-NEW | dev helper `ronin_debug.exe --keys "C-x g" --idle-check` from the repository root: "a modal box open 1, git jobs running or pending 0", then PASS, 0 frames, 0 us of CPU in 5 s. |
+| U14 | Opening and closing it again and again leaks nothing: memory, handles, threads, processes | AUTOMATED-NEW | `--leak-check git-cycle` (browse, cancel): OK, the handle ledger and our processes exact, in `verify.bat phase`. |
+| U15 | Random use with the box open keeps every invariant | AUTOMATED-NEW | `--soak` (git sessions with the fake git, the random keys that reach C-x g and [keys git-changes], the view's invariants at every check); the seeded "git" group in `--fuzz-seeds`. |
+| U16 | A config saved while it is open applies: [keys git-changes], the colors; git_path, the limits and the timeout from the next run | AUTOMATED-NEW | "test: ok: git changes" (C-j bound to modal-previous, diff_added changed, diff_hunk following number); "test: ok: git errors" (git_timeout_ms). |
+| U17 | The real git, whatever the machine's git configuration: the list and the diffs as git prints them | AUTOMATED-NEW | "test: ok: git real" (its system and global configuration shut out; equal to the fake git's canned answers); skipped with a log line without git on PATH. |
+| U18 | The box looks right on a real repository: readable, the status letters lined up, the colors tell the kinds apart, tabs line up as in buffers, long lines end at the pane's edge, at 100% and 150% | HUMAN | a look; HUMAN step 40 (dev helper for the picture). |
+| U19 | On the real keyboard in the release exe, in ronin's own repository: C-x g, select, TAB, scroll, RET, g, C-g while git runs | HUMAN | real input and focus, git's speed on a real tree; HUMAN step 41. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -605,6 +632,17 @@ Phase 18, the command list:
     `ronin_debug.exe src\app.c --scale 150 --keys "C-S-p f i l e" --screenshot build\shots\t20.png`).
 39. **T21**: In `build\ronin.exe` press Ctrl+Shift+P, type "find", RET: the box closes and "Find file:" asks;
     C-g. Ctrl+Shift+P again and click outside the box: it closes, nothing moved; once more and ESC: the same.
+
+Phase 19, the git changes view:
+
+40. **U18**: In a git work tree with a few changes, `build\ronin.exe <a changed file>`, C-x g: the files and the diff
+    are readable, the status letters line up, added, removed, @@ and header lines are told apart at a glance; a line
+    with tabs lines up as in the buffer, a long line ends at the box's edge. The
+    same at 150% (dev helper for the picture: `ronin_debug.exe <file> --scale 150 --keys "C-x g" --screenshot
+    build\shots\u18.png`).
+41. **U19**: In `build\ronin.exe` on ronin's own repository with uncommitted changes: C-x g, Down to another file
+    (its diff appears), TAB, C-v and M-v (the diff scrolls), TAB, RET (the file at its first change); C-x g again,
+    g (the list again), C-g at once: it closes without waiting.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
