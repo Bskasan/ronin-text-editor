@@ -14637,6 +14637,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     LOG("soak: %U events, seed 0x%X, %d key sequences, files in %S", events, seed, s.seq_count, s.dir);
 
     u64 t0 = os_time_us(), block_t0 = t0, peak = 0, first_us = 0, second_us = 0, last_us = 0, mem_after_first = 0, mem_last = 0;
+    u64 mem_first_half = 0; // the highest settled value of the blocks in the first half of the run
     u64 done = 0;
     struct { u64 us, event; char what[64]; } slow[5] = { 0 }; // the slowest events, to look for slow commands
     for (u64 e = 1; e <= events && !t.failures; e++) {
@@ -14710,14 +14711,16 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
                 mem_after_first = settled;
             }
             if (e == 2 * SOAK_BLOCK) second_us = per;
+            if (e <= events / 2) mem_first_half = MAX(mem_first_half, settled);
             last_us = per;
             mem_last = settled;
             block_t0 = now;
         }
         done = e;
     }
-    // Slowdown and growth: the last probe against the faster of the first two, memory after the first block against
-    // the last.
+    // Slowdown and growth: the last probe against the faster of the first two; the memory after the last block against
+    // the highest of the first half (the random walk's high-water by then; Phase 19: one first block alone is too low
+    // a reference when the walk reaches its larger states later).
     if (!t.failures && events >= 3 * SOAK_BLOCK) {
         u64 ref = second_us ? MIN(first_us, second_us) : first_us;
         if (last_us * 2 > ref * 3) {
@@ -14725,10 +14728,10 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             t.failures++;
         }
         // Leaks: settled (the starting buffers in one window), without the undo logs, after the first block and the last.
-        LOG("soak: settled, without the undo logs: %U KB after the first block, %U KB after the last", mem_after_first >> 10,
-            mem_last >> 10);
-        if (mem_last > mem_after_first + MB(2)) {
-            LOG("test: FAIL: soak: private bytes grew from %U KB to %U KB", mem_after_first >> 10, mem_last >> 10);
+        LOG("soak: settled, without the undo logs: %U KB after the first block, %U KB at most in the first half, %U KB after the last",
+            mem_after_first >> 10, mem_first_half >> 10, mem_last >> 10);
+        if (mem_last > mem_first_half + MB(2)) {
+            LOG("test: FAIL: soak: private bytes grew from %U KB (the first half's highest) to %U KB", mem_first_half >> 10, mem_last >> 10);
             t.failures++;
         }
     }
