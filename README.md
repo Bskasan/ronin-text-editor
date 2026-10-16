@@ -99,6 +99,18 @@ Only what exists today.
 
 ![The git changes view on a test repository: a.c's diff with a removed and an added line](docs/images/git-changes.png)
 
+**Terminals**
+- C-c t opens a terminal window in the current file's directory (for a buffer without a file, the directory
+  given on the command line, `ronin <directory>`, else the current one).
+- C-c a opens one in the project's root (else the file's directory) running an AI assistant's command line
+  tool, so a question is one key away: `claude` (Claude Code) by default, `codex` with `ai_provider = openai`,
+  or any command with `ai_provider = custom` and `ai_command`. `ai_command`, when set, runs instead for any
+  provider. The tool runs inside `cmd /k`, so npm's `claude.cmd` works and the window stays open after it ends.
+- Windows Terminal when `wt.exe` is on PATH, otherwise the classic console; `terminal = wt` or `terminal = cmd`
+  chooses one.
+- ronin starts the terminal and lets it go: it keeps nothing of it, and the terminal stays open after ronin
+  ends.
+
 **Search**
 - isearch forward and backward with the other matches on screen highlighted, smart case, wrapping,
   the search ring, C-w / C-y to extend the search string.
@@ -176,7 +188,7 @@ window.
 
 | what | value |
 |---|---|
-| executable size (release) | 448,512 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
+| executable size (release) | 453,120 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
 | startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms |
 | typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* |
 | typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) |
@@ -289,6 +301,7 @@ One deliberate difference from Emacs: `ESC` is keyboard-quit, not a Meta prefix.
 | `M-x` | run a command by name |
 | `C-S-p` | the command list: every command with what it does and its keys; type to filter, `RET` runs |
 | `C-x g` | the git changes view: the changed files and their diffs (`TAB` the diff, `RET` visit, `g` again) |
+| `C-c t` `C-c a` | a terminal in the file's directory / one in the project's root running the AI assistant's tool |
 | `C-g` | keyboard-quit (also cancels a prompt; with several cursors: their regions, then the extra cursors) |
 | `C-h k` | describe the next key |
 | `C-c ,` | open the config file |
@@ -328,7 +341,17 @@ widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]`, `[keys ise
 the command list or the git changes view is open). The boxes have their own colors: `modal_background`,
 `modal_border`, `modal_selection`, `modal_description` and `modal_key`; the git changes view also `diff_added`,
 `diff_removed`, `diff_hunk`, `diff_header` and `git_status`. Its settings: `git_path` (the git program; PATH
-when not set), `git_diff_max_lines`, `git_status_max_files` and `git_timeout_ms`. In
+when not set), `git_diff_max_lines`, `git_status_max_files` and `git_timeout_ms`. The terminals' settings:
+`ai_provider` (`claude`, `openai` or `custom`), `ai_command` and `terminal` (`auto`, `wt` or `cmd`):
+
+```
+[settings]
+ai_provider = custom
+ai_command  = claude --continue
+terminal    = wt
+```
+
+In
 `[keys]` the last word of a line is the command; `none` removes a binding. To run the last build
 again with one key:
 
@@ -391,6 +414,9 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
   horizontal scrolling); a change that is only a line ending (CRLF against LF) shows as two equal lines.
   git's error output shares the pipe with its normal output, so the message shown is git's first `fatal:`,
   `error:` or `usage:` line.
+- Terminals: Windows Terminal or the classic console only (no other terminal program, no wt profile). ronin does not
+  check that the AI tool exists: cmd says so in the new window. When ronin itself runs inside a job that kills its
+  processes when it closes and does not let them leave it (some launchers do that), the terminals end with it.
 
 The full list is the "Later" section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later).
 
@@ -436,7 +462,9 @@ Testing is built into the dev builds:
   kills of the whole process tree, 100 start / kill rounds); a differential fuzz of multiple cursors against
   the one-cursor commands applied cursor by cursor; the git changes view against a scripted fake git (every
   command line, every kind of status and diff, git's refusals, a timeout, a cancel) and, when git is
-  installed, against the real one on a repository made for the test; file round trips; a crashing child
+  installed, against the real one on a repository made for the test; the terminal commands against a fake
+  terminal that records its directory and command line (no test opens a real terminal or starts a git it did
+  not choose); file round trips; a crashing child
   process whose recovery files must equal a save byte for byte; and a harness that posts
   real key messages through the window procedure on US, UK, Turkish Q and Finnish keyboard layouts.
 - `--fuzz-seeds` runs every seeded test group for hundreds of seeds; `--soak` sends a million random keys,

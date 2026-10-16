@@ -47,6 +47,8 @@ dev builds; they are not part of the repository.
 | `--fake-git DIR ARGS` | Phase 19, dev builds: the tests' git. It appends its arguments to DIR\calls.txt and runs the `--child` script DIR\map.txt names for the first key found in them. |
 | git tests | The `--test` groups logged as "test: ok: programs", "git parse", "git job", "git changes", "git errors", "git real" (or "test: skip: git real" without git on PATH) and the seeded "git fuzz" (Phase 19). |
 | `--bench-git` | Phase 19: git's status and diff parsed from memory (5,000 files, 50,000 lines), and a 20,000-line diff copied into the open view: frames, the longest slice and frame build. Never takes the focus. |
+| `--fake-terminal DIR ...` | Phase 20, dev builds: the tests' terminal. It appends its working directory, the program and console it stands for and its command line exactly as it came to DIR\calls.txt, then exits. |
+| terminal tests | The `--test` groups logged as "test: ok: launch", "terminal config" and "terminal" (Phase 20), smoke stage 13 ("smoke: ok: terminal"), `--leak-check terminal-cycle` and the soak's "soak: terminals" line. |
 | verify checks | `verify.bat`'s steps "check-imports" (the release exe's DLLs equal res\imports.txt, no CRT DLL) and "version" (`ronin.exe --version` prints "ronin X.Y.Z"). |
 | shield | The input tests' protection against real input (`DevShield` in win32_main.c, its self-test "test: ok: input shield"): a case whose injected key state did not hold is logged as "test: inconclusive: ..." with the reason and repeated (at most 5 attempts, then "key state unstable"); a wrong result with the key state held is a failure. |
 
@@ -519,6 +521,25 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | U18 | The box looks right on a real repository: readable, the status letters lined up, the colors tell the kinds apart, tabs line up as in buffers, long lines end at the pane's edge, at 100% and 150% | HUMAN | a look; HUMAN step 40 (dev helper for the picture). |
 | U19 | On the real keyboard in the release exe, in ronin's own repository: C-x g, select, TAB, scroll, RET, g, C-g while git runs | HUMAN | real input and focus, git's speed on a real tree; HUMAN step 41. |
 
+## V. Terminals and the AI terminal (Phase 20)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| V1 | C-c t in a file opens Windows Terminal in the file's directory | HUMAN | a real terminal takes the foreground, so no test opens one; HUMAN step 42. The command line and its directory are checked exactly with the fake terminal: "test: ok: terminal", smoke stage 13. |
+| V2 | C-c a opens Windows Terminal in the project's root running claude | HUMAN | the same; HUMAN step 43. Automated with the fake: "test: ok: terminal" (the root, `"<cmd>" /s /k "claude"`), smoke stage 13. |
+| V3 | `terminal = cmd` opens a classic console (C-c a: claude running in it) | HUMAN | the same; HUMAN step 44. Automated with the fake: "test: ok: terminal" (cmd.exe with a new console, `/s /k "claude"`). |
+| V4 | Closing ronin leaves both terminals running | HUMAN | the processes of a real session; HUMAN step 45. What ronin keeps of them is checked: no handle and no job ("test: ok: launch": the ledger and the process's handles unchanged after 100 launches, outside any job). |
+| V5 | A buffer without a file uses the default directory (the one given on the command line, `ronin <directory>`, else the current one) | HUMAN | the look of the terminal's prompt; HUMAN step 42. The directory itself: "test: ok: terminal" (*scratch* with and without a command-line directory, for both commands). |
+| V6 | `ai_provider = openai` runs codex, `custom` runs `ai_command`, `ai_command` runs for any provider | AUTOMATED-NEW | "test: ok: terminal" (codex, my-ai --x, a quoted program path with openai); "test: ok: terminal config" (every value). |
+| V7 | The messages: "ai_command is empty", "Windows Terminal (wt.exe) not found", "Could not start ...: error N", "Opened ... in ...", refused in the minibuffer and in the command list | AUTOMATED-NEW | "test: ok: terminal" (each message exactly, nothing started for the refusals). |
+| V8 | A directory with a space or `;` and a drive root open wt there | HUMAN | wt's own parsing of `\;`; HUMAN step 46. The command lines (`-d "C:\\"`, `\;` for wt only): "test: ok: terminal". |
+| V9 | A config saved with another ai_command applies to the next C-c a; bad values are reported with their line | AUTOMATED-NEW | "test: ok: terminal" (a reload); "test: ok: terminal config" (the diagnostics, the earlier value kept). |
+| V10 | Launching again and again keeps nothing: handles, processes, memory | AUTOMATED-NEW | "test: ok: launch", "test: ok: terminal" (200 launches); `--leak-check terminal-cycle` (220 launches, 0 LEAK); the soak's terminals (one call per launch). |
+| V11 | Started inside a job that refuses breaking away, the terminal still starts | AUTOMATED-NEW | "test: ok: launch" (a child in a build's job: "breakaway refused (error 5) ... started inside ronin's job", the grandchild's file written). |
+| V12 | No test, smoke, bench, soak or leak check starts a real terminal or a real git it did not choose | AUTOMATED-NEW | the guard: "terminal: no real terminal in a test run", "git: no real git in a test run" ("test: ok: terminal", "test: ok: git errors"), `os_dev_real_refused` 0 at the end of `--test`, every fuzz worker, the soak and the leak check; the modal fuzz runs with the fake git and the fake terminal. |
+| V13 | git's warning between two lines of a diff's hunk does not cut the hunk | FIXED | without the fix "git parse: diff 9" fails (the warning kept as a context line, `-b` and `+B` drawn as headers), and so does "git changes: status 'main: 8 changed files', panes 8 / 15" (the warning on the fake git's stderr made a row); with the rename's source left alone "git parse: a warning before a source" fails; fixed in d941010. |
+| V14 | Typing is as fast as before | AUTOMATED | `--bench-latency` against Phase 19 (Measurements (Phase 20)). |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -643,6 +664,21 @@ Phase 19, the git changes view:
 41. **U19**: In `build\ronin.exe` on ronin's own repository with uncommitted changes: C-x g, Down to another file
     (its diff appears), TAB, C-v and M-v (the diff scrolls), TAB, RET (the file at its first change); C-x g again,
     g (the list again), C-g at once: it closes without waiting.
+
+Phase 20, terminals (Windows Terminal installed, `claude` on PATH; each step opens real windows):
+
+42. **V1, V5**: `build\ronin.exe src\app.c`, C-c t: Windows Terminal opens with its prompt in ...\text-editor\src and
+    the echo area says "Opened terminal in .../src". Then C-x b `*scratch*` RET, C-c t: the prompt is in the directory
+    ronin was started from (its current directory). Close ronin, start `build\ronin.exe src`, C-c t: the prompt is in src.
+43. **V2**: In src\app.c, C-c a: Windows Terminal opens in ...\text-editor (the project's root) running claude. Leave
+    claude (`/exit`): the cmd prompt stays open.
+44. **V3**: C-c , and add `terminal = cmd` under [settings], save. C-c t: a classic console window opens in src; C-c a:
+    one running claude in the root. Remove the line again.
+45. **V4**: With the terminals of steps 42-44 still open, C-x C-c: ronin closes, every terminal stays open and claude
+    still answers.
+46. **V8**: Make a folder `C:\temp\a;b c` with a file x.txt in it, `build\ronin.exe "C:\temp\a;b c\x.txt"`, C-c t: wt's
+    prompt is in exactly `C:\temp\a;b c` (one tab, not two). Then `ronin C:\`, C-x b `*scratch*` RET, C-c t: the prompt
+    is in `C:\`.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
