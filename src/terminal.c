@@ -112,7 +112,7 @@ static void terminal_open(CommandContext *ctx, b32 ai) {
         program = app->terminal.dev_program;
         console = 0;
     } else if (os_dev_batch_run()) {
-        app->dev_real_refused++;
+        os_dev_real_refused_add(1);
         echo_message(ctx->echo, "terminal: no real terminal in a test run");
         return;
     }

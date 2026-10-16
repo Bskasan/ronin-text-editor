@@ -1002,6 +1002,7 @@ i32 leak_check(App *app, LeakHost *host, String8 which, i32 cycles, String8 tmp_
         leak_run(&L, &leak_scenarios[i], cycles);
         ran++;
     }
+    if (os_dev_real_refused()) leak_fail(&L, "a scenario", str8_fmt(arena, "reached a real terminal or git %d time(s)", os_dev_real_refused()));
     i32 code = L.failed ? 9 : L.leaks ? 6 : L.mismatches ? 3 : 0;
     LOG("leak: %s: %d scenario(s), %d LEAK, %d failure(s), %d screenshot mismatch(es), %U s; WATCH and STEP: %s", code ? "FAIL" : "PASS", ran, L.leaks,
         L.failed, L.mismatches, (os_time_us() - t0) / 1000000, L.watch_len ? L.watch : "none");
