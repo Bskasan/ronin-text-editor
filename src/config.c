@@ -163,6 +163,7 @@ static const struct { const char *name; u32 offset, len_offset, cap; } config_te
     { "project_markers", offsetof(Settings, project_markers), offsetof(Settings, project_markers_len), CONFIG_LIST_CAP },
     { "project_ignore", offsetof(Settings, project_ignore), offsetof(Settings, project_ignore_len), CONFIG_LIST_CAP },
     { "git_path", offsetof(Settings, git_path), offsetof(Settings, git_path_len), CONFIG_PATH_CAP },
+    { "ai_command", offsetof(Settings, ai_command), offsetof(Settings, ai_command_len), CONFIG_PATH_CAP },
 };
 
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {
@@ -231,6 +232,16 @@ static void config_setting(ConfigParser *p, String8 name, String8 value) {
         else if (str8_equal(value, STR8_LIT("true"))) s->compilation_scroll_output = COMPILATION_SCROLL_ALWAYS;
         else if (str8_equal(value, STR8_LIT("false"))) s->compilation_scroll_output = COMPILATION_SCROLL_NEVER;
         else config_diag(p, 0, "compilation_scroll_output: '%S' is not first-error, true or false", config_quote(value));
+    } else if (str8_equal(name, STR8_LIT("ai_provider"))) {
+        if (str8_equal(value, STR8_LIT("claude"))) s->ai_provider = AI_PROVIDER_CLAUDE;
+        else if (str8_equal(value, STR8_LIT("openai"))) s->ai_provider = AI_PROVIDER_OPENAI;
+        else if (str8_equal(value, STR8_LIT("custom"))) s->ai_provider = AI_PROVIDER_CUSTOM;
+        else config_diag(p, 0, "ai_provider: '%S' is not claude, openai or custom", config_quote(value));
+    } else if (str8_equal(name, STR8_LIT("terminal"))) {
+        if (str8_equal(value, STR8_LIT("auto"))) s->terminal_program = TERMINAL_PROGRAM_AUTO;
+        else if (str8_equal(value, STR8_LIT("wt"))) s->terminal_program = TERMINAL_PROGRAM_WT;
+        else if (str8_equal(value, STR8_LIT("cmd"))) s->terminal_program = TERMINAL_PROGRAM_CMD;
+        else config_diag(p, 0, "terminal: '%S' is not auto, wt or cmd", config_quote(value));
     } else {
         config_diag(p, 0, "unknown setting '%S'", config_quote(name));
     }

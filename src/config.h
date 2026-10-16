@@ -51,8 +51,14 @@ struct Settings {
     i32 git_diff_max_lines;   // a diff is cut there (a last line says so)
     i32 git_status_max_files; // the file list is cut there
     i32 git_timeout_ms;       // a git that prints nothing for this long is stopped
+    i32 ai_provider;          // AI_PROVIDER_*: what open-ai-terminal (C-c a) runs
+    u8 ai_command[CONFIG_PATH_CAP]; // ... this command line instead, for any provider; empty = the provider's
+    i32 ai_command_len;
+    i32 terminal_program;     // TERMINAL_PROGRAM_* ("terminal" in a file): Windows Terminal, the classic console, or wt if found
 };
 
+enum { AI_PROVIDER_CLAUDE, AI_PROVIDER_OPENAI, AI_PROVIDER_CUSTOM };                 // claude, codex, ai_command
+enum { TERMINAL_PROGRAM_AUTO, TERMINAL_PROGRAM_WT, TERMINAL_PROGRAM_CMD };           // wt.exe if found else cmd, wt.exe, cmd.exe
 enum { COMPILATION_SAVE_ASK, COMPILATION_SAVE_ALL, COMPILATION_SAVE_NONE };            // asked one by one, all saved, left
 enum { COMPILATION_SCROLL_FIRST_ERROR, COMPILATION_SCROLL_ALWAYS, COMPILATION_SCROLL_NEVER }; // until the first error, always, never
 
