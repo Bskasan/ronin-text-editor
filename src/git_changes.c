@@ -577,4 +577,104 @@ static b32 app_dev_git_busy(App *app) {
     GitView *v = g->view;
     return g->pending || g->dying_count || g->work_pending || (v && (v->status_job || v->diff_job || v->copy_job));
 }
+
+// One git command on this thread (dev setup only), to its end; its exit code (0xFFFFFFFF: it did not start).
+static u32 git_dev_run(Arena *arena, String8 git, String8 args, String8 dir, String8 env, String8 *out) {
+    OsProcess p;
+    *out = str8(NULL, 0);
+    if (os_process_start_program(arena, git, args, dir, env, &p) != OS_FILE_OK) return 0xFFFFFFFFu;
+    OsEvent cancel;
+    os_event_create(&cancel);
+    i64 cap = KB(256), n = 0;
+    u8 *buf = PUSH_ARRAY(arena, u8, cap);
+    for (;;) {
+        i64 got = 0;
+        if (os_process_read(&p, cancel, 30000, buf + n, cap - n, &got) != OS_PROCESS_DATA) break;
+        n += got;
+        if (n == cap) break;
+    }
+    os_process_kill(&p);
+    os_process_wait(&p, 5000);
+    u32 code = os_process_exit_code(&p);
+    os_process_close(&p, 1);
+    os_event_destroy(cancel);
+    *out = str8(buf, n);
+    return code;
+}
+
+// The real-git test's and smoke stage 12's repository, tmp\gitrepo\repo: made once (git init, a.c b.c c.c, one
+// commit), then its working tree set again each time: a.c changed, c.c deleted, d.txt untracked. Every git of it runs
+// with *env: the system and global configuration shut out (GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL to an empty file,
+// HOME and XDG_CONFIG_HOME for a git older than 2.32). False when git.exe is not on PATH (or the setup failed).
+static b32 git_dev_make_repo(Arena *arena, String8 tmp_dir, String8 *git, String8 *repo, String8 *env) {
+    if (!os_find_program(arena, STR8_LIT("git.exe"), git)) return 0;
+    String8 home = os_full_path(arena, str8_fmt(arena, "%S\\gitrepo-home", tmp_dir));
+    String8 root = os_full_path(arena, str8_fmt(arena, "%S\\gitrepo", tmp_dir));
+    *repo = str8_fmt(arena, "%S\\repo", root);
+    os_make_dir(home);
+    os_make_dir(root);
+    os_make_dir(*repo);
+    os_write_file(str8_fmt(arena, "%S\\.gitconfig", home), str8(NULL, 0));
+    *env = str8_fmt(arena, "GIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=%S\\.gitconfig\nHOME=%S\nXDG_CONFIG_HOME=%S", home, home, home);
+    String8 out;
+    u32 code = git_dev_run(arena, *git, STR8_LIT("--version"), *repo, *env, &out);
+    LOG("git repo: %S (%S): exit %u", out.len && out.data[out.len - 1] == '\n' ? str8(out.data, out.len - 1) : out, *git, code);
+    if (code != 0) return 0;
+    OsFileInfo info;
+    if (os_file_info(str8_fmt(arena, "%S\\.git", *repo), &info) != OS_FILE_OK || !info.exists) {
+        static const char *const setup[] = { "-c init.defaultBranch=main init -q", "add -A",
+                                             "-c user.name=ronin -c user.email=ronin@localhost commit -q -m initial" };
+        os_write_file(str8_fmt(arena, "%S\\a.c", *repo), STR8_LIT("int a;\nint b;\nint c;\n"));
+        os_write_file(str8_fmt(arena, "%S\\b.c", *repo), STR8_LIT("int x;\n"));
+        os_write_file(str8_fmt(arena, "%S\\c.c", *repo), STR8_LIT("gone\n"));
+        for (i32 i = 0; i < (i32)ARRAY_COUNT(setup); i++) {
+            code = git_dev_run(arena, *git, str8_cstr(setup[i]), *repo, *env, &out);
+            if (code != 0) {
+                LOG("git repo: '%s' failed (exit %u): %S", setup[i], code, out);
+                return 0;
+            }
+        }
+    }
+    os_write_file(str8_fmt(arena, "%S\\a.c", *repo), STR8_LIT("int a;\nint B;\nint c;\n"));
+    os_write_file(str8_fmt(arena, "%S\\b.c", *repo), STR8_LIT("int x;\n"));
+    os_file_delete(str8_fmt(arena, "%S\\c.c", *repo));
+    os_write_file(str8_fmt(arena, "%S\\d.txt", *repo), STR8_LIT("new\n"));
+    return 1;
+}
+
+// Smoke stage 12: the real git with that configuration, b.c of the repository in the window, point at its line's end, focus on.
+void app_dev_smoke_git(App *app, String8 git, String8 repo, String8 env) {
+    GitChanges *g = &app->git;
+    g->dev_program = git;
+    g->dev_prefix = str8(NULL, 0);
+    g->dev_env = env;
+    if (!g->arena.base) g->arena = arena_create(MB(1));
+    Buffer *b = app_find_file(app, str8_fmt(&app->files_arena, "%S\\b.c", repo));
+    View *v = app_selected_view(app);
+    if (b) app_switch_buffer(app, v, b);
+    view_set_point(v, view_primary(v), 6); // the end of "int x;"
+    echo_clear(&app->echo);
+    app->force_focus = 1;
+}
+
+// RET visited a.c at its first change (line 2).
+b32 app_dev_smoke_git_visited(App *app) {
+    View *v = app_selected_view(app);
+    b32 ok = str8_equal(v->buffer->name, STR8_LIT("a.c")) && buffer_line_of(v->buffer, view_point(v, view_primary(v))) == 1 && !modal_active(app);
+    LOG("smoke: %s: git changes: RET visited %S at line %D", ok ? "ok" : "FAIL", v->buffer->name,
+        buffer_line_of(v->buffer, view_point(v, view_primary(v))) + 1);
+    return ok;
+}
+
+void app_dev_smoke_git_end(App *app) {
+    modal_close(app);
+    app_switch_buffer(app, app_selected_view(app), buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*")));
+    static const char *const names[] = { "a.c", "b.c" };
+    for (i32 i = 0; i < 2; i++) {
+        Buffer *b = buffer_list_find_name(&app->buffers, str8_cstr(names[i]));
+        if (b) files_kill_buffer(app, b);
+    }
+    app->git.dev_program = app->git.dev_env = str8(NULL, 0);
+    app->force_focus = 0;
+}
 #endif

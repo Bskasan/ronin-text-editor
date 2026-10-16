@@ -2576,6 +2576,39 @@ i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 
             APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 5 * cw + t, .y0 = t, .x1 = x + 6 * cw - t, .y1 = lh - t, .rgb = th->background,
                            .what = "modal: ... hollow (its inside in the background) while the box has the keys");
         }
+    } else if (stage == 12) {
+        // app_dev_smoke_git, then C-x g on tmp\gitrepo\repo (the real git): the first file (a.c) selected, its diff on the
+        // right: "diff --git" (row 0, diff_header), "@@ -1,3 +1,3 @@" (row 4, diff_hunk), "-int b;" (row 6, diff_removed),
+        // "+int B;" (row 7, diff_added); the next row's status letters, the selected row's empty part; the status line; the window
+        // underneath (b.c's one line) untouched, its cursor hollow.
+        Theme *th = &app->config->theme;
+        ModalGeometry *g = &app->modal.g;
+        ModalList *list = &app->modal.lists[0];
+        if (app->modal.active && g->fits && list->count >= 3 && list->selected == 0) {
+            i32 lx = (i32)g->panes[0].x0 + l.pad, ly = (i32)g->panes[0].y0;
+            i32 rx = (i32)g->panes[1].x0 + l.pad, ry = (i32)g->panes[1].y0;
+            i32 sx = (i32)g->field.x0 + l.pad, sy = (i32)g->field.y0;
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = ry, .x1 = rx + 10 * cw, .y1 = ry + lh, .rgb = th->diff_header,
+                           .what = "git: the file header 'diff --git' in diff_header");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = ry + 4 * lh, .x1 = rx + 14 * cw, .y1 = ry + 5 * lh, .rgb = th->diff_hunk,
+                           .what = "git: the hunk header in diff_hunk");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = ry + 6 * lh, .x1 = rx + 7 * cw, .y1 = ry + 7 * lh, .rgb = th->diff_removed,
+                           .what = "git: '-int b;' in diff_removed");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = rx, .y0 = ry + 7 * lh, .x1 = rx + 7 * cw, .y1 = ry + 8 * lh, .rgb = th->diff_added,
+                           .what = "git: '+int B;' in diff_added");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = rx, .y0 = ry + 12 * lh, .x1 = rx + 40 * cw, .y1 = ry + 13 * lh, .rgb = th->modal_background,
+                           .what = "git: the diff pane below its 9 lines in modal_background");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = lx, .y0 = ly + lh, .x1 = lx + 2 * cw, .y1 = ly + 2 * lh, .rgb = th->git_status,
+                           .what = "git: the next row's status ' D' in git_status");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = lx + 8 * cw, .y0 = ly, .x1 = lx + 20 * cw, .y1 = ly + lh, .rgb = th->modal_selection,
+                           .what = "git: the selected row's empty part in modal_selection");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = sx, .y0 = sy, .x1 = sx + 20 * cw, .y1 = sy + lh, .rgb = th->modal_description,
+                           .what = "git: the status line in modal_description");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 8 * cw, .y0 = 0, .x1 = x + 40 * cw, .y1 = MIN((i32)g->box.y0, 3 * lh),
+                           .rgb = th->background, .what = "git: the window underneath, right of its line, untouched");
+            APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 6 * cw + t, .y0 = t, .x1 = x + 7 * cw - t, .y1 = lh - t, .rgb = th->background,
+                           .what = "git: the window's cursor after 'int x;' hollow (its inside in the background) while the box has the keys");
+        }
     } else if (stage == 10) {
         // app_dev_smoke_cursors: on each of lines 0-2 the filled cursor at column 4, the region over columns 1-3,
         // nothing after the line's end (column 6 on); "mc:3" in the mode line.
