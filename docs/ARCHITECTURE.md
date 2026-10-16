@@ -1984,7 +1984,7 @@ config-reload-cycle/color private commit (as in Phase 19); the exit check PASS. 
 - [x] 17. Repository and build-folder cleanup
 - [x] 18. Modal overlay and the command list
 - [x] 19. The git changes modal
-- [ ] 20. Terminal and AI terminal shortcuts
+- [x] 20. Terminal and AI terminal shortcuts
 
 ## Decisions
 
