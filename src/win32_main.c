@@ -4468,6 +4468,8 @@ static void win32_bench_sort(u64 *us, i32 n) {
     }
 }
 
+static void win32_dev_memory_log(Platform *p, const char *what, OsDevMemoryOwners *out);
+
 static void win32_bench_modal(Platform *p) {
     r_dev_set_present_interval(p->renderer, 0);
     win32_bench_log_display(p);
@@ -4480,6 +4482,9 @@ static void win32_bench_modal(Platform *p) {
     i32 nb[4] = { 0 }, nf = 0;
     b32 opened_ok = 1;
     OsDevMetrics m0, m1 = { 0 }, m2;
+    // The walk's own scratch (its heap ranges, ~1.1 MB) is committed by the first walk, before the first metrics.
+    OsDevMemoryOwners o0, o1 = { 0 };
+    win32_dev_memory_log(p, "before the first open", &o0);
     os_dev_metrics(&m0);
     for (i32 round = 0; round < ROUNDS; round++) {
         for (i32 part = 0; part < 4; part++) {
@@ -4505,13 +4510,23 @@ static void win32_bench_modal(Platform *p) {
             if (part == 0) opened_ok &= app_dev_modal_open(p->app);
         }
         opened_ok &= !app_dev_modal_open(p->app);
-        if (round == 0) os_dev_metrics(&m1);
+        if (round == 0) {
+            os_dev_metrics(&m1);
+            win32_dev_memory_log(p, "after the first round", &o1);
+        }
     }
     os_dev_metrics(&m2);
     LOG("bench-modal: private bytes %U KB before the first open, %U KB after the first round, %U KB after the last; our arenas' "
         "commit %U KB, %U KB, %U KB (%d, %d, %d reservations: the field's buffer and View, the modal's arena)", m0.private_bytes >> 10,
         m1.private_bytes >> 10, m2.private_bytes >> 10, m0.reserved_committed >> 10, m1.reserved_committed >> 10,
         m2.reserved_committed >> 10, m0.reservations, m1.reservations, m2.reservations);
+    // The first round's growth by owner (--memory-report's walk), signed KB.
+    LOG("bench-modal: the first round by owner: our arenas %D KB, heaps %D KB, stacks %D KB, other (driver) %D KB, "
+        "image pages %D KB, views %D KB", ((i64)o1.arenas - (i64)o0.arenas) / 1024, ((i64)o1.heaps - (i64)o0.heaps) / 1024,
+        ((i64)o1.stacks - (i64)o0.stacks) / 1024, ((i64)o1.other - (i64)o0.other) / 1024,
+        ((i64)o1.image_w - (i64)o0.image_w) / 1024, ((i64)o1.mapped_w - (i64)o0.mapped_w) / 1024);
+    LOG("bench-modal: process threads %d before, %d after the first round (ours %d, %d)", m0.process_threads, m1.process_threads,
+        m0.live_threads, m1.live_threads);
     b32 slow = 0;
     win32_bench_sort(filter, nf);
     if (nf) {
@@ -5615,6 +5630,19 @@ void os_dev_memory_owners(OsDevMemoryOwners *out) {
     win32_dev_memory_classify(scratch, &mem);
     *out = (OsDevMemoryOwners){ mem.arenas, mem.heaps, mem.stacks, mem.other, mem.image_w, mem.mapped_w };
     arena_pop_to(scratch, mark);
+}
+
+// One line of the walk (--bench-modal): what each owner holds, the other private allocations' regions, the heaps, the
+// stacks; and the owners' bytes.
+static void win32_dev_memory_log(Platform *p, const char *what, OsDevMemoryOwners *out) {
+    u64 mark = arena_pos(&p->scratch);
+    Win32DevMemory mem;
+    win32_dev_memory_classify(&p->scratch, &mem);
+    LOG("memory walk %s: our arenas %U KB, heaps %U KB (%u heaps), stacks %U KB (%d), other %U KB (%U regions, the largest %U KB), "
+        "image pages %U KB, views %U KB", what, mem.arenas >> 10, mem.heaps >> 10, mem.heap_count, mem.stacks >> 10, mem.stack_count,
+        mem.other >> 10, mem.other_regions, mem.other_largest >> 10, mem.image_w >> 10, mem.mapped_w >> 10);
+    *out = (OsDevMemoryOwners){ mem.arenas, mem.heaps, mem.stacks, mem.other, mem.image_w, mem.mapped_w };
+    arena_pop_to(&p->scratch, mark);
 }
 
 static void win32_dev_memory_report(Platform *p) {

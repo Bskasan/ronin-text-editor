@@ -1720,7 +1720,7 @@ by the median, not by every keystroke); with them both are well inside it. Openi
 
 Memory: private bytes +1,076 to +1,228 KB at the first open, of which our arenas' commit +64 KB (1,708 -> 1,772
 KB) and 10 reservations (the field's Buffer and View, the modal's arena); after the first round nothing more (+0
-to +28 KB over the next four). The rest of the first open's growth is not ours ("Later").
+to +28 KB over the next four). The rest of the first open's growth is not ours (classified in Measurements (Phase 19)).
 
 ### Idle and latency
 
@@ -1772,6 +1772,29 @@ scripted command list sessions besides the random keys that open it), debug PASS
 The leak check: 24 scenarios, 0 LEAK, 120 s, modal-cycle/browse and modal-cycle/run OK (browse's frames before and
 after equal); STEP: config-reload-cycle/color private commit (the process heap's irregular moves Phase 16
 accepted); the exit check PASS.
+
+## Measurements (Phase 19)
+
+Same machine (AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800 window).
+
+### The command list's first open, by owner
+
+`ronin_bench.exe --bench-modal` now walks the memory (`--memory-report`'s classification) before the first open and after
+the first round (open, 20 filter keystrokes, 20 movements, close); the walk's own scratch (~1.1 MB of heap ranges) is
+committed before the first reading. Four runs:
+
+| owner | first round |
+|---|---|
+| our arenas | +64 KB (10 reservations: the field's Buffer and View, the modal's arena) |
+| process heaps | +4 to +284 KB (5 heaps before and after) |
+| thread stacks | +44 to +52 KB: one more thread in the process (59 -> 60), not ours (our threads 0 and 0) |
+| other private allocations (the D3D11 driver and runtime) | +936 KB every run: one region more and the largest one +656 KB |
+| writable image pages, mapped views | +0 |
+
+Private bytes moved +840 to +1,128 KB. Ours is the 64 KB the design makes (kept until the exit, as the minibuffer's);
+ronin allocates nothing from a heap (the release build has no C runtime), so the heaps' growth belongs to the system DLLs,
+and the new thread and the 936 KB to the graphics driver (the first frames with ~5,000 more glyph quads). Windows' and the
+driver's: recorded, not pursued (the Phase 19 instruction). Later opens add nothing.
 
 ## Roadmap
 
@@ -2994,9 +3017,6 @@ test_run removes it again after the group.
   the bindings of the minibuffer's and isearch's keymaps (only the current window's are shown); a field longer
   than its line scrolls but cannot wrap. The input harness checks `[keys command-list]` only through the global bindings
   it shares.
-- The first open of the command list adds ~1.0-1.2 MB of private bytes, of which 64 KB are our arenas (the
-  field's Buffer and View, the modal's arena; 10 reservations); later opens add nothing. The rest was not looked
-  into (Phase 18).
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.
