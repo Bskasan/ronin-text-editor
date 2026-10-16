@@ -1921,7 +1921,7 @@ check PASS. The first run of this phase failed in soak-debug: "The soak's checks
 - [x] 16. Memory and resource leak audit
 - [x] 17. Repository and build-folder cleanup
 - [x] 18. Modal overlay and the command list
-- [ ] 19. The git changes modal
+- [x] 19. The git changes modal
 
 ## Decisions
 
