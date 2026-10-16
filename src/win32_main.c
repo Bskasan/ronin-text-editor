@@ -5438,6 +5438,7 @@ static void win32_dev_idle_check_mark(Platform *p, b32 end) {
         p->idle_start_frames = p->frame_count;
         p->idle_start_wakeups = p->idle_wakeups;
         p->idle_measuring = 1;
+        LOG("idle-check: from now: a modal box open %d, git jobs running or pending %d", app_dev_modal_open(p->app), app_dev_git_busy(p->app));
         return;
     }
     p->idle_measuring = 0;
