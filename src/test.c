@@ -11119,6 +11119,62 @@ static b32 test_launch(Test *t) {
     return 1;
 }
 
+// Phase 20: ai_provider, ai_command and terminal.
+static b32 test_terminal_config(Test *t) {
+    Config c;
+    config_init(&c);
+    config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    Settings *s = &c.settings;
+    TEST_CHECK(t, c.diags.errors == 0 && s->ai_provider == AI_PROVIDER_CLAUDE && s->ai_command_len == 0 &&
+                      s->terminal_program == TERMINAL_PROGRAM_AUTO, "terminal config: defaults %d '%S' %d", s->ai_provider,
+               str8(s->ai_command, s->ai_command_len), s->terminal_program);
+    static const struct { const char *line; i32 provider, terminal; } values[] = {
+        { "ai_provider = openai", AI_PROVIDER_OPENAI, -1 },  { "ai_provider = custom", AI_PROVIDER_CUSTOM, -1 },
+        { "ai_provider = claude", AI_PROVIDER_CLAUDE, -1 },  { "terminal = wt", -1, TERMINAL_PROGRAM_WT },
+        { "terminal = cmd", -1, TERMINAL_PROGRAM_CMD },      { "terminal = auto", -1, TERMINAL_PROGRAM_AUTO },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(values); i++) {
+        config_parse(&c, &t->arena, str8_fmt(&t->arena, "[settings]\n%s\n", values[i].line), STR8_LIT("t.conf"));
+        TEST_CHECK(t, c.diags.errors == 0 && (values[i].provider < 0 || s->ai_provider == values[i].provider) &&
+                          (values[i].terminal < 0 || s->terminal_program == values[i].terminal), "terminal config: '%s'", values[i].line);
+    }
+    config_parse(&c, &t->arena, STR8_LIT("[settings]\nai_command = \"C:\\Program Files\\x\\claude.exe\" --continue\n"), STR8_LIT("t.conf"));
+    TEST_CHECK(t, c.diags.errors == 0 && str8_equal(str8(s->ai_command, s->ai_command_len), STR8_LIT("\"C:\\Program Files\\x\\claude.exe\" --continue")),
+               "terminal config: ai_command '%S'", str8(s->ai_command, s->ai_command_len));
+    // The length: 259 bytes kept, 260 refused (the earlier value stays).
+    for (i32 len = 259; len <= 260; len++) {
+        String8 v = str8(PUSH_ARRAY(&t->arena, u8, len), len);
+        memset(v.data, 'a', (size_t)len);
+        Config l;
+        config_init(&l);
+        config_parse(&l, &t->arena, str8_fmt(&t->arena, "[settings]\nai_command = %S\n", v), STR8_LIT("t.conf"));
+        b32 kept = len == 259 ? l.diags.errors == 0 && l.settings.ai_command_len == 259
+                              : l.diags.errors == 1 && l.settings.ai_command_len == 0 &&
+                                    str8_equal(l.diags.first->text, STR8_LIT("t.conf:2: ai_command longer than 259 bytes"));
+        TEST_CHECK(t, kept, "terminal config: ai_command of %d bytes: %d errors, %d kept", len, l.diags.errors, l.settings.ai_command_len);
+    }
+    // Bad values: reported with their line, the value before them kept (here the built-in one).
+    Config bad;
+    config_init(&bad);
+    config_parse(&bad, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    config_parse(&bad, &t->arena, STR8_LIT("[settings]\nai_provider = gemini\nterminal = powershell\nai_provider =\nterminal = WT\n"), STR8_LIT("t.conf"));
+    static const char *const want[] = {
+        "t.conf:2: ai_provider: 'gemini' is not claude, openai or custom",
+        "t.conf:3: terminal: 'powershell' is not auto, wt or cmd",
+        "t.conf:4: expected name = value",
+        "t.conf:5: terminal: 'WT' is not auto, wt or cmd",
+    };
+    i32 k = 0;
+    for (ConfigDiag *d = bad.diags.first; d; d = d->next, k++) {
+        TEST_CHECK(t, k < ARRAY_COUNT(want) && str8_equal(d->text, str8_cstr(want[k])), "terminal config: diagnostic %d '%S'", k, d->text);
+    }
+    TEST_CHECK(t, k == ARRAY_COUNT(want) && bad.settings.ai_provider == AI_PROVIDER_CLAUDE && bad.settings.terminal_program == TERMINAL_PROGRAM_AUTO,
+               "terminal config: %d diagnostics, provider %d, terminal %d", k, bad.settings.ai_provider, bad.settings.terminal_program);
+    LOG("test: ok: terminal config (defaults, every value of ai_provider and terminal, ai_command with quotes and at 259 / 260 bytes, "
+        "each diagnostic, the earlier value kept)");
+    return 1;
+}
+
 // A match as text: "kind line:col [path] (num) {kind word} <project>", "-" for none.
 static String8 test_match_text(Arena *arena, String8 line, b32 ok, const CompileMatch *m) {
     if (!ok) return STR8_LIT("-");
@@ -14141,6 +14197,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_process_program(&t);
     arena_reset(&t.arena);
     test_launch(&t);
+    arena_reset(&t.arena);
+    test_terminal_config(&t);
     arena_reset(&t.arena);
     test_compile_match(&t);
     arena_reset(&t.arena);
