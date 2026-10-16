@@ -13528,6 +13528,92 @@ static b32 test_git_changes(Test *t) {
     return 1;
 }
 
+// The view's rows and each file's diff (every row selected in turn, its diff waited for) as one text: "XY path" lines,
+// then each diff as test_git_diff_text gives it, the hashes of "index" lines left out (they differ from run to run).
+static String8 test_git_view_text(Test *t, App *app) {
+    GitView *v = app->git.view;
+    if (!v) return STR8_LIT("(not open)");
+    String8 s = str8(NULL, 0);
+    for (i64 i = 0; i < v->count; i++) s = str8_fmt(&t->arena, "%S%c%c %S\n", s, v->rows[i].xy[0], v->rows[i].xy[1], v->rows[i].path);
+    for (i64 i = 0; i < v->count; i++) {
+        if (i) app_dev_feed(app, "<down>", &t->arena);
+        test_git_wait(t, app, 20000);
+        GitRow *row = &v->rows[i];
+        GitDiff d = { .text = row->text, .lines = row->lines, .count = row->count, .first_changed = row->first_changed };
+        String8 text = test_git_diff_text(&t->arena, &d), norm = str8(NULL, 0);
+        for (i64 at = 0; at < text.len;) {
+            i64 end = at;
+            while (end < text.len && text.data[end] != '\n') end++;
+            String8 line = str8(text.data + at, end - at);
+            at = end + 1;
+            if (str8_starts_with(line, STR8_LIT("H index "))) line = STR8_LIT("H index *");
+            norm = str8_fmt(&t->arena, "%S%S\n", norm, line);
+        }
+        s = str8_fmt(&t->arena, "%S%S", s, norm);
+    }
+    return s;
+}
+
+// What git prints for tmp\gitrepo\repo (git_dev_make_repo): the fake git's canned answers and the real one's both
+// give this.
+#define TEST_GIT_REAL_WANT                                                                                                          \
+    " M a.c\n D c.c\n?? d.txt\n"                                                                                                    \
+    "H diff --git a/a.c b/a.c\nH index *\nH --- a/a.c\nH +++ b/a.c\n@ @@ -1,3 +1,3 @@\nT  int a;\n- -int b;\n+ +int B;\nT  int c;\nfirst 2\n" \
+    "H diff --git a/c.c b/c.c\nH deleted file mode 100644\nH index *\nH --- a/c.c\nH +++ /dev/null\n@ @@ -1 +0,0 @@\n- -gone\nfirst 1\n"     \
+    "H diff --git a/d.txt b/d.txt\nH new file mode 100644\nH index *\nH --- /dev/null\nH +++ b/d.txt\n@ @@ -0,0 +1 @@\n+ +new\nfirst 1\n"
+
+// The real git, when it is on PATH, on a repository made for it (its system and global configuration shut out):
+// the list and the diffs exactly as the fake git's canned answers for the same repository give them.
+static b32 test_git_real(Test *t) {
+    String8 git, repo, env;
+    i32 procs0 = os_dev_live_processes(), ledger0 = os_dev_live_handles();
+    // The fake git first: the expectation itself is checked through the same path.
+    String8 slash = str8(NULL, 0);
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "git real: no app");
+    String8 dir = test_git_fake(t, "real_fake", NULL, 0);
+    slash = str8_copy(&t->arena, dir);
+    for (i64 i = 0; i < slash.len; i++) if (slash.data[i] == '\\') slash.data[i] = '/';
+    const char *pairs[] = {
+        "rev-parse", (const char *)str8_fmt(&t->arena, "out %S\n%c", slash, 0).data,
+        "status", "raw ## main\\x00 M a.c\\x00 D c.c\\x00?? d.txt\\x00\n",
+        "-- a.c", "raw diff --git a/a.c b/a.c\\nindex 1e3e6a8..3d8b3e1 100644\\n--- a/a.c\\n+++ b/a.c\\n@@ -1,3 +1,3 @@\\n int a;\\n-int b;\\n+int B;\\n"
+                  " int c;\\n\n",
+        "-- c.c", "raw diff --git a/c.c b/c.c\\ndeleted file mode 100644\\nindex 6c5c2b0..0000000\\n--- a/c.c\\n+++ /dev/null\\n@@ -1 +0,0 @@\\n-gone\\n\n",
+        "d.txt", "raw diff --git a/d.txt b/d.txt\\nnew file mode 100644\\nindex 0000000..3e75765\\n--- /dev/null\\n+++ b/d.txt\\n@@ -0,0 +1 @@\\n+new\\n\nexit 1\n",
+    };
+    dir = test_git_fake(t, "real_fake", pairs, (i32)ARRAY_COUNT(pairs));
+    test_git_use_fake(t, app, dir);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    String8 fake = test_git_view_text(t, app);
+    TEST_CHECK(t, str8_equal(fake, STR8_LIT(TEST_GIT_REAL_WANT)), "git real: the fake git's canned repository gave:\n%S", fake);
+    if (!test_app_destroy(t, app, "git real (fake)")) return 0;
+    if (!git_dev_make_repo(&t->arena, t->tmp_dir, &git, &repo, &env)) {
+        LOG("test: skip: git real: git.exe is not on PATH (or its repository could not be made)");
+        return 1;
+    }
+    app = test_app_create(t);
+    TEST_CHECK(t, app, "git real: no app");
+    app->git.dev_program = git;
+    app->git.dev_env = env;
+    Buffer *b = app_find_file(app, str8_fmt(&t->arena, "%S\\b.c", repo)); // the project: the repository
+    TEST_CHECK(t, b, "git real: b.c");
+    app_switch_buffer(app, app_selected_view(app), b);
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, test_git_wait(t, app, 20000) && modal_active(app), "git real: did not open ('%S')", test_echo(app));
+    String8 real = test_git_view_text(t, app);
+    TEST_CHECK(t, str8_equal(real, fake), "git real: git printed:\n%S", real);
+    TEST_CHECK(t, str8_equal(app->git.view->toplevel, repo) && str8_equal(app->git.view->branch, STR8_LIT("main")),
+               "git real: top level '%S', branch '%S'", app->git.view->toplevel, app->git.view->branch);
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "git real")) return 0;
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_handles() == ledger0, "git real: counters back");
+    LOG("test: ok: git real (%S on tmp\\gitrepo\\repo with its configuration shut out: the list and the three diffs equal the fake "
+        "git's canned answers)", git);
+    return 1;
+}
+
 // The error paths through the app: no git, not a work tree, git's own refusal, a failing status and diff, the timeout
 // (pending and open), a cancel on close, the shutdown with a git that hangs.
 static b32 test_git_changes_errors(Test *t) {
@@ -13781,6 +13867,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_git_changes(&t);
     arena_reset(&t.arena);
     test_git_changes_errors(&t);
+    arena_reset(&t.arena);
+    test_git_real(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);

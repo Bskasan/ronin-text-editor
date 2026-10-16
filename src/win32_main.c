@@ -3407,7 +3407,7 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
     i32 count = buffer_view ? app_dev_buffer_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage)
                             : app_dev_syntax_probes(p->app, &input, probes, ARRAY_COUNT(probes), stage == -1);
     i32 expected = stage == 0 ? 13 : stage == 1 ? 3 : stage == 2 ? 6 : stage == 3 ? 6 : stage == 4 ? 6 : stage == 5 ? 1 : stage == 6 ? 10
-                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == 10 ? 11 : stage == 11 ? 10 : stage == -1 ? 13 : 5;
+                 : stage == 7 ? 6 : stage == 8 ? 7 : stage == 9 ? 5 : stage == 10 ? 11 : stage == 11 ? 10 : stage == 12 ? 10 : stage == -1 ? 13 : 5;
     i32 result = EXIT_OK;
     LOG("smoke: checking the %s frame%s%s", stage == 0 ? "buffer view (hollow cursor)" : stage == 1 ? "buffer view (filled cursor)"
                                          : stage == 2 ? "buffer view (region)" : stage == 3 ? "minibuffer (M-x list)"
@@ -3415,7 +3415,7 @@ static i32 win32_smoke_check_frame(Platform *p, i32 stage, const char *language)
                                          : stage == 5 ? "isearch (failing)" : stage == 6 ? "two windows"
                                          : stage == 7 ? "project finder" : stage == 8 ? "results buffer (*search*)"
                                          : stage == 9 ? "build (*compilation*)" : stage == 10 ? "three cursors with regions"
-                                         : stage == 11 ? "command list (modal box)"
+                                         : stage == 11 ? "command list (modal box)" : stage == 12 ? "git changes (two panes)"
                                          : stage == -1 ? "highlighted buffer (rendering and syntax)" : "highlighted buffer",
         language ? ": " : "", language ? language : "");
     for (i32 i = 0; i < count; i++) {
@@ -3525,6 +3525,74 @@ static i32 win32_smoke_modal(Platform *p) {
         app_dev_size(p->app));
     if (!ran && code == EXIT_OK) code = EXIT_TEST;
     app_dev_smoke_modal_end(p->app);
+    return code;
+}
+
+// Frames and the workers' wake until the git changes view's jobs settled (and, with `open`, its box is open); 10 s at most.
+static void win32_smoke_git_wait(Platform *p, b32 open) {
+    for (i32 k = 0; k < 2000; k++) {
+        if (!app_dev_git_busy(p->app) && (!open || app_dev_modal_open(p->app))) break;
+        if (os_dev_wake_wait(5)) app_wake(p->app);
+        win32_frame(p);
+    }
+}
+
+// Copies the frame captured now (the back buffer), in perm.
+static u8 *win32_smoke_keep_frame(Platform *p, i32 *w, i32 *h) {
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    u8 *pixels = r_read_capture(p->renderer, &p->scratch, w, h);
+    if (!pixels) return NULL;
+    u64 bytes = (u64)*w * (u64)*h * 4;
+    u8 *kept = PUSH_ARRAY(&p->perm, u8, bytes);
+    memcpy(kept, pixels, (size_t)bytes);
+    arena_reset(&p->scratch);
+    return kept;
+}
+
+// Stage 12: C-x g on tmp\gitrepo\repo with the real git (its configuration shut out); skipped without git on PATH. The
+// box's colors (app_dev_buffer_probes), RET visiting a.c at its first change, then C-x g again and C-g: that frame
+// equal to the one before, byte for byte.
+static i32 win32_smoke_git(Platform *p) {
+    String8 git, repo, env;
+    if (!git_dev_make_repo(&p->perm, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir), &git, &repo, &env)) {
+        LOG("smoke: skip: git changes (stage 12): git.exe is not on PATH (or its repository could not be made)");
+        return EXIT_OK;
+    }
+    app_dev_smoke_git(p->app, git, repo, env);
+    win32_frame(p);
+    win32_smoke_feed_no_frame(p, "C-x g");
+    win32_smoke_git_wait(p, 1);
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    i32 code = win32_smoke_check_frame(p, 12, NULL);
+    win32_smoke_feed(p, "RET");
+    win32_smoke_git_wait(p, 0);
+    if (!app_dev_smoke_git_visited(p->app) && code == EXIT_OK) code = EXIT_TEST;
+    i32 w, h, w2, h2;
+    u8 *before = win32_smoke_keep_frame(p, &w, &h);
+    win32_smoke_feed_no_frame(p, "C-x g");
+    win32_smoke_git_wait(p, 1);
+    win32_smoke_feed_no_frame(p, "C-g");
+    win32_smoke_git_wait(p, 0);
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w2, &h2);
+    i64 differ = -1;
+    u64 bytes = (u64)w * (u64)h * 4;
+    if (before && pixels && w2 == w && h2 == h) {
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+    }
+    if (!before || !pixels || w2 != w || h2 != h || differ >= 0 || app_dev_modal_open(p->app)) {
+        LOG("smoke: FAIL: git changes: the frame after C-g differs from the one before C-x g (first pixel (%D, %D)), open %d",
+            differ >= 0 ? differ % w : -1, differ >= 0 ? differ / w : -1, app_dev_modal_open(p->app));
+        if (code == EXIT_OK) code = EXIT_PIXEL_MISMATCH;
+    } else {
+        LOG("smoke: ok: git changes: the frame after C-g equals the one before C-x g (%dx%d)", w, h);
+    }
+    arena_reset(&p->scratch);
+    app_dev_smoke_git_end(p->app);
+    win32_frame(p);
     return code;
 }
 
@@ -7052,6 +7120,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 if (code3 == EXIT_OK) code3 = win32_smoke_modal(p); // stage 11: the command list
                 i32 code4 = win32_smoke_check_title(p);
                 if (code4 == EXIT_OK) code4 = win32_smoke_check_icon(p);
+                if (code3 == EXIT_OK) code3 = win32_smoke_git(p); // stage 12: the git changes view (the real git); it visits
+                                                                  // files, so after the title's check
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_text_scale(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);
