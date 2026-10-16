@@ -12917,6 +12917,162 @@ static b32 test_modal_fuzz(Test *t, u64 seed) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 19: the git changes view
+
+// A diff's lines as "K text" lines (K: T text, H header, @ hunk, + added, - removed, C the cut), then "first N".
+static String8 test_git_diff_text(Arena *arena, const GitDiff *d) {
+    static const char kinds[] = "TH@+-C";
+    String8 s = str8(NULL, 0);
+    for (i64 i = 0; i < d->count; i++) {
+        GitLine *l = &d->lines[i];
+        s = str8_fmt(arena, "%S%c %S\n", s, kinds[l->kind], str8(d->text.data + l->off, l->len));
+    }
+    return str8_fmt(arena, "%Sfirst %D%s", s, d->first_changed, d->cut ? " cut" : "");
+}
+
+static String8 test_git_status_text(Arena *arena, const GitStatus *st) {
+    String8 s = str8_fmt(arena, "branch '%S'%s%s\n", st->branch, st->no_head ? " no head" : "", st->cut ? " cut" : "");
+    for (i64 i = 0; i < st->count; i++) {
+        GitEntry *e = &st->entries[i];
+        s = str8_fmt(arena, "%S%c%c|%S|%S\n", s, e->xy[0], e->xy[1], e->path, e->orig);
+    }
+    return s;
+}
+
+static b32 test_git_parse(Test *t) {
+    // Status: every kind, a rename's and a copy's source after it, a UTF-8 path, the branch record and its forms.
+    static const u8 status[] = "## main...origin/main [ahead 1]\0M  src/app.c\0 M README.md\0A  new.c\0 D gone.c\0"
+                               "R  src/new name.c\0src/old name.c\0C  copy.c\0orig.c\0RM moved.c\0was.c\0"
+                               "?? notes/\xc4\x9f\xc3\xbc\xc5\x9f.txt\0?? b.txt\0";
+    GitStatus st;
+    git_parse_status(&t->arena, str8((u8 *)status, sizeof(status) - 1), 5000, &st);
+    String8 got = test_git_status_text(&t->arena, &st);
+    String8 want = STR8_LIT("branch 'main'\nM |src/app.c|\n M|README.md|\nA |new.c|\n D|gone.c|\nR |src/new name.c|src/old name.c\n"
+                            "C |copy.c|orig.c\nRM|moved.c|was.c\n??|notes/\xc4\x9f\xc3\xbc\xc5\x9f.txt|\n??|b.txt|\n");
+    TEST_CHECK(t, str8_equal(got, want), "git parse: status:\n%S", got);
+    static const struct { const char *raw; i64 len; const char *want; } branches[] = {
+        { "## No commits yet on main\0A  a.c\0?? b.c\0", 40, "branch 'main' no head\nA |a.c|\n??|b.c|\n" },
+        { "## Initial commit on master\0", 28, "branch 'master' no head\n" },
+        { "## HEAD (no branch)\0 M x\0", 25, "branch 'HEAD (no branch)'\n M|x|\n" },
+        { "## main\0", 8, "branch 'main'\n" },
+        { "", 0, "branch ''\n" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(branches); i++) {
+        git_parse_status(&t->arena, str8((u8 *)branches[i].raw, branches[i].len), 5000, &st);
+        got = test_git_status_text(&t->arena, &st);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(branches[i].want)), "git parse: status %d:\n%S", i, got);
+    }
+    // The file limit: 5,001 records give 5,000 and the cut; exactly 5,000 no cut.
+    for (i32 extra = 0; extra < 2; extra++) {
+        String8 many = str8(PUSH_ARRAY(&t->arena, u8, 5001 * 12), 0);
+        for (i32 i = 0; i < 5000 + extra; i++) many.len += fmt_buf(many.data + many.len, 12, " M f%05d", i) + 1;
+        git_parse_status(&t->arena, many, 5000, &st);
+        TEST_CHECK(t, st.count == 5000 && st.cut == extra && str8_equal(st.entries[4999].path, STR8_LIT("f04999")),
+                   "git parse: %d records: %D kept, cut %d", 5000 + extra, st.count, st.cut);
+    }
+
+    // Diffs: two hunks (the second one must be there), a removed line that starts with "--" and an added one with
+    // "++" (inside a hunk the counts decide), "\ No newline", CRLF content, the first changed line.
+    static const char two[] = "diff --git a/a.c b/a.c\nindex 1111111..2222222 100644\n--- a/a.c\n+++ b/a.c\n"
+                              "@@ -1,3 +1,3 @@\n int a;\n--- old\n+++ new\n int b;\n"
+                              "@@ -10,2 +10,3 @@ int f(void) {\n x\r\n+y\r\n z\n\\ No newline at end of file\n";
+    GitDiff d;
+    git_parse_diff(&t->arena, STR8_LIT(two), 20000, &d);
+    got = test_git_diff_text(&t->arena, &d);
+    want = STR8_LIT("H diff --git a/a.c b/a.c\nH index 1111111..2222222 100644\nH --- a/a.c\nH +++ b/a.c\n@ @@ -1,3 +1,3 @@\n"
+                    "T  int a;\n- --- old\n+ +++ new\nT  int b;\n@ @@ -10,2 +10,3 @@ int f(void) {\nT  x\n+ +y\nT  z\n"
+                    "T \\ No newline at end of file\nfirst 2");
+    TEST_CHECK(t, str8_equal(got, want), "git parse: two hunks:\n%S", got);
+    static const struct { const char *raw, *want; } diffs[] = {
+        // A new file (untracked, through --no-index): from line 1.
+        { "diff --git a/n.txt b/n.txt\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/n.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n",
+          "H diff --git a/n.txt b/n.txt\nH new file mode 100644\nH index 0000000..e69de29\nH --- /dev/null\nH +++ b/n.txt\n"
+          "@ @@ -0,0 +1,2 @@\n+ +a\n+ +b\nfirst 1" },
+        // A deleted file: everything removed, its first line.
+        { "diff --git a/g.c b/g.c\ndeleted file mode 100644\n--- a/g.c\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n",
+          "H diff --git a/g.c b/g.c\nH deleted file mode 100644\nH --- a/g.c\nH +++ /dev/null\n@ @@ -1,2 +0,0 @@\n- -x\n- -y\nfirst 1" },
+        // Lines removed after line 4: the line after.
+        { "@@ -5,2 +4,0 @@\n-p\n-q\n", "@ @@ -5,2 +4,0 @@\n- -p\n- -q\nfirst 5" },
+        // A change further down: the new side's line of the first - line.
+        { "@@ -7,3 +7,3 @@\n a\n-b\n+B\n c\n", "@ @@ -7,3 +7,3 @@\nT  a\n- -b\n+ +B\nT  c\nfirst 8" },
+        // A rename with changes, and one without (similarity 100%: no hunk, no first line).
+        { "diff --git a/old.c b/new.c\nsimilarity index 100%\nrename from old.c\nrename to new.c\n",
+          "H diff --git a/old.c b/new.c\nH similarity index 100%\nH rename from old.c\nH rename to new.c\nfirst 0" },
+        // A binary file: its header line, nothing to visit.
+        { "diff --git a/i.png b/i.png\nindex 1..2 100644\nBinary files a/i.png and b/i.png differ\n",
+          "H diff --git a/i.png b/i.png\nH index 1..2 100644\nH Binary files a/i.png and b/i.png differ\nfirst 0" },
+        // A mode change only.
+        { "diff --git a/s.sh b/s.sh\nold mode 100644\nnew mode 100755\n", "H diff --git a/s.sh b/s.sh\nH old mode 100644\nH new mode 100755\nfirst 0" },
+        // Two files: the hunk of the first ends by its counts, the second file's header follows.
+        { "@@ -1 +1 @@\n-a\n+b\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1,2 @@\n y\n+z\n",
+          "@ @@ -1 +1 @@\n- -a\n+ +b\nH diff --git a/y b/y\nH --- a/y\nH +++ b/y\n@ @@ -1 +1,2 @@\nT  y\n+ +z\nfirst 1" },
+        // No trailing newline; empty output.
+        { "@@ -1 +1 @@\n-a\n+b", "@ @@ -1 +1 @@\n- -a\n+ +b\nfirst 1" },
+        { "", "first 0" },
+        // Not a diff (a failed run's output): a header line here; the view draws a failed run in the text color.
+        { "fatal: bad object HEAD\n", "H fatal: bad object HEAD\nfirst 0" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(diffs); i++) {
+        git_parse_diff(&t->arena, str8_cstr(diffs[i].raw), 20000, &d);
+        got = test_git_diff_text(&t->arena, &d);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(diffs[i].want)), "git parse: diff %d:\n%S", i, got);
+    }
+    // The line limit: 20,001 lines give 20,000 and the cut line; exactly 20,000 no cut.
+    for (i32 extra = 0; extra < 2; extra++) {
+        i64 n = 20000 + extra - 1;
+        String8 big = str8(PUSH_ARRAY(&t->arena, u8, 32 + n * 16), 0);
+        big.len += fmt_buf(big.data, 32, "@@ -0,0 +1,%D @@\n", n);
+        for (i64 i = 0; i < n; i++) big.len += fmt_buf(big.data + big.len, 16, "+line %D\n", i + 1);
+        git_parse_diff(&t->arena, big, 20000, &d);
+        TEST_CHECK(t, d.count == 20000 + extra && d.cut == extra && (!extra || d.lines[20000].kind == GIT_LINE_CUT) &&
+                          d.lines[19999].kind == GIT_LINE_ADDED, "git parse: %D lines: %D kept, cut %d", n + 1, d.count, d.cut);
+    }
+    // A line over 4,096 bytes is cut there, never inside a character (a 2-byte one across byte 4,096).
+    String8 longl = str8(PUSH_ARRAY(&t->arena, u8, 5000), 0);
+    longl.data[longl.len++] = '+';
+    while (longl.len < 4095) longl.data[longl.len++] = 'x';
+    longl.data[longl.len++] = 0xC4;
+    longl.data[longl.len++] = 0x9F;
+    while (longl.len < 4990) longl.data[longl.len++] = 'y';
+    longl.data[longl.len++] = '\n';
+    git_parse_diff(&t->arena, str8_fmt(&t->arena, "@@ -0,0 +1 @@\n%S", longl), 20000, &d);
+    TEST_CHECK(t, d.count == 2 && d.lines[1].len == 4095, "git parse: a long line kept %u bytes", d.count == 2 ? d.lines[1].len : 0);
+
+    // The error line: the prefixed line wins, blank lines and CR skipped, the cut on a character boundary.
+    static const struct { const char *out, *want; } errors[] = {
+        { "fatal: not a git repository (or any of the parent directories): .git\n", "fatal: not a git repository (or any of the parent directories): .git" },
+        { "\n   \nsomething first\r\nerror: pathspec 'x' did not match\r\n", "error: pathspec 'x' did not match" },
+        { "fatal: detected dubious ownership in repository at 'C:/x/y'\n'C:/x/y' is owned by:\n\tS-1-5-32-544\nTo add an exception "
+          "for this directory, call:\n\n\tgit config --global --add safe.directory C:/x/y\n",
+          "fatal: detected dubious ownership in repository at 'C:/x/y'" },
+        { "\r\n  plain words\r\nmore\n", "  plain words" },
+        { "usage: git diff [<options>]\n", "usage: git diff [<options>]" },
+        { "", "" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(errors); i++) {
+        got = git_error_line(str8_cstr(errors[i].out));
+        TEST_CHECK(t, str8_equal(got, str8_cstr(errors[i].want)), "git parse: error line %d: '%S'", i, got);
+    }
+    String8 longf = str8(PUSH_ARRAY(&t->arena, u8, 400), 0);
+    memcpy(longf.data, "fatal: ", 7);
+    longf.len = 7;
+    while (longf.len < 119) longf.data[longf.len++] = 'a';
+    longf.data[longf.len++] = 0xE2; // a 3-byte character over bytes 119-121
+    longf.data[longf.len++] = 0x80;
+    longf.data[longf.len++] = 0xA6;
+    while (longf.len < 300) longf.data[longf.len++] = 'b';
+    got = git_error_line(longf);
+    TEST_CHECK(t, got.len == 119, "git parse: a 300-byte error line cut at %D bytes", got.len);
+    TEST_CHECK(t, git_not_a_repository(STR8_LIT("x\nfatal: not a git repository (or any parent up to mount point /)\n")) &&
+                      !git_not_a_repository(STR8_LIT("fatal: detected dubious ownership in repository at 'C:/x'\n")),
+               "git parse: not a git repository");
+    LOG("test: ok: git parse (status records, renames and copies, a UTF-8 path, the branch forms, no commits yet, the file limit; "
+        "two hunks, -- and ++ lines inside a hunk, CRLF, no newline, new, deleted, renamed, binary and mode-only files, two files, "
+        "the first changed line, the line limit, a long line; the error line and its cut, not a git repository)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -13057,6 +13213,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_command_list(&t);
     arena_reset(&t.arena);
     test_modal_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_git_parse(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
