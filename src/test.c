@@ -11021,6 +11021,104 @@ static b32 test_process_program(Test *t) {
     return 1;
 }
 
+// Phase 20: waits up to `ms` until the file at `path` exists and holds at least `min_len` bytes; its text (empty: never).
+static String8 test_wait_file(Test *t, String8 path, u32 ms, i64 min_len) {
+    OsEvent tick;
+    os_event_create(&tick);
+    String8 text = { 0 };
+    u64 deadline = os_time_us() + (u64)ms * 1000;
+    for (;;) {
+        u64 mark = arena_pos(&t->arena);
+        if (os_read_small_file(&t->arena, path, MB(4), &text) == OS_FILE_OK && text.len >= min_len) break;
+        arena_pop_to(&t->arena, mark);
+        text = str8(NULL, 0);
+        if (os_time_us() > deadline) break;
+        os_event_wait(tick, 5); // never set: a 5 ms pause
+    }
+    os_event_destroy(tick);
+    return text;
+}
+
+// Phase 20: os_process_launch starts a program and lets it go: its working directory, failures, nothing kept open, and
+// the retry inside a job that refuses breaking away.
+static b32 test_launch(Test *t) {
+    i32 procs0 = os_dev_live_processes(), events0 = os_dev_live_events(), ledger0 = os_dev_live_handles();
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p20", t->tmp_dir));
+    String8 sub = str8_fmt(&t->arena, "%S\\launch dir", dir);
+    os_make_dir(dir);
+    os_make_dir(sub);
+    String8 exe = os_dev_exe_path(&t->arena);
+    // Started in `dir`: the child writes a file by a relative path, which lands there only if that is its directory.
+    String8 here = str8_fmt(&t->arena, "%S\\launched.txt", sub);
+    os_file_delete(here);
+    String8 script = str8_fmt(&t->arena, "%S\\launch_write.txt", dir);
+    os_write_file(script, STR8_LIT("write launched.txt ok\n"));
+    u32 error = os_process_launch(&t->arena, exe, str8_fmt(&t->arena, "--child \"%S\"", script), sub, 0);
+    String8 how = os_dev_last_launch();
+    String8 wrote = test_wait_file(t, here, 10000, 2);
+    TEST_CHECK(t, !error && str8_equal(wrote, STR8_LIT("ok")), "launch: error %u, the file in its directory '%S'", error, wrote);
+    b32 outside = str8_equal(how, str8_fmt(&t->arena, "launch: %S started outside any job (breakaway)", exe));
+    b32 inside = str8_equal(how, str8_fmt(&t->arena, "launch: breakaway refused (error 5), %S started inside ronin's job", exe));
+    TEST_CHECK(t, outside || inside, "launch: logged '%S'", how);
+    LOG("test: launch: this process %s", outside ? "may break away from its job (or is in none)" : "is in a job that refuses breaking away");
+    // A program or a directory that does not exist: the Win32 error, nothing started.
+    error = os_process_launch(&t->arena, str8_fmt(&t->arena, "%S\\no_such_program.exe", dir), str8(NULL, 0), sub, 0);
+    TEST_CHECK(t, error == 2, "launch: a missing program gave error %u", error);
+    error = os_process_launch(&t->arena, exe, str8_fmt(&t->arena, "--child \"%S\"", script), str8_fmt(&t->arena, "%S\\no_such_dir", dir), 0);
+    TEST_CHECK(t, error == 267, "launch: a missing directory gave error %u", error);
+    // 100 launches keep nothing: the ledger and our processes exact, the process's real handle count not growing.
+    String8 quiet = str8_fmt(&t->arena, "%S\\launch_exit.txt", dir);
+    os_write_file(quiet, STR8_LIT("exit 0\n"));
+    String8 quiet_args = str8_fmt(&t->arena, "--child \"%S\"", quiet);
+    i32 handles_first = 0, failed = 0;
+    for (i32 i = 0; i < 100; i++) {
+        failed += os_process_launch(&t->arena, exe, quiet_args, dir, 0) != 0;
+        if (!i) handles_first = os_dev_handle_count();
+    }
+    TEST_CHECK(t, !failed && os_dev_live_handles() == ledger0 && os_dev_live_processes() == procs0 && os_dev_handle_count() <= handles_first,
+               "launch: 100 launches: %d failed, ledger %d -> %d, processes %d -> %d, handles %d -> %d", failed, ledger0,
+               os_dev_live_handles(), procs0, os_dev_live_processes(), handles_first, os_dev_handle_count());
+    // Inside a job that refuses breaking away (the Phase 13 job of a build): the retry starts it inside that job. The
+    // child launches a grandchild that writes a file by a relative path (the child's directory, inherited), and prints
+    // how it started; the job is closed only after the file is there.
+    String8 retried = str8_fmt(&t->arena, "%S\\retried.txt", dir);
+    os_file_delete(retried);
+    String8 grand = str8_fmt(&t->arena, "%S\\launch_grand.txt", dir);
+    os_write_file(grand, STR8_LIT("write retried.txt ok\n"));
+    String8 child = str8_fmt(&t->arena, "%S\\launch_child.txt", dir);
+    os_write_file(child, str8_fmt(&t->arena, "launch %S\n", grand));
+    OsProcess p;
+    OsFileStatus status = os_process_start_program(&t->arena, exe, str8_fmt(&t->arena, "--child \"%S\"", child), dir, str8(NULL, 0), &p);
+    String8 out = { 0 };
+    if (status == OS_FILE_OK) {
+        OsEvent cancel;
+        os_event_create(&cancel);
+        i64 cap = KB(64), n = 0;
+        u8 *buf = PUSH_ARRAY(&t->arena, u8, cap);
+        for (;;) {
+            i64 got = 0;
+            if (os_process_read(&p, cancel, 10000, buf + n, cap - n, &got) != OS_PROCESS_DATA) break;
+            n += got;
+        }
+        out = str8(buf, n);
+        wrote = test_wait_file(t, retried, 10000, 2);
+        os_process_wait(&p, 5000);
+        u32 code = os_process_exit_code(&p);
+        os_process_close(&p, 1);
+        os_event_destroy(cancel);
+        String8 want = str8_fmt(&t->arena, "launch: breakaway refused (error 5), %S started inside ronin's job\r\n", exe);
+        TEST_CHECK(t, code == 0 && str8_equal(out, want) && str8_equal(wrote, STR8_LIT("ok")),
+                   "launch: inside a job: exit %u, printed '%S', the grandchild's file '%S'", code, out, wrote);
+    }
+    TEST_CHECK(t, status == OS_FILE_OK, "launch: the job's child did not start (%d)", (i32)status);
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_events() == events0 && os_dev_live_handles() == ledger0,
+               "launch: counters back (%d processes, %d events, ledger %d -> %d)", os_dev_live_processes(), os_dev_live_events(), ledger0,
+               os_dev_live_handles());
+    LOG("test: ok: launch (its working directory, a missing program and directory, 100 launches keeping no handle, the breakaway "
+        "refused inside a job and the retry there)");
+    return 1;
+}
+
 // A match as text: "kind line:col [path] (num) {kind word} <project>", "-" for none.
 static String8 test_match_text(Arena *arena, String8 line, b32 ok, const CompileMatch *m) {
     if (!ok) return STR8_LIT("-");
@@ -14041,6 +14139,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_process_platform(&t);
     arena_reset(&t.arena);
     test_process_program(&t);
+    arena_reset(&t.arena);
+    test_launch(&t);
     arena_reset(&t.arena);
     test_compile_match(&t);
     arena_reset(&t.arena);

@@ -59,6 +59,8 @@ typedef struct Platform {
     volatile LONG live_events;         // os_event_create minus destroyed
     volatile LONG live_processes;      // os_process_start minus os_process_close
     volatile LONG live_handles;        // the ledger: kernel handles opened by the os_* layer and not closed
+    u8 last_launch[600];               // os_process_launch's last outcome (its log line), os_dev_last_launch
+    i64 last_launch_len;
     i32 exit_handles_window, exit_handles_frame; // the process's handles after the window was created, after the first frame
     OsDevHandleType exit_types[64];    // ... by type, after the window was created
     i32 exit_type_count;
@@ -1311,6 +1313,67 @@ OsFileStatus os_process_start_program(Arena *arena, String8 program, String8 arg
     return status;
 }
 
+u32 os_process_launch(Arena *arena, String8 program, String8 args, String8 dir, b32 new_console) {
+    if (!program.len) return ERROR_FILE_NOT_FOUND;
+    if (program.len + args.len + 4 > 32000) return ERROR_FILENAME_EXCED_RANGE;
+    u64 mark = arena_pos(arena);
+    String16 app = str16_from_str8(arena, program);
+    String16 args16 = str16_from_str8(arena, args);
+    String16 dir16 = str16_from_str8(arena, dir);
+    i64 line_cap = app.len + args16.len + 4;
+    // "<program>" <args>, as os_process_start_program.
+    WCHAR *line = PUSH_ARRAY(arena, WCHAR, line_cap);
+    i64 n = 0;
+    line[n++] = '"';
+    memcpy(line + n, app.data, sizeof(WCHAR) * (size_t)app.len);
+    n += app.len;
+    line[n++] = '"';
+    if (args16.len) {
+        line[n++] = ' ';
+        memcpy(line + n, args16.data, sizeof(WCHAR) * (size_t)args16.len);
+        n += args16.len;
+    }
+    line[n] = 0;
+    // Nothing inherited, no pipe, no job: the program is on its own. Out of ronin's job when that job allows it (a
+    // launcher's kill-on-close job would end it with ronin); once more inside it when breaking away is refused.
+    DWORD flags = (new_console ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW) | CREATE_DEFAULT_ERROR_MODE;
+    STARTUPINFOW si = { 0 };
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = { 0 };
+    b32 broke_away = 1;
+    BOOL ok = CreateProcessW((WCHAR *)app.data, line, NULL, NULL, FALSE, flags | CREATE_BREAKAWAY_FROM_JOB, NULL,
+                             dir.len ? (WCHAR *)dir16.data : NULL, &si, &pi);
+    DWORD error = ok ? 0 : GetLastError();
+    if (!ok && error == ERROR_ACCESS_DENIED) {
+        broke_away = 0;
+        ok = CreateProcessW((WCHAR *)app.data, line, NULL, NULL, FALSE, flags, NULL, dir.len ? (WCHAR *)dir16.data : NULL, &si, &pi);
+        error = ok ? 0 : GetLastError();
+    }
+    if (ok) {
+        WIN32_DEV_HANDLES(2); // the process and its thread, closed at once: ronin keeps nothing of it
+        win32_close(&pi.hThread);
+        win32_close(&pi.hProcess);
+    }
+#if RONIN_DEV
+    Platform *p = g_platform;
+    String8 text = !ok ? str8_fmt(arena, "launch: %S could not start: error %u", program, (u32)error)
+                 : broke_away ? str8_fmt(arena, "launch: %S started outside any job (breakaway)", program)
+                              : str8_fmt(arena, "launch: breakaway refused (error 5), %S started inside ronin's job", program);
+    p->last_launch_len = MIN(text.len, (i64)sizeof(p->last_launch));
+    memcpy(p->last_launch, text.data, (size_t)p->last_launch_len);
+    LOG("%S", text);
+#endif
+    arena_pop_to(arena, mark);
+    return ok ? 0 : (error ? (u32)error : (u32)ERROR_GEN_FAILURE);
+}
+
+String8 os_system_program(Arena *arena, String8 name) {
+    WCHAR sys[MAX_PATH];
+    UINT sys_len = GetSystemDirectoryW(sys, MAX_PATH);
+    if (!sys_len || sys_len >= MAX_PATH) return str8(NULL, 0);
+    return str8_fmt(arena, "%S\\%S", str8_from_str16(arena, (u16 *)sys, sys_len), name);
+}
+
 b32 os_find_program(Arena *arena, String8 name, String8 *path) {
     *path = str8(NULL, 0);
     u64 mark = arena_pos(arena);
@@ -1526,6 +1589,10 @@ b32 os_dev_reserved(void *base) {
 
 i32 os_dev_live_handles(void) {
     return (i32)InterlockedOr(&g_platform->live_handles, 0);
+}
+
+String8 os_dev_last_launch(void) {
+    return str8(g_platform->last_launch, g_platform->last_launch_len);
 }
 
 // The committed bytes of one os_reserve range: its regions while they belong to that allocation.
