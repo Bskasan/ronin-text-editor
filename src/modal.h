@@ -38,15 +38,20 @@ typedef struct ModalSpec {
     String8 name;                                    // "command list": "save-buffer is not available in the command list"
     Keymap *(*keymap)(App *app, void *data);         // its [keys ...] section, searched before the global keymap
     b32 field;                                       // a one-line text field at the top (a filter, a message ...)
+    b32 status_line;                                 // without a field: a top line holding only the status (left-aligned)
     i32 panes;                                       // lists side by side: 1 (command list) or 2 (Phase 19)
+    u32 scroll_panes;                                // a bit per pane without a selection: the movement commands scroll it,
+                                                     // accept gets its top row (a diff)
     i32 width_pct;                                   // of the frame's width; 0 = MODAL_WIDTH_PCT
     i32 height_pct;                                  // at most this much of the window area's height; 0 = MODAL_HEIGHT_PCT
     i32 pane_split_pct;                              // two panes: the left pane's share of the width; 0 = MODAL_PANE_SPLIT_PCT
     void *data;                                      // the owner's state
     void (*field_changed)(App *app, void *data, String8 text); // the field's text changed (also once at open)
     void (*accept)(App *app, void *data, i32 pane, i64 row);   // modal-accept (RET) or a double-click on a row
+    void (*selected)(App *app, void *data, i32 pane, i64 row); // a pane's selection moved (keys, a click); may be NULL
     void (*draw_row)(App *app, void *data, Renderer *r, ModalRow *row);
-    String8 (*status)(App *app, void *data, Arena *scratch);   // the right end of the field line ("12/137"), may be empty
+    String8 (*status)(App *app, void *data, Arena *scratch);   // the right end of the field line ("12/137"), or the status
+                                                               // line's text; may be empty
     void (*reload)(App *app, void *data);            // the config was applied again while open (bindings, colors)
     void (*closed)(App *app, void *data);            // it closed: C-g, ESC, a click outside, accept, a resize too small
 } ModalSpec;
@@ -55,7 +60,7 @@ typedef struct ModalSpec {
 typedef struct ModalGeometry {
     b32 fits;                // at least MODAL_MIN_COLS x MODAL_MIN_ROWS
     Rect box;
-    Rect field;              // the field line (empty without a field)
+    Rect field;              // the field line, or the status line (empty without either)
     Rect panes[MODAL_PANES_MAX];
     i32 rows;                // list rows shown in each pane
     i32 border;              // the frame's and the separators' width in pixels
@@ -87,7 +92,8 @@ void       modal_close(App *app);                       // closed() runs; the ar
 b32        modal_active(App *app);
 Arena     *modal_arena(App *app);                       // the owner's per-open memory; reset when it closes
 void       modal_set_data(App *app, void *data);       // the owner's state, when it lives in modal_arena (made after the open)
-void       modal_set_rows(App *app, i32 pane, i64 count); // selection back to 0, top to 0
+void       modal_set_rows(App *app, i32 pane, i64 count); // selection back to 0 (none in a scroll pane), top to 0
+void       modal_grow_rows(App *app, i32 pane, i64 count); // more rows came: the selection and the top stay
 ModalList *modal_list(App *app, i32 pane);
 i32        modal_focus_pane(App *app);                  // the pane the movement commands act on (modal-other-pane)
 void       modal_run_after_close(App *app, const Command *cmd); // accept: close, then cmd on the selected window's View

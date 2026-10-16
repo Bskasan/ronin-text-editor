@@ -19,14 +19,15 @@ static ModalGeometry modal_geometry(Modal *m, const ModalSpec *s, i64 rows_wante
     g.border = b;
     g.fits = cols >= MODAL_MIN_COLS && max_rows >= MODAL_MIN_ROWS;
     if (!g.fits) return g;
-    i32 field_h = s->field ? lh + b : 0; // the field line and the separator under it
+    b32 top_line = s->field || s->status_line;
+    i32 field_h = top_line ? lh + b : 0; // the field (or status) line and the separator under it
     i32 list_rows = (max_rows * lh - 2 * b - field_h) / lh;
     list_rows = (i32)MAX(MIN((i64)list_rows, MAX(rows_wanted, 1)), 1);
     i32 w = cols * cw, h = 2 * b + field_h + list_rows * lh;
     i32 x0 = (m->frame_w - w) / 2, y0 = MAX((area_h - h) / 2, 0);
     g.box = (Rect){ (f32)x0, (f32)y0, (f32)(x0 + w), (f32)(y0 + h) };
     i32 list_y = y0 + b + field_h;
-    if (s->field) g.field = (Rect){ (f32)(x0 + b), (f32)(y0 + b), (f32)(x0 + w - b), (f32)(y0 + b + lh) };
+    if (top_line) g.field = (Rect){ (f32)(x0 + b), (f32)(y0 + b), (f32)(x0 + w - b), (f32)(y0 + b + lh) };
     g.rows = list_rows;
     i32 inner_x = x0 + b, inner_w = w - 2 * b;
     if (s->panes > 1) {
@@ -110,11 +111,31 @@ Rect modal_rect(App *app) {
     return app->modal.g.box;
 }
 
+static b32 modal_scrolls(Modal *m, i32 pane) {
+    return (m->spec.scroll_panes >> pane) & 1;
+}
+
 void modal_set_rows(App *app, i32 pane, i64 count) {
     Modal *m = &app->modal;
     ModalList *l = modal_list(app, pane);
-    *l = (ModalList){ count, count ? 0 : -1, 0 };
+    *l = (ModalList){ count, count && !modal_scrolls(m, pane) ? 0 : -1, 0 };
     m->rows_high = MAX(m->rows_high, count);
+}
+
+void modal_grow_rows(App *app, i32 pane, i64 count) {
+    Modal *m = &app->modal;
+    ModalList *l = modal_list(app, pane);
+    if (count < l->count) return;
+    if (l->selected < 0 && count && !modal_scrolls(m, pane)) l->selected = 0;
+    l->count = count;
+    m->rows_high = MAX(m->rows_high, count);
+}
+
+// The owner hears of a selection that moved.
+static void modal_selection_moved(App *app, i32 pane, i64 before) {
+    Modal *m = &app->modal;
+    i64 now = m->lists[pane].selected;
+    if (m->active && now != before && now >= 0 && m->spec.selected) m->spec.selected(app, m->spec.data, pane, now);
 }
 
 b32 modal_open(App *app, const ModalSpec *spec) {
@@ -287,6 +308,7 @@ static void modal_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         modal_close(app);
         return;
     }
+    if (m->spec.status_line && !m->spec.field && modal_inside(g->field, x, y)) return; // the status line: nothing
     if (m->spec.field && modal_inside(g->field, x, y)) {
         View *v = &m->field_view;
         view_deactivate_mark(v);
@@ -298,11 +320,21 @@ static void modal_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         if (!modal_inside(g->panes[p], x, y)) continue;
         ModalList *list = &m->lists[p];
         i64 row = list->top + (i64)((y - (i32)g->panes[p].y0) / MAX(l->line_h, 1));
+        if (modal_scrolls(m, p)) { // no selection: the click focuses it; a double click accepts its row
+            m->focus = p;
+            if (clicks == 2 && m->spec.accept) {
+                m->spec.accept(app, m->spec.data, p, row);
+                modal_after(app);
+            }
+            return;
+        }
         if (row >= list->count) return;
         m->focus = p;
+        i64 before = list->selected;
         list->selected = row;
         modal_list_show(list, g->rows);
-        if (clicks == 2 && m->spec.accept) {
+        modal_selection_moved(app, p, before);
+        if (clicks == 2 && m->spec.accept && m->active) {
             m->spec.accept(app, m->spec.data, p, row);
             modal_after(app);
         }
@@ -361,6 +393,13 @@ static void modal_draw(App *app, Renderer *r, AppLayout *l, FrameInput *in) {
     r_set_clip(r, box);
     modal_fill(r, box, th->modal_border);
     modal_fill(r, (Rect){ box.x0 + b, box.y0 + b, box.x1 - b, box.y1 - b }, th->modal_background);
+    if (m->spec.status_line && !m->spec.field) { // the status alone, from the left
+        Rect f = g->field;
+        modal_fill(r, (Rect){ f.x0, f.y1, f.x1, f.y1 + b }, th->modal_border);
+        r_set_clip(r, f);
+        String8 status = m->spec.status ? m->spec.status(app, m->spec.data, in->scratch) : str8(NULL, 0);
+        if (status.len) font_draw_text(app->font, r, (i32)f.x0 + l->pad, (i32)f.y0, status, COLOR_HEX(th->modal_description));
+    }
     if (m->spec.field) {
         Rect f = g->field;
         modal_fill(r, (Rect){ f.x0, f.y1, f.x1, f.y1 + b }, th->modal_border);
@@ -410,8 +449,14 @@ static void modal_move(CommandContext *ctx, i32 pages, i32 rows) {
     ModalList *l = &m->lists[m->focus];
     if (!l->count) return;
     i64 by = pages ? (i64)pages * MAX(m->g.rows, 1) : rows;
+    if (modal_scrolls(m, m->focus)) { // no selection: the rows scroll, the last page stays full
+        l->top = CLAMP(l->top + by, 0, MAX(l->count - m->g.rows, 0));
+        return;
+    }
+    i64 before = l->selected;
     l->selected = CLAMP(l->selected + by, 0, l->count - 1);
     modal_list_show(l, m->g.rows);
+    modal_selection_moved(ctx->app, m->focus, before);
 }
 
 static void cmd_modal_next(CommandContext *ctx) { modal_move(ctx, 0, 1); }
@@ -423,7 +468,9 @@ static void cmd_modal_accept(CommandContext *ctx) {
     Modal *m = modal_of(ctx);
     if (!m) return;
     ModalList *l = &m->lists[m->focus];
-    if (l->selected >= 0 && l->selected < l->count && m->spec.accept) m->spec.accept(ctx->app, m->spec.data, m->focus, l->selected);
+    if (!m->spec.accept) return;
+    if (modal_scrolls(m, m->focus)) m->spec.accept(ctx->app, m->spec.data, m->focus, l->top); // its top row (maybe none yet)
+    else if (l->selected >= 0 && l->selected < l->count) m->spec.accept(ctx->app, m->spec.data, m->focus, l->selected);
 }
 
 static void cmd_modal_other_pane(CommandContext *ctx) {
