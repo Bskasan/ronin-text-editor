@@ -28,6 +28,7 @@
 #include "cursors.h"
 #include "modal.h"
 #include "git_changes.h"
+#include "terminal.h"
 
 #include "base.c"
 #include "png.c"
@@ -69,6 +70,9 @@
 #include "modal.c"
 #include "commands_list.c"
 #include "git_changes.c"
+#pragma optimize("s", on)
+#include "terminal.c"
+#pragma optimize("", on)
 #pragma optimize("s", on)
 #include "cursors.c"
 #pragma optimize("", on)

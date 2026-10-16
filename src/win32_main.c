@@ -153,6 +153,7 @@ typedef struct Platform {
     u32 compile_wait_ms;  // --compile-wait MS: a screenshot run waits up to MS for running builds to end
     String8 child_script; // --child: run this script (win32_child.c) and exit: the tests' scripted program
     String8 fake_git_dir, fake_git_args; // --fake-git DIR ARGS...: the tests' git (win32_child.c)
+    String8 fake_terminal_dir;           // --fake-terminal DIR PROGRAM CONSOLE ARGS...: the tests' terminal (win32_child.c)
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
     u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
     Event last_key_event; // the last of them
@@ -1595,6 +1596,11 @@ String8 os_dev_last_launch(void) {
     return str8(g_platform->last_launch, g_platform->last_launch_len);
 }
 
+b32 os_dev_batch_run(void) {
+    Platform *p = g_platform;
+    return p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p);
+}
+
 // The committed bytes of one os_reserve range: its regions while they belong to that allocation.
 static u64 win32_dev_reservation_committed(void *base) {
     u64 committed = 0;
@@ -1828,6 +1834,7 @@ static void win32_push_event(Platform *p, Event e);
 static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
 static i32 win32_dev_child(Platform *p, String8 script); // win32_child.c
 static i32 win32_dev_fake_git(Platform *p, String8 dir, String8 args); // win32_child.c
+static i32 win32_dev_fake_terminal(Platform *p, String8 dir);          // win32_child.c
 static u64 win32_dev_hash(String8 s);
 static void win32_dev_idle_check_mark(Platform *p, b32 end);
 static void win32_dev_memory_report(Platform *p);
@@ -6805,6 +6812,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             p->fake_git_args = rest;
             break;
         }
+        if (str8_equal(a, STR8_LIT("--fake-terminal")) && has_value) { // the rest is read raw from the command line
+            p->fake_terminal_dir = args[++i];
+            break;
+        }
         if (str8_equal(a, STR8_LIT("--compile-wait")) && has_value) { p->compile_wait_ms = (u32)win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
@@ -6847,6 +6858,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // window.
     if (p->child_script.len) return bad_arg.len ? EXIT_USAGE : win32_dev_child(p, p->child_script);
     if (p->fake_git_dir.len) return bad_arg.len ? EXIT_USAGE : win32_dev_fake_git(p, p->fake_git_dir, p->fake_git_args);
+    if (p->fake_terminal_dir.len) return bad_arg.len ? EXIT_USAGE : win32_dev_fake_terminal(p, p->fake_terminal_dir);
 #endif
 
 #if RONIN_DEV
