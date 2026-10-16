@@ -182,6 +182,7 @@ b32 app_wake(App *app) {
             i++;
         }
     }
+    frame |= git_changes_wake(app); // the git changes view's jobs
     return results_wake(app) || frame; // the searches' records (and the files a search follows)
 }
 

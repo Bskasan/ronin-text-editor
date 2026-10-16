@@ -95,6 +95,7 @@ struct App {
     String8 compile_next_key, compile_next_command, compile_next_dir, compile_next_root;
     b32 results_pending;         // results work can go on at once: another frame
     Modal modal;                 // modal.c: a box over the windows (the command list); while open it takes every event
+    GitChanges git;              // git_changes.c: the git changes view's jobs (C-x g)
 #if RONIN_DEV
     i32 dev_grep_hold_after;     // --grep-hold N: every search's workers stand still after N files until released
     b32 dev_grep_stuck_next;     // the next search's workers are stuck in the "file system" (shutdown tests)
@@ -131,6 +132,12 @@ static void modal_wheel(App *app, i32 x, i32 y, i32 wheel);
 static void modal_config_applied(App *app);
 static i32  modal_shutdown(App *app);
 static void modal_draw(App *app, Renderer *r, AppLayout *l, FrameInput *in);
+
+// git_changes.c: the git changes view.
+static b32  git_changes_wake(App *app);
+static b32  git_changes_work(App *app, u64 deadline, i64 budget);
+static void git_changes_quit(App *app);
+static void git_changes_shutdown(App *app, u64 deadline);
 
 static View *app_selected_view(App *app) {
     return app->windows.nodes[app->windows.selected].view;
@@ -363,6 +370,29 @@ static void app_draw_buffer_line(App *app, Renderer *r, Buffer *buf, i64 line, i
         col++;
     }
     if (i > run) font_draw_text(app->font, r, x0 + (i32)(run_col - left) * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(run_rgb));
+}
+
+// A line of text that is not in a buffer (a diff in the git changes view) drawn as a buffer line is: tabs to their
+// stops, control characters in caret notation; its first `cols` columns, in one color.
+static void app_draw_text_line(App *app, Renderer *r, String8 s, i32 x0, i32 y, i64 cols, i32 tab_width, u32 rgb) {
+    i32 cell_w = app->font->cell_w;
+    i64 col = 0, run = 0, run_col = 0, i = 0;
+    while (i < s.len && col < cols) {
+        u8 b = s.data[i];
+        if (b == '\t' || view_is_control(b)) {
+            if (i > run) font_draw_text(app->font, r, x0 + (i32)run_col * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(rgb));
+            if (b != '\t') app_draw_caret(app, r, x0, y, col, 0, cols, b, COLOR_HEX(app->config->theme.number));
+            col += view_char_width(b, col, tab_width);
+            run = ++i;
+            run_col = col;
+            continue;
+        }
+        i64 advance = 1;
+        if (b >= 0x80) utf8_decode(s.data + i, s.len - i, &advance);
+        i += advance;
+        col++;
+    }
+    if (i > run) font_draw_text(app->font, r, x0 + (i32)run_col * cell_w, y, str8(s.data + run, i - run), COLOR_HEX(rgb));
 }
 
 // The cell rect of a cursor, or false when it is outside the window's first `rows` rows (only the
@@ -1202,6 +1232,7 @@ i32 app_shutdown(App *app) {
     results_cancel_all(app);
     finder_shutdown(app, deadline);
     results_shutdown(app, deadline);
+    git_changes_shutdown(app, deadline);
     i32 leaks = app->font ? font_shutdown(app->font) : 0;
     View *views[WINDOW_MAX];
     for (i32 i = 0, n = app_views(app, views); i < n; i++) view_destroy(views[i]);
@@ -1934,6 +1965,7 @@ static void app_key_event(App *app, Event *e) {
     KeyResult k;
     key_input_feed(&app->keys, stack, count, e, &k);
     if (k.kind != KEY_RESULT_IGNORED && k.kind != KEY_RESULT_DROPPED) app->landing_buffer = NULL; // the landing highlight: until this key
+    if (k.command && (k.command->flags & COMMAND_QUIT)) git_changes_quit(app); // C-g: a C-x g still waiting for git is dropped
 #if RONIN_DEV
     if (app->dev_log_keys) app_dev_log_key(app, e, &k, isearch, replacing);
 #endif
@@ -2038,7 +2070,7 @@ static void app_catch_up(App *app, Arena *scratch, u64 end) {
 }
 
 b32 app_wants_frame(App *app) {
-    return app->syntax_pending || app->search_pending || app->rank_pending || app->results_pending;
+    return app->syntax_pending || app->search_pending || app->rank_pending || app->results_pending || app->git.work_pending;
 }
 
 u32 app_wait_ms(App *app) {
@@ -2131,6 +2163,7 @@ static b32 app_update(App *app, FrameInput *in) {
         input |= k == EVENT_KEY_DOWN || k == EVENT_TEXT || k == EVENT_MOUSE_DOWN || k == EVENT_MOUSE_WHEEL;
     }
     app->results_pending = input ? results_running(app) : results_work(app, deadline, rank_budget);
+    if (!input) app->git.work_pending = git_changes_work(app, deadline, rank_budget); // a diff copied into the git changes view
     app_normalize_views(app, in->scratch); // the results' work may have moved the points of the windows that follow it
     // A command may have changed the font (text scale, config): lay out again.
     l = app_layout(app, in);

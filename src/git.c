@@ -56,6 +56,14 @@ void git_parse_status(Arena *arena, String8 raw, i64 max_files, GitStatus *out) 
         while (end < raw.len && raw.data[end]) end++;
         String8 rec = str8(raw.data + at, end - at);
         at = end + 1;
+        // stderr shares the pipe: a warning ("warning: in the working copy of 'x', LF will be replaced by CRLF ...")
+        // ends with a newline, which no record holds on Windows; the record is what follows the last one.
+        for (i64 i = rec.len; i > 0; i--) {
+            if (rec.data[i - 1] == '\n') {
+                rec = str8(rec.data + i, rec.len - i);
+                break;
+            }
+        }
         if (rec.len >= 3 && rec.data[0] == '#' && rec.data[1] == '#' && rec.data[2] == ' ') {
             git_parse_branch(rec, out);
             continue;
@@ -138,6 +146,7 @@ void git_parse_diff(Arena *arena, String8 raw, i64 max_lines, GitDiff *out) {
         } else {
             i64 old_count, new_start, new_count;
             old_left = new_left = 0;
+            if (git_starts(line, "warning: ")) continue; // git's stderr in the shared pipe (CRLF conversion ...): not the diff
             if (git_starts(line, "@@ ") && git_parse_hunk(line, &old_count, &new_start, &new_count)) {
                 kind = GIT_LINE_HUNK;
                 old_left = old_count;
