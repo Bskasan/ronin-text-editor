@@ -14292,6 +14292,13 @@ static u64 soak_settle(Soak *s, i32 initial_buffers) {
     soak_tidy(s, initial_buffers);
     soak_keys(s, STR8_LIT("C-x 1"), 0);
     soak_feed(s, NULL, 0);
+    // A project search still running (or cancelled with its buffer and still ending) is not settled: its workers would
+    // count in the sample (threads, events, the ledger). 10 s at most.
+    u64 deadline = os_time_us() + 10000000;
+    while ((app_dev_results_busy(s->app) || app_dev_git_busy(s->app)) && os_time_us() < deadline) {
+        if (os_dev_wake_wait(app_wants_frame(s->app) ? 0 : 5)) app_wake(s->app);
+        soak_feed(s, NULL, 0);
+    }
     return os_dev_private_bytes();
 }
 
@@ -14683,6 +14690,16 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             per = soak_probe(&s);
             LOG("soak:   settled: private bytes %U KB; undo logs %U KB, kill ring %U KB; the probe %U ns an event", settled >> 10,
                 undo >> 10, app->kills.small_committed >> 10, per);
+            {
+                OsDevMetrics dm;
+                OsDevMemoryOwners ow;
+                os_dev_metrics(&dm);
+                os_dev_memory_owners(&ow);
+                LOG("soak:   by owner: our arenas %U KB, heaps %U KB, stacks %U KB, other %U KB, image pages %U KB, views %U KB; "
+                    "worker thread slots %d (at most %d)",
+                    ow.arenas >> 10, ow.heaps >> 10, ow.stacks >> 10, ow.other >> 10, ow.image_w >> 10, ow.mapped_w >> 10, dm.worker_slots,
+                    dm.worker_slots_max);
+            }
             // The undo logs grow up to their limit (undo_limit_mb a buffer): the rest is what must stay flat.
             settled = settled > undo ? settled - undo : 0;
             if (checkpoints < SOAK_CHECKPOINTS) soak_sample(metrics[checkpoints++], settled, undo, &slots_max);
