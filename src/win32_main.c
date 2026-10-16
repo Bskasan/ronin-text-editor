@@ -1082,38 +1082,15 @@ static void win32_close(HANDLE *h) {
     *h = NULL;
 }
 
-OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p) {
-    memset(p, 0, sizeof(*p));
+// The child of os_process_start and os_process_start_program: `app` run with the command line `line` in `dir`, its
+// environment `env` (a UTF-16 block; NULL: ronin's), in a job, its output in one pipe. Temporary memory in `arena`.
+static OsFileStatus win32_process_spawn(Arena *arena, WCHAR *app, WCHAR *line, String8 dir, WCHAR *env, OsProcess *p) {
     static volatile LONG pipe_counter;
-    u64 mark = arena_pos(arena);
     HANDLE job = NULL, server = NULL, client = NULL, nul = NULL, io_event = NULL;
     LPPROC_THREAD_ATTRIBUTE_LIST list = NULL;
     OsFileStatus status = OS_FILE_OK;
     PROCESS_INFORMATION pi = { 0 };
-    // The command line: "<system>\cmd.exe" /s /c "<command>" (no search of PATH or the current
-    // directory for cmd itself).
-    WCHAR sys[MAX_PATH];
-    UINT sys_len = GetSystemDirectoryW(sys, MAX_PATH);
-    String16 cmd16 = str16_from_str8(arena, command);
     String16 dir16 = str16_from_str8(arena, dir);
-    i64 line_cap = (i64)sys_len + cmd16.len + 32;
-    if (!sys_len || sys_len >= MAX_PATH - 16 || line_cap > 32000) {
-        status = sys_len ? OS_FILE_TOO_LARGE : OS_FILE_IO_ERROR;
-        goto done;
-    }
-    WCHAR *app = PUSH_ARRAY(arena, WCHAR, sys_len + 16);
-    memcpy(app, sys, sizeof(WCHAR) * sys_len);
-    memcpy(app + sys_len, L"\\cmd.exe", sizeof(L"\\cmd.exe"));
-    WCHAR *line = PUSH_ARRAY(arena, WCHAR, line_cap);
-    i64 n = 0;
-    line[n++] = '"';
-    for (WCHAR *c = app; *c; c++) line[n++] = *c;
-    static const WCHAR mid[] = L"\" /s /c \"";
-    for (i32 i = 0; mid[i]; i++) line[n++] = mid[i];
-    memcpy(line + n, cmd16.data, sizeof(WCHAR) * (size_t)cmd16.len);
-    n += cmd16.len;
-    line[n++] = '"';
-    line[n] = 0;
     // One pipe for stdout and stderr: a named pipe, so the reader can wait on it together with the process and
     // a cancel (anonymous pipes have no overlapped reads). Local only, one instance, a unique name.
     WCHAR name[96];
@@ -1173,7 +1150,7 @@ OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProc
     si.lpAttributeList = list;
     // Suspended until it is in the job, so nothing it starts can escape the job.
     DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
-    if (!CreateProcessW(app, line, NULL, NULL, TRUE, flags, NULL, dir.len ? (WCHAR *)dir16.data : NULL, &si.StartupInfo, &pi)) {
+    if (!CreateProcessW(app, line, NULL, NULL, TRUE, flags, env, dir.len ? (WCHAR *)dir16.data : NULL, &si.StartupInfo, &pi)) {
         DWORD error = GetLastError();
         status = error == ERROR_DIRECTORY ? OS_FILE_NOT_FOUND : win32_file_status(error);
         goto done;
@@ -1205,14 +1182,188 @@ done:
     win32_close(&server);
     win32_close(&io_event);
     win32_close(&job);
+    return status;
+}
+
+OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p) {
+    memset(p, 0, sizeof(*p));
+    u64 mark = arena_pos(arena);
+    // The command line: "<system>\cmd.exe" /s /c "<command>" (no search of PATH or the current
+    // directory for cmd itself).
+    WCHAR sys[MAX_PATH];
+    UINT sys_len = GetSystemDirectoryW(sys, MAX_PATH);
+    String16 cmd16 = str16_from_str8(arena, command);
+    i64 line_cap = (i64)sys_len + cmd16.len + 32;
+    OsFileStatus status;
+    if (!sys_len || sys_len >= MAX_PATH - 16 || line_cap > 32000) {
+        status = sys_len ? OS_FILE_TOO_LARGE : OS_FILE_IO_ERROR;
+    } else {
+        WCHAR *app = PUSH_ARRAY(arena, WCHAR, sys_len + 16);
+        memcpy(app, sys, sizeof(WCHAR) * sys_len);
+        memcpy(app + sys_len, L"\\cmd.exe", sizeof(L"\\cmd.exe"));
+        WCHAR *line = PUSH_ARRAY(arena, WCHAR, line_cap);
+        i64 n = 0;
+        line[n++] = '"';
+        for (WCHAR *c = app; *c; c++) line[n++] = *c;
+        static const WCHAR mid[] = L"\" /s /c \"";
+        for (i32 i = 0; mid[i]; i++) line[n++] = mid[i];
+        memcpy(line + n, cmd16.data, sizeof(WCHAR) * (size_t)cmd16.len);
+        n += cmd16.len;
+        line[n++] = '"';
+        line[n] = 0;
+        status = win32_process_spawn(arena, app, line, dir, NULL, p);
+    }
     arena_pop_to(arena, mark);
     return status;
 }
 
-// One overlapped read of the pipe, waiting also on `others` (the process, the cancel event). Returns the
-// index of what ended the wait: 0 the read (*got bytes, 0 = the pipe is broken), 1 + i others[i]; -1 error.
-// Whatever ended it, no read is left in flight.
-static i32 win32_process_read_wait(OsProcess *p, HANDLE *others, i32 other_count, void *dst, DWORD cap, i64 *got) {
+// An ASCII case-insensitive comparison of an environment entry's name (up to its '=', past a leading one: "=C:=C:\")
+// with `name`.
+static b32 win32_env_name_is(const WCHAR *entry, const WCHAR *name, i64 name_len) {
+    i64 i = 0;
+    for (; i < name_len; i++) {
+        WCHAR a = entry[i], b = name[i];
+        if (!a) return 0;
+        if (a >= 'a' && a <= 'z') a = (WCHAR)(a - 32);
+        if (b >= 'a' && b <= 'z') b = (WCHAR)(b - 32);
+        if (a != b) return 0;
+    }
+    return entry[i] == '=' && i > 0;
+}
+
+// ronin's environment with the "NAME=VALUE" lines of `extra` laid over it (a same-named variable replaced), as a
+// UTF-16 block in `arena`; NULL when `extra` is empty (the child inherits ronin's) or on failure.
+static WCHAR *win32_env_block(Arena *arena, String8 extra) {
+    if (!extra.len) return NULL;
+    String16 extra16 = str16_from_str8(arena, extra);
+    WCHAR *base = GetEnvironmentStringsW();
+    if (!base) return NULL;
+    i64 base_len = 0;
+    while (base[base_len] || base[base_len + 1]) base_len++;
+    base_len += 2;
+    WCHAR *block = PUSH_ARRAY(arena, WCHAR, base_len + extra16.len + 2);
+    i64 n = 0;
+    for (const WCHAR *e = base; *e;) {
+        i64 len = 0;
+        while (e[len]) len++;
+        b32 replaced = 0;
+        for (i64 i = 0; i < extra16.len && !replaced;) {
+            i64 j = i, eq = -1;
+            while (j < extra16.len && extra16.data[j] != '\n') {
+                if (eq < 0 && extra16.data[j] == '=' && j > i) eq = j;
+                j++;
+            }
+            if (eq > i) replaced = win32_env_name_is(e, (const WCHAR *)extra16.data + i, eq - i);
+            i = j + 1;
+        }
+        if (!replaced) {
+            memcpy(block + n, e, sizeof(WCHAR) * (size_t)(len + 1));
+            n += len + 1;
+        }
+        e += len + 1;
+    }
+    FreeEnvironmentStringsW(base);
+    for (i64 i = 0; i < extra16.len;) {
+        i64 j = i;
+        while (j < extra16.len && extra16.data[j] != '\n') j++;
+        if (j > i) {
+            memcpy(block + n, extra16.data + i, sizeof(WCHAR) * (size_t)(j - i));
+            n += j - i;
+            block[n++] = 0;
+        }
+        i = j + 1;
+    }
+    block[n++] = 0;
+    if (n == 1) block[n++] = 0; // an empty block is two NULs
+    return block;
+}
+
+OsFileStatus os_process_start_program(Arena *arena, String8 program, String8 args, String8 dir, String8 env_extra, OsProcess *p) {
+    memset(p, 0, sizeof(*p));
+    u64 mark = arena_pos(arena);
+    String16 app = str16_from_str8(arena, program);
+    String16 args16 = str16_from_str8(arena, args);
+    i64 line_cap = app.len + args16.len + 4;
+    OsFileStatus status;
+    if (!program.len) {
+        status = OS_FILE_NOT_FOUND;
+    } else if (line_cap > 32000) {
+        status = OS_FILE_TOO_LARGE;
+    } else {
+        // "<program>" <args>: the program quoted as the child's argv[0].
+        WCHAR *line = PUSH_ARRAY(arena, WCHAR, line_cap);
+        i64 n = 0;
+        line[n++] = '"';
+        memcpy(line + n, app.data, sizeof(WCHAR) * (size_t)app.len);
+        n += app.len;
+        line[n++] = '"';
+        if (args16.len) {
+            line[n++] = ' ';
+            memcpy(line + n, args16.data, sizeof(WCHAR) * (size_t)args16.len);
+            n += args16.len;
+        }
+        line[n] = 0;
+        status = win32_process_spawn(arena, (WCHAR *)app.data, line, dir, win32_env_block(arena, env_extra), p);
+    }
+    arena_pop_to(arena, mark);
+    return status;
+}
+
+b32 os_find_program(Arena *arena, String8 name, String8 *path) {
+    *path = str8(NULL, 0);
+    u64 mark = arena_pos(arena);
+    DWORD cap = GetEnvironmentVariableW(L"PATH", NULL, 0);
+    if (!cap) return 0;
+    WCHAR *env = PUSH_ARRAY(arena, WCHAR, cap + 1);
+    u64 env_pos = arena_pos(arena) - (u64)(cap + 1) * sizeof(WCHAR);
+    DWORD len = GetEnvironmentVariableW(L"PATH", env, cap);
+    if (!len || len >= cap) {
+        arena_pop_to(arena, mark);
+        return 0;
+    }
+    String16 name16 = str16_from_str8(arena, name);
+    WCHAR *full = PUSH_ARRAY(arena, WCHAR, len + name16.len + 4);
+    b32 found = 0;
+    i64 full_len = 0;
+    for (DWORD i = 0; i < len && !found;) {
+        DWORD j = i;
+        while (j < len && env[j] != ';') j++;
+        DWORD a = i, b = j;
+        while (a < b && env[a] == ' ') a++;
+        if (b > a + 1 && env[a] == '"' && env[b - 1] == '"') { // a quoted entry
+            a++;
+            b--;
+        }
+        if (b > a) { // never the current directory: only what PATH names
+            i64 n = 0;
+            memcpy(full, env + a, sizeof(WCHAR) * (b - a));
+            n = b - a;
+            if (full[n - 1] != '\\' && full[n - 1] != '/') full[n++] = '\\';
+            memcpy(full + n, name16.data, sizeof(WCHAR) * (size_t)name16.len);
+            n += name16.len;
+            full[n] = 0;
+            full_len = n;
+            DWORD attributes = GetFileAttributesW(full);
+            found = attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+        }
+        i = j + 1;
+    }
+    if (!found) {
+        arena_pop_to(arena, mark);
+        return 0;
+    }
+    // The UTF-8 path where the temporaries were.
+    String8 result = str8_from_str16(arena, (u16 *)full, full_len);
+    memmove(env, result.data, (size_t)result.len);
+    arena_pop_to(arena, env_pos + (u64)result.len);
+    *path = str8((u8 *)env, result.len);
+    return 1;
+}
+
+// One overlapped read of the pipe, waiting also on `others` (the process, the cancel event), at most `wait_ms`.
+// Returns the index of what ended the wait: 0 the read (*got bytes, 0 = the pipe is broken), 1 + i others[i]; -1
+// error; -2 the timeout. Whatever ended it, no read is left in flight.
+static i32 win32_process_read_wait(OsProcess *p, HANDLE *others, i32 other_count, void *dst, DWORD cap, i64 *got, DWORD wait_ms) {
     *got = 0;
     OVERLAPPED ov = { 0 };
     ov.hEvent = p->io_event;
@@ -1228,30 +1379,34 @@ static i32 win32_process_read_wait(OsProcess *p, HANDLE *others, i32 other_count
     if (error != ERROR_IO_PENDING) return -1;
     HANDLE handles[4] = { p->io_event };
     for (i32 i = 0; i < other_count; i++) handles[1 + i] = others[i];
-    DWORD w = WaitForMultipleObjects((DWORD)(1 + other_count), handles, FALSE, INFINITE);
-    i32 which = w >= WAIT_OBJECT_0 && w < WAIT_OBJECT_0 + 1 + (DWORD)other_count ? (i32)(w - WAIT_OBJECT_0) : -1;
+    DWORD w = WaitForMultipleObjects((DWORD)(1 + other_count), handles, FALSE, wait_ms);
+    i32 which = w == WAIT_TIMEOUT ? -2 : w >= WAIT_OBJECT_0 && w < WAIT_OBJECT_0 + 1 + (DWORD)other_count ? (i32)(w - WAIT_OBJECT_0) : -1;
     if (which != 0) CancelIoEx(p->pipe, &ov);
     // The read is complete, or cancelled (it may still have taken bytes before the cancel: they count).
     if (GetOverlappedResult(p->pipe, &ov, &n, TRUE)) *got = n;
     else if (GetLastError() != ERROR_BROKEN_PIPE && GetLastError() != ERROR_OPERATION_ABORTED && which == 0) return -1;
+    if (which == -2 && *got) return 0; // bytes came in at the last moment: they are output
     return which;
 }
 
-OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, void *dst, i64 cap, i64 *got) {
+OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, u32 idle_ms, void *dst, i64 cap, i64 *got) {
     *got = 0;
     DWORD c = (DWORD)MIN(cap, (i64)MB(64));
+    DWORD wait_ms = idle_ms ? idle_ms : INFINITE;
     if (WaitForSingleObject(cancel.handle, 0) == WAIT_OBJECT_0) {
         SetEvent(cancel.handle); // auto-reset: left set for the caller's next look
         return OS_PROCESS_CANCELLED;
     }
     while (!p->exited) {
         HANDLE others[2] = { p->process, cancel.handle };
-        i32 which = win32_process_read_wait(p, others, 2, dst, c, got);
+        i32 which = win32_process_read_wait(p, others, 2, dst, c, got, wait_ms);
+        if (which == -2) return OS_PROCESS_TIMEOUT;
         if (which == 0) {
             if (*got) return OS_PROCESS_DATA;
             // Every writer closed the pipe: cmd.exe is ending (or closed its output); its end is the build's.
             HANDLE ends[2] = { p->process, cancel.handle };
-            DWORD w = WaitForMultipleObjects(2, ends, FALSE, INFINITE);
+            DWORD w = WaitForMultipleObjects(2, ends, FALSE, wait_ms);
+            if (w == WAIT_TIMEOUT) return OS_PROCESS_TIMEOUT;
             if (w == WAIT_OBJECT_0 + 1) {
                 SetEvent(cancel.handle);
                 return OS_PROCESS_CANCELLED;
@@ -1271,7 +1426,8 @@ OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, void *dst, i64 cap, 
     DWORD avail = 0;
     if (!PeekNamedPipe(p->pipe, NULL, 0, NULL, &avail, NULL) || !avail) return OS_PROCESS_EXITED;
     HANDLE others[1] = { cancel.handle };
-    i32 which = win32_process_read_wait(p, others, 1, dst, MIN(c, avail), got);
+    i32 which = win32_process_read_wait(p, others, 1, dst, MIN(c, avail), got, wait_ms);
+    if (which == -2) return OS_PROCESS_TIMEOUT;
     if (which == 1) {
         SetEvent(cancel.handle);
         return OS_PROCESS_CANCELLED;
@@ -1539,6 +1695,16 @@ String8 os_dev_exe_path(Arena *arena) {
     WCHAR path[MAX_PATH * 2];
     DWORD n = GetModuleFileNameW(NULL, path, ARRAY_COUNT(path));
     return n && n < ARRAY_COUNT(path) ? str8_from_str16(arena, (u16 *)path, n) : str8(NULL, 0);
+}
+
+b32 os_dev_set_env(String8 name, String8 value, b32 unset) {
+    Arena *scratch = &g_platform->scratch;
+    u64 mark = arena_pos(scratch);
+    WCHAR *name16 = (WCHAR *)str16_from_str8(scratch, name).data;
+    WCHAR *value16 = unset ? NULL : (WCHAR *)str16_from_str8(scratch, value).data;
+    b32 ok = SetEnvironmentVariableW(name16, value16) != 0;
+    arena_pop_to(scratch, mark);
+    return ok;
 }
 
 // A directory junction (a mount point reparse point), as mklink /J makes it: no admin rights needed.

@@ -11,6 +11,7 @@
 //   flood BYTES               numbered lines in 64 KB writes; every 64th an MSVC warning on flood.c
 //   cwd                       the working directory and CRLF
 //   write PATH TEXT           PATH rewritten with TEXT (escapes), as a build that regenerates a file
+//   env NAME                  the value of every environment entry named NAME (any case), each with CRLF; "(unset)"
 //
 // An unknown line ends it with exit code 98.
 
@@ -143,6 +144,24 @@ static i32 win32_dev_child(Platform *p, String8 script) {
             while (s2 < arg.len && arg.data[s2] != ' ') s2++;
             String8 path = str8(arg.data, s2), body = s2 < arg.len ? str8(arg.data + s2 + 1, arg.len - s2 - 1) : str8(NULL, 0);
             if (!os_write_file(path, str8(buf, win32_child_unescape(body, buf)))) return 95;
+        } else if (str8_equal(cmd, STR8_LIT("env"))) {
+            WCHAR *block = GetEnvironmentStringsW();
+            i32 found = 0;
+            for (const WCHAR *e = block; e && *e;) {
+                i64 len = 0;
+                while (e[len]) len++;
+                String8 entry = str8_from_str16(arena, (u16 *)e, len);
+                e += len + 1;
+                if (entry.len <= arg.len || entry.data[arg.len] != '=') continue;
+                b32 same = 1;
+                for (i64 k = 0; k < arg.len && same; k++) same = unicode_lower(entry.data[k]) == unicode_lower(arg.data[k]);
+                if (!same) continue;
+                win32_child_write(STD_OUTPUT_HANDLE, entry.data + arg.len + 1, entry.len - arg.len - 1);
+                win32_child_write(STD_OUTPUT_HANDLE, (const u8 *)"\r\n", 2);
+                found++;
+            }
+            if (block) FreeEnvironmentStringsW(block);
+            if (!found) win32_child_write(STD_OUTPUT_HANDLE, (const u8 *)"(unset)\r\n", 9);
         } else {
             static const u8 msg[] = "child: unknown line\r\n";
             win32_child_write(STD_ERROR_HANDLE, msg, sizeof(msg) - 1);

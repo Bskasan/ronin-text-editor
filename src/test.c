@@ -10826,7 +10826,7 @@ static TestProcRun test_proc_run(Test *t, String8 command, String8 dir, const ch
     for (;;) {
         u8 chunk[4096];
         i64 got = 0;
-        OsProcessRead r = os_process_read(&p, cancel, chunk, sizeof(chunk), &got);
+        OsProcessRead r = os_process_read(&p, cancel, 0, chunk, sizeof(chunk), &got);
         if (r == OS_PROCESS_DATA) {
             i64 take = MIN(got, cap - n);
             memcpy(out + n, chunk, (size_t)take);
@@ -10918,6 +10918,106 @@ static b32 test_process_platform(Test *t) {
     LOG("test: ok: processes (stdout and stderr in order through one pipe, CRLF, the exit code, the working directory, a missing "
         "directory leaving nothing open, a kill ending the child and its grandchild, a normal end with a grandchild holding the pipe "
         "(let go), no handle growth over 20 runs)");
+    return 1;
+}
+
+// Phase 19: a program started directly (no cmd.exe) read to its end, or until `idle_ms` passes without output
+// (*timed_out, then killed).
+static TestProcRun test_program_run(Test *t, String8 program, String8 args, String8 dir, String8 env, u32 idle_ms, b32 *timed_out) {
+    TestProcRun run = { 0 };
+    OsProcess p;
+    *timed_out = 0;
+    run.status = os_process_start_program(&t->arena, program, args, dir, env, &p);
+    if (run.status != OS_FILE_OK) return run;
+    OsEvent cancel;
+    os_event_create(&cancel);
+    i64 cap = MB(1), n = 0;
+    u8 *out = PUSH_ARRAY(&t->arena, u8, cap);
+    for (;;) {
+        i64 got = 0;
+        OsProcessRead r = os_process_read(&p, cancel, idle_ms, out + n, cap - n, &got);
+        if (r == OS_PROCESS_DATA) {
+            n += got;
+            continue;
+        }
+        *timed_out = r == OS_PROCESS_TIMEOUT;
+        run.exited = r == OS_PROCESS_EXITED;
+        break;
+    }
+    if (*timed_out) os_process_kill(&p);
+    os_process_wait(&p, 5000);
+    run.code = os_process_exit_code(&p);
+    os_process_close(&p, 1);
+    os_event_destroy(cancel);
+    run.out = str8(out, n);
+    return run;
+}
+
+static b32 test_process_program(Test *t) {
+    i32 procs0 = os_dev_live_processes(), events0 = os_dev_live_events(), ledger0 = os_dev_live_handles();
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13", t->tmp_dir));
+    String8 exe = os_dev_exe_path(&t->arena);
+    b32 timed_out = 0;
+    // Started directly: the arguments as given (a quoted path with spaces), the working directory, the exit code.
+    test_child(t, "prog one", STR8_LIT("out one\nerr two\nexit 4\n"));
+    String8 script = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\prog one.txt", dir));
+    TestProcRun r = test_program_run(t, exe, str8_fmt(&t->arena, "--child \"%S\"", script), dir, str8(NULL, 0), 0, &timed_out);
+    TEST_CHECK(t, r.status == OS_FILE_OK && r.exited && r.code == 4 && str8_equal(r.out, STR8_LIT("one\r\ntwo\r\n")),
+               "program: status %d, exit %u, output '%S'", (i32)r.status, r.code, r.out);
+    // The environment: ronin's inherited, a same-named variable replaced (any case, once), a new one added.
+    os_dev_set_env(STR8_LIT("RONIN_TEST_ENV"), STR8_LIT("parent"), 0);
+    os_dev_set_env(STR8_LIT("RONIN_TEST_KEEP"), STR8_LIT("kept"), 0);
+    test_child(t, "env", STR8_LIT("env RONIN_TEST_ENV\nenv RONIN_TEST_KEEP\nenv RONIN_TEST_NEW\nenv RONIN_TEST_GONE\n"));
+    String8 env_script = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\env.txt", dir));
+    String8 env_args = str8_fmt(&t->arena, "--child \"%S\"", env_script);
+    r = test_program_run(t, exe, env_args, dir, STR8_LIT("ronin_test_env=child\nRONIN_TEST_NEW=a b=c"), 0, &timed_out);
+    TEST_CHECK(t, str8_equal(r.out, STR8_LIT("child\r\nkept\r\na b=c\r\n(unset)\r\n")), "program: the environment block gave '%S'", r.out);
+    r = test_program_run(t, exe, env_args, dir, str8(NULL, 0), 0, &timed_out);
+    TEST_CHECK(t, str8_equal(r.out, STR8_LIT("parent\r\nkept\r\n(unset)\r\n(unset)\r\n")), "program: ronin's environment gave '%S'", r.out);
+    os_dev_set_env(STR8_LIT("RONIN_TEST_ENV"), str8(NULL, 0), 1);
+    os_dev_set_env(STR8_LIT("RONIN_TEST_KEEP"), str8(NULL, 0), 1);
+    // The idle timeout: a child silent for 3 s is reported after 300 ms (and killed); output resets it.
+    test_child(t, "silent", STR8_LIT("out a\nsleep 3000\nout b\n"));
+    String8 silent = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\silent.txt", dir));
+    u64 t0 = os_time_us();
+    r = test_program_run(t, exe, str8_fmt(&t->arena, "--child \"%S\"", silent), dir, str8(NULL, 0), 300, &timed_out);
+    u64 waited_ms = (os_time_us() - t0) / 1000;
+    TEST_CHECK(t, timed_out && str8_equal(r.out, STR8_LIT("a\r\n")) && waited_ms < 2500, "program: timeout %d after %U ms, output '%S'",
+               timed_out, waited_ms, r.out);
+    test_child(t, "talker", STR8_LIT("out a\nsleep 200\nout b\nsleep 200\nout c\n"));
+    String8 talker = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\talker.txt", dir));
+    r = test_program_run(t, exe, str8_fmt(&t->arena, "--child \"%S\"", talker), dir, str8(NULL, 0), 1000, &timed_out);
+    TEST_CHECK(t, !timed_out && r.exited && str8_equal(r.out, STR8_LIT("a\r\nb\r\nc\r\n")), "program: a talking child timed out (%d) '%S'",
+               timed_out, r.out);
+    // A program that does not exist, and a directory that does not: nothing starts, nothing is left open.
+    r = test_program_run(t, str8_fmt(&t->arena, "%S\\no_such_program.exe", dir), str8(NULL, 0), dir, str8(NULL, 0), 0, &timed_out);
+    TEST_CHECK(t, r.status == OS_FILE_NOT_FOUND, "program: a missing program gave status %d", (i32)r.status);
+    r = test_program_run(t, exe, env_args, str8_fmt(&t->arena, "%S\\no_such_dir", dir), str8(NULL, 0), 0, &timed_out);
+    TEST_CHECK(t, r.status == OS_FILE_NOT_FOUND, "program: a missing directory gave status %d", (i32)r.status);
+    // PATH: the first entry holding the file, quoted entries, never the current directory, nothing when absent.
+    String8 old_path = os_get_env(&t->arena, STR8_LIT("PATH"));
+    String8 bin1 = str8_fmt(&t->arena, "%S\\p19path\\one", t->tmp_dir), bin2 = str8_fmt(&t->arena, "%S\\p19path\\two dir", t->tmp_dir);
+    os_make_dir(str8_fmt(&t->arena, "%S\\p19path", t->tmp_dir));
+    os_make_dir(bin1);
+    os_make_dir(bin2);
+    os_make_dir(str8_fmt(&t->arena, "%S\\tool.exe", bin1)); // a directory of that name does not count
+    os_write_file(str8_fmt(&t->arena, "%S\\tool.exe", bin2), STR8_LIT("x"));
+    String8 found = { 0 };
+    os_dev_set_env(STR8_LIT("PATH"), str8_fmt(&t->arena, ";%S;\"%S\";C:\\no_such_dir", bin1, bin2), 0);
+    b32 ok = os_find_program(&t->arena, STR8_LIT("tool.exe"), &found);
+    TEST_CHECK(t, ok && str8_equal(found, str8_fmt(&t->arena, "%S\\tool.exe", bin2)), "program: PATH lookup gave %d '%S'", ok, found);
+    ok = os_find_program(&t->arena, STR8_LIT("no_such_tool.exe"), &found);
+    TEST_CHECK(t, !ok && !found.len, "program: a missing program found as '%S'", found);
+    os_dev_set_env(STR8_LIT("PATH"), str8(NULL, 0), 1);
+    ok = os_find_program(&t->arena, STR8_LIT("tool.exe"), &found);
+    TEST_CHECK(t, !ok, "program: found '%S' without a PATH", found);
+    os_dev_set_env(STR8_LIT("PATH"), old_path, 0);
+    ok = os_find_program(&t->arena, STR8_LIT("cmd.exe"), &found);
+    TEST_CHECK(t, ok && found.len > 8, "program: cmd.exe not found on PATH");
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_events() == events0 && os_dev_live_handles() == ledger0,
+               "program: counters back (%d processes, %d events, ledger %d -> %d)", os_dev_live_processes(), os_dev_live_events(), ledger0,
+               os_dev_live_handles());
+    LOG("test: ok: programs (started without cmd.exe, the environment block, the idle timeout, a missing program or directory, PATH)");
     return 1;
 }
 
@@ -12935,6 +13035,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_landing(&t);
     arena_reset(&t.arena);
     test_process_platform(&t);
+    arena_reset(&t.arena);
+    test_process_program(&t);
     arena_reset(&t.arena);
     test_compile_match(&t);
     arena_reset(&t.arena);

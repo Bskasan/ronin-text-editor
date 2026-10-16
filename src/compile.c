@@ -687,7 +687,7 @@ static void compile_worker_main(void *data) {
                 break;
             }
             i64 got = 0;
-            OsProcessRead r = os_process_read(&proc, c->cancel_event, buf, COMPILE_READ_BYTES, &got);
+            OsProcessRead r = os_process_read(&proc, c->cancel_event, 0, buf, COMPILE_READ_BYTES, &got);
             if (r == OS_PROCESS_DATA) {
                 c->bytes += got;
                 compile_split_feed(&split, buf, got, compile_worker_line, &w);
