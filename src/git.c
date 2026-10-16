@@ -75,6 +75,12 @@ void git_parse_status(Arena *arena, String8 raw, i64 max_files, GitStatus *out) 
             while (oend < raw.len && raw.data[oend]) oend++;
             if (at < raw.len) e.orig = str8(raw.data + at, oend - at);
             at = oend + 1;
+            for (i64 i = e.orig.len; i > 0; i--) { // a warning in front of the source, as in front of a record
+                if (e.orig.data[i - 1] == '\n') {
+                    e.orig = str8(e.orig.data + i, e.orig.len - i);
+                    break;
+                }
+            }
         }
         if (out->count >= max_files) {
             out->cut = 1;
@@ -129,6 +135,9 @@ void git_parse_diff(Arena *arena, String8 raw, i64 max_lines, GitDiff *out) {
         u8 c = line.len ? line.data[0] : 0;
         GitLineKind kind = GIT_LINE_TEXT;
         if ((old_left > 0 || new_left > 0) && !git_starts(line, "diff --git ")) {
+            // git's stderr can land between two body lines too; no body line starts with 'w', so it is skipped
+            // without touching the counts ("+warning: x" is an added line).
+            if (git_starts(line, "warning: ")) continue;
             if (c == '+') {
                 kind = GIT_LINE_ADDED;
                 if (!out->first_changed) out->first_changed = MAX(new_line, 1);
