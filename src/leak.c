@@ -481,6 +481,70 @@ static b32 leak_git_cancel_cycle(Leak *L) {
     return !modal_active(L->app) && L->app->git.dying_count == 1 && leak_settle(L) && !L->app->git.dying_count;
 }
 
+// The terminals with the fake terminal (tmp\leak\term): tmp\leak\term\proj\sub\a.c shown (proj a project), one launch a
+// cycle, C-c t and C-c a by turns; the teardown waits for every call and checks each line.
+static b32 leak_terminal_setup(Leak *L) {
+    App *app = L->app;
+    String8 dir = str8_fmt(L->arena, "%S\\term", L->dir), proj = str8_fmt(L->arena, "%S\\proj", dir);
+    os_make_dir(dir);
+    os_make_dir(proj);
+    os_make_dir(str8_fmt(L->arena, "%S\\sub", proj));
+    os_write_file(str8_fmt(L->arena, "%S\\.ronin-project", proj), str8(NULL, 0));
+    os_write_file(str8_fmt(L->arena, "%S\\sub\\a.c", proj), STR8_LIT("int a;\n"));
+    os_write_file(str8_fmt(L->arena, "%S\\calls.txt", dir), str8(NULL, 0));
+    app->terminal.dev_program = os_dev_exe_path(L->arena);
+    app->terminal.dev_prefix = str8_fmt(L->arena, "--fake-terminal \"%S\"", dir);
+    app->terminal.dev_wt_present = 1;
+    app->terminal.dev_launches = 0;
+    return app_dev_visit(app, str8_fmt(L->arena, "%S\\sub\\a.c", proj));
+}
+
+static b32 leak_terminal_cycle(Leak *L) {
+    App *app = L->app;
+    u64 before = app->terminal.dev_launches;
+    b32 ai = before % 2;
+    if (!leak_keys(L, ai ? "C-c a" : "C-c t")) return 0;
+    String8 echo = str8(app->echo.text, app->echo.len);
+    return app->terminal.dev_launches == before + 1 && str8_starts_with(echo, ai ? STR8_LIT("Opened claude in ") : STR8_LIT("Opened terminal in "));
+}
+
+static void leak_terminal_teardown(Leak *L) {
+    App *app = L->app;
+    String8 dir = str8_fmt(L->arena, "%S\\term", L->dir), proj = str8_fmt(L->arena, "%S\\proj", dir), sub = str8_fmt(L->arena, "%S\\sub", proj);
+    String8 want[2] = { str8_fmt(L->arena, "%S|wt.exe|0|-d \"%S\"", sub, sub),
+                        str8_fmt(L->arena, "%S|wt.exe|0|-d \"%S\" \"%S\" /s /k \"claude\"", proj, proj,
+                                 os_system_program(L->arena, STR8_LIT("cmd.exe"))) };
+    i64 launches = (i64)app->terminal.dev_launches, lines = 0, kinds[3] = { 0 };
+    String8 text = { 0 };
+    OsEvent tick;
+    os_event_create(&tick);
+    u64 deadline = os_time_us() + 30000 * 1000ull; // every fake has written its line (each one a process start)
+    for (;;) {
+        text = str8(NULL, 0);
+        os_read_small_file(L->arena, str8_fmt(L->arena, "%S\\calls.txt", dir), MB(1), &text);
+        lines = 0;
+        for (i64 i = 0; i < text.len; i++) lines += text.data[i] == '\n';
+        if (lines >= launches || os_time_us() > deadline) break;
+        os_event_wait(tick, 10);
+    }
+    os_event_destroy(tick);
+    for (i64 at = 0; at < text.len;) {
+        i64 end = at;
+        while (end < text.len && text.data[end] != '\n') end++;
+        String8 line = str8(text.data + at, end - at);
+        kinds[str8_equal(line, want[0]) ? 0 : str8_equal(line, want[1]) ? 1 : 2]++;
+        at = end + 1;
+    }
+    if (lines != launches || kinds[0] != (launches + 1) / 2 || kinds[1] != launches / 2 || kinds[2]) {
+        leak_fail(L, "terminal-cycle", str8_fmt(L->arena, "%D launches, %D calls (%D open-terminal, %D open-ai-terminal, %D other)", launches,
+                                                lines, kinds[0], kinds[1], kinds[2]));
+    } else {
+        LOG("leak: terminal-cycle: %D launches, every call as expected (%D open-terminal, %D open-ai-terminal)", launches, kinds[0], kinds[1]);
+    }
+    memset(&app->terminal, 0, sizeof(app->terminal));
+    leak_kill_current(L);
+}
+
 static b32 leak_find_file_prompt_cycle(Leak *L) {
     return leak_keys(L, "C-x C-f") && L->app->mini.active && L->app->mini.match_count > 0 && leak_keys(L, "C-g") && !L->app->mini.active;
 }
@@ -714,6 +778,7 @@ static const LeakScenario leak_scenarios[] = {
     { "modal-cycle/run", NULL, leak_modal_run_cycle, NULL, 0, 0, 0 },
     { "git-cycle/browse", leak_git_setup, leak_git_browse_cycle, leak_git_teardown, 0, 1, 1 },
     { "git-cycle/cancel", leak_git_hang_setup, leak_git_cancel_cycle, leak_git_teardown, 0, 0, 1 },
+    { "terminal-cycle", leak_terminal_setup, leak_terminal_cycle, leak_terminal_teardown, 0, 0, 0 },
     { "undo-cycle", leak_undo_setup, leak_undo_cycle, leak_undo_teardown, 0, 0, 1 },
     { "finder-cycle/open", leak_project_setup, leak_finder_open_cycle, leak_kill_teardown, 0, 0, 0 },
     { "finder-cycle/cancel", leak_project_setup, leak_finder_cancel_cycle, leak_kill_teardown, 0, 0, 0 },
