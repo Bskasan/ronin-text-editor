@@ -22,6 +22,7 @@
 #include "search.h"
 #include "grep.h"
 #include "compile.h"
+#include "git.h"
 #include "isearch.h"
 #include "results.h"
 #include "cursors.h"
@@ -52,6 +53,7 @@
 #include "search.c"
 #include "grep.c"
 #include "compile.c"
+#include "git.c"
 #pragma optimize("s", on)
 #include "isearch.c"
 #pragma optimize("", on)
