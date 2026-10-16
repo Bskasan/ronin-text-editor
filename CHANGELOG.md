@@ -38,6 +38,19 @@ The command list (Phase 18), the first box drawn over the windows:
 - Every command has a description (M-x and describe-key do not show it yet).
 - The tests no longer leave a junction loop in `build\tmp`.
 
+The git changes view (Phase 19), the second box:
+
+- C-x g shows the uncommitted changes of the project's git work tree: the changed files on the left with git's
+  two-letter status, the selected file's diff against HEAD on the right, colored. Its diff is fetched once per
+  file while the box is open; TAB moves to the diff and scrolls it, RET visits the file at its first change, g
+  runs git status again, C-g, ESC or a click outside close it and stop a git that still runs. Read only.
+- git runs in the background (`git.exe` on PATH, or the new `git_path` setting); the box opens once git has
+  answered, so without git or outside a work tree a message says so and nothing opens. A refusal of git's shows
+  git's own words.
+- New settings `git_diff_max_lines` (20,000), `git_status_max_files` (5,000) and `git_timeout_ms` (30,000), new
+  colors `diff_added`, `diff_removed`, `diff_hunk`, `diff_header` and `git_status`, the new section
+  `[keys git-changes]`.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).

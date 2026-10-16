@@ -7,7 +7,7 @@
 | `src/ronin.c` | the unity translation unit; includes everything below except the .cpp, in order |
 | `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header ronin uses, then `ronin.c`, so a ronin identifier that a system header defines as a macro fails the build |
 | `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
-| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call); processes (a command through cmd.exe in a job object, one overlapped pipe) |
+| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call); processes (a command through cmd.exe in a job object, one overlapped pipe; since Phase 19 also a program started directly with an environment laid over ronin's, a read's idle timeout, a program found on PATH) |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
@@ -28,21 +28,23 @@
 | `src/finder.h/.c` | part of the app (included after files.c): the projects kept (4), their scans and tree watches, `app_wake` (the workers' results), staleness and rescans, the project finder's matcher and its commands (project-find-file, -other-window, project-refresh); dev: smoke and bench helpers |
 | `src/search.h/.c` | the search engine: literal text, forward and backward, exact or folded; its core (a pattern, the SSE2 candidate scan on the first and second byte, the comparison) on plain byte ranges, and on top of it the search over the gap buffer's two segments in place, resumable with a budget of positions |
 | `src/grep.h/.c` | the project-wide search's worker side: one file in fixed chunks that overlap (encodings, binary files, lines counted, long lines cut), the workers claiming files of an append-only list in order, their batches through one locked queue, cancel, bounded join |
+| `src/git.h/.c` | the git changes view's worker side (Phase 19): a GitJob runs git's commands on a worker (rev-parse, status, one diff), each read into its arena with the idle timeout and stopped past the limits, parsed there (status `-z` into entries, a unified diff into lines with a kind, the first changed line, git's error line), one batch per step through one locked queue, cancel, bounded join |
 | `src/compile.h/.c` | builds, the worker side: the reader worker owning the process (start, read, kill, close), the lines (split across reads, CR, ANSI, OEM, the cut, the output cap), the error matchers (MSVC, GCC / Clang, includes, Jai, tsc, MSBuild; kinds without a location), the path resolution and its cache, batches through one locked queue |
 | `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*, *compilation*: each location's row and line offsets, a build's marks without a location), the landing highlight, the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; *compilation* (its lines inside the frame budget, the scroll rule, the end and its check of rewritten files), project-compile, compile, recompile, kill-compilation, the save, kill and exit questions' chain, the commands remembered per directory; dev: smoke and bench helpers |
-| `src/modal.h/.c` | part of the app (included after results.c): a box drawn over the windows, one at a time, taking every key and mouse event while open; its geometry (percentages of the frame, the 40 x 6 minimum, one or two panes), an optional one-line field (its own Buffer and View), the lists it moves, pages, scrolls and hit-tests, the key routing ([owner keymap, global]: quit closes, COMMAND_FIELD edits the field, the rest refused), its drawing, the owner's callbacks, the layer's commands (modal-next ... modal-other-pane) |
+| `src/modal.h/.c` | part of the app (included after results.c): a box drawn over the windows, one at a time, taking every key and mouse event while open; its geometry (percentages of the frame, the 40 x 6 minimum, one or two panes), an optional one-line field (its own Buffer and View), the lists it moves, pages, scrolls and hit-tests, the key routing ([owner keymap, global]: quit closes, COMMAND_FIELD edits the field, the rest refused), its drawing, the owner's callbacks, the layer's commands (modal-next ... modal-other-pane); since Phase 19 a status line instead of a field, panes without a selection that scroll, the selection callback, a full height from the open |
+| `src/git_changes.h/.c` | part of the app (included after commands_list.c): show-git-changes (C-x g), the modal layer's second owner: the job waiting for rev-parse before the box opens, the box's jobs (status, one diff at a time), the rows and each diff fetched once per open, the copy of a diff into the modal's arena inside the frame budget, RET's visit, g, the dying list and the shutdown; dev: the smoke's and the tests' repository (`git_dev_make_repo`) |
 | `src/commands_list.c` | part of the app (included after modal.c): show-command-list, the modal layer's first owner: every command with its description and its bindings (where-is), the fuzzy filter over the name, the description and both, the rows' drawing, RET running the command as M-x |
 | `src/cursors.h/.c` | the multiple-cursors commands (mark-next / previous / all-like-this, skip, unmark, the edit-lines family) and the CursorJob, their search spread over frames |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout; while a modal box is open every key and mouse event goes to modal.c) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak) and the `--bench-buffer` core |
-| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak) and the `--bench-buffer` core |
+| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
-| `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten) |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison; Phase 19: `--bench-git`, the smoke's stage 12, the git view's wait in screenshot runs, `--fake-git`'s dispatch), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
+| `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten, an environment variable, numbered lines); `--fake-git DIR ARGS`, the tests' git (Phase 19): the calls logged, a script picked by the arguments |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 | `res/ronin.rc`, `src/version.h` | the icon (build\gen\ronin.ico) and the version resource; the version for the code (`--version`) |
@@ -50,10 +52,10 @@
 | `tools/make_icon.c` | build-time tool, not part of the exe: draws the icon into build\gen\ronin.ico on every build |
 | `build.bat`, `verify.bat`, `dist.bat` | the build, the gate before every commit, the release zip |
 
-Core (`app.c`, `files.c`, `finder.c`, `results.c`, `modal.c`, `commands_list.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
+Core (`app.c`, `files.c`, `finder.c`, `results.c`, `modal.c`, `commands_list.c`, `git_changes.c`, `git.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
 `fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
-additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c) and the build's reader
-(compile.c) call only the os_* functions platform.h marks "any thread".
+additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c), the build's reader
+(compile.c) and git's worker (git.c) call only the os_* functions platform.h marks "any thread".
 
 ## Startup and frame loop
 
@@ -92,7 +94,8 @@ additionally calls `font_backend.h`. The scanner's worker (project.c), the searc
    Background work has one deadline per frame (2 ms): search slices first (isearch, query-replace,
    replace-all), then a prompt's ranking (the project finder), then the results buffers' work (the
    project search's list and its files written in order, buffers searched from memory; not in frames
-   that carry input), then lexer states with what is left; while any is pending the app asks for another
+   that carry input), then a diff copied into the git changes view (Phase 19; not in frames that carry input either),
+   then lexer states with what is left; while any is pending the app asks for another
    frame, otherwise none.
 4. `WM_SIZE` resizes the swap chain and renders immediately, so live resize stays crisp
    inside the modal size loop. Minimized = frames are no-ops, and the driver's temporary
@@ -1796,6 +1799,105 @@ ronin allocates nothing from a heap (the release build has no C runtime), so the
 and the new thread and the 936 KB to the graphics driver (the first frames with ~5,000 more glyph quads). Windows' and the
 driver's: recorded, not pursued (the Phase 19 instruction). Later opens add nothing.
 
+### git's output (`--bench-git`)
+
+Bench build, three runs. The parsers on generated output in memory, 20 runs each: a diff of one file with 50,000 lines
+(3,032,869 bytes: hunks of 166 context, 166 removed and 166 added lines of ~60 bytes) and a status of 5,000 files in
+50 directories (181,522 bytes, every tenth a rename with its source). Then a 20,000-line diff of the fake git
+(tmp\p19bench) copied into the open view, 5 rounds of C-x g, the copy, C-g:
+
+| part | median | max |
+|---|---|---|
+| parse the 50,000-line diff (on git's worker) | 1,436-1,517 us | 1,661-1,810 us |
+| parse the 5,000-file status (on git's worker) | 135-136 us | 146-169 us |
+| the copy of the 20,000-line diff: frames | 1 | 1 |
+| ... its longest slice (the frame's background work) | 69-91 us | 75-131 us |
+| ... the longest frame build while it runs | 154-197 us | 168-242 us |
+| the frame showing the whole diff afterwards | 14-17 us | 17-22 us |
+
+The copy fits the 2 ms budget about 15 times over: it is never sliced at the default limits; the slicing (the clock
+every 256 lines) is exercised by the tests with `dev_work_budget` (4,096 lines a frame). One fake-git process (the
+bench exe started with `--fake-git`, its script, its exit) takes ~15 ms on the worker ("git job: the cut diff took
+15 ms").
+
+### Idle and latency
+
+`ronin_debug.exe --keys "C-x g" --idle-check` from the repository root (the real git on ronin's own tree): "a modal box
+open 1, git jobs running or pending 0" when the 5 s began, then PASS, 0 frames, 0 us of CPU, 0 main loop passes
+besides the marks.
+
+`--bench-latency` against the Phase 18 code (28e614a, a bench build of it in build\proof\p18), alternated, 3 runs each;
+DWM composed the window throughout this time (no overlay rows):
+
+| | arrival to Present returned p50 / p99 | command + frame build p50 | on screen (DWM) p50 |
+|---|---|---|---|
+| Phase 18 | 359-407 us / 729-844 us | 22-27 us | 17.8-18.1 ms |
+| Phase 19 | 369-412 us / 779-855 us | 21-29 us | 17.6-17.9 ms |
+
+Unchanged within noise.
+
+### Size and imports
+
+The release exe: 448,512 bytes, 26,112 more than Phase 18's 422,400. By module (the linker's map, `--map-report`,
+bytes in sections, 26,540 in all): git_changes.c +9,616, git.c +7,736, app.c +2,696 (the hooks and `app_draw_text_line`),
+unwind tables +1,992, config_default.h +1,832, string literals +1,496, win32_main.c
++1,456 (the program start, the environment block, the PATH walk), modal.c +1,168, minibuffer.c +432; compile.c -1,608
+and commands_list.c -928 (inlining moved by /GL); the rest +240 together. Imports: KERNEL32 79 (+2:
+GetEnvironmentStringsW, FreeEnvironmentStringsW), USER32 50, GDI32 6 functions; no new DLL.
+
+### The new tests fail when they should
+
+On a scratch copy (build\proof\p19, deleted afterwards), each break alone, `--test` (debug):
+
+| break | result |
+|---|---|
+| the parser drops a diff's last hunk | exit 9: "git parse: two hunks:" (the second hunk missing from the golden) and "git changes: status 'main: 8 changed files', panes 8 / 10" (a.c's 14 lines cut to 10) |
+| a cached diff fetched again when its file is shown again | exit 9: "git changes: the diffs fetched: 'a.c\|old name.c new name.c\|a.c\|old name.c new name.c\|gone.c' (5 jobs)" |
+
+A first try of the second break (a cached row fetching itself at once) failed too, less directly: the view never
+settled ("git changes: did not open").
+
+### The soak's checks under the new event stream
+
+The first `verify.bat phase` of this phase failed in soak-debug (exit 9); the bench soak passed with 1.9 MB of growth,
+just under the limit. Three findings, each measured before anything changed (the details in Decisions 15):
+
+- At the 600,000 checkpoint the soak counted 2 more threads, 2 more events and 2 more handles of ours, back by 700,000
+  (LEAK rows). Logged at the sample: no git job busy, a project search running ("results busy 1", its two workers). The
+  settle had never waited for searches; this stream starts one just before a checkpoint. Fixed (64fec0c).
+- Settled memory without the undo logs, 2,000,000 debug events: 8,469 KB after the first block, then 10.3-14.5 MB with
+  no trend (12.2 MB at 1,000,000, 12.8 MB at 2,000,000). By owner from the first block to the plateau: our arenas
+  without the undo logs +1.95 MB (buffers of the random walk, as Phase 16 found), process heaps +0.4 MB (560 -> 976 KB,
+  flat from the middle on; CreateProcess's), thread stacks +0.15 MB (worker slots 9 -> 11), image pages and views +0,
+  and +1.8 MB the walk does not classify (page tables and the like; Phase 18's soak, run alone with the same log: +1.1
+  MB). Phase 18 on the same machine: 11.6 -> 12.1 MB, its first block already high. A walk that reaches its large states
+  later, not a leak: judged now against the first half's highest (fec6d72).
+- The debug probe stepped from ~1.6 to ~2.4 us after the first block in some runs and not in others, with the same code
+  and seed (the walk is not fully deterministic: when workers' answers come depends on the clock). The same state probed
+  twice in a row: up to 35% apart (1,941 and 2,325 ns; 1,763 and 2,293); a fixed computation of 20,000,000 multiplies
+  slowed at the same checkpoints (15.2 -> 16.6-17.4 ms); the app's state at the probe (buffers, windows, the modal, jobs,
+  *Messages*, the kill ring, the history) the same in fast and slow blocks; during one soak Chrome used 35.6 s of CPU in
+  25 s and NVIDIA Broadcast 4.6 s. The bench build's probe stayed flat (457-565 ns). No cost of ronin's: the probe is now
+  the fastest of three runs (f1b92ca). After the three changes: debug PASS (8,520 KB, the first half's highest 12,588 KB,
+  12,992 KB at the end; probes 1,570-1,763 ns), bench PASS (11,704 / 12,368 KB; 457-565 ns), every leak metric OK.
+
+### Screenshots
+
+docs/images/git-changes.png: `ronin_debug.exe --config build\tmp\none.conf build\tmp\gitrepo\repo\b.c --keys "C-x g"
+--screenshot`, re-encoded with System.Drawing (3,073,098 -> 23,547 bytes, every pixel identical). Checked with
+System.Drawing: diff_removed #ff6e6e, diff_added #73e673, diff_hunk #7ad0c6, diff_header #c1d1e3, git_status #0fdfaf,
+the selected row #0000ff, the box #0c3434 inside a #2e8b8b frame, the status line #a8977a, the window below #072626.
+
+### verify.bat phase
+
+At f1b92ca (the code of this phase): PASS in 7 min 56 s. The seed sweep: 256 seeds PASS (199.0 s, 168.9 s in Phase 18;
+the new "git" group ~0.5 s a seed). The soak: bench 1,000,000 events PASS in 21.2 s (10.8 s in Phase 18; 148 git
+sessions besides the random keys that reach C-x g; settled 8,460 KB after the first block, 11,712 KB at most in the
+first half, 11,656 KB at the end), debug PASS in 27.4 s (8,396 / 13,092 / 13,396 KB). The leak check: 26 scenarios,
+0 LEAK, 141 s, git-cycle/browse and git-cycle/cancel OK (browse's frames before and after equal); STEP:
+config-reload-cycle/color and /scale private commit (the process heap's irregular moves Phase 16 accepted); the exit
+check PASS. The first run of this phase failed in soak-debug: "The soak's checks under the new event stream" above.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -1819,6 +1921,7 @@ driver's: recorded, not pursued (the Phase 19 instruction). Later opens add noth
 - [x] 16. Memory and resource leak audit
 - [x] 17. Repository and build-folder cleanup
 - [x] 18. Modal overlay and the command list
+- [ ] 19. The git changes modal
 
 ## Decisions
 
@@ -2938,6 +3041,95 @@ run: goto-line through it, its prompt cancelled); the soak's command list sessio
 `--test` removes its junction loop (build\tmp\p11scan\src\loop) once the scanner test no longer needs it, and
 test_run removes it again after the group.
 
+### The git changes modal (Phase 19)
+
+1. git is an external program: ronin runs the git executable as a child process through the Phase 13 process layer
+   (job object, one overlapped pipe, the worker owning the process). No git code is in ronin. It is started directly,
+   not through cmd.exe (`os_process_start_program`: no cmd quoting, no `%`, `&` or `^` in file names to fear, no
+   AutoRun): `git_path` in [settings] when set (a file), else the first `git.exe` of PATH (`os_find_program`: every
+   entry, quoted ones too, never the current directory). Both are KERNEL32 calls: no new DLL.
+2. show-git-changes (C-x g) opens a box of two panes (90% x 80%, the left one 30%), its keys in `[keys git-changes]`.
+   The box opens only once `git rev-parse --show-toplevel` has answered (decided with the user): the command echoes
+   "Running git…" and starts a worker; no git, a folder git does not know, or a refusal of git's say so in the echo
+   area and nothing ever opens (keys typed in those 20-50 ms go to the window). Then "Running git…" stands in the
+   box's status line while git status runs. The main thread never waits for git.
+3. The command lines, P = `--no-optional-locks --literal-pathspecs -c core.quotepath=false -c core.fsmonitor=false`:
+   - `"<git>" P rev-parse --show-toplevel` in the project's root (`finder_root`), else the buffer's directory, else
+     the default one;
+   - `"<git>" P status --porcelain=v1 -z --branch --untracked-files=all` in the top level it printed;
+   - `"<git>" P diff HEAD --no-color --no-ext-diff -- "<path>"`; for a rename or copy
+     `... diff HEAD --no-color --no-ext-diff -M -- "<orig>" "<path>"`; for an untracked file, or in a repository with
+     no commits yet, `... diff --no-index --no-color --no-ext-diff -- /dev/null "<path>"` (its exit code 1 means
+     "differences").
+
+   --no-optional-locks: status never takes index.lock while the user runs git; --literal-pathspecs: `[a].c` is a name,
+   not a glob; core.fsmonitor=false: no fsmonitor daemon starts inside our job; --untracked-files=all: files, never a
+   bare directory; --branch: the status line's branch, and "## No commits yet on" (or the older "## Initial commit
+   on") for a repository without HEAD. Production runs keep the user's configuration otherwise.
+4. The hand-off: a `GitJob` lives at the start of its own reservation (as a CompileRun); the request is copied into it
+   before the start and only read by the worker. The worker runs its steps (OPEN: rev-parse, then status; STATUS; one
+   DIFF), reads each process into its arena (stopped past the limit's lines or records, or 64 MB), parses there, and
+   links one `GitBatch` per step to a list under the lock (held only to link), then `os_wake_main`. `app_wake` takes
+   the list; TOPLEVEL opens the box, STATUS fills the left pane (5,000 entries copied at once: 0.14 ms to parse), a
+   DIFF is copied into the modal's arena by the frame's background work, after the results' work, inside the same
+   2 ms deadline and never in a frame with input, checking the clock every 256 lines (`--bench-git`: 20,000 lines
+   take ~0.1 ms, one frame). The last batch says the worker made its last os_* call: the join does not wait.
+5. Cancellation: closing the box (C-g, ESC, a click outside, RET, a resize too small), g, C-g while the open is
+   pending, and the shutdown cancel a job: its atomic flag and its event, on which the worker's read waits with the
+   process. The worker kills git's job object (git and anything it started, e.g. Git for Windows' launcher and the real
+   git.exe), closes it, links a CANCELLED batch. The job goes to a dying list (16) and is freed when that batch comes;
+   C-x g refuses to start when fewer than 4 slots are free ("git is still stopping; try again"), so nothing ever waits.
+   The shutdown cancels every job, then joins them within the shared 1,000 ms bound.
+6. The idle timeout: `os_process_read` gets `idle_ms` (builds pass 0) and OS_PROCESS_TIMEOUT; git silent for
+   `git_timeout_ms` is killed and the view says "git timed out". The wait has a timeout only while git runs, on the
+   worker: no idle timer.
+7. Fetching: at most one git process per open box. Selecting a file not fetched starts its diff when none runs or is
+   being copied; otherwise the selection waits and, when the running one ends, the file then selected is fetched (the
+   files passed over are not). A diff is fetched once per open: each row is none, fetching, copying, cached or failed.
+   g cancels the box's jobs, pops the modal arena back to the view's top level and program (the list and every diff go)
+   and runs status again.
+8. What is shown: the left rows are git's XY in git_status and the path ("old -> new" for a rename), in git's order,
+   past `git_status_max_files` one row "[list cut at N files]". The right pane is the selected file's diff, kinds
+   colored (diff_added, diff_removed, diff_hunk, diff_header; context and "\ No newline" in text), lines drawn as
+   buffer lines are (tabs, caret notation: `app_draw_text_line`) and cut at the pane's edge; past `git_diff_max_lines`
+   a last line "[diff cut at N lines]". Hunk bodies are read by their counts, so "--- x" inside a hunk is a removed
+   line. One trailing CR is dropped (CRLF content; a change of line endings alone then shows as two equal lines, as
+   accepted). A diff line is stored cut at 4,096 bytes.
+9. stdout and stderr share the one pipe, so git's warnings ("LF will be replaced by CRLF") arrive inside its output: a
+   `warning: ` line outside a hunk is not part of the diff, and a status record is what follows the last newline in
+   it (no record holds one on Windows). A failed run's message is git's own line (decided with the user): its first
+   non-empty line starting with `fatal:`, `error:` or `usage:`, else its first non-empty line, CR dropped, cut at
+   120 bytes on a character boundary; "git: <line>" in the echo area (before the box) or the status line. Output
+   holding "not a git repository" says "Not a git work tree: <dir>" instead. No git, and the timeout, have fixed
+   texts (git said nothing). A second pipe for stderr alone was not made: two more handles and a second read a run.
+10. RET (or a double click, in either pane) closes the box and runs the internal command git-changes-visit as M-x
+    would: the file at the work tree's top level in the selected window, at its first change (the new side's line of the
+    first + or - line) when its diff is in, otherwise where find-file puts point. A file deleted in the working tree is
+    refused ("x is deleted in the working tree") and the box stays.
+11. Nothing else changes while the box is open: no buffer is touched, ronin reads no file except git's output, nothing
+    refreshes by itself (no watch, no timer). It opens over neither the minibuffer nor another box.
+12. The modal layer, additively (the command list unchanged): `status_line` (a top line with the owner's status, no
+    field), `scroll_panes` (a pane without a selection: the movement commands scroll it, accept gets its top row),
+    `selected()` when a pane's selection moves, `full_height` (the box at its height from the open, its rows coming
+    later) and `modal_grow_rows` (rows that arrive over frames).
+13. Config: `git_path` (text, 259 bytes; empty is PATH; it cannot be written empty in a file), `git_diff_max_lines`
+    (20,000; 100 to 1,000,000), `git_status_max_files` (5,000; 10 to 100,000), `git_timeout_ms` (30,000; 1,000 to
+    600,000), applied from the next git run (`git_path` from the next C-x g or g); colors diff_added (#73e673) and
+    diff_removed (#ff6e6e) with their own defaults, diff_hunk, diff_header and git_status following number, variable
+    and string (decided with the user: hunk lines must not be green beside added ones); 39 colors now.
+14. Tests: `--fake-git DIR ARGS` (dev builds) is the tests' git: it logs its arguments to DIR\calls.txt and runs the
+    `--child` script that DIR\map.txt names for the first key found in them. The real-git test and smoke stage 12 run
+    on build\tmp\gitrepo\repo (made once, its working tree set each time) with the system and global configuration shut
+    out through `env_extra` (GIT_CONFIG_NOSYSTEM=1, GIT_CONFIG_GLOBAL to an empty file, HOME and XDG_CONFIG_HOME for a
+    git older than 2.32); without git on PATH they log a skip, never a failure. The fake git's canned answers for that
+    repository and the real git's give the same text.
+15. The soak (found by this phase's `verify.bat phase`, decided with the user): its settle waits, 10 s at most, for a
+    running project search and git's jobs before the checkpoint's sample (a search still running had counted its two
+    workers as LEAK); the settled memory after the last block is judged against the highest settled value of the first
+    half of the run, +2 MB, matching the Phase 16 plateau rule (one first block alone was too low a reference: with this
+    phase's event stream it is 8.4 MB, the plateau of 12-13 MB comes later); the typing probe is the fastest of three
+    runs (other programs' load slowed one run of the debug build by up to a third), the 1.5x rule unchanged.
+
 ## Later
 
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
@@ -3017,6 +3209,11 @@ test_run removes it again after the group.
   the bindings of the minibuffer's and isearch's keymaps (only the current window's are shown); a field longer
   than its line scrolls but cannot wrap. The input harness checks `[keys command-list]` only through the global bindings
   it shares.
+- The git changes view (Phase 19): staging, unstaging, committing and reverting; a filter field over the file list;
+  horizontal scrolling of the diff; word-level highlighting inside changed lines; a refresh on a change in the work
+  tree (now g only); stderr in its own pipe (git's messages are picked from the shared one); the diff of the files a
+  selection passed over fetched ahead; keys typed before the box opens queued for it; showing a line-ending change
+  (now one CR is dropped from each line).
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.

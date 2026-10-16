@@ -183,7 +183,8 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
     build/ronin_debug.exe --idle-check                    # shown without focus; 5 s idle after 1 s: CPU
                                                           # time, frames (must be 0), private bytes, the
                                                           # messages that reached the window meanwhile
-                                                          # (it opens under the mouse: don't touch it)
+                                                          # (it opens under the mouse: don't touch it); logs
+                                                          # whether a modal box is open and git's jobs at its start
     build/ronin_debug.exe <file> --dpi-check build/shots/dpi  # WM_DPICHANGED to 125% and back, three
                                                           # screenshots, the frame after coming back equal
     build/ronin_debug.exe --clipboard-check               # the REAL clipboard (only when it holds plain
@@ -227,7 +228,11 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # out / err TEXT, raw / rawerr TEXT (escapes \r \n
                                                           # \t \e \xHH), sleep MS, exit N, hang (120 s at
                                                           # most), spawn FILE (a grandchild), flood BYTES,
-                                                          # cwd, write PATH TEXT
+                                                          # cwd, write PATH TEXT, env NAME, repeat N TEXT
+    build/ronin_debug.exe --fake-git DIR ARGS...           # the tests' git (no window, no log; every argument after
+                                                          # DIR is git's): ARGS appended to DIR\calls.txt, then the
+                                                          # --child script DIR\map.txt names for the first KEY<TAB>
+                                                          # SCRIPT line whose KEY is in ARGS (none: exit 128)
     build/ronin_bench.exe --bench-compile                 # a --child program printing 100 MB into *compilation*
                                                           # (cap 128 MB and the default 16 MB): time, frames,
                                                           # the longest frame, memory; typing at line
@@ -244,21 +249,30 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
     build/ronin_bench.exe --bench-modal                   # the command list over the full command table, 5 rounds of:
                                                           # open, 20 filter keystrokes, 20 movements, close; median and
                                                           # max of the filter and of command + frame build; the memory
-                                                          # of the first open (exit 9 at a filter median of 200 us)
+                                                          # of the first open, by owner (exit 9 at a filter median of
+                                                          # 200 us)
+    build/ronin_bench.exe --bench-git                     # git's output parsed from memory (a 50,000-line diff, a 5,000-
+                                                          # file status; 20 runs, median and max); a 20,000-line diff of
+                                                          # the fake git (build\tmp\p19bench) copied into the open git
+                                                          # changes view, 5 rounds: frames, the longest slice and frame
+                                                          # build (exit 9 when a slice passes 2.5 ms)
     build/ronin_bench.exe --fuzz-seeds FIRST COUNT        # every seeded --test group for seeds FIRST.. (worker
                                                           # processes, at most 8, below normal priority; their logs
                                                           # in build\fuzz\worker<k>.log); exit 9 names the seed
     build/ronin_bench.exe --soak N [--seed S]             # N random events through the headless app (keys of every
                                                           # keymap, typed code, mouse, focus, resizes) over the files of
                                                           # build\tmp\soak, the only place it may write; invariants every
-                                                          # 1,000 events, settled memory and a typing probe every
-                                                          # 100,000; logs peak / final memory and the 5 slowest events;
+                                                          # 1,000 events, settled memory (searches and git waited for;
+                                                          # the last against the first half's highest, +2 MB) and a typing
+                                                          # probe (the fastest of three) every 100,000; logs peak / final
+                                                          # memory, its owners, and the 5 slowest events;
                                                           # the leak metrics every 100,000, judged over the last 500,000
                                                           # (exit 6 on LEAK; memory informational: the walk's high-water)
     build/ronin_debug.exe --leak-check [SCENARIO|all] [--cycles N]  # debug build only: each scenario (file-cycle,
                                                           # window-cycle, minibuffer-cycle, isearch-cycle, finder-cycle,
                                                           # grep-cycle, compile-cycle, multi-cursor-cycle, modal-cycle,
-                                                          # config-reload-cycle, undo-cycle, external-change-cycle; a
+                                                          # git-cycle, config-reload-cycle, undo-cycle,
+                                                          # external-change-cycle; a
                                                           # name before '/' runs its sub-cycles) after a prime step, 20
                                                           # warm-up cycles and 4 windows of N/4 (N = 200, a multiple of
                                                           # 4): one table a scenario in the log, LEAK -> exit 6, a cycle
@@ -286,7 +300,8 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
 
 The benches never take the focus (shown cloaked without activation, as the smoke and --idle-check);
 screenshot runs take the workers' results (project scans, searches, builds' output; until none came for
-300 ms, or with --compile-wait until the builds ended) before their frame.
+300 ms, or with --compile-wait until the builds ended; git's answers to C-x g until its jobs are done, 10 s at most)
+before their frame.
 
 The smoke, the benches and the measurement flags (--memory-report, --bench-latency,
 --startup-capture), --type-ahead-check and --leak-check read only the built-in config (deterministic)
@@ -350,7 +365,15 @@ RET must have run end-of-buffer and closed the box (exit 9 otherwise). Every
 syntax frame also has a number pixel in its color. The window
 title must be "*scratch* - ronin",
 set exactly once, and the window class must have both icons, the 16 px one drawing a stem pixel in the
-text color, the background beside the "r" and a transparent corner. Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
+text color, the background beside the "r" and a transparent corner. Then the git changes view (stage 12, after the
+title's check since it visits files; skipped with a log line when git.exe is not on PATH): build\tmp\gitrepo\repo
+(made once by git_dev_make_repo, its working tree set again: a.c changed, c.c deleted, d.txt new) with the real git, its
+system and global configuration shut out, b.c in the window: C-x g, the frames until git's answers are in: the diff
+of a.c with "diff --git" in diff_header, the @@ line in diff_hunk, "-int b;" in diff_removed, "+int B;" in diff_added,
+the empty pane below its lines in modal_background, the next row's " D" in git_status, the selected row's empty part in
+modal_selection, the status line in modal_description, the window underneath untouched and its cursor hollow; RET must
+visit a.c at line 2 (exit 9 otherwise); C-x g again and C-g: that frame must equal the one before byte for byte (exit
+3). Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
 killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the
@@ -503,7 +526,22 @@ order, the key texts, the filter's goldens and a query split across name and des
 the list, refusals, the field's editing, C-g, ESC, RET running a motion, a region command and a prompting one, the
 minibuffer, M-x, the mouse, a config reload while open, a frame too small, no allocation over 21 keystrokes); the
 seeded group "modal" (600 random operations: the shown order against a slow full ranking, the selection, the top and
-the arena while open, the window underneath after a close); the scanner test's junction removed. A failed
+the arena while open, the window underneath after a close); the scanner test's junction removed. Phase 19: programs
+started without cmd.exe (the arguments, the environment block laid over ronin's, the idle timeout, a missing program
+or directory, PATH with quoted entries and without the current directory); the git parsers' goldens (status records,
+renames and copies, a UTF-8 path, the branch forms, no commits yet, git's warnings in the shared pipe, the file limit;
+diffs with two hunks, "--" and "++" lines inside a hunk, CRLF, new, deleted, renamed, binary and mode-only files, the
+first changed line, the line limit, a long line; the error line and its cut); git's jobs against the fake git
+(--fake-git: the open's two command lines and the three diffs' exactly, exit 1 from --no-index only, not a work tree, a
+refusal in git's words, a failing status and diff, git_path nowhere, no git on PATH, git stopped past the line limit,
+the timeout, a cancel, the environment block); the view through the headless app on a canned repository (opened only
+after rev-parse, the rows and the status line, each diff fetched once per open and none for the files passed over, a
+deleted file refused, a diff copied over frames, TAB, scrolling, the wheel, a reload, refusals, g, RET at the first
+change, the minibuffer, C-g while pending) and its error paths (nothing opens without git or a work tree, the
+timeout before and after the open, C-g and a click outside cancelling without waiting, the shutdown with a hanging
+git); the real git on build\tmp\gitrepo\repo (made once; its system and global configuration shut out) equal to the
+fake git's canned answers, or "test: skip: git real" without git on PATH; the seeded group "git" (80 random operations:
+git's order, no diff twice since the open or g, the view's invariants, the arena after a close). A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);
@@ -523,7 +561,7 @@ back by itself, and `build.bat clean` removes both. In build\:
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
-| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec) and verify's clean-check (tmp\clean_check, removed after it) |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench) and verify's clean-check (tmp\clean_check, removed after it) |
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |
@@ -551,6 +589,8 @@ number/constant).
 | mode_line_inactive_background | background | | mode_line_inactive_text | text |
 | modal_background | #0c3434 |   | modal_border    | #2e8b8b |
 | modal_selection  | selection |  | modal_description | #a8977a |
-| modal_key        | number  |   |                 |         |
+| modal_key        | number  |   | diff_added      | #73e673 |
+| diff_removed     | #ff6e6e |   | diff_hunk       | number  |
+| diff_header      | variable |  | git_status      | string  |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.

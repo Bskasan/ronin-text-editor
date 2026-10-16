@@ -80,6 +80,25 @@ Only what exists today.
 
 ![The command list filtered with "file", over src/modal.c](docs/images/command-list.png)
 
+**git changes**
+- C-x g shows the uncommitted changes of the project's git work tree in a box over the windows: on the
+  left every file git status lists (working tree and index against HEAD), with its two-letter status as
+  git prints it (` M`, `A `, ` D`, `R `, `??` ...), on the right the selected file's diff against HEAD
+  (staged and unstaged changes together; an untracked file in full, as added lines). Added lines are
+  green, removed lines red, `@@` lines and file headers in their own colors.
+- The arrows, C-n / C-p and C-v / M-v select a file; its diff is fetched the first time it is selected
+  and kept while the box is open. TAB moves to the diff, where the same keys scroll it, and back. RET
+  visits the selected file at its first change; g runs git status again; C-g, ESC or a click outside
+  close the box.
+- It only reads: nothing is staged, committed or reverted. git runs in the background (the `git.exe` on
+  PATH, or `git_path`): the box opens once git has said where the work tree is, typing never waits for
+  it, and closing the box stops a git that is still running. Without git, or outside a work tree, it says
+  so and opens nothing; when git refuses (e.g. "detected dubious ownership"), its own message is shown.
+- A diff is cut at 20,000 lines and the list at 5,000 files, each with a last line saying so; a git that
+  prints nothing for 30 s is stopped (`git_diff_max_lines`, `git_status_max_files`, `git_timeout_ms`).
+
+![The git changes view on a test repository: a.c's diff with a removed and an added line](docs/images/git-changes.png)
+
 **Search**
 - isearch forward and backward with the other matches on screen highlighted, smart case, wrapping,
   the search ring, C-w / C-y to extend the search string.
@@ -157,12 +176,13 @@ window.
 
 | what | value |
 |---|---|
-| executable size (release) | 422,400 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
+| executable size (release) | 448,512 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
 | startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms |
 | typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* |
 | typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) |
 | typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms |
-| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build, with 10,000 cursors and with the command list open |
+| idle | 0 frames and 0 us of CPU time in 5 s, also right after a build, with 10,000 cursors, with the command list open and with the git changes view open |
+| the git changes view | a 20,000-line diff copied into the box within one frame (~0.1 ms); a 50,000-line diff parsed in ~1.5 ms and a 5,000-file status in ~0.14 ms, on git's background thread |
 | memory (private bytes, idle) | 57-59 MB with an empty buffer, ~3 MB of it our arenas and the rest mostly Direct3D and the driver; 174-175 MB with a 100 MB file open |
 | loading a 100 MB file | 35-40 ms |
 | searching a project of 100 MB in 3,000 files (warm file cache) | 23-28 ms with 8 threads, the first result after ~2 ms; typing meanwhile as fast as without |
@@ -268,6 +288,7 @@ One deliberate difference from Emacs: `ESC` is keyboard-quit, not a Meta prefix.
 | `M-g n` `M-g p` | next-error / previous-error: the next / previous match or error of the latest results |
 | `M-x` | run a command by name |
 | `C-S-p` | the command list: every command with what it does and its keys; type to filter, `RET` runs |
+| `C-x g` | the git changes view: the changed files and their diffs (`TAB` the diff, `RET` visit, `g` again) |
 | `C-g` | keyboard-quit (also cancels a prompt; with several cursors: their regions, then the extra cursors) |
 | `C-h k` | describe the next key |
 | `C-c ,` | open the config file |
@@ -303,9 +324,11 @@ C-c g       goto-line
 
 The sections are `[settings]` (font, size, line height, ClearType mode, tab and indentation
 widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]`, `[keys isearch]`,
-`[keys search-results]`, `[keys compilation]` and `[keys command-list]`, the keys while the command list is
-open). The command list's box has its own colors: `modal_background`, `modal_border`, `modal_selection`,
-`modal_description` and `modal_key`. In
+`[keys search-results]`, `[keys compilation]`, `[keys command-list]` and `[keys git-changes]`, the keys while
+the command list or the git changes view is open). The boxes have their own colors: `modal_background`,
+`modal_border`, `modal_selection`, `modal_description` and `modal_key`; the git changes view also `diff_added`,
+`diff_removed`, `diff_hunk`, `diff_header` and `git_status`. Its settings: `git_path` (the git program; PATH
+when not set), `git_diff_max_lines`, `git_status_max_files` and `git_timeout_ms`. In
 `[keys]` the last word of a line is the command; `none` removes a binding. To run the last build
 again with one key:
 
@@ -363,6 +386,11 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
 - Listing a directory on a slow network share in C-x C-f blocks the window until it is done.
 - The command list shows the bindings of the current window's keymaps, not those of the minibuffer or
   isearch; its filter uses the first 256 bytes typed. describe-key and M-x do not show the descriptions yet.
+- The git changes view only reads (no staging, committing or reverting) and needs git 2.15 or later. Keys
+  typed in the moment before its box opens go to the window. Diff lines are cut at the box's edge (no
+  horizontal scrolling); a change that is only a line ending (CRLF against LF) shows as two equal lines.
+  git's error output shares the pipe with its normal output, so the message shown is git's first `fatal:`,
+  `error:` or `usage:` line.
 
 The full list is the "Later" section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later).
 
@@ -381,6 +409,7 @@ Likely, in no fixed order:
   background thread (a save waits for ReplaceFileW: 5-7 ms, once 146 ms in a million soak events).
 - Projects and builds: an index kept current from change notifications, run and debug commands, several
   build commands per project, user-defined error formats.
+- git: staging, committing and reverting from the git changes view.
 - Windows: window configurations (undo of window changes).
 
 Not planned (by design): a language server or tree-sitter, proportional fonts, ligatures, bold and
@@ -405,23 +434,26 @@ Testing is built into the dev builds:
   occur and builds); the search over files against a whole-text reference and on generated trees with 1 to 8
   threads; the error matchers' golden lines; builds of a scripted child program (output, exit codes,
   kills of the whole process tree, 100 start / kill rounds); a differential fuzz of multiple cursors against
-  the one-cursor commands applied cursor by cursor; file round trips; a crashing child process whose
-  recovery files must equal a save byte for byte; and a harness that posts
+  the one-cursor commands applied cursor by cursor; the git changes view against a scripted fake git (every
+  command line, every kind of status and diff, git's refusals, a timeout, a cancel) and, when git is
+  installed, against the real one on a repository made for the test; file round trips; a crashing child
+  process whose recovery files must equal a save byte for byte; and a harness that posts
   real key messages through the window procedure on US, UK, Turkish Q and Finnish keyboard layouts.
 - `--fuzz-seeds` runs every seeded test group for hundreds of seeds; `--soak` sends a million random keys,
   clicks and resizes through the app, checking its invariants, its memory, its handles and threads and its
   speed as it goes.
-- `--leak-check` repeats 24 operations (files, windows, prompts, searches, the project finder, project
-  searches, builds, multiple cursors, the command list, undo, config reloads, files changed on disk) hundreds of times and
+- `--leak-check` repeats 26 operations (files, windows, prompts, searches, the project finder, project
+  searches, builds, multiple cursors, the command list, the git changes view, undo, config reloads, files changed
+  on disk) hundreds of times and
   checks that memory, handles, threads, the glyph atlas and Direct3D objects stop growing; every exit of a
   dev build checks that nothing of ronin's is left (Direct3D objects, memory, handles).
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
   the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors, the command list
-  and the frame under it after it closes), the D3D11 debug layer and
+  and the frame under it after it closes, the git changes view with the real git), the D3D11 debug layer and
   leaks (processes, threads and handles too).
 - Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans, the
-  project-wide search, a build's output, typing at up to 10,000 cursors on a 100 MB file or tree, and the
-  command list's filter.
+  project-wide search, a build's output, typing at up to 10,000 cursors on a 100 MB file or tree, the
+  command list's filter, and git's output parsed and copied into the git changes view.
 - `verify.bat` builds the three configurations, checks `build.bat clean` on a scratch tree, runs the
   smoke and the tests, checks the release exe's imported DLLs against a committed list and prints one
   PASS or FAIL line; it is the gate before every
