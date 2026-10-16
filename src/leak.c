@@ -116,7 +116,8 @@ static void leak_fail(Leak *L, const char *what, String8 detail) {
 // Workers, prompts and timers that still have something to do: the app is not settled.
 static b32 leak_busy(App *app) {
     b32 busy = app_wants_frame(app) || app_dev_results_busy(app) || app_dev_compile_busy(app) || app->finder.dying_count > 0 ||
-               app_wait_ms(app) != CONFIG_WAIT_INFINITE || cursor_job_pending(&app->cursor_job) || replace_pending(&app->replace);
+               app_wait_ms(app) != CONFIG_WAIT_INFINITE || cursor_job_pending(&app->cursor_job) || replace_pending(&app->replace) ||
+               app_dev_git_busy(app);
     for (i32 i = 0; i < PROJECT_KEPT; i++) busy |= app->finder.projects[i].scan != NULL;
     return busy;
 }
@@ -236,9 +237,9 @@ static String8 leak_state(Leak *L, Arena *a) {
     i32 running = 0, scans = 0;
     for (i32 i = 0; i < RESULTS_MAX; i++) running += app->results[i].buffer && app->results[i].running;
     for (i32 i = 0; i < PROJECT_KEPT; i++) scans += app->finder.projects[i].scan != NULL;
-    s = str8_fmt(a, "%S; modal %d minibuffer %d isearch %d replace %d cursor job %d; running %d scans %d dying %d %d %d", s,
+    s = str8_fmt(a, "%S; modal %d minibuffer %d isearch %d replace %d cursor job %d; running %d scans %d dying %d %d %d; git %d %d %d", s,
                  app->modal.active, app->mini.active, app->isearch.active, (i32)app->replace.state, (i32)app->cursor_job.kind, running, scans, app->finder.dying_count,
-                 app->grep_dying_count, app->compile_dying_count);
+                 app->grep_dying_count, app->compile_dying_count, app->git.pending != NULL, app->git.view != NULL, app->git.dying_count);
     return s;
 }
 
@@ -437,6 +438,47 @@ static b32 leak_modal_browse_cycle(Leak *L) {
 static b32 leak_modal_run_cycle(Leak *L) {
     return leak_keys(L, "C-S-p g o t o - l i n e RET") && !L->app->modal.active && L->app->mini.active && leak_keys(L, "C-g") &&
            !L->app->mini.active;
+}
+
+// The git changes view with the fake git (tmp\leak\git: two changed files): open, a diff each, TAB, scroll, close (the
+// frame and the state as before the first cycle); and opened, then closed while its status still runs (tmp\leak\git_hang):
+// git cancelled, its job freed when it ended.
+static b32 leak_git_use(Leak *L, const char *name) {
+    App *app = L->app;
+    app->git.dev_program = os_dev_exe_path(L->arena);
+    app->git.dev_prefix = str8_fmt(L->arena, "--fake-git \"%S\\%s\"", L->dir, name);
+    app->git.dev_env = str8(NULL, 0);
+    echo_clear(&app->echo);
+    return 1;
+}
+
+static b32 leak_git_setup(Leak *L) {
+    return leak_git_use(L, "git");
+}
+
+static b32 leak_git_hang_setup(Leak *L) {
+    return leak_git_use(L, "git_hang");
+}
+
+static void leak_git_teardown(Leak *L) {
+    L->app->git.dev_program = L->app->git.dev_prefix = str8(NULL, 0);
+}
+
+static b32 leak_git_open(Leak *L) {
+    return modal_active(L->app);
+}
+
+static b32 leak_git_browse_cycle(Leak *L) {
+    if (!leak_keys(L, "C-x g") || !modal_active(L->app) || !L->app->git.view || L->app->git.view->count != 2) return 0;
+    return leak_keys(L, "<down> TAB <down> C-v M-v TAB <up>") && modal_active(L->app) && leak_keys(L, "C-g") && !modal_active(L->app);
+}
+
+static b32 leak_git_cancel_cycle(Leak *L) {
+    leak_feed(L, STR8_LIT("C-x g"), 1);
+    if (!leak_wait(L, leak_git_open, "the box (rev-parse answered, status hanging)")) return 0;
+    if (!L->app->git.view || !L->app->git.view->status_job) return 0;
+    leak_feed(L, STR8_LIT("C-g"), 1);
+    return !modal_active(L->app) && L->app->git.dying_count == 1 && leak_settle(L) && !L->app->git.dying_count;
 }
 
 static b32 leak_find_file_prompt_cycle(Leak *L) {
@@ -670,6 +712,8 @@ static const LeakScenario leak_scenarios[] = {
     { "multi-cursor-cycle", NULL, leak_cursors_cycle, NULL, 0, 0, 0 },
     { "modal-cycle/browse", leak_modal_setup, leak_modal_browse_cycle, NULL, 0, 1, 1 },
     { "modal-cycle/run", NULL, leak_modal_run_cycle, NULL, 0, 0, 0 },
+    { "git-cycle/browse", leak_git_setup, leak_git_browse_cycle, leak_git_teardown, 0, 1, 1 },
+    { "git-cycle/cancel", leak_git_hang_setup, leak_git_cancel_cycle, leak_git_teardown, 0, 0, 1 },
     { "undo-cycle", leak_undo_setup, leak_undo_cycle, leak_undo_teardown, 0, 0, 1 },
     { "finder-cycle/open", leak_project_setup, leak_finder_open_cycle, leak_kill_teardown, 0, 0, 0 },
     { "finder-cycle/cancel", leak_project_setup, leak_finder_cancel_cycle, leak_kill_teardown, 0, 0, 0 },
@@ -718,6 +762,25 @@ String8 leak_prepare(Arena *arena, String8 tmp_dir) {
     leak_write_if_changed(arena, str8_fmt(arena, "%S\\ext\\ext.txt", dir), STR8_LIT(LEAK_EXT_TEXT));
     leak_write_if_changed(arena, str8_fmt(arena, "%S\\replace.txt", dir), STR8_LIT("foo one\nfoo two\nfoo three\n"));
     leak_write_if_changed(arena, str8_fmt(arena, "%S\\undo.txt", dir), STR8_LIT("undo-cycle types before this line\n"));
+    // git-cycle's fake gits: git (two changed files, their diffs) and git_hang (its status never answers).
+    String8 fwd = str8_copy(arena, dir);
+    for (i64 i = 0; i < fwd.len; i++) if (fwd.data[i] == '\\') fwd.data[i] = '/';
+    static const char *const fakes[] = { "git", "git_hang" };
+    for (i32 k = 0; k < 2; k++) {
+        String8 g = str8_fmt(arena, "%S\\%s", dir, fakes[k]);
+        os_make_dir(g);
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\a.c", g), STR8_LIT("int a;\n"));
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\b.c", g), STR8_LIT("int b;\n"));
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\rev.txt", g), str8_fmt(arena, "out %S/%s\n", fwd, fakes[k]));
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\status.txt", g),
+                              k ? STR8_LIT("hang\n") : STR8_LIT("raw ## main\\x00 M a.c\\x00 M b.c\\x00\n"));
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\a.txt", g),
+                              STR8_LIT("raw diff --git a/a.c b/a.c\\n--- a/a.c\\n+++ b/a.c\\n@@ -1 +1 @@\\n-int A;\\n+int a;\\n\n"));
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\b.txt", g),
+                              STR8_LIT("raw diff --git a/b.c b/b.c\\n--- a/b.c\\n+++ b/b.c\\n@@ -1 +1 @@\\n-int B;\\n+int b;\\n\n"));
+        leak_write_if_changed(arena, str8_fmt(arena, "%S\\map.txt", g),
+                              STR8_LIT("rev-parse\trev.txt\nstatus\tstatus.txt\n-- a.c\ta.txt\n-- b.c\tb.txt\n"));
+    }
     // search.txt: "word" on each of 2,000 lines; cursors.txt: "needle" 1,000 times, once a line.
     u64 mark = arena_pos(arena);
     i64 cap = KB(128), n = 0;
