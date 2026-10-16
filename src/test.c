@@ -12969,6 +12969,11 @@ static b32 test_git_parse(Test *t) {
         got = test_git_status_text(&t->arena, &st);
         TEST_CHECK(t, str8_equal(got, str8_cstr(branches[i].want)), "git parse: status %d:\n%S", i, got);
     }
+    // A warning between a rename's record and its source: the source is what follows it.
+    static const u8 renamed[] = "## main\0R  new.c\0warning: in the working copy of 'old.c', LF will be replaced by CRLF\nold.c\0 M b.c\0";
+    git_parse_status(&t->arena, str8((u8 *)renamed, sizeof(renamed) - 1), 5000, &st);
+    got = test_git_status_text(&t->arena, &st);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("branch 'main'\nR |new.c|old.c\n M|b.c|\n")), "git parse: a warning before a source:\n%S", got);
     // The file limit: 5,001 records give 5,000 and the cut; exactly 5,000 no cut.
     for (i32 extra = 0; extra < 2; extra++) {
         String8 many = str8(PUSH_ARRAY(&t->arena, u8, 5001 * 12), 0);
@@ -13017,6 +13022,9 @@ static b32 test_git_parse(Test *t) {
         { "warning: in the working copy of 'a.c', LF will be replaced by CRLF the next time Git touches it\ndiff --git a/a.c b/a.c\n"
           "@@ -1 +1,2 @@\n a\n+warning: x\n",
           "H diff --git a/a.c b/a.c\n@ @@ -1 +1,2 @@\nT  a\n+ +warning: x\nfirst 2" },
+        // A warning between two body lines: skipped, the counts untouched (the hunk keeps its last lines).
+        { "@@ -1,2 +1,2 @@\n a\nwarning: in the working copy of 'a.c', LF will be replaced by CRLF\n-b\n+B\n",
+          "@ @@ -1,2 +1,2 @@\nT  a\n- -b\n+ +B\nfirst 2" },
         // No trailing newline; empty output.
         { "@@ -1 +1 @@\n-a\n+b", "@ @@ -1 +1 @@\n- -a\n+ +b\nfirst 1" },
         { "", "first 0" },
@@ -13079,7 +13087,8 @@ static b32 test_git_parse(Test *t) {
                "git parse: not a git repository");
     LOG("test: ok: git parse (status records, renames and copies, a UTF-8 path, the branch forms, no commits yet, the file limit; "
         "two hunks, -- and ++ lines inside a hunk, CRLF, no newline, new, deleted, renamed, binary and mode-only files, two files, "
-        "the first changed line, the line limit, a long line; the error line and its cut, not a git repository)");
+        "the first changed line, the line limit, a long line; git's warnings before a record, before a rename's source and "
+        "between two hunk-body lines; the error line and its cut, not a git repository)");
     return 1;
 }
 
@@ -13366,8 +13375,10 @@ static String8 test_git_view_fake(Test *t, const char *name, const char *status)
         "--no-index", "raw diff --git a/notes.txt b/notes.txt\\nnew file mode 100644\\n--- /dev/null\\n+++ b/notes.txt\\n@@ -0,0 +1,2 @@\\n+one\\n+two\\n\nexit 1\n",
         "-M --", "raw diff --git a/old name.c b/new name.c\\nsimilarity index 90%\\nrename from old name.c\\nrename to new name.c\\n"
                  "@@ -1,2 +1,2 @@\\n-x\\n+y\\n z\\n\n",
-        "-- a.c", "raw diff --git a/a.c b/a.c\\nindex 1111111..2222222 100644\\n--- a/a.c\\n+++ b/a.c\\n@@ -1,4 +1,4 @@\\n line 1\\n line 2\\n"
-                  "-line 3\\n+LINE 3\\n line 4\\n@@ -8,2 +8,3 @@\\n line 8\\n+\\tinserted\\n line 9\\n\n",
+        // git's stderr between two body lines (the shared pipe): not a row, the hunk's counts untouched.
+        "-- a.c", "raw diff --git a/a.c b/a.c\\nindex 1111111..2222222 100644\\n--- a/a.c\\n+++ b/a.c\\n@@ -1,4 +1,4 @@\\n line 1\\n line 2\\n\n"
+                  "rawerr warning: in the working copy of 'a.c', LF will be replaced by CRLF the next time Git touches it\\n\n"
+                  "raw -line 3\\n+LINE 3\\n line 4\\n@@ -8,2 +8,3 @@\\n line 8\\n+\\tinserted\\n line 9\\n\n",
         "-- gone.c", "raw diff --git a/gone.c b/gone.c\\ndeleted file mode 100644\\n--- a/gone.c\\n+++ /dev/null\\n@@ -1 +0,0 @@\\n-bye\\n\n",
         "\xc4\x9f.c", "raw @@ -2 +2 @@\\n-a\\n+b\\n\n",
         "img.png", "raw diff --git a/img.png b/img.png\\nindex 1..2 100644\\nBinary files a/img.png and b/img.png differ\\n\n",
@@ -13521,7 +13532,8 @@ static b32 test_git_changes(Test *t) {
     TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0 &&
                       os_dev_live_handles() == ledger0, "git changes: counters back (%d processes, %d threads, %d events, ledger %d -> %d)",
                os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events(), ledger0, os_dev_live_handles());
-    LOG("test: ok: git changes (opened after rev-parse, the rows and the status line, a diff with kinds; each diff fetched once per open, "
+    LOG("test: ok: git changes (opened after rev-parse, the rows and the status line, a diff with kinds and git's warning on stderr "
+        "between two of its body lines; each diff fetched once per open, "
         "none for the files passed over; a deleted file refused; a diff copied over frames, the cut; TAB, scrolling, the wheel; CRLF; a "
         "reload; refusals; g; RET at the first change for a modified, an untracked, a renamed and a binary file; the minibuffer; C-g while "
         "pending; nothing left)");
