@@ -137,6 +137,7 @@ typedef struct Platform {
     b32 bench_cursors;
     b32 bench_longline;
     b32 bench_modal;
+    b32 bench_git;
     b32 dev_crash;           // --crash: an access violation after --keys (the recovery files' test)
     String8 recovery_arg;    // --recovery-dir DIR
     String8 screenshot_path;
@@ -2096,7 +2097,7 @@ void os_fatal(String8 message) {
                        g_platform->bench_text || g_platform->bench_buffer || g_platform->bench_view ||
                        g_platform->bench_edit || g_platform->bench_complete || g_platform->bench_syntax || g_platform->bench_search || g_platform->bench_windows ||
                        g_platform->bench_project || g_platform->bench_grep || g_platform->bench_compile || g_platform->bench_cursors ||
-                       g_platform->bench_modal)) interactive = 0;
+                       g_platform->bench_modal || g_platform->bench_git)) interactive = 0;
 #endif
     if (g_platform && g_platform->startup_ms) interactive = 0;
     if (interactive) {
@@ -4787,6 +4788,158 @@ static void win32_bench_modal(Platform *p) {
     r_dev_set_present_interval(p->renderer, 1);
 }
 
+// --bench-git: the parsers on generated output in memory (no process): a 50,000-line diff and a 5,000-entry status, 20
+// runs each, median and max; then a 20,000-line diff copied into the open git changes view (the fake git in
+// tmp\p19bench answers it): the frames the copy takes, its longest slice and the longest frame build while it runs,
+// over 5 rounds. Exit 9 when a slice passes 2.5 ms (the frame's 2 ms background budget, checked every 256 lines).
+static void win32_bench_git_frame(Platform *p) {
+    win32_bench_pump();
+    p->event_count = 0;
+    FrameInput input = win32_frame_input(p);
+    app_update_and_render(p->app, &input, p->renderer);
+    arena_reset(&p->scratch);
+    r_dev_take_frame_stats(p->renderer);
+}
+
+static void win32_bench_git(Platform *p) {
+    r_dev_set_present_interval(p->renderer, 0);
+    win32_bench_log_display(p);
+    Arena *a = &p->perm;
+    enum { RUNS = 20, ROUNDS = 5 };
+    // The diff: one file, hunks of 166 context, 166 removed and 166 added lines (about 60 bytes each), 50,000 lines.
+    i64 cap = MB(8), n = 0, lines = 4;
+    u8 *buf = PUSH_ARRAY(a, u8, cap);
+    n += fmt_buf(buf + n, cap - n, "diff --git a/big.c b/big.c\nindex 1111111..2222222 100644\n--- a/big.c\n+++ b/big.c\n");
+    for (i64 h = 0; lines < 50000; h++) {
+        n += fmt_buf(buf + n, cap - n, "@@ -%D,332 +%D,332 @@ int function_%D(void) {\n", h * 400 + 1, h * 400 + 1, h);
+        lines++;
+        for (i32 k = 0; k < 498 && lines < 50000; k++, lines++) {
+            n += fmt_buf(buf + n, cap - n, "%c    total += compute_value(table[%d], offset + %D, flags);\n", " -+"[k % 3], k, h);
+        }
+    }
+    String8 diff = str8(buf, n);
+    // The status: 5,000 files in 50 directories, every tenth a rename (its source after it).
+    u8 *sbuf = PUSH_ARRAY(a, u8, MB(1));
+    i64 sn = 0;
+    sn += fmt_buf(sbuf + sn, 64, "## main...origin/main") + 1;
+    for (i32 i = 0; i < 5000; i++) {
+        if (i % 10 == 9) {
+            sn += fmt_buf(sbuf + sn, 96, "R  src/dir%02d/renamed_file_%05d.c", i % 50, i) + 1;
+            sn += fmt_buf(sbuf + sn, 96, "src/dir%02d/original_file_%05d.c", i % 50, i) + 1;
+        } else {
+            sn += fmt_buf(sbuf + sn, 96, "%s src/dir%02d/source_file_%05d.c", i % 7 ? " M" : "??", i % 50, i) + 1;
+        }
+    }
+    String8 status = str8(sbuf, sn);
+    Arena pa = arena_create(MB(64));
+    u64 diff_us[RUNS], status_us[RUNS];
+    i64 diff_lines = 0, status_files = 0;
+    for (i32 r = 0; r < RUNS; r++) {
+        GitDiff d;
+        u64 t0 = os_time_us();
+        git_parse_diff(&pa, diff, 1000000, &d);
+        diff_us[r] = os_time_us() - t0;
+        diff_lines = d.count;
+        arena_reset(&pa);
+        GitStatus st;
+        t0 = os_time_us();
+        git_parse_status(&pa, status, 5000, &st);
+        status_us[r] = os_time_us() - t0;
+        status_files = st.count;
+        arena_reset(&pa);
+    }
+    os_release(pa.base);
+    win32_bench_sort(diff_us, RUNS);
+    win32_bench_sort(status_us, RUNS);
+    LOG("bench-git: parse a %D-line diff (%D bytes), %d runs: median %U us, max %U us", diff_lines, diff.len, RUNS, diff_us[RUNS / 2],
+        diff_us[RUNS - 1]);
+    LOG("bench-git: parse a %D-file status (%D bytes), %d runs: median %U us, max %U us", status_files, status.len, RUNS, status_us[RUNS / 2],
+        status_us[RUNS - 1]);
+    b32 failed = diff_lines != 50000 || status_files != 5000;
+    // The copy: the fake git's 20,000-line diff of one file.
+    String8 dir = str8_fmt(a, "%S\\tmp\\p19bench", p->exe_dir), fwd = str8_copy(a, dir);
+    for (i64 i = 0; i < fwd.len; i++) if (fwd.data[i] == '\\') fwd.data[i] = '/';
+    os_make_dir(dir);
+    os_write_file(str8_fmt(a, "%S\\rev.txt", dir), str8_fmt(a, "out %S\n", fwd));
+    os_write_file(str8_fmt(a, "%S\\status.txt", dir), STR8_LIT("raw ## main\\x00 M big.c\\x00\n"));
+    os_write_file(str8_fmt(a, "%S\\diff.txt", dir),
+                  STR8_LIT("raw diff --git a/big.c b/big.c\\n--- a/big.c\\n+++ b/big.c\\n@@ -0,0 +1,19996 @@\\n\n"
+                           "repeat 19996 +    total += compute_value(table[k], offset + n, flags); // line \n"));
+    os_write_file(str8_fmt(a, "%S\\map.txt", dir), STR8_LIT("rev-parse\trev.txt\nstatus\tstatus.txt\ndiff\tdiff.txt\n"));
+    App *app = p->app;
+    app->git.dev_program = os_dev_exe_path(a);
+    app->git.dev_prefix = str8_fmt(a, "--fake-git \"%S\"", dir);
+    u64 frames[ROUNDS], slice[ROUNDS], build[ROUNDS], shown[ROUNDS];
+    i32 rounds = 0;
+    for (i32 round = 0; round < ROUNDS && !failed; round++) {
+        Event e[4];
+        i32 ne = app_dev_key_events(app, STR8_LIT("C-x g"), e, ARRAY_COUNT(e));
+        for (i32 i = 0; i < ne; i++) {
+            win32_bench_pump();
+            p->events[0] = e[i];
+            p->event_count = 1;
+            FrameInput input = win32_frame_input(p);
+            app_update_and_render(app, &input, p->renderer);
+            p->event_count = 0;
+            arena_reset(&p->scratch);
+            r_dev_take_frame_stats(p->renderer);
+        }
+        // git's answers, without frames: the diff is in when its copy is about to start.
+        u64 deadline = os_time_us() + 20000000;
+        while (os_time_us() < deadline && !(app->git.view && app->git.view->copy_job)) {
+            if (os_dev_wake_wait(5)) app_wake(app);
+        }
+        GitView *v = app->git.view;
+        if (!v || !v->copy_job) {
+            LOG("bench-git: FAIL: round %d: the diff did not come", round);
+            failed = 1;
+            break;
+        }
+        app->git.dev_copy_max_us = 0;
+        u64 f = 0, bmax = 0;
+        while (v->copy_job && f < 10000) {
+            win32_bench_git_frame(p);
+            bmax = MAX(bmax, app_dev_build_us(app));
+            f++;
+        }
+        win32_bench_git_frame(p); // the box with the whole diff
+        frames[rounds] = f;
+        slice[rounds] = app->git.dev_copy_max_us;
+        build[rounds] = bmax;
+        shown[rounds] = app_dev_build_us(app);
+        rounds++;
+        LOG("bench-git: round %d: %D lines copied in %U frame(s), the longest slice %U us, the longest frame build %U us, then %U us",
+            round, v->rows[0].count, f, slice[rounds - 1], bmax, shown[rounds - 1]);
+        failed |= v->rows[0].count != 20000 || slice[rounds - 1] > 2500;
+        ne = app_dev_key_events(app, STR8_LIT("C-g"), e, ARRAY_COUNT(e));
+        p->events[0] = e[0];
+        p->event_count = 1;
+        FrameInput input = win32_frame_input(p);
+        app_update_and_render(app, &input, p->renderer);
+        p->event_count = 0;
+        arena_reset(&p->scratch);
+        for (u64 k = 0; k < 4000 && app_dev_git_busy(app); k++) {
+            if (os_dev_wake_wait(5)) app_wake(app);
+        }
+    }
+    if (rounds) {
+        win32_bench_sort(frames, rounds);
+        win32_bench_sort(slice, rounds);
+        win32_bench_sort(build, rounds);
+        win32_bench_sort(shown, rounds);
+        LOG("bench-git: the copy of a 20,000-line diff, %d rounds: frames median %U (max %U), the longest slice median %U us (max %U us), "
+            "the longest frame build median %U us (max %U us), the frame with the whole diff median %U us (max %U us)", rounds,
+            frames[rounds / 2], frames[rounds - 1], slice[rounds / 2], slice[rounds - 1], build[rounds / 2], build[rounds - 1],
+            shown[rounds / 2], shown[rounds - 1]);
+    }
+    app->git.dev_program = app->git.dev_prefix = str8(NULL, 0);
+    if (failed) {
+        LOG("bench-git: FAIL: %s", rounds < ROUNDS ? "a round did not run" : "a slice passed 2.5 ms, or a count was wrong");
+        p->exit_code = EXIT_TEST;
+    }
+    r_dev_set_present_interval(p->renderer, 1);
+}
+
 // --bench-project, scanning: a project scan of `root` through the app, waited for; its numbers.
 static void win32_bench_scan(Platform *p, String8 root, const char *what) {
     u64 before = os_dev_private_bytes(), t0 = os_time_us();
@@ -6209,7 +6362,7 @@ static i32 win32_dev_exit_check(Platform *p) {
 
 static b32 win32_dev_batch_mode(Platform *p) {
     return p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || p->type_ahead_check || p->dpi_check.len || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
-           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors || p->bench_modal ||
+           p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors || p->bench_modal || p->bench_git ||
            p->screenshot_path.len ||
            p->atlas_path.len;
 }
@@ -6369,7 +6522,7 @@ static b32 win32_dev_user_config(const Platform *p) {
     return !(p->smoke || p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete ||
              p->bench_syntax || p->bench_search || p->bench_windows || p->bench_project || p->bench_grep ||
              p->bench_compile || p->bench_cursors || p->bench_longline || p->memory_report || p->bench_latency ||
-             p->startup_capture || p->type_ahead_check || p->leak_check || p->bench_modal);
+             p->startup_capture || p->type_ahead_check || p->leak_check || p->bench_modal || p->bench_git);
 }
 
 // --test: command lines through win32_file_arg / win32_files_done.
@@ -6423,7 +6576,7 @@ static i32 win32_dev_test_args(Platform *p) {
     b32 *builtin[] = { &q->smoke, &q->bench_text, &q->bench_buffer, &q->bench_view, &q->bench_edit, &q->bench_complete,
                        &q->bench_syntax, &q->bench_search, &q->bench_windows, &q->bench_project, &q->bench_grep,
                        &q->bench_compile, &q->bench_cursors, &q->bench_longline, &q->memory_report, &q->bench_latency,
-                       &q->startup_capture, &q->type_ahead_check, &q->leak_check, &q->bench_modal };
+                       &q->startup_capture, &q->type_ahead_check, &q->leak_check, &q->bench_modal, &q->bench_git };
     b32 config_ok = win32_dev_user_config(q);
     q->idle_check = 1;
     q->screenshot_path = STR8_LIT("x.png");
@@ -6556,6 +6709,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--bench-edit"))) { p->bench_edit = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-complete"))) { p->bench_complete = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-modal"))) { p->bench_modal = 1; continue; }
+        if (str8_equal(a, STR8_LIT("--bench-git"))) { p->bench_git = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-syntax"))) { p->bench_syntax = 1; continue; }
         if (str8_equal(a, STR8_LIT("--bench-longline"))) { p->bench_longline = 1; continue; }
         if (str8_equal(a, STR8_LIT("--crash"))) { p->dev_crash = 1; continue; }
@@ -6646,7 +6800,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_longline ? "bench-longline" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
-                                   : p->bench_cursors ? "bench-cursors" : p->bench_modal ? "bench-modal"
+                                   : p->bench_cursors ? "bench-cursors" : p->bench_modal ? "bench-modal" : p->bench_git ? "bench-git"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
     // Tests, the smoke, benches and screenshots never touch the real clipboard.
     if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
@@ -6822,7 +6976,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #if RONIN_DEV
     b32 bench = p->bench_text || p->bench_buffer || p->bench_view || p->bench_edit || p->bench_complete || p->bench_syntax || p->bench_longline ||
                 p->bench_search || p->bench_windows || p->bench_project || p->bench_grep || p->bench_compile || p->bench_cursors ||
-                p->bench_modal;
+                p->bench_modal || p->bench_git;
     show_early = show_early && !(p->smoke || p->leak_check || p->dev_crash || p->idle_check || p->memory_report || p->bench_latency || p->startup_capture || bench || p->screenshot_path.len || p->atlas_path.len || p->dpi_check.len);
 #endif
     if (show_early && !p->shown_early) {
@@ -6992,6 +7146,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     }
     if (p->bench_modal && !p->quit) {
         win32_bench_modal(p);
+        p->quit = 1;
+    }
+    if (p->bench_git && !p->quit) {
+        win32_bench_git(p);
         p->quit = 1;
     }
 #endif
