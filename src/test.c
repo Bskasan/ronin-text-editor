@@ -12331,8 +12331,8 @@ static b32 test_leak_metrics(Test *t, i32 ledger0) {
 
 typedef struct TestModal {
     Keymap keys;
-    i32 closed, accepts, accept_pane;
-    i64 accept_row;
+    i32 closed, accepts, accept_pane, selects, select_pane;
+    i64 accept_row, select_row;
     const Command *run; // accept: modal_run_after_close with it
 } TestModal;
 
@@ -12350,6 +12350,19 @@ static void test_modal_accept(App *app, void *data, i32 pane, i64 row) {
 static void test_modal_closed(App *app, void *data) {
     (void)app;
     ((TestModal *)data)->closed++;
+}
+static void test_modal_selected(App *app, void *data, i32 pane, i64 row) {
+    (void)app;
+    TestModal *tm = data;
+    tm->selects++;
+    tm->select_pane = pane;
+    tm->select_row = row;
+}
+static String8 test_modal_status(App *app, void *data, Arena *scratch) {
+    (void)app;
+    (void)data;
+    (void)scratch;
+    return STR8_LIT("status");
 }
 
 static b32 test_modal_rect_is(Rect r, f32 x0, f32 y0, f32 x1, f32 y1) {
@@ -12507,6 +12520,53 @@ static b32 test_modal_layer(Test *t) {
     TEST_CHECK(t, !modal_active(app) && view_point(v, view_primary(v)) == 14, "modal: accept ran end-of-buffer after closing (%D)",
                view_point(v, view_primary(v)));
     tm->run = NULL;
+    // Phase 19's shape: a status line instead of a field (90 / 80 / 30: 39 rows less the status line and its
+    // separator, 37 list rows; y (784 - 611) / 2 = 86), the right pane without a selection (it scrolls), the
+    // owner told of every selection that moved.
+    ModalSpec git = spec;
+    git.width_pct = 90;
+    git.height_pct = 80;
+    git.pane_split_pct = 30;
+    git.status_line = 1;
+    git.scroll_panes = 1u << 1;
+    git.selected = test_modal_selected;
+    git.status = test_modal_status;
+    TEST_CHECK(t, modal_open(app, &git), "modal: status line: did not open");
+    modal_set_rows(app, 0, 10);
+    modal_set_rows(app, 1, 100);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, test_modal_rect_is(g->box, 64, 86, 1216, 697) && test_modal_rect_is(g->field, 65, 87, 1215, 103) && g->rows == 37 &&
+                      test_modal_rect_is(g->panes[0], 65, 104, 409, 696) && test_modal_rect_is(g->panes[1], 410, 104, 1215, 696),
+               "modal: status line: box %f %f %f %f, line %f %f, %d rows, panes %f-%f %f-%f", g->box.x0, g->box.y0, g->box.x1, g->box.y1,
+               g->field.y0, g->field.y1, g->rows, g->panes[0].y0, g->panes[0].y1, g->panes[1].x0, g->panes[1].y1);
+    TEST_CHECK(t, m->lists[0].selected == 0 && m->lists[1].selected == -1 && tm->selects == 0, "modal: scroll pane: selections %D %D",
+               m->lists[0].selected, m->lists[1].selected);
+    app_dev_feed(app, "<down> <up> <up>", &t->arena);
+    TEST_CHECK(t, tm->selects == 2 && tm->select_pane == 0 && tm->select_row == 0 && m->lists[0].selected == 0,
+               "modal: selected: %d calls, the last pane %d row %D", tm->selects, tm->select_pane, tm->select_row);
+    app_dev_feed(app, "TAB <down> <down>", &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 2 && m->lists[1].selected == -1 && tm->selects == 2, "modal: scroll pane: <down> twice: top %D",
+               m->lists[1].top);
+    app_dev_feed(app, "C-v", &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 39, "modal: scroll pane: C-v: top %D", m->lists[1].top);
+    app_dev_feed(app, "C-v C-v", &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 63, "modal: scroll pane: the last page stays full: top %D", m->lists[1].top);
+    app_dev_feed(app, "M-v RET", &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 26 && tm->accept_pane == 1 && tm->accept_row == 26 && modal_active(app),
+               "modal: scroll pane: RET accepts its top row (%d, %D)", tm->accept_pane, tm->accept_row);
+    test_modal_click(t, app, 100, 104 + 3 * 16 + 5, 1);
+    TEST_CHECK(t, modal_focus_pane(app) == 0 && m->lists[0].selected == 3 && tm->selects == 3 && tm->select_row == 3,
+               "modal: a click selects row 3 and says so (%d)", tm->selects);
+    test_modal_click(t, app, 300, 90, 1);
+    TEST_CHECK(t, modal_active(app) && modal_focus_pane(app) == 0 && m->lists[0].selected == 3, "modal: a click on the status line");
+    test_modal_click(t, app, 600, 104 + 2 * 16 + 5, 2);
+    TEST_CHECK(t, modal_focus_pane(app) == 1 && m->lists[1].selected == -1 && tm->accept_pane == 1 && tm->accept_row == 28,
+               "modal: a double click on the scroll pane accepts row %D", tm->accept_row);
+    modal_grow_rows(app, 1, 120);
+    modal_grow_rows(app, 0, 12);
+    TEST_CHECK(t, m->lists[1].count == 120 && m->lists[1].top == 26 && m->lists[1].selected == -1 && m->lists[0].count == 12 &&
+                      m->lists[0].selected == 3, "modal: rows grown");
+    modal_close(app);
     // Not over the minibuffer; the layer's commands outside a modal.
     app_dev_feed(app, "M-x", &t->arena);
     TEST_CHECK(t, app->mini.active && !modal_open(app, &spec) && test_app_echo_is(app, "The test modal is not available in the minibuffer"),
@@ -12517,7 +12577,7 @@ static b32 test_modal_layer(Test *t) {
     if (!test_app_destroy(t, app, "modal")) return 0;
     LOG("test: ok: modal layer (geometry at 70/60/50 and 90/80/30, a short box, the 40 x 6 minimum, movement, other pane, pages, "
         "refusals, a cancelled prefix, accept, mouse rows and double click, the wheel, a click outside, C-g, ESC, a resize, run after "
-        "close, the minibuffer)");
+        "close, the minibuffer; a status line, a scroll pane, the selection callback, rows grown)");
     return 1;
 }
 
