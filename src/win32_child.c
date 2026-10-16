@@ -22,6 +22,9 @@
 // arguments, joined by spaces, are appended as one line to DIR\calls.txt; the first line "KEY<TAB>SCRIPT" of
 // DIR\map.txt whose KEY is in them names the script (relative to DIR) run as --child runs one; with none,
 // "fatal: fake git: no answer" on stderr and exit code 128.
+//
+// --fake-terminal DIR PROGRAM CONSOLE ARGS... (Phase 20): the tests' terminal. Appends one line to DIR\calls.txt:
+// "<its working directory>|PROGRAM|CONSOLE|ARGS", ARGS exactly as they stand in its command line, and exits.
 
 #if RONIN_DEV
 
@@ -235,6 +238,48 @@ static i32 win32_dev_fake_git(Platform *p, String8 dir, String8 args) {
     static const u8 msg[] = "fatal: fake git: no answer\n";
     win32_child_write(STD_ERROR_HANDLE, msg, sizeof(msg) - 1);
     return 128;
+}
+
+static i32 win32_dev_fake_terminal(Platform *p, String8 dir) {
+    Arena *arena = &p->perm;
+    // The command line as it came (the quoting is what the tests check): after "--fake-terminal" and the quoted DIR.
+    WCHAR *raw16 = GetCommandLineW();
+    i64 raw_len = 0;
+    while (raw16[raw_len]) raw_len++;
+    String8 raw = str8_from_str16(arena, (u16 *)raw16, raw_len);
+    String8 key = STR8_LIT("--fake-terminal ");
+    i64 at = 0;
+    while (at + key.len <= raw.len && !mem_equal(raw.data + at, key.data, key.len)) at++;
+    at += key.len;
+    if (at < raw.len && raw.data[at] == '"') {
+        at++;
+        while (at < raw.len && raw.data[at] != '"') at++;
+        at++;
+    } else {
+        while (at < raw.len && raw.data[at] != ' ') at++;
+    }
+    if (at < raw.len && raw.data[at] == ' ') at++;
+    String8 rest = at < raw.len ? str8(raw.data + at, raw.len - at) : str8(NULL, 0);
+    String8 field[2] = { 0 };
+    for (i32 f = 0; f < 2; f++) {
+        i64 sp = 0;
+        while (sp < rest.len && rest.data[sp] != ' ') sp++;
+        field[f] = str8(rest.data, sp);
+        rest = sp < rest.len ? str8(rest.data + sp + 1, rest.len - sp - 1) : str8(NULL, 0);
+    }
+    WCHAR cwd16[MAX_PATH * 2];
+    DWORD n = GetCurrentDirectoryW(ARRAY_COUNT(cwd16), cwd16);
+    String8 cwd = str8_from_str16(arena, (u16 *)cwd16, n < ARRAY_COUNT(cwd16) ? n : 0);
+    // One line, one append: terminals started at once never mix their lines.
+    String8 line = str8_fmt(arena, "%S|%S|%S|%S\n", cwd, field[0], field[1], rest);
+    String16 calls16 = str16_from_str8(arena, str8_fmt(arena, "%S\\calls.txt", dir));
+    HANDLE calls = CreateFileW((WCHAR *)calls16.data, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (calls == INVALID_HANDLE_VALUE) return 95;
+    DWORD wrote = 0;
+    BOOL ok = WriteFile(calls, line.data, (DWORD)line.len, &wrote, NULL);
+    CloseHandle(calls);
+    return ok && (i64)wrote == line.len ? 0 : 95;
 }
 
 #endif

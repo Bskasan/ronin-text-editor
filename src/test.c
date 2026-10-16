@@ -5130,13 +5130,13 @@ static b32 test_config_minibuffer(Test *t) {
     TEST_CHECK(t, c->settings.completion_lines == 8 && c->settings.auto_revert && c->theme.prompt == 0x0fdfaf &&
                   c->theme.completion_selection == 0x0000ff && c->theme.completion_match == 0xffffff,
                "config minibuffer: defaults");
-    String8 user = STR8_LIT("[keys minibuffer]\nC-c a forward-char\n[keys global]\nC-c b backward-char\n[keys]\nC-c c next-line\n"
+    String8 user = STR8_LIT("[keys minibuffer]\nC-c e forward-char\n[keys global]\nC-c b backward-char\n[keys]\nC-c c next-line\n"
                             "[keys bogus]\nC-c d previous-line\n[keysminibuffer]\n[settings]\ncompletion_lines = 99\nauto_revert = false\n"
                             "[colors]\nprompt = #123456\n");
     config_parse(c, &t->arena, user, STR8_LIT("t.conf"));
     KeySeq a, b, d;
     const char *error;
-    key_seq_parse(STR8_LIT("C-c a"), &a, &error);
+    key_seq_parse(STR8_LIT("C-c e"), &a, &error); // C-c a is bound globally (open-ai-terminal)
     key_seq_parse(STR8_LIT("C-c b"), &b, &error);
     key_seq_parse(STR8_LIT("C-c d"), &d, &error);
     TEST_CHECK(t, keymap_get(&c->minibuffer, &a) == &CMD_FORWARD_CHAR && !keymap_get(&c->global, &a) &&
@@ -11175,6 +11175,250 @@ static b32 test_terminal_config(Test *t) {
     return 1;
 }
 
+// Phase 20: the tests' terminal in tmp\p20\<name> (calls.txt emptied), started by `app` instead of a real one, with wt.exe
+// "found".
+static String8 test_terminal_fake(Test *t, App *app, const char *name) {
+    os_make_dir(str8_fmt(&t->arena, "%S\\p20", t->tmp_dir));
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p20\\%s", t->tmp_dir, name));
+    os_make_dir(dir);
+    os_write_file(str8_fmt(&t->arena, "%S\\calls.txt", dir), str8(NULL, 0));
+    app->terminal.dev_program = os_dev_exe_path(&t->arena);
+    app->terminal.dev_prefix = str8_fmt(&t->arena, "--fake-terminal \"%S\"", dir);
+    app->terminal.dev_wt_present = 1;
+    return dir;
+}
+
+// The fake terminal's calls once there are `count` lines (10 s at most): the whole text, its line count in *lines.
+static String8 test_terminal_calls(Test *t, String8 dir, i64 count, i64 *lines) {
+    OsEvent tick;
+    os_event_create(&tick);
+    String8 path = str8_fmt(&t->arena, "%S\\calls.txt", dir), text = { 0 };
+    u64 deadline = os_time_us() + 10000 * 1000ull;
+    for (;;) {
+        text = str8(NULL, 0);
+        os_read_small_file(&t->arena, path, MB(4), &text);
+        *lines = 0;
+        for (i64 i = 0; i < text.len; i++) *lines += text.data[i] == '\n';
+        if (*lines >= count || os_time_us() > deadline) break;
+        os_event_wait(tick, 5);
+    }
+    os_event_destroy(tick);
+    return text;
+}
+
+// The next line of the fake terminal after the `*seen` already checked (empty when none came).
+static String8 test_terminal_next(Test *t, String8 dir, i64 *seen) {
+    i64 lines = 0;
+    String8 text = test_terminal_calls(t, dir, *seen + 1, &lines);
+    if (lines <= *seen) return str8(NULL, 0);
+    i64 at = 0;
+    for (i64 k = 0; k < *seen; k++) {
+        while (at < text.len && text.data[at] != '\n') at++;
+        at++;
+    }
+    i64 end = at;
+    while (end < text.len && text.data[end] != '\n') end++;
+    (*seen)++;
+    return str8(text.data + at, end - at);
+}
+
+// Phase 20: open-terminal and open-ai-terminal through the headless app with the fake terminal: the directories, the
+// command lines of every provider and program, the quoting, the messages and refusals, a reload, the guard, and 200
+// launches keeping nothing.
+static b32 test_terminal(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events(), ledger0 = os_dev_live_handles();
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "terminal: no app");
+    String8 dir = test_terminal_fake(t, app, "term");
+    Settings *s = &app->config->settings;
+    // A marker no directory above build\tmp has: the project below, and a file outside any project.
+    memcpy(s->project_markers, "p20-marker", 10);
+    s->project_markers_len = 10;
+    String8 root = str8_fmt(&t->arena, "%S\\term proj", dir), sub = str8_fmt(&t->arena, "%S\\sub", root);
+    String8 loose = str8_fmt(&t->arena, "%S\\loose", dir), semi = str8_fmt(&t->arena, "%S\\semi;colon", root);
+    os_make_dir(root);
+    os_make_dir(sub);
+    os_make_dir(loose);
+    os_make_dir(semi);
+    os_write_file(str8_fmt(&t->arena, "%S\\p20-marker", root), str8(NULL, 0));
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", sub), x_c = str8_fmt(&t->arena, "%S\\x.c", loose), s_c = str8_fmt(&t->arena, "%S\\s.c", semi);
+    os_write_file(a_c, STR8_LIT("int a;\n"));
+    os_write_file(x_c, STR8_LIT("int x;\n"));
+    os_write_file(s_c, STR8_LIT("int s;\n"));
+    String8 cmd = os_system_program(&t->arena, STR8_LIT("cmd.exe"));
+    String8 qcmd = terminal_quote_arg(&t->arena, cmd);
+    String8 dot = results_compile_dir(&t->arena, os_full_path(&t->arena, STR8_LIT(".")));
+    Buffer *scratch = buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*"));
+    i64 seen = 0;
+    u64 launches0 = app->terminal.dev_launches;
+    String8 line;
+#define TEST_TERMINAL_LINE(want, ...)                                                                                          \
+    do {                                                                                                                       \
+        line = test_terminal_next(t, dir, &seen);                                                                              \
+        String8 want_ = str8_fmt(&t->arena, want, __VA_ARGS__);                                                                \
+        TEST_CHECK(t, str8_equal(line, want_), "terminal: line %D:\n  got  '%S'\n  want '%S' (echo '%S')", seen, line, want_,  \
+                   test_echo(app));                                                                                            \
+    } while (0)
+    // open-terminal: the file's directory (also inside a project), else the command line's directory, else the current one.
+    TEST_CHECK(t, app_dev_visit(app, a_c), "terminal: cannot visit a.c");
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\"", sub, sub);
+    TEST_CHECK(t, str8_equal(test_echo(app), str8_fmt(&t->arena, "Opened terminal in %S", test_slashes(t, sub))),
+               "terminal: the echo '%S'", test_echo(app));
+    app_switch_buffer(app, app_selected_view(app), scratch);
+    memcpy(app->finder.cmdline_buf, root.data, (size_t)root.len);
+    app->finder.cmdline_dir = str8(app->finder.cmdline_buf, root.len);
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\"", root, root);
+    app->finder.cmdline_dir = str8(NULL, 0);
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\"", dot, dot);
+    // open-ai-terminal: the project's root, else the file's directory, else the default directory.
+    app_dev_visit(app, a_c);
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"claude\"", root, root, qcmd);
+    TEST_CHECK(t, str8_equal(test_echo(app), str8_fmt(&t->arena, "Opened claude in %S", test_slashes(t, root))),
+               "terminal: the AI echo '%S'", test_echo(app));
+    app_dev_visit(app, x_c);
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"claude\"", loose, loose, qcmd);
+    app_switch_buffer(app, app_selected_view(app), scratch);
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"claude\"", dot, dot, qcmd);
+    // The providers: openai, custom with and without ai_command, ai_command over a provider.
+    app_dev_visit(app, a_c);
+    s->ai_provider = AI_PROVIDER_OPENAI;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"codex\"", root, root, qcmd);
+    s->ai_provider = AI_PROVIDER_CUSTOM;
+    u64 before = app->terminal.dev_launches;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "ai_command is empty") && app->terminal.dev_launches == before, "terminal: custom without a command: '%S'",
+               test_echo(app));
+    memcpy(s->ai_command, "my-ai --x", 9);
+    s->ai_command_len = 9;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"my-ai --x\"", root, root, qcmd);
+    TEST_CHECK(t, str8_equal(test_echo(app), str8_fmt(&t->arena, "Opened my-ai --x in %S", test_slashes(t, root))),
+               "terminal: the custom echo '%S'", test_echo(app));
+    s->ai_provider = AI_PROVIDER_OPENAI;
+    memcpy(s->ai_command, "\"C:\\x y\\foo.exe\" --x", 20);
+    s->ai_command_len = 20;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"\"C:\\x y\\foo.exe\" --x\"", root, root, qcmd);
+    s->ai_command_len = 0;
+    s->ai_provider = AI_PROVIDER_CLAUDE;
+    // The program: auto without wt.exe is the classic console; wt asked for and missing says so; cmd while wt.exe is there.
+    app->terminal.dev_wt_present = 2;
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_TERMINAL_LINE("%S|cmd.exe|1|", sub);
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|cmd.exe|1|/s /k \"claude\"", root);
+    s->terminal_program = TERMINAL_PROGRAM_WT;
+    before = app->terminal.dev_launches;
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "Windows Terminal (wt.exe) not found") && app->terminal.dev_launches == before,
+               "terminal: wt missing: '%S'", test_echo(app));
+    app->terminal.dev_wt_present = 1;
+    s->terminal_program = TERMINAL_PROGRAM_CMD;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|cmd.exe|1|/s /k \"claude\"", root);
+    s->terminal_program = TERMINAL_PROGRAM_AUTO;
+    // The quoting: a drive root ("C:\\" for wt), a ';' escaped for wt only (in the directory and in the command).
+    String8 drive = str8_copy(&t->arena, str8(dot.data, 3));
+    app_switch_buffer(app, app_selected_view(app), scratch);
+    memcpy(app->finder.cmdline_buf, drive.data, 3);
+    app->finder.cmdline_dir = str8(app->finder.cmdline_buf, 3);
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\\\"", drive, drive);
+    app->finder.cmdline_dir = str8(NULL, 0);
+    app_dev_visit(app, s_c);
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\\;colon\"", semi, str8(semi.data, semi.len - 6));
+    memcpy(s->ai_command, "a;b", 3);
+    s->ai_command_len = 3;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"a\\;b\"", root, root, qcmd);
+    s->terminal_program = TERMINAL_PROGRAM_CMD;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|cmd.exe|1|/s /k \"a;b\"", root);
+    s->terminal_program = TERMINAL_PROGRAM_AUTO;
+    s->ai_command_len = 0;
+    // A program that cannot start: the Win32 error.
+    String8 fake = app->terminal.dev_program;
+    app->terminal.dev_program = str8_fmt(&t->arena, "%S\\no_terminal.exe", dir);
+    app_dev_feed(app, "C-c t", &t->arena);
+    TEST_CHECK(t, str8_equal(test_echo(app), str8_fmt(&t->arena, "Could not start %S: error 2", test_slashes(t, app->terminal.dev_program))),
+               "terminal: a program that cannot start: '%S'", test_echo(app));
+    // The guard: no fake in a test run, nothing starts, counted once.
+    app->terminal.dev_program = str8(NULL, 0);
+    u64 refused = app->dev_real_refused;
+    before = app->terminal.dev_launches;
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "terminal: no real terminal in a test run") && app->dev_real_refused == refused + 1 &&
+                      app->terminal.dev_launches == before, "terminal: the guard: '%S', refused %U", test_echo(app), app->dev_real_refused);
+    app->dev_real_refused = refused;
+    app->terminal.dev_program = fake;
+    // Refused in the minibuffer and in the command list.
+    app_dev_feed(app, "M-x C-c t", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "A terminal cannot be opened from the minibuffer"), "terminal: in the minibuffer: '%S'", test_echo(app));
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    app_dev_feed(app, "C-S-p C-c a", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_contains(test_echo(app), "open-ai-terminal is not available in the"), "terminal: in the command list: '%S'",
+               test_echo(app));
+    app_dev_feed(app, "C-g", &t->arena);
+    // A reload: the next C-c a runs the new ai_command.
+    String8 conf = test_results_conf(t, "p20term.conf", "[settings]\nai_provider = custom\nai_command = reloaded --yes\nproject_markers = p20-marker\n");
+    app_dev_use_config(app, conf);
+    app_dev_feed(app, "C-c a", &t->arena);
+    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"reloaded --yes\"", root, root, qcmd);
+    app_dev_use_config(app, str8(NULL, 0));
+    s = &app->config->settings;
+    memcpy(s->project_markers, "p20-marker", 10); // the reload put the built-in markers back
+    s->project_markers_len = 10;
+    // 100 launches of each: nothing kept open, then every line of the two kinds.
+    app_dev_visit(app, a_c);
+    i32 handles_first = 0, ledger1 = os_dev_live_handles(); // the app's own (its watches ...) included
+    for (i32 i = 0; i < 200; i++) {
+        app_dev_feed(app, i % 2 ? "C-c a" : "C-c t", &t->arena);
+        if (!i) handles_first = os_dev_handle_count();
+    }
+    TEST_CHECK(t, os_dev_live_handles() == ledger1 && os_dev_live_processes() == procs0 && os_dev_handle_count() <= handles_first,
+               "terminal: 200 launches: ledger %d -> %d, processes %d -> %d, handles %d -> %d", ledger1, os_dev_live_handles(), procs0,
+               os_dev_live_processes(), handles_first, os_dev_handle_count());
+    i64 lines = 0;
+    String8 calls = test_terminal_calls(t, dir, seen + 200, &lines);
+    String8 want_t = str8_fmt(&t->arena, "%S|wt.exe|0|-d \"%S\"\n", sub, sub);
+    String8 want_a = str8_fmt(&t->arena, "%S|wt.exe|0|-d \"%S\" %S /s /k \"claude\"\n", root, root, qcmd);
+    i64 kinds[3] = { 0 };
+    i64 at = 0;
+    for (i64 k = 0; k < seen; k++) {
+        while (at < calls.len && calls.data[at] != '\n') at++;
+        at++;
+    }
+    while (at < calls.len) {
+        i64 end = at;
+        while (end < calls.len && calls.data[end] != '\n') end++;
+        String8 l = str8(calls.data + at, end + 1 - at);
+        kinds[str8_equal(l, want_t) ? 0 : str8_equal(l, want_a) ? 1 : 2]++;
+        at = end + 1;
+    }
+    TEST_CHECK(t, lines == seen + 200 && kinds[0] == 100 && kinds[1] == 100 && !kinds[2] &&
+                      app->terminal.dev_launches - launches0 == (u64)lines,
+               "terminal: %D lines after the 200 launches (%D open-terminal, %D open-ai-terminal, %D other), %U launches", lines, kinds[0],
+               kinds[1], kinds[2], app->terminal.dev_launches - launches0);
+#undef TEST_TERMINAL_LINE
+    if (!test_app_destroy(t, app, "terminal")) return 0;
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0 &&
+                      os_dev_live_handles() == ledger0, "terminal: counters back (%d processes, %d threads, %d events, ledger %d -> %d)",
+               os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events(), ledger0, os_dev_live_handles());
+    LOG("test: ok: terminal (open-terminal in the file's, the command line's and the current directory; open-ai-terminal in the project's "
+        "root, the file's and the default directory; claude, codex, custom with and without ai_command, ai_command over a provider; wt "
+        "found, missing with auto and with wt, cmd forced; a drive root, a space and ';' quoted; a program that cannot start; the guard; "
+        "the minibuffer and the command list; a reload; 200 launches keeping nothing, every line)");
+    return 1;
+}
+
 // A match as text: "kind line:col [path] (num) {kind word} <project>", "-" for none.
 static String8 test_match_text(Arena *arena, String8 line, b32 ok, const CompileMatch *m) {
     if (!ok) return STR8_LIT("-");
@@ -14199,6 +14443,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_launch(&t);
     arena_reset(&t.arena);
     test_terminal_config(&t);
+    arena_reset(&t.arena);
+    test_terminal(&t);
     arena_reset(&t.arena);
     test_compile_match(&t);
     arena_reset(&t.arena);

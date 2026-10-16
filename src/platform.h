@@ -241,6 +241,8 @@ i32  os_dev_handle_count(void);        // the process's open kernel handles
 i32  os_dev_live_handles(void);        // the ledger: kernel handles the os_* layer opened and has not closed (the worker
                                        // thread slots' handles apart: OsDevMetrics.worker_slots)
 String8 os_dev_last_launch(void);      // os_process_launch's last outcome, as it logged it ("launch: ... (breakaway)")
+b32  os_dev_batch_run(void);           // --test, --smoke, a bench, --soak, --fuzz-seeds, --leak-check, a screenshot ...: no
+                                       // real terminal or git may start (Phase 20's guard)
 // The leak check's sample (Phase 16). Verdict metrics first, then the informational ones.
 typedef struct OsDevMetrics {
     u64 private_bytes;   // committed private memory
