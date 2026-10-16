@@ -51,6 +51,16 @@ The git changes view (Phase 19), the second box:
   colors `diff_added`, `diff_removed`, `diff_hunk`, `diff_header` and `git_status`, the new section
   `[keys git-changes]`.
 
+Terminals (Phase 20):
+
+- C-c t (open-terminal) opens a terminal in the current file's directory; C-c a (open-ai-terminal) one in the
+  project's root running an AI assistant's command line tool: `claude` by default, `codex` with
+  `ai_provider = openai`, or `ai_command` (`ai_provider = custom`, or set for any provider). Windows Terminal when
+  `wt.exe` is on PATH, else the classic console; the new setting `terminal` (auto, wt, cmd) chooses. ronin starts
+  the terminal and lets it go; it stays open after ronin ends.
+- The git changes view: a warning git printed while it was writing a diff (such as "LF will be replaced by CRLF")
+  no longer ends that file's hunk one line early, and no longer shows up in a renamed file's old name.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).

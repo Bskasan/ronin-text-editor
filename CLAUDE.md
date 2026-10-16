@@ -228,11 +228,15 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # out / err TEXT, raw / rawerr TEXT (escapes \r \n
                                                           # \t \e \xHH), sleep MS, exit N, hang (120 s at
                                                           # most), spawn FILE (a grandchild), flood BYTES,
-                                                          # cwd, write PATH TEXT, env NAME, repeat N TEXT
+                                                          # cwd, write PATH TEXT, env NAME, repeat N TEXT,
+                                                          # launch FILE (a grandchild let go: how it started)
     build/ronin_debug.exe --fake-git DIR ARGS...           # the tests' git (no window, no log; every argument after
                                                           # DIR is git's): ARGS appended to DIR\calls.txt, then the
                                                           # --child script DIR\map.txt names for the first KEY<TAB>
                                                           # SCRIPT line whose KEY is in ARGS (none: exit 128)
+    build/ronin_debug.exe --fake-terminal DIR PROGRAM CONSOLE ARGS...  # the tests' terminal (no window, no log): appends
+                                                          # "<its working directory>|PROGRAM|CONSOLE|ARGS" to
+                                                          # DIR\calls.txt, ARGS as they stand in its raw command line
     build/ronin_bench.exe --bench-compile                 # a --child program printing 100 MB into *compilation*
                                                           # (cap 128 MB and the default 16 MB): time, frames,
                                                           # the longest frame, memory; typing at line
@@ -271,8 +275,8 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
     build/ronin_debug.exe --leak-check [SCENARIO|all] [--cycles N]  # debug build only: each scenario (file-cycle,
                                                           # window-cycle, minibuffer-cycle, isearch-cycle, finder-cycle,
                                                           # grep-cycle, compile-cycle, multi-cursor-cycle, modal-cycle,
-                                                          # git-cycle, config-reload-cycle, undo-cycle,
-                                                          # external-change-cycle; a
+                                                          # git-cycle, terminal-cycle, config-reload-cycle,
+                                                          # undo-cycle, external-change-cycle; a
                                                           # name before '/' runs its sub-cycles) after a prime step, 20
                                                           # warm-up cycles and 4 windows of N/4 (N = 200, a multiple of
                                                           # 4): one table a scenario in the log, LEAK -> exit 6, a cycle
@@ -373,7 +377,10 @@ of a.c with "diff --git" in diff_header, the @@ line in diff_hunk, "-int b;" in 
 the empty pane below its lines in modal_background, the next row's " D" in git_status, the selected row's empty part in
 modal_selection, the status line in modal_description, the window underneath untouched and its cursor hollow; RET must
 visit a.c at line 2 (exit 9 otherwise); C-x g again and C-g: that frame must equal the one before byte for byte (exit
-3). Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
+3). Then the terminals (stage 13) with the fake terminal: build\tmp\smoke_term (a .ronin-project, sub\a.c in the window,
+wt.exe "found"), C-c t, then C-c a: its calls must be exactly `<sub>|wt.exe|0|-d "<sub>"` and `<root>|wt.exe|0|-d
+"<root>" "<system>\cmd.exe" /s /k "claude"` (exit 9 otherwise), the frame above the echo line equal to the one before
+byte for byte (exit 3), the echo "Opened claude in <root>". Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
 killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the
@@ -529,7 +536,8 @@ seeded group "modal" (600 random operations: the shown order against a slow full
 the arena while open, the window underneath after a close); the scanner test's junction removed. Phase 19: programs
 started without cmd.exe (the arguments, the environment block laid over ronin's, the idle timeout, a missing program
 or directory, PATH with quoted entries and without the current directory); the git parsers' goldens (status records,
-renames and copies, a UTF-8 path, the branch forms, no commits yet, git's warnings in the shared pipe, the file limit;
+renames and copies, a UTF-8 path, the branch forms, no commits yet, git's warnings in the shared pipe (before a record,
+before a rename's source, between two hunk-body lines; Phase 20), the file limit;
 diffs with two hunks, "--" and "++" lines inside a hunk, CRLF, new, deleted, renamed, binary and mode-only files, the
 first changed line, the line limit, a long line; the error line and its cut); git's jobs against the fake git
 (--fake-git: the open's two command lines and the three diffs' exactly, exit 1 from --no-index only, not a work tree, a
@@ -541,7 +549,14 @@ change, the minibuffer, C-g while pending) and its error paths (nothing opens wi
 timeout before and after the open, C-g and a click outside cancelling without waiting, the shutdown with a hanging
 git); the real git on build\tmp\gitrepo\repo (made once; its system and global configuration shut out) equal to the
 fake git's canned answers, or "test: skip: git real" without git on PATH; the seeded group "git" (80 random operations:
-git's order, no diff twice since the open or g, the view's invariants, the arena after a close). A failed
+git's order, no diff twice since the open or g, the view's invariants, the arena after a close). Phase 20: a program
+launched and let go (its working directory, a missing program or directory, 100 launches keeping no handle, the
+breakaway refused inside a build's job and the retry there); the terminal settings (every value, the length limit, each
+diagnostic); the terminal commands through the headless app with the fake terminal (--fake-terminal: the directories of
+both commands, every provider and program, the quoting of a drive root, a space and ';', each message, the minibuffer
+and the command list, a reload, the guard, 200 launches keeping nothing and every call exactly). In a batch run no
+test starts a real terminal, or a git it did not choose: the guard refuses it and counts it (os_dev_real_refused, 0 at
+the end of --test, every fuzz worker, the soak and the leak check). A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.
 
 Open every screenshot after a visual change and look at it (crop and enlarge for detail);

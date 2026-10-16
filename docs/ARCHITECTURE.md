@@ -7,7 +7,7 @@
 | `src/ronin.c` | the unity translation unit; includes everything below except the .cpp, in order |
 | `src/check_macros.c` | compiled by build.bat with /Zs only (never linked): every system header ronin uses, then `ronin.c`, so a ronin identifier that a system header defines as a macro fails the build |
 | `src/base.h/.c` | types, ASSERT, Arena, String8/16, UTF-8<->UTF-16, clipboard text conversion (CRLF), letter case, mini formatter, dev LOG |
-| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call); processes (a command through cmd.exe in a job object, one overlapped pipe; since Phase 19 also a program started directly with an environment laid over ronin's, a read's idle timeout, a program found on PATH) |
+| `src/platform.h` | os_* primitives, Key/Event/FrameInput, app entry points — all the core sees of the OS; threads, locks, events, atomics and the main loop's wake (and which os_* functions a worker may call); processes (a command through cmd.exe in a job object, one overlapped pipe; since Phase 19 also a program started directly with an environment laid over ronin's, a read's idle timeout, a program found on PATH; since Phase 20 a program started and let go, `os_process_launch`, and the system directory's programs) |
 | `src/render.h` | Rect, Color, r_* API (rects, glyphs, atlas) — all the core sees of the GPU |
 | `src/font_backend.h` | extern "C" glyph rasterization API, no Win32 / DWrite types |
 | `src/win32_dwrite.cpp` | the only C++ file: DirectWrite calls behind font_backend.h, nothing else |
@@ -33,18 +33,19 @@
 | `src/results.h/.c` | part of the app (included after finder.c): results buffers and their locations (*search*, *occur*, *compilation*: each location's row and line offsets, a build's marks without a location), the landing highlight, the project search's file list (the index copied, or a running scan followed), the files written strictly in list order (held records, the claim window, buffers searched from memory in their place), project-search, occur, next-error / previous-error and the [keys search-results] commands; *compilation* (its lines inside the frame budget, the scroll rule, the end and its check of rewritten files), project-compile, compile, recompile, kill-compilation, the save, kill and exit questions' chain, the commands remembered per directory; dev: smoke and bench helpers |
 | `src/modal.h/.c` | part of the app (included after results.c): a box drawn over the windows, one at a time, taking every key and mouse event while open; its geometry (percentages of the frame, the 40 x 6 minimum, one or two panes), an optional one-line field (its own Buffer and View), the lists it moves, pages, scrolls and hit-tests, the key routing ([owner keymap, global]: quit closes, COMMAND_FIELD edits the field, the rest refused), its drawing, the owner's callbacks, the layer's commands (modal-next ... modal-other-pane); since Phase 19 a status line instead of a field, panes without a selection that scroll, the selection callback, a full height from the open |
 | `src/git_changes.h/.c` | part of the app (included after commands_list.c): show-git-changes (C-x g), the modal layer's second owner: the job waiting for rev-parse before the box opens, the box's jobs (status, one diff at a time), the rows and each diff fetched once per open, the copy of a diff into the modal's arena inside the frame budget, RET's visit, g, the dying list and the shutdown; dev: the smoke's and the tests' repository (`git_dev_make_repo`) |
+| `src/terminal.h/.c` | part of the app (included after git_changes.c, Phase 20): open-terminal (C-c t) and open-ai-terminal (C-c a): the directory (the file's, the project's root, the default one), the program (wt.exe on PATH or the system's cmd.exe), the command lines and their quoting, the start through `os_process_launch` (fire and forget), the messages; dev: the fake terminal (`dev_program`), the guard, smoke stage 13's setup |
 | `src/commands_list.c` | part of the app (included after modal.c): show-command-list, the modal layer's first owner: every command with its description and its bindings (where-is), the fuzzy filter over the name, the description and both, the rows' drawing, RET running the command as M-x |
 | `src/cursors.h/.c` | the multiple-cursors commands (mark-next / previous / all-like-this, skip, unmark, the edit-lines family) and the CursorJob, their search spread over frames |
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout; while a modal box is open every key and mouse event goes to modal.c) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak) and the `--bench-buffer` core |
-| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak) and the `--bench-buffer` core |
+| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19, terminal-cycle since Phase 20) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison; Phase 19: `--bench-git`, the smoke's stage 12, the git view's wait in screenshot runs, `--fake-git`'s dispatch), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
-| `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten, an environment variable, numbered lines); `--fake-git DIR ARGS`, the tests' git (Phase 19): the calls logged, a script picked by the arguments |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison; Phase 19: `--bench-git`, the smoke's stage 12, the git view's wait in screenshot runs, `--fake-git`'s dispatch; Phase 20: `os_process_launch`, the smoke's stage 13, `--fake-terminal`'s dispatch, the guard's `os_dev_batch_run` and its count), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
+| `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten, an environment variable, numbered lines); `--fake-git DIR ARGS`, the tests' git (Phase 19): the calls logged, a script picked by the arguments; Phase 20: `launch FILE` (a grandchild through `os_process_launch`) and `--fake-terminal DIR ...`, the tests' terminal (its working directory and raw command line logged) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 | `res/ronin.rc`, `src/version.h` | the icon (build\gen\ronin.ico) and the version resource; the version for the code (`--version`) |
@@ -52,7 +53,7 @@
 | `tools/make_icon.c` | build-time tool, not part of the exe: draws the icon into build\gen\ronin.ico on every build |
 | `build.bat`, `verify.bat`, `dist.bat` | the build, the gate before every commit, the release zip |
 
-Core (`app.c`, `files.c`, `finder.c`, `results.c`, `modal.c`, `commands_list.c`, `git_changes.c`, `git.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
+Core (`app.c`, `files.c`, `finder.c`, `results.c`, `modal.c`, `commands_list.c`, `git_changes.c`, `terminal.c`, `git.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
 `fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
 additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c), the build's reader
 (compile.c) and git's worker (git.c) call only the os_* functions platform.h marks "any thread".
@@ -1898,6 +1899,67 @@ first half, 11,656 KB at the end), debug PASS in 27.4 s (8,396 / 13,092 / 13,396
 config-reload-cycle/color and /scale private commit (the process heap's irregular moves Phase 16 accepted); the exit
 check PASS. The first run of this phase failed in soak-debug: "The soak's checks under the new event stream" above.
 
+## Measurements (Phase 20)
+
+Same machine (AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800 window).
+
+### Idle and latency
+
+`ronin_debug.exe --idle-check`: PASS, 0 frames, 0 us of CPU in 5 s, 0 main loop passes besides the marks.
+
+`--bench-latency` against the Phase 19 code (db8061e, a bench build of it in build\proof\p19), alternated, 3 runs each;
+DWM composed the window throughout:
+
+| | arrival to Present returned p50 / p99 | command + frame build p50 | on screen (DWM) p50 |
+|---|---|---|---|
+| Phase 19 | 362-368 us / 857-1,009 us | 21 us | 18.0-18.4 ms |
+| Phase 20 | 365-374 us / 743-751 us | 21-22 us | 17.3-18.6 ms |
+
+Unchanged within noise: nothing on the typing path changed.
+
+### Size and imports
+
+The release exe: 453,120 bytes, 4,608 more than Phase 19's 448,512. By module (`--map-report`, bytes in sections,
+3,884 in all): terminal.c +2,256, config_default.h +704 (the settings' comments and the two bindings), win32_main.c
++672 (`os_process_launch`, `os_system_program`), string literals +584, unwind tables +172, ronin.obj +24, command.c
++16; git.c -368 and config.c -176 (inlining moved by /GL). Imports: KERNEL32 79, USER32 50, GDI32 6 functions,
+unchanged (CreateProcessW and GetSystemDirectoryW were imported already); no new DLL.
+
+### The new tests fail when they should
+
+On a scratch copy (build\proof\p20, deleted afterwards), each break alone, `--test` (debug):
+
+| break | result |
+|---|---|
+| open-terminal resolves the project's root instead of the file's directory | exit 9: "terminal: line 1: got '...\term proj\|wt.exe\|0\|-d "...\term proj"' want '...\term proj\sub\|...'" |
+| `os_process_launch` leaves the thread handle open | exit 9: "launch: 100 launches: ... ledger 0 -> 101, ... handles 189 -> 288" and "terminal: 200 launches: ledger 119 -> 319, ... handles 307 -> 506" |
+| git.c before d941010 | exit 9: "git parse: a warning before a source" and "git changes: status 'main: 8 changed files', panes 8 / 15" |
+| only the hunk body's warning skip taken out | exit 9: "git parse: diff 9" (the warning a context line, "-b" and "+B" headers) and the same "panes 8 / 15" |
+
+### The terminals under the soak and the leak check
+
+The soak's random keys reach C-c t and C-c a: 1,000,000 events started 1,924 fake terminals in the bench soak (960 /
+964) and 1,919 in the debug one, every call in an existing directory with wt's command line. The bench soak took 30.0 s,
+19.7 s for Phase 19's code on the same seed (rerun for this): the ~10 s are those process starts, ~5 ms each on the main
+thread (CreateProcessW of the fake, with ~1,900 short-lived processes competing for the cores). A real C-c t pays that
+once per key, never on the typing path. The five slowest soak events (70-99 ms: C-g and RET at events ~111,000,
+~112,000 and ~536,000) are the same in Phase 19's run: not this phase's. `--leak-check terminal-cycle`: 220 launches,
+every call as expected, 0 LEAK (the ledger and our processes the same in every window), 1.2 s.
+
+The bench soak of `verify.bat phase` settled at 38,096 KB after its first block (our arenas 33,600 KB), 39,620 KB at
+most in the first half and 40,024 KB at the end: within the +2 MB rule, every leak metric OK. A rerun of the same
+100,000 events settled with our arenas at 6,108 KB, as the debug soak (6,428 KB) and Phase 19's (5,644 KB): the walk
+is not fully deterministic (Phase 19: when the workers' answers come depends on the clock), and that run reached a
+larger state early. Recorded, not pursued.
+
+### verify.bat phase
+
+At 24dc383 (the code of this phase): PASS in 7 min 45 s. The seed sweep: 256 seeds PASS (175.0 s). The soak: bench
+PASS in 30.0 s (above), debug PASS in 33.4 s (settled 10,196 KB after the first block, 12,688 KB at most in the first
+half, 13,732 KB at the end). The leak check: 27 scenarios, 0 LEAK, 137 s, terminal-cycle OK; STEP:
+config-reload-cycle/color private commit (as in Phase 19); the exit check PASS. No run reached the guard
+(`os_dev_real_refused` 0 at every end).
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -1922,6 +1984,7 @@ check PASS. The first run of this phase failed in soak-debug: "The soak's checks
 - [x] 17. Repository and build-folder cleanup
 - [x] 18. Modal overlay and the command list
 - [x] 19. The git changes modal
+- [ ] 20. Terminal and AI terminal shortcuts
 
 ## Decisions
 
@@ -3130,6 +3193,70 @@ test_run removes it again after the group.
     phase's event stream it is 8.4 MB, the plateau of 12-13 MB comes later); the typing probe is the fastest of three
     runs (other programs' load slowed one run of the debug build by up to a third), the 1.5x rule unchanged.
 
+### Terminals (Phase 20)
+
+1. Two commands, one mechanism (src/terminal.c, part of the app, included after git_changes.c, compiled for size):
+   open-terminal (C-c t) opens a terminal window in the selected window's file's directory, else the directory given on
+   the command line, else the current one (the order of `files_default_dir`); open-ai-terminal (C-c a) one in the
+   project's root (`finder_root`), else the file's directory, else the default one, running the AI command. The
+   directory is normalised as a build's (`results_compile_dir`: backslashes, no trailing one but a drive root's). The
+   echo area says "Opened terminal in C:/x/y" or "Opened claude in C:/x/y" (the path with forward slashes, as every
+   path in the echo area; the command as written). Refused in the minibuffer ("A terminal cannot be opened from the
+   minibuffer"); a modal box refuses them as every command it does not own.
+2. Fire and forget: ronin does not read from or write to the terminal, keeps no handle to it, puts it in no job and
+   never waits for it; the terminal outlives ronin. `os_process_launch` (KERNEL32's CreateProcessW: no ShellExecute,
+   no shell32, no new DLL or import) starts `"<program>" <args>` in the directory with nothing inherited, the
+   inherited environment, CREATE_NEW_CONSOLE for the classic console or CREATE_NO_WINDOW otherwise (ignored by a GUI
+   program such as wt.exe), and closes both handles at once (the ledger +2 -2; `live_processes`, "started minus
+   closed", is not touched). It returns 0 or the Win32 error.
+3. ronin's own job (decided with the user): the first attempt adds CREATE_BREAKAWAY_FROM_JOB (no effect when ronin is
+   in no job); on ERROR_ACCESS_DENIED (a job that does not allow breaking away) it retries once without it. Dev builds
+   log which ("launch: <program> started outside any job (breakaway)" or "launch: breakaway refused (error 5),
+   <program> started inside ronin's job"; `os_dev_last_launch`). When the retry starts it inside a launcher's
+   kill-on-close job, the terminal ends with that job (a known limit).
+4. Settings in [settings]: `ai_provider` (claude, openai, custom; claude), `ai_command` (text, 259 bytes, as git_path;
+   when set it runs for any provider), `terminal` (auto, wt, cmd; auto). claude runs `claude`, openai `codex`; custom
+   with no `ai_command` says "ai_command is empty" and starts nothing. A bad value is reported at load with its line
+   and the value before it stays (the built-in one unless the same file set it before). They are read when the
+   command runs: a reload applies from the next C-c t / C-c a with no code of its own.
+5. The program: `terminal = wt` is Windows Terminal, `wt.exe` found on PATH by `os_find_program` (the App Execution
+   Alias in WindowsApps counts: GetFileAttributesW succeeds on it, CreateProcessW starts it); missing: "Windows
+   Terminal (wt.exe) not found". `cmd` is the classic console, `<GetSystemDirectoryW>\cmd.exe` (`os_system_program`,
+   never PATH's). `auto` is wt when found, else cmd. A failed start: "Could not start <program>: error N". A missing
+   AI command is reported by cmd inside the new window: ronin does not look for it first.
+6. The command lines (W wt.exe's full path, C the system's cmd.exe; `<dir>` quoted as CommandLineToArgvW reads it back,
+   so a drive root is `"C:\\"`):
+
+   | | wt | cmd (a new console) |
+   |---|---|---|
+   | open-terminal | `"W" -d "<dir>"` | `"C"` |
+   | open-ai-terminal | `"W" -d "<dir>" "C" /s /k "<command>"` | `"C" /s /k "<command>"` |
+
+   each started in `<dir>`. cmd /k is always the AI command's shell: npm's `claude.cmd` resolves there and the window
+   stays open after the command ends. /s (decided with the user) makes cmd strip exactly the outer quotes, so a quoted
+   program path in `ai_command` (`"C:\Program Files\x\claude.exe" --continue`) survives; Phase 13's builds use /s /c
+   too. The wt form passes cmd by its full system path (decided with the user): PATH cannot change which cmd runs.
+   wt splits its command line into tabs at `;`, so in the wt form only a `;` (in the directory or the command) is
+   written `\;`, wt's escape.
+7. Tests never open a real terminal. Dev builds: `--fake-terminal DIR PROGRAM CONSOLE ARGS` (win32_child.c, before
+   the log opens) appends "<its working directory>|PROGRAM|CONSOLE|ARGS" to DIR\calls.txt in one write, ARGS exactly
+   as they stand in its raw command line (GetCommandLineW), so the quoting is checked byte for byte. The app starts it
+   instead of the real program when `app->terminal.dev_program` is set (as git's `dev_program`), always without a
+   console; `dev_wt_present` makes the wt lookup deterministic. Opening a real terminal takes the foreground: HUMAN
+   only (V1-V5).
+8. One guard for git and the terminals (decided with the user): in a dev batch run (`--test`, `--smoke`, a bench,
+   `--soak`, `--fuzz-seeds`, `--leak-check`, a screenshot run: `os_dev_batch_run`), open-terminal and open-ai-terminal
+   without the fake, and show-git-changes without a chosen git (the fake, or the real one with its configuration shut
+   out, as the real-git test and smoke stage 12 set it), start nothing: "terminal: no real terminal in a test run",
+   "git: no real git in a test run", counted by `os_dev_real_refused`, which must be 0 at the end of `--test`, every
+   fuzz worker, the soak and the leak check (each guard's own test takes its one back). The "no git on PATH" test sets
+   `dev_allow_real` (its PATH holds no git). The modal fuzz, whose RET runs whatever command is selected, installs the
+   fake git and the fake terminal; it had no fake git before (found while planning this phase).
+9. git's warnings (the Phase 19 question): inside a hunk body a `warning: ` line was counted as a context line, so the
+   hunk ended one line early and its last line was drawn as a header (and missed by the first changed line). Now it is
+   skipped there without touching the counts (no body line starts with `w`; `+warning: x` stays an added line), and a
+   rename's or copy's source drops a warning in front of it as a record does (d941010).
+
 ## Later
 
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
@@ -3214,6 +3341,9 @@ test_run removes it again after the group.
   tree (now g only); stderr in its own pipe (git's messages are picked from the shared one); the diff of the files a
   selection passed over fetched ahead; keys typed before the box opens queued for it; showing a line-ending change
   (now one CR is dropped from each line).
+- Terminals (Phase 20): a terminal program of the user's choice (any command line, a Windows Terminal profile); the
+  region or the file's name handed to the AI tool; looking for the AI command before the window opens (cmd says it is
+  missing inside the new window now).
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.
