@@ -195,14 +195,21 @@ typedef enum OsProcessRead {
     OS_PROCESS_EXITED,    // cmd.exe has ended and the pipe holds nothing more (or every writer closed it)
     OS_PROCESS_CANCELLED, // `cancel` was set (nothing read)
     OS_PROCESS_ERROR,
+    OS_PROCESS_TIMEOUT,   // nothing came for idle_ms (nothing read; the process runs on)
 } OsProcessRead;
 
 // Started, or a status (a directory that does not exist: OS_FILE_NOT_FOUND / OS_FILE_BAD_PATH) with
 // nothing left open. Temporary memory in `arena` (popped again).
 OsFileStatus  os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p);
+// The same for a program started directly, not through cmd.exe (Phase 19: git): `program` a full path, the command
+// line "<program>" <args> (args quoted by the caller), the environment ronin's with the "NAME=VALUE" lines of
+// `env_extra` laid over it (empty: ronin's, unchanged). Everything else as os_process_start.
+OsFileStatus  os_process_start_program(Arena *arena, String8 program, String8 args, String8 dir, String8 env_extra, OsProcess *p);
+// The first PATH entry holding the file `name` (never the current directory), its full path in `arena`; false: none.
+b32           os_find_program(Arena *arena, String8 name, String8 *path);
 // Waits for output, the end of cmd.exe or `cancel` (an event set only to cancel; it is left set), whichever
-// comes first.
-OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, void *dst, i64 cap, i64 *got);
+// comes first; with idle_ms (0: no limit), OS_PROCESS_TIMEOUT when nothing of these came for that long.
+OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, u32 idle_ms, void *dst, i64 cap, i64 *got);
 b32  os_process_wait(OsProcess *p, u32 timeout_ms); // cmd.exe has ended within the timeout
 u32  os_process_exit_code(OsProcess *p);            // after it ended
 void os_process_kill(OsProcess *p);                 // every process of the job, at once
@@ -256,6 +263,7 @@ typedef struct OsDevReservation {
 i32     os_dev_reservations(OsDevReservation *out, i32 cap);   // our arenas' reservations now; the number filled
 String8 os_dev_reservation_origin(Arena *arena, void *base);    // "arena_create <- buffer_create <- ...": who made it
 String8 os_dev_exe_path(Arena *arena); // this executable (the --child program of the tests)
+b32     os_dev_set_env(String8 name, String8 value, b32 unset); // tests: ronin's own environment variable (PATH ...)
 void    os_dev_set_recovery_dir(String8 dir); // tests: the recovery directory from here on
 #endif
 
