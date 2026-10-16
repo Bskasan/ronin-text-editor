@@ -13614,6 +13614,124 @@ static b32 test_git_real(Test *t) {
     return 1;
 }
 
+// The git changes view's invariants (the seeded group, the soak): the jobs and the rows' states agree, the panes show
+// the selected file, nothing pending while the box is open, the dying list in bounds.
+static b32 test_git_invariants(Test *t, App *app, const char *what, u64 at) {
+    GitChanges *g = &app->git;
+    GitView *v = g->view;
+    TEST_CHECK(t, g->dying_count >= 0 && g->dying_count <= GIT_DYING_MAX, "%s %U: %d dying", what, at, g->dying_count);
+    TEST_CHECK(t, !(g->pending && v), "%s %U: a C-x g pending while the box is open", what, at);
+    if (!v) {
+        TEST_CHECK(t, !g->work_pending, "%s %U: a copy pending without the box", what, at);
+        return 1;
+    }
+    Modal *m = &app->modal;
+    TEST_CHECK(t, m->active && m->spec.data == v, "%s %U: the view without its box", what, at);
+    if (v->listed) {
+        TEST_CHECK(t, m->lists[0].count == v->count + (v->cut ? 1 : 0), "%s %U: %D rows listed, %D files", what, at, m->lists[0].count, v->count);
+    }
+    TEST_CHECK(t, !v->diff_job || v->rows[v->diff_row].state == GIT_ROW_FETCHING, "%s %U: the running diff's row", what, at);
+    TEST_CHECK(t, !v->copy_job || (v->copy_row >= 0 && v->copy_row < v->count && v->rows[v->copy_row].state == GIT_ROW_COPYING),
+               "%s %U: the copied row", what, at);
+    for (i64 i = 0; i < v->count; i++) {
+        GitRow *r = &v->rows[i];
+        TEST_CHECK(t, r->state <= GIT_ROW_FAILED && r->count <= r->total && (r->state != GIT_ROW_CACHED || r->count == r->total),
+                   "%s %U: row %D: state %u, %D of %D lines", what, at, i, r->state, r->count, r->total);
+        TEST_CHECK(t, r->state != GIT_ROW_FETCHING || (v->diff_job && v->diff_row == i), "%s %U: row %D fetching without its job", what, at, i);
+    }
+    GitRow *sel = git_changes_selected(app, v);
+    TEST_CHECK(t, m->lists[1].count == (sel ? sel->count : 0) && m->lists[1].selected == -1, "%s %U: the diff pane: %D rows, the file's %D", what,
+               at, m->lists[1].count, sel ? sel->count : 0);
+    return 1;
+}
+
+// The seeded group "git": random operations on the view over the fake git's canned repository (open, sometimes not
+// waited for; movement in either pane, TAB, the wheel, g, RET, C-g, ESC, a click outside), the invariants after each;
+// whenever settled, the rows in git's order and each diff fetched at most once since the open (or the last g).
+static b32 test_git_fuzz(Test *t, u64 seed) {
+    t->rng = seed ^ 0x676974ull; // "git"
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "git fuzz: no app");
+    String8 dir = test_git_view_fake(t, "fuzz", TEST_GIT_STATUS);
+    test_git_use_fake(t, app, dir);
+    static const char *const moves[] = { "<down>", "<up>", "C-n", "C-p", "C-v", "M-v", "<next>", "<prior>", "TAB", "<down> <down> <down>" };
+    i32 ops = 0, opens = 0, settles = 0, visits = 0;
+    i64 since = 0; // calls.txt's length at the open (or g)
+    Buffer *home = app_selected_view(app)->buffer;
+    for (ops = 0; ops < 80 && !t->failures; ops++) {
+        u64 r = test_below(t, 100);
+        if (!modal_active(app)) {
+            if (app->git.pending) {
+                if (r < 20) app_dev_feed(app, "C-g", &t->arena); // dropped before it opens
+                else test_git_wait(t, app, 10000);
+            } else {
+                if (app_selected_view(app)->buffer != home) app_switch_buffer(app, app_selected_view(app), home);
+                since = test_git_calls(t, dir).len;
+                app_dev_feed(app, "C-x g", &t->arena);
+                opens++;
+                if (r < 70) test_git_wait(t, app, 10000);
+            }
+        } else if (r < 50) {
+            app_dev_feed(app, moves[test_below(t, ARRAY_COUNT(moves))], &t->arena);
+        } else if (r < 58) {
+            ModalGeometry *g = &app->modal.g;
+            i32 pane = (i32)test_below(t, 2);
+            Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = (i32)g->panes[pane].x0 + 10, .y = (i32)g->panes[pane].y0 + 10,
+                            .wheel = test_below(t, 2) ? 120 : -120 };
+            app_dev_feed_events(app, &wheel, 1, &t->arena);
+        } else if (r < 64) {
+            app_dev_feed(app, "g", &t->arena);
+            since = test_git_calls(t, dir).len;
+        } else if (r < 70) {
+            app_dev_feed(app, "RET", &t->arena);
+            visits += !modal_active(app);
+        } else if (r < 76) {
+            app_dev_feed(app, test_below(t, 2) ? "C-g" : "ESC", &t->arena);
+        } else if (r < 80) {
+            test_modal_click(t, app, 1, 1, 1);
+        } else {
+            settles++;
+            TEST_CHECK(t, test_git_wait(t, app, 10000), "git fuzz %U: op %d: did not settle", seed, ops);
+            GitView *v = app->git.view;
+            if (v && v->listed) { // git's order, and no diff twice since the open (or g)
+                static const char *const paths[] = { "a.c", "new name.c", "notes.txt", "gone.c", "\xc4\x9f.c", "img.png", "big.c", "crlf.c" };
+                TEST_CHECK(t, v->count == 8, "git fuzz %U: op %d: %D rows", seed, ops, v->count);
+                for (i64 i = 0; i < v->count; i++) {
+                    TEST_CHECK(t, str8_equal(v->rows[i].path, str8_cstr(paths[i])), "git fuzz %U: op %d: row %D is %S", seed, ops, i, v->rows[i].path);
+                }
+                String8 calls = test_git_calls(t, dir);
+                String8 tail = str8(calls.data + MIN(since, calls.len), calls.len - MIN(since, calls.len));
+                i32 diffs = 0;
+                for (i64 at = 0; at < tail.len;) {
+                    i64 end = at;
+                    while (end < tail.len && tail.data[end] != '\n') end++;
+                    String8 line = str8(tail.data + at, end - at);
+                    at = end + 1;
+                    String8 key = STR8_LIT(" diff ");
+                    b32 diff = 0;
+                    for (i64 i = 0; i + key.len <= line.len && !diff; i++) diff = mem_equal(line.data + i, key.data, key.len);
+                    diffs += diff;
+                    for (i64 b = end + 1; diff && b < tail.len;) { // the same line again later: fetched twice
+                        i64 e2 = b;
+                        while (e2 < tail.len && tail.data[e2] != '\n') e2++;
+                        TEST_CHECK(t, !str8_equal(str8(tail.data + b, e2 - b), line), "git fuzz %U: op %d: fetched twice: %S", seed, ops, line);
+                        b = e2 + 1;
+                    }
+                }
+                i64 fetched = 0;
+                for (i64 i = 0; i < v->count; i++) fetched += v->rows[i].state != GIT_ROW_NONE;
+                TEST_CHECK(t, diffs == fetched, "git fuzz %U: op %d: %d diff calls, %D rows fetched", seed, ops, diffs, fetched);
+            }
+        }
+        if (!modal_active(app)) TEST_CHECK(t, arena_pos(&app->modal.arena) == 0, "git fuzz %U: op %d: the modal arena after the close", seed, ops);
+        if (!test_git_invariants(t, app, "git fuzz", (u64)ops)) return 0;
+    }
+    test_git_wait(t, app, 10000);
+    if (!test_app_destroy(t, app, "git fuzz")) return 0;
+    LOG("test: ok: git fuzz (seed %U: %d operations, %d opens, %d settled checks, %d visits)", seed, ops, opens, settles, visits);
+    return 1;
+}
+
 // The error paths through the app: no git, not a work tree, git's own refusal, a failing status and diff, the timeout
 // (pending and open), a cancel on close, the shutdown with a git that hangs.
 static b32 test_git_changes_errors(Test *t) {
@@ -13870,6 +13988,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_git_real(&t);
     arena_reset(&t.arena);
+    test_git_fuzz(&t, seed);
+    arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
     test_threads(&t);
@@ -13992,11 +14112,11 @@ typedef struct Soak {
     Test *t;
     App *app;
     String8 dir;
-    String8 *seqs; // every bound key sequence of the global, minibuffer, isearch, search-results and command-list keymaps (kbd)
+    String8 *seqs; // every bound key sequence of the global, minibuffer, isearch, search-results, command-list and git-changes keymaps (kbd)
     i32 seq_count;
     i32 w, h;      // the frame (h 0: minimized)
     b32 after_key; // the last event was a key: the selected window's point must be visible
-    u64 keys, texts, mice, resizes, focus, truncated, killed, modal_sessions;
+    u64 keys, texts, mice, resizes, focus, truncated, killed, modal_sessions, git_sessions;
     char recent[32][64]; // the last events, logged when a check fails
     u64 recent_count;
 } Soak;
@@ -14043,7 +14163,8 @@ static void soak_collect(Soak *s, Keymap *map) {
 }
 
 static b32 soak_busy(App *app) {
-    return app->modal.active || app->mini.active || app->isearch.active || app->replace.state != REPLACE_OFF || cursor_job_pending(&app->cursor_job);
+    return app->modal.active || app->mini.active || app->isearch.active || app->replace.state != REPLACE_OFF || cursor_job_pending(&app->cursor_job) ||
+           app->git.pending;
 }
 
 // The buffer against its own line index (a full scan), its markers, its batch and its modified flag.
@@ -14105,6 +14226,7 @@ static b32 soak_check(Soak *s, u64 event) {
     for (i32 i = 0; i < n; i++) if (!soak_check_view(t, views[i], s->h > 0 && !app_view_hidden(app, views[i]), event)) return 0;
     if (!soak_check_view(t, app->mini.view, 0, event)) return 0;
     if (app->modal.field_buffer && !soak_check_view(t, &app->modal.field_view, 0, event)) return 0;
+    if (!test_git_invariants(t, app, "soak event", event)) return 0;
     if (app->modal.active) { // the open command list: its rows, selection and top
         ModalList *list = &app->modal.lists[0];
         TEST_CHECK(t, (list->count ? list->selected >= 0 && list->selected < list->count : list->selected == -1) && list->top >= 0 &&
@@ -14153,8 +14275,20 @@ static void soak_tidy(Soak *s, i32 max_buffers) {
 
 // Back to a known shape for a memory reading: prompts and searches ended, the buffers made since the start killed,
 // one window. Returns the private bytes.
+// The git changes view's jobs settled (the fake git's answers in), 5 s at most.
+static void soak_git_wait(Soak *s) {
+    u64 deadline = os_time_us() + 5000000;
+    while (app_dev_git_busy(s->app) && os_time_us() < deadline) {
+        if (os_dev_wake_wait(app_wants_frame(s->app) ? 0 : 5)) app_wake(s->app);
+        soak_feed(s, NULL, 0);
+    }
+}
+
 static u64 soak_settle(Soak *s, i32 initial_buffers) {
-    for (i32 i = 0; i < 10 && soak_busy(s->app); i++) soak_keys(s, STR8_LIT("C-g"), 0);
+    for (i32 i = 0; i < 10 && (soak_busy(s->app) || app_dev_git_busy(s->app)); i++) { // a git still answering may open its box
+        soak_keys(s, STR8_LIT("C-g"), 0);
+        soak_git_wait(s);
+    }
     soak_tidy(s, initial_buffers);
     soak_keys(s, STR8_LIT("C-x 1"), 0);
     soak_feed(s, NULL, 0);
@@ -14264,6 +14398,25 @@ static void soak_event(Soak *s) {
                 soak_feed(s, e, 2);
             }
             s->modal_sessions++;
+        }
+    } else if (r < 858) { // now and then a git changes session (the fake git): open, the list, moves, TAB, g; C-g, RET or a click
+        if (!soak_busy(app) && test_below(t, 8) == 0) {
+            static const char *const moves[] = { "<down>", "<down> <down>", "TAB C-v", "TAB <down> TAB <down>", "g", "<up> M-v", "C-n C-n C-n" };
+            soak_keys(s, STR8_LIT("C-x g"), 0);
+            soak_git_wait(s);
+            for (u64 k = test_below(t, 4); k > 0; k--) {
+                soak_keys(s, str8_cstr(moves[test_below(t, ARRAY_COUNT(moves))]), 0);
+                if (test_below(t, 2)) soak_git_wait(s);
+            }
+            u64 how = test_below(t, 3);
+            if (how == 0) soak_keys(s, STR8_LIT("C-g"), 0);
+            else if (how == 1) soak_keys(s, STR8_LIT("RET"), 0);
+            else if (app->modal.active) {
+                Event e[2] = { { .kind = EVENT_MOUSE_DOWN, .button = MOUSE_LEFT, .clicks = 1, .x = 0, .y = 0 },
+                               { .kind = EVENT_MOUSE_UP, .button = MOUSE_LEFT, .x = 0, .y = 0 } };
+                soak_feed(s, e, 2);
+            }
+            s->git_sessions++;
         }
     } else if (r < 860) { // a chord nothing may be bound to
         static const char *mods[] = { "C-", "M-", "C-M-", "C-x C-", "C-c ", "C-x " };
@@ -14422,7 +14575,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
         big_len += fmt_buf(big + big_len, 160, "int f%d(int a) {\n    switch (a) {\n    case %d: return a + 1; // one\n    default:\n"
                                                "        return \"s%d\"[0];\n    }\n}\n\n", i, i, i);
     }
-    soak_file(&t, s.dir, ".ronin-project", STR8_LIT("[ignore]\n*.log\n"));
+    soak_file(&t, s.dir, ".ronin-project", STR8_LIT("[ignore]\n*.log\ngit/*.txt\n")); // the fake git's scripts and calls
     String8 files[] = {
         soak_file(&t, s.dir, "a.c", STR8_LIT("#include <stdio.h>\n\nint main(void) {\n    int x = 1;\n    if (x) {\n        printf(\"%d\\n\", x);\n"
                                             "    }\n    return 0;\n}\n")),
@@ -14444,14 +14597,29 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     }
     s.app = app;
     app->ctx.dev_soak = 1;
+    // The fake git (soak\git, the only place it may write: its calls.txt): three changed files, their diffs.
+    String8 git_dir = str8_fmt(&t.arena, "%S\\git", s.dir), git_fwd = str8_copy(&t.arena, git_dir);
+    for (i64 i = 0; i < git_fwd.len; i++) if (git_fwd.data[i] == '\\') git_fwd.data[i] = '/';
+    os_make_dir(git_dir);
+    soak_file(&t, git_dir, "a.c", STR8_LIT("int a;\n"));
+    soak_file(&t, git_dir, "b.c", STR8_LIT("int b;\n"));
+    soak_file(&t, git_dir, "rev.txt", str8_fmt(&t.arena, "out %S\n", git_fwd));
+    soak_file(&t, git_dir, "status.txt", STR8_LIT("raw ## main\\x00 M a.c\\x00 M b.c\\x00?? new.txt\\x00\n"));
+    soak_file(&t, git_dir, "a.txt", STR8_LIT("raw diff --git a/a.c b/a.c\\n@@ -1 +1 @@\\n-int A;\\n+int a;\\n\n"));
+    soak_file(&t, git_dir, "b.txt", STR8_LIT("raw diff --git a/b.c b/b.c\\n@@ -1 +1,2 @@\\n int b;\\n+\\tint c;\\n\n"));
+    soak_file(&t, git_dir, "new.txt", STR8_LIT("raw @@ -0,0 +1 @@\\n+new\\n\nexit 1\n"));
+    soak_file(&t, git_dir, "map.txt", STR8_LIT("rev-parse\trev.txt\nstatus\tstatus.txt\n-- a.c\ta.txt\n-- b.c\tb.txt\nnew.txt\tnew.txt\n"));
+    app->git.dev_program = os_dev_exe_path(&t.arena);
+    app->git.dev_prefix = str8_fmt(&t.arena, "--fake-git \"%S\"", git_dir);
     os_dev_write_root(s.dir);
     app_dev_feed_events(app, NULL, 0, &t.arena);
-    s.seqs = PUSH_ARRAY(&t.arena, String8, 5 * KEYMAP_CAP);
+    s.seqs = PUSH_ARRAY(&t.arena, String8, 6 * KEYMAP_CAP);
     soak_collect(&s, &app->config->global);
     soak_collect(&s, &app->config->minibuffer);
     soak_collect(&s, &app->config->isearch);
     soak_collect(&s, &app->config->search_results);
     soak_collect(&s, &app->config->command_list);
+    soak_collect(&s, &app->config->git_changes);
     SoakMetrics *metrics = PUSH_ARRAY(&t.arena, SoakMetrics, SOAK_CHECKPOINTS); // before the mark the checks pop to
     OsDevReservation *res_mid = PUSH_ARRAY(&t.arena, OsDevReservation, 16384), *res_last = PUSH_ARRAY(&t.arena, OsDevReservation, 16384);
     i32 res_mid_count = 0, res_last_count = 0, checkpoints = 0;
@@ -14507,9 +14675,9 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             u64 per = (now - block_t0) * 1000 / SOAK_BLOCK; // ns an event
             peak = MAX(peak, mem);
             LOG("soak: %U events: %U ns an event in this block, private bytes %U KB, %d buffers, %d windows, %d cursors; keys %U, "
-                "text %U, mouse %U, resizes %U, focus %U, command list sessions %U; buffers killed %U, truncated %U; writes refused %U", e,
-                per, mem >> 10, app->buffers.count, window_count(&app->windows), app_selected_view(app)->cursor_count, s.keys, s.texts,
-                s.mice, s.resizes, s.focus, s.modal_sessions, s.killed, s.truncated, os_dev_writes_refused());
+                "text %U, mouse %U, resizes %U, focus %U, command list sessions %U, git sessions %U; buffers killed %U, truncated %U; "
+                "writes refused %U", e, per, mem >> 10, app->buffers.count, window_count(&app->windows), app_selected_view(app)->cursor_count,
+                s.keys, s.texts, s.mice, s.resizes, s.focus, s.modal_sessions, s.git_sessions, s.killed, s.truncated, os_dev_writes_refused());
             u64 settled = soak_settle(&s, initial_buffers), undo = 0;
             for (i32 i = 0; i < app->buffers.count; i++) undo += buffer_undo_memory(app->buffers.entries[i].buffer);
             per = soak_probe(&s);
@@ -14891,6 +15059,7 @@ i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
         { "undo buffer", test_undo_buffer }, { "undo commands", test_undo_commands }, { "syntax", test_syntax },
         { "search", test_search }, { "undo fuzz", test_undo_fuzz }, { "kbd", test_kbd }, { "config", test_config },
         { "fuzzy", test_fuzzy }, { "grep file", test_grep_file }, { "modal", test_modal_fuzz },
+        { "git", test_git_fuzz },
     };
     Test t = { 0 };
     t.arena = arena_create(GB(4));
