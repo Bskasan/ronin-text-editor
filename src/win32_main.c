@@ -3671,6 +3671,71 @@ static i32 win32_smoke_git(Platform *p) {
     return code;
 }
 
+// The fake terminal's calls once there are `count` lines (10 s at most).
+static String8 win32_smoke_terminal_calls(Platform *p, String8 dir, i64 count) {
+    String8 path = str8_fmt(&p->perm, "%S\\calls.txt", dir), text = { 0 };
+    for (i32 k = 0; k < 2000; k++) {
+        text = str8(NULL, 0);
+        os_read_small_file(&p->perm, path, KB(64), &text);
+        i64 lines = 0;
+        for (i64 i = 0; i < text.len; i++) lines += text.data[i] == '\n';
+        if (lines >= count) break;
+        Sleep(5);
+    }
+    return text;
+}
+
+// Stage 13: C-c t, then C-c a, with the fake terminal on tmp\smoke_term\sub\a.c: its calls, each with its directory and
+// command line exactly; the frame afterwards equal to the one before above the echo line, byte for byte, and the echo.
+static i32 win32_smoke_terminal(Platform *p) {
+    String8 calls;
+    String8 root = app_dev_smoke_terminal(p->app, str8_fmt(&p->perm, "%S\\tmp", p->exe_dir), &calls);
+    String8 sub = str8_fmt(&p->perm, "%S\\sub", root);
+    win32_frame(p);
+    i32 w, h, w2, h2, cw, lh;
+    u8 *before = win32_smoke_keep_frame(p, &w, &h);
+    win32_smoke_feed(p, "C-c t");
+    win32_smoke_terminal_calls(p, calls, 1); // one at a time: the lines in order
+    win32_smoke_feed(p, "C-c a");
+    String8 got = win32_smoke_terminal_calls(p, calls, 2);
+    String8 want = str8_fmt(&p->perm, "%S|wt.exe|0|-d \"%S\"\n%S|wt.exe|0|-d \"%S\" \"%S\" /s /k \"claude\"\n", sub, sub, root, root,
+                            os_system_program(&p->perm, STR8_LIT("cmd.exe")));
+    i32 code = EXIT_OK;
+    if (!str8_equal(got, want)) {
+        LOG("smoke: FAIL: terminal: the calls:\n%S\nwanted:\n%S", got, want);
+        code = EXIT_TEST;
+    } else {
+        LOG("smoke: ok: terminal: C-c t and C-c a started the fake terminal in %S and %S with wt's command lines", sub, root);
+    }
+    String8 echo = app_dev_echo(p->app);
+    String8 shown = str8_fmt(&p->perm, "Opened claude in %S", root);
+    for (i64 i = 0; i < shown.len; i++) if (shown.data[i] == '\\') shown.data[i] = '/';
+    if (!str8_equal(echo, shown)) {
+        LOG("smoke: FAIL: terminal: the echo '%S', wanted '%S'", echo, shown);
+        if (code == EXIT_OK) code = EXIT_TEST;
+    }
+    app_dev_cell(p->app, &cw, &lh);
+    r_request_capture(p->renderer);
+    win32_frame(p);
+    u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w2, &h2);
+    i64 differ = -1;
+    u64 bytes = (u64)w * (u64)MAX(h - lh, 0) * 4; // above the echo line
+    if (before && pixels && w2 == w && h2 == h) {
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+    }
+    if (!before || !pixels || w2 != w || h2 != h || differ >= 0) {
+        LOG("smoke: FAIL: terminal: the frame above the echo line changed (first pixel (%D, %D))", differ >= 0 ? differ % w : -1,
+            differ >= 0 ? differ / w : -1);
+        if (code == EXIT_OK) code = EXIT_PIXEL_MISMATCH;
+    } else {
+        LOG("smoke: ok: terminal: the frame above the echo line unchanged (%dx%d, the echo line's %d rows apart)", w, h, lh);
+    }
+    arena_reset(&p->scratch);
+    app_dev_smoke_terminal_end(p->app);
+    win32_frame(p);
+    return code;
+}
+
 static b32 win32_smoke_has_reason(Platform *p) {
     WCHAR reason[128];
     DWORD len = ARRAY_COUNT(reason);
@@ -7360,6 +7425,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 if (code4 == EXIT_OK) code4 = win32_smoke_check_icon(p);
                 if (code3 == EXIT_OK) code3 = win32_smoke_git(p); // stage 12: the git changes view (the real git); it visits
                                                                   // files, so after the title's check
+                if (code3 == EXIT_OK) code3 = win32_smoke_terminal(p); // stage 13: the terminals, with the fake terminal
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_text_scale(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);

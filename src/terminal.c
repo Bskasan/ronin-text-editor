@@ -139,5 +139,41 @@ static void cmd_open_ai_terminal(CommandContext *ctx) {
     terminal_open(ctx, 1);
 }
 
+#if RONIN_DEV
+// Smoke stage 13: tmp\smoke_term (a .ronin-project, sub\a.c) with a.c in the window, point at its line's end, focus on;
+// the fake terminal in tmp\smoke_term\calls (emptied), wt.exe "found". The root's full path; the calls' directory in
+// *calls.
+String8 app_dev_smoke_terminal(App *app, String8 tmp_dir, String8 *calls) {
+    Arena *a = &app->files_arena;
+    String8 root = os_full_path(a, str8_fmt(a, "%S\\smoke_term", tmp_dir));
+    os_make_dir(root);
+    os_make_dir(str8_fmt(a, "%S\\sub", root));
+    *calls = str8_fmt(a, "%S\\calls", root);
+    os_make_dir(*calls);
+    os_write_file(str8_fmt(a, "%S\\calls.txt", *calls), str8(NULL, 0));
+    os_write_file(str8_fmt(a, "%S\\.ronin-project", root), str8(NULL, 0));
+    os_write_file(str8_fmt(a, "%S\\sub\\a.c", root), STR8_LIT("int a;\n"));
+    app->terminal.dev_program = os_dev_exe_path(a);
+    app->terminal.dev_prefix = str8_fmt(a, "--fake-terminal \"%S\"", *calls);
+    app->terminal.dev_wt_present = 1;
+    Buffer *b = app_find_file(app, str8_fmt(a, "%S\\sub\\a.c", root));
+    View *v = app_selected_view(app);
+    if (b) app_switch_buffer(app, v, b);
+    view_set_point(v, view_primary(v), 6);
+    echo_clear(&app->echo);
+    app->force_focus = 1;
+    return root;
+}
+
+void app_dev_smoke_terminal_end(App *app) {
+    app_switch_buffer(app, app_selected_view(app), buffer_list_find_name(&app->buffers, STR8_LIT("*scratch*")));
+    Buffer *b = buffer_list_find_name(&app->buffers, STR8_LIT("a.c"));
+    if (b) files_kill_buffer(app, b);
+    memset(&app->terminal, 0, sizeof(app->terminal));
+    echo_clear(&app->echo);
+    app->force_focus = 0;
+}
+#endif
+
 const Command CMD_OPEN_TERMINAL = { "open-terminal", "Open a terminal in the file's directory", cmd_open_terminal, COMMAND_ONCE };
 const Command CMD_OPEN_AI_TERMINAL = { "open-ai-terminal", "Open the AI assistant's CLI in a terminal", cmd_open_ai_terminal, COMMAND_ONCE };
