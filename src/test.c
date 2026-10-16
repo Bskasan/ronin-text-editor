@@ -13073,6 +13073,223 @@ static b32 test_git_parse(Test *t) {
     return 1;
 }
 
+// A fake git in tmp\p19\<name>: map.txt with each KEY and its --child script (s<k>.txt), calls.txt emptied. `pairs`:
+// KEY, SCRIPT, KEY, SCRIPT ... Returns the directory (a full path).
+static String8 test_git_fake(Test *t, const char *name, const char *const *pairs, i32 count) {
+    String8 root = str8_fmt(&t->arena, "%S\\p19", t->tmp_dir);
+    os_make_dir(root);
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\%s", root, name));
+    os_make_dir(dir);
+    String8 map = str8(NULL, 0);
+    for (i32 i = 0; i + 1 < count; i += 2) {
+        os_write_file(str8_fmt(&t->arena, "%S\\s%d.txt", dir, i / 2), str8_cstr(pairs[i + 1]));
+        map = str8_fmt(&t->arena, "%S%s\ts%d.txt\n", map, pairs[i], i / 2);
+    }
+    os_write_file(str8_fmt(&t->arena, "%S\\map.txt", dir), map);
+    os_write_file(str8_fmt(&t->arena, "%S\\calls.txt", dir), str8(NULL, 0));
+    return dir;
+}
+
+// The fake git's calls so far (one line each).
+static String8 test_git_calls(Test *t, String8 dir) {
+    String8 calls = { 0 };
+    os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\calls.txt", dir), MB(4), &calls);
+    return calls;
+}
+
+// A request to the fake git in `dir`.
+static GitRequest test_git_request(Test *t, GitJobKind kind, String8 dir) {
+    GitRequest q = { .kind = kind, .program = os_dev_exe_path(&t->arena), .dir = dir, .max_lines = 20000, .max_files = 5000,
+                     .timeout_ms = 10000 };
+    q.prefix = str8_fmt(&t->arena, "--fake-git \"%S\"", dir);
+    return q;
+}
+
+// Runs a job to its last batch (or `ms`); the batches in order, at most 4; their count.
+static i32 test_git_job_run(Test *t, GitRequest *q, GitBatch **out, u32 ms, b32 cancel_after_first) {
+    GitJob *j = git_job_create(q);
+    if (!j || !git_job_start(j)) return -1;
+    i32 n = 0;
+    b32 last = 0;
+    u64 deadline = os_time_us() + (u64)ms * 1000;
+    while (!last && os_time_us() < deadline) {
+        os_dev_wake_wait(5);
+        for (GitBatch *b = git_job_take(j); b; b = b->next) {
+            if (n < 4) out[n] = b;
+            n++;
+            last |= b->last;
+            if (cancel_after_first && n == 1) git_job_cancel(j);
+        }
+    }
+    TEST_CHECK(t, last, "git job: no last batch within %u ms (%d batches)", ms, n);
+    git_job_ended(j);
+    // The batches point into the job: copied out before it goes.
+    for (i32 i = 0; i < MIN(n, 4); i++) {
+        GitBatch *c = PUSH_STRUCT(&t->arena, GitBatch);
+        *c = *out[i];
+        c->text = str8_copy(&t->arena, out[i]->text);
+        c->error = str8_copy(&t->arena, out[i]->error);
+        c->program = str8_copy(&t->arena, out[i]->program);
+        if (c->kind == GIT_BATCH_STATUS) {
+            c->status.entries = PUSH_ARRAY(&t->arena, GitEntry, c->status.count + 1);
+            for (i64 k = 0; k < c->status.count; k++) {
+                c->status.entries[k] = out[i]->status.entries[k];
+                c->status.entries[k].path = str8_copy(&t->arena, out[i]->status.entries[k].path);
+                c->status.entries[k].orig = str8_copy(&t->arena, out[i]->status.entries[k].orig);
+            }
+            c->status.branch = str8_copy(&t->arena, out[i]->status.branch);
+        }
+        if (c->kind == GIT_BATCH_DIFF) {
+            c->diff.text = str8_copy(&t->arena, out[i]->diff.text);
+            c->diff.lines = PUSH_ARRAY(&t->arena, GitLine, c->diff.count + 1);
+            memcpy(c->diff.lines, out[i]->diff.lines, sizeof(GitLine) * (size_t)c->diff.count);
+        }
+        out[i] = c;
+    }
+    git_job_free(j);
+    return n;
+}
+
+static b32 test_git_job(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events(), ledger0 = os_dev_live_handles();
+    GitBatch *b[4] = { 0 };
+    // The open: rev-parse, then status in the top level it printed; both command lines exactly.
+    String8 dir = test_git_fake(t, "job_open", NULL, 0);
+    String8 slash = str8_copy(&t->arena, dir);
+    for (i64 i = 0; i < slash.len; i++) if (slash.data[i] == '\\') slash.data[i] = '/';
+    const char *open_pairs[] = { "rev-parse", (const char *)str8_fmt(&t->arena, "out %S\n%c", slash, 0).data,
+                                 "status", "raw ## main\\x00 M a.c\\x00?? b.txt\\x00\n" };
+    dir = test_git_fake(t, "job_open", open_pairs, 4);
+    GitRequest q = test_git_request(t, GIT_JOB_OPEN, dir);
+    i32 n = test_git_job_run(t, &q, b, 10000, 0);
+    TEST_CHECK(t, n == 2 && b[0]->kind == GIT_BATCH_TOPLEVEL && str8_equal(b[0]->text, dir) && !b[0]->last &&
+                      str8_equal(b[0]->program, q.program) && b[1]->kind == GIT_BATCH_STATUS && b[1]->last &&
+                      b[1]->status.count == 2 && str8_equal(b[1]->status.branch, STR8_LIT("main")) &&
+                      str8_equal(b[1]->status.entries[1].path, STR8_LIT("b.txt")),
+               "git job: open: %d batches, top '%S'", n, n ? b[0]->text : str8(NULL, 0));
+    String8 calls = test_git_calls(t, dir);
+    TEST_CHECK(t, str8_equal(calls, STR8_LIT("--no-optional-locks --literal-pathspecs -c core.quotepath=false -c core.fsmonitor=false "
+                                             "rev-parse --show-toplevel\n--no-optional-locks --literal-pathspecs -c core.quotepath=false "
+                                             "-c core.fsmonitor=false status --porcelain=v1 -z --branch --untracked-files=all\n")),
+               "git job: the open's command lines:\n%S", calls);
+    // The three diffs' command lines (a path with a space and a UTF-8 character), exit 1 accepted from --no-index only.
+    const char *diff_pairs[] = { "--no-index", "raw @@ -0,0 +1 @@\\n+x\\n\nexit 1\n", "-M", "raw @@ -1 +1 @@\\n-a\\n+b\\n\n",
+                                 "diff HEAD", "raw @@ -2 +2 @@\\n-a\\n+b\\n\nexit 1\n" };
+    dir = test_git_fake(t, "job_diff", diff_pairs, 6);
+    static const struct { GitDiffMode mode; const char *path, *orig, *call; GitBatchKind kind; i64 first; } diffs[] = {
+        { GIT_DIFF_NEW, "new \xc3\xbc.txt", "", "diff --no-index --no-color --no-ext-diff -- /dev/null new \xc3\xbc.txt", GIT_BATCH_DIFF, 1 },
+        { GIT_DIFF_RENAME, "b c.c", "a.c", "diff HEAD --no-color --no-ext-diff -M -- a.c b c.c", GIT_BATCH_DIFF, 1 },
+        { GIT_DIFF_HEAD, "x.c", "", "diff HEAD --no-color --no-ext-diff -- x.c", GIT_BATCH_FAILED, 0 },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(diffs); i++) {
+        os_write_file(str8_fmt(&t->arena, "%S\\calls.txt", dir), str8(NULL, 0));
+        q = test_git_request(t, GIT_JOB_DIFF, dir);
+        q.mode = diffs[i].mode;
+        q.path = str8_cstr(diffs[i].path);
+        q.orig = str8_cstr(diffs[i].orig);
+        n = test_git_job_run(t, &q, b, 10000, 0);
+        calls = test_git_calls(t, dir);
+        String8 want = str8_fmt(&t->arena, "%s %s\n", GIT_COMMON_ARGS, diffs[i].call);
+        TEST_CHECK(t, n == 1 && b[0]->kind == diffs[i].kind && b[0]->last && str8_equal(calls, want) &&
+                          (b[0]->kind != GIT_BATCH_DIFF || b[0]->diff.first_changed == diffs[i].first),
+                   "git job: diff %d: %d batches, kind %d, calls '%S'", i, n, n ? (i32)b[0]->kind : -1, calls);
+    }
+    // Failures in git's words: not a work tree, a refusal of another kind, a status that fails, a diff that fails (its
+    // output kept), a directory git cannot start in.
+    static const char *const fails[][3] = {
+        { "rev-parse", "rawerr fatal: not a git repository (or any of the parent directories): .git\\n\nexit 128\n",
+          "fatal: not a git repository (or any of the parent directories): .git" },
+        { "rev-parse", "rawerr fatal: detected dubious ownership in repository at 'C:/x/y'\\n'C:/x/y' is owned by:\\n\\tS-1-5-21\\n"
+          "To add an exception for this directory, call:\\n\\n\\tgit config --global --add safe.directory C:/x/y\\n\nexit 128\n",
+          "fatal: detected dubious ownership in repository at 'C:/x/y'" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(fails); i++) {
+        const char *pairs[] = { fails[i][0], fails[i][1] };
+        dir = test_git_fake(t, i ? "job_dubious" : "job_notree", pairs, 2);
+        q = test_git_request(t, GIT_JOB_OPEN, dir);
+        n = test_git_job_run(t, &q, b, 10000, 0);
+        GitBatchKind want = i ? GIT_BATCH_FAILED : GIT_BATCH_NOT_WORK_TREE;
+        TEST_CHECK(t, n == 1 && b[0]->kind == want && b[0]->exit_code == 128 && str8_equal(b[0]->error, str8_cstr(fails[i][2])),
+                   "git job: failure %d: kind %d, exit %u, error '%S'", i, n ? (i32)b[0]->kind : -1, n ? b[0]->exit_code : 0,
+                   n ? b[0]->error : str8(NULL, 0));
+    }
+    const char *status_fail[] = { "rev-parse", (const char *)str8_fmt(&t->arena, "out %S\n%c", slash, 0).data, "status",
+                                  "rawerr fatal: unable to read index\\n\nexit 128\n" };
+    dir = test_git_fake(t, "job_open", status_fail, 4);
+    q = test_git_request(t, GIT_JOB_OPEN, dir);
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    TEST_CHECK(t, n == 2 && b[1]->kind == GIT_BATCH_FAILED && str8_equal(b[1]->error, STR8_LIT("fatal: unable to read index")),
+               "git job: a failing status: %d batches", n);
+    const char *diff_fail[] = { "diff", "raw some output\\n\nrawerr fatal: bad object HEAD\\n\nexit 128\n" };
+    dir = test_git_fake(t, "job_difffail", diff_fail, 2);
+    q = test_git_request(t, GIT_JOB_DIFF, dir);
+    q.path = STR8_LIT("a.c");
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    TEST_CHECK(t, n == 1 && b[0]->kind == GIT_BATCH_FAILED && str8_equal(b[0]->error, STR8_LIT("fatal: bad object HEAD")) &&
+                      str8_equal(b[0]->text, STR8_LIT("some output\nfatal: bad object HEAD\n")),
+               "git job: a failing diff: '%S' / '%S'", n ? b[0]->error : str8(NULL, 0), n ? b[0]->text : str8(NULL, 0));
+    q.dir = str8_fmt(&t->arena, "%S\\no_such_dir", dir);
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    TEST_CHECK(t, n == 1 && b[0]->kind == GIT_BATCH_FAILED && b[0]->exit_code == 0xFFFFFFFFu, "git job: a missing directory");
+    // No git: git_path pointing nowhere; PATH without git.exe.
+    q = test_git_request(t, GIT_JOB_OPEN, dir);
+    q.program = str8_fmt(&t->arena, "%S\\no_git_here.exe", dir);
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    TEST_CHECK(t, n == 1 && b[0]->kind == GIT_BATCH_NO_GIT && str8_equal(b[0]->text, q.program), "git job: git_path nowhere");
+    String8 old_path = os_get_env(&t->arena, STR8_LIT("PATH"));
+    os_dev_set_env(STR8_LIT("PATH"), dir, 0);
+    q.program = str8(NULL, 0);
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    os_dev_set_env(STR8_LIT("PATH"), old_path, 0);
+    TEST_CHECK(t, n == 1 && b[0]->kind == GIT_BATCH_NO_GIT && !b[0]->text.len, "git job: no git.exe on PATH");
+    // The line limit: git is stopped once there are more lines (not read to its end), the diff cut.
+    const char *big[] = { "diff", "raw @@ -0,0 +1,900000 @@\\n\nrepeat 900000 +line \n" };
+    dir = test_git_fake(t, "job_big", big, 2);
+    q = test_git_request(t, GIT_JOB_DIFF, dir);
+    q.path = STR8_LIT("big.c");
+    u64 t0 = os_time_us();
+    n = test_git_job_run(t, &q, b, 20000, 0);
+    TEST_CHECK(t, n == 1 && b[0]->kind == GIT_BATCH_DIFF && b[0]->diff.cut && b[0]->diff.count == 20001 &&
+                      b[0]->diff.lines[20000].kind == GIT_LINE_CUT && b[0]->diff.text.len < 4 * 1000 * 1000,
+               "git job: the line limit: %d batches, %D lines, %D bytes read", n, n ? b[0]->diff.count : 0, n ? b[0]->diff.text.len : 0);
+    LOG("git job: the cut diff took %U ms", (os_time_us() - t0) / 1000);
+    // The timeout: a git silent for longer than timeout_ms is stopped; one that talks is not.
+    const char *slow[] = { "rev-parse", "hang\n" };
+    dir = test_git_fake(t, "job_slow", slow, 2);
+    q = test_git_request(t, GIT_JOB_OPEN, dir);
+    q.timeout_ms = 500;
+    t0 = os_time_us();
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    u64 took = (os_time_us() - t0) / 1000;
+    TEST_CHECK(t, n == 1 && b[0]->kind == GIT_BATCH_TIMEOUT && took < 4000, "git job: the timeout: kind %d after %U ms", n ? (i32)b[0]->kind : -1,
+               took);
+    // A cancel while status runs (it hangs): the job ends at once, git is gone.
+    const char *hang[] = { "rev-parse", (const char *)str8_fmt(&t->arena, "out %S\n%c", slash, 0).data, "status", "hang\n" };
+    dir = test_git_fake(t, "job_open", hang, 4);
+    q = test_git_request(t, GIT_JOB_OPEN, dir);
+    t0 = os_time_us();
+    n = test_git_job_run(t, &q, b, 10000, 1);
+    took = (os_time_us() - t0) / 1000;
+    TEST_CHECK(t, n == 2 && b[0]->kind == GIT_BATCH_TOPLEVEL && b[1]->kind == GIT_BATCH_CANCELLED && took < 4000,
+               "git job: a cancel: %d batches, %U ms", n, took);
+    // The environment block reaches git (the real-git test's isolation).
+    const char *env[] = { "rev-parse", "env RONIN_GIT_ENV\n" };
+    dir = test_git_fake(t, "job_env", env, 2);
+    q = test_git_request(t, GIT_JOB_OPEN, dir);
+    q.env = STR8_LIT("RONIN_GIT_ENV=isolated");
+    n = test_git_job_run(t, &q, b, 10000, 0);
+    TEST_CHECK(t, n >= 1 && b[0]->kind == GIT_BATCH_TOPLEVEL && str8_equal(b[0]->text, STR8_LIT("isolated")), "git job: env gave '%S'",
+               n ? b[0]->text : str8(NULL, 0));
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0 &&
+                      os_dev_live_handles() == ledger0,
+               "git job: counters back (%d processes, %d threads, %d events, ledger %d -> %d)", os_dev_live_processes(),
+               os_dev_live_threads(), os_dev_live_events(), ledger0, os_dev_live_handles());
+    LOG("test: ok: git job (the open's two command lines and the three diffs' exactly, exit 1 from --no-index only; not a work tree, "
+        "another refusal, a failing status and diff in git's words; a missing directory; git_path nowhere, no git.exe on PATH; the "
+        "line limit stopping git; the timeout; a cancel; the environment block; nothing left)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -13215,6 +13432,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_modal_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_git_parse(&t);
+    arena_reset(&t.arena);
+    test_git_job(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);

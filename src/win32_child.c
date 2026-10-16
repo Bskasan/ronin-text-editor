@@ -12,8 +12,14 @@
 //   cwd                       the working directory and CRLF
 //   write PATH TEXT           PATH rewritten with TEXT (escapes), as a build that regenerates a file
 //   env NAME                  the value of every environment entry named NAME (any case), each with CRLF; "(unset)"
+//   repeat N TEXT             N lines of TEXT (escapes) and its number, each ending in LF ("+line 1" ... a long diff)
 //
 // An unknown line ends it with exit code 98.
+//
+// --fake-git DIR ARGS... (Phase 19): the tests' git. Every argument after DIR is git's (none is ronin's). The
+// arguments, joined by spaces, are appended as one line to DIR\calls.txt; the first line "KEY<TAB>SCRIPT" of
+// DIR\map.txt whose KEY is in them names the script (relative to DIR) run as --child runs one; with none,
+// "fatal: fake git: no answer" on stderr and exit code 128.
 
 #if RONIN_DEV
 
@@ -162,6 +168,23 @@ static i32 win32_dev_child(Platform *p, String8 script) {
             }
             if (block) FreeEnvironmentStringsW(block);
             if (!found) win32_child_write(STD_OUTPUT_HANDLE, (const u8 *)"(unset)\r\n", 9);
+        } else if (str8_equal(cmd, STR8_LIT("repeat"))) {
+            i64 s2 = 0;
+            while (s2 < arg.len && arg.data[s2] != ' ') s2++;
+            i64 count = win32_child_number(str8(arg.data, s2));
+            String8 body = s2 < arg.len ? str8(arg.data + s2 + 1, arg.len - s2 - 1) : str8(NULL, 0);
+            i64 body_len = win32_child_unescape(body, buf);
+            u8 *block = PUSH_ARRAY(arena, u8, KB(64) + body_len + 32);
+            i64 used = 0;
+            for (i64 k = 1; k <= count; k++) {
+                memcpy(block + used, buf, (size_t)body_len);
+                used += body_len;
+                used += fmt_buf(block + used, 32, "%D\n", k);
+                if (used >= KB(64) || k == count) {
+                    win32_child_write(STD_OUTPUT_HANDLE, block, used);
+                    used = 0;
+                }
+            }
         } else {
             static const u8 msg[] = "child: unknown line\r\n";
             win32_child_write(STD_ERROR_HANDLE, msg, sizeof(msg) - 1);
@@ -169,6 +192,40 @@ static i32 win32_dev_child(Platform *p, String8 script) {
         }
     }
     return 0;
+}
+
+static i32 win32_dev_fake_git(Platform *p, String8 dir, String8 args) {
+    Arena *arena = &p->perm;
+    // The call, for the tests that count them (one git process at a time: no two appends at once).
+    String16 calls16 = str16_from_str8(arena, str8_fmt(arena, "%S\\calls.txt", dir));
+    HANDLE calls = CreateFileW((WCHAR *)calls16.data, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
+    if (calls != INVALID_HANDLE_VALUE) {
+        String8 line = str8_fmt(arena, "%S\n", args);
+        DWORD wrote = 0;
+        WriteFile(calls, line.data, (DWORD)line.len, &wrote, NULL);
+        CloseHandle(calls);
+    }
+    String8 map;
+    if (os_read_small_file(arena, str8_fmt(arena, "%S\\map.txt", dir), MB(1), &map) == OS_FILE_OK) {
+        for (i64 at = 0; at < map.len;) {
+            i64 end = at;
+            while (end < map.len && map.data[end] != '\n') end++;
+            String8 line = str8(map.data + at, end - at);
+            at = end + 1;
+            if (line.len && line.data[line.len - 1] == '\r') line.len--;
+            i64 tab = 0;
+            while (tab < line.len && line.data[tab] != '\t') tab++;
+            if (!tab || tab >= line.len) continue;
+            String8 key = str8(line.data, tab), script = str8(line.data + tab + 1, line.len - tab - 1);
+            b32 hit = 0;
+            for (i64 i = 0; i + key.len <= args.len && !hit; i++) hit = mem_equal(args.data + i, key.data, key.len);
+            if (hit) return win32_dev_child(p, str8_fmt(arena, "%S\\%S", dir, script));
+        }
+    }
+    static const u8 msg[] = "fatal: fake git: no answer\n";
+    win32_child_write(STD_ERROR_HANDLE, msg, sizeof(msg) - 1);
+    return 128;
 }
 
 #endif

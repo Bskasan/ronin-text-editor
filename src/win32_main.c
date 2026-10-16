@@ -149,6 +149,7 @@ typedef struct Platform {
     String8 touch; // --touch: rewritten after the keys, then the app is activated (the changed-on-disk check)
     u32 compile_wait_ms;  // --compile-wait MS: a screenshot run waits up to MS for running builds to end
     String8 child_script; // --child: run this script (win32_child.c) and exit: the tests' scripted program
+    String8 fake_git_dir, fake_git_args; // --fake-git DIR ARGS...: the tests' git (win32_child.c)
     b32 log_keys;  // --log-keys: every keyboard message and what became of it, in the log
     u32 key_seq;   // key and text events pushed so far (Event.dev_seq)
     Event last_key_event; // the last of them
@@ -1758,6 +1759,7 @@ static void win32_push_event(Platform *p, Event e);
 #if RONIN_DEV
 static i32 win32_dev_input_test(Platform *p); // win32_input_test.c
 static i32 win32_dev_child(Platform *p, String8 script); // win32_child.c
+static i32 win32_dev_fake_git(Platform *p, String8 dir, String8 args); // win32_child.c
 static u64 win32_dev_hash(String8 s);
 static void win32_dev_idle_check_mark(Platform *p, b32 end);
 static void win32_dev_memory_report(Platform *p);
@@ -6502,6 +6504,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (str8_equal(a, STR8_LIT("--keys-after")) && has_value) { p->keys_after = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--touch")) && has_value) { p->touch = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--child")) && has_value) { p->child_script = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--fake-git")) && has_value) { // every argument after the directory is git's
+            p->fake_git_dir = args[++i];
+            String8 rest = str8(NULL, 0);
+            for (i++; i < arg_count; i++) rest = rest.len ? str8_fmt(&p->perm, "%S %S", rest, args[i]) : args[i];
+            p->fake_git_args = rest;
+            break;
+        }
         if (str8_equal(a, STR8_LIT("--compile-wait")) && has_value) { p->compile_wait_ms = (u32)win32_parse_i32(args[++i]); continue; }
         if (str8_equal(a, STR8_LIT("--log-keys"))) { p->log_keys = 1; continue; }
         if (str8_equal(a, STR8_LIT("--idle-check"))) { p->idle_check = 1; continue; }
@@ -6543,6 +6552,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     // The tests' scripted program: before the log is opened (the run that started it writes that log), no
     // window.
     if (p->child_script.len) return bad_arg.len ? EXIT_USAGE : win32_dev_child(p, p->child_script);
+    if (p->fake_git_dir.len) return bad_arg.len ? EXIT_USAGE : win32_dev_fake_git(p, p->fake_git_dir, p->fake_git_args);
 #endif
 
 #if RONIN_DEV
