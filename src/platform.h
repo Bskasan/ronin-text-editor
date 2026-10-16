@@ -447,6 +447,9 @@ void app_dev_smoke_modal_end(App *app);                // ... and the box closed
 void app_dev_smoke_git(App *app, String8 git, String8 repo, String8 env); // stage 12: that git, b.c of the repository, focus on
 b32  app_dev_smoke_git_visited(App *app);              // ... RET visited a.c at its first change (logged)
 void app_dev_smoke_git_end(App *app);                  // ... and *scratch* again, a.c and b.c killed
+String8 app_dev_smoke_terminal(App *app, String8 tmp_dir, String8 *calls); // stage 13: tmp\smoke_term\sub\a.c shown, the fake
+                                                       // terminal in *calls, wt.exe "found"; the project's root
+void app_dev_smoke_terminal_end(App *app);             // ... and *scratch* again, a.c killed, the fake gone
 b32  app_dev_modal_open(App *app);                     // a modal box (the command list) is open
 void app_dev_modal_stats(App *app, u64 *field_calls, u64 *field_us); // --bench-modal: the owner's field changes so far, the last one's time
 i32  app_dev_command_count(void);                      // the command table's size
