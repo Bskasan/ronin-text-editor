@@ -8,6 +8,8 @@
 //   exit N                    ends with exit code N (the end of the script: 0)
 //   hang                      waits; gives up after 120 s (exit 99), so a broken test leaves nothing for long
 //   spawn FILE                a grandchild on another script, inheriting stdout and stderr; prints "grandchild <pid>"
+//   launch FILE               a grandchild on another script through os_process_launch (nothing inherited); prints how it
+//                             started (os_dev_last_launch: out of the job or inside it); exit 94 when it did not
 //   flood BYTES               numbered lines in 64 KB writes; every 64th an MSVC warning on flood.c
 //   cwd                       the working directory and CRLF
 //   write PATH TEXT           PATH rewritten with TEXT (escapes), as a build that regenerates a file
@@ -137,6 +139,13 @@ static i32 win32_dev_child(Platform *p, String8 script) {
             win32_child_write(STD_OUTPUT_HANDLE, msg, n);
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
+        } else if (str8_equal(cmd, STR8_LIT("launch"))) {
+            String8 exe = os_dev_exe_path(arena);
+            u32 error = os_process_launch(arena, exe, str8_fmt(arena, "--child \"%S\"", arg), str8(NULL, 0), 0);
+            String8 how = os_dev_last_launch();
+            win32_child_write(STD_OUTPUT_HANDLE, how.data, how.len);
+            win32_child_write(STD_OUTPUT_HANDLE, (const u8 *)"\r\n", 2);
+            if (error) return 94;
         } else if (str8_equal(cmd, STR8_LIT("flood"))) {
             win32_child_flood(arena, win32_child_number(arg));
         } else if (str8_equal(cmd, STR8_LIT("cwd"))) {

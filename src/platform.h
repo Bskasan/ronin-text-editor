@@ -207,6 +207,13 @@ OsFileStatus  os_process_start(Arena *arena, String8 command, String8 dir, OsPro
 OsFileStatus  os_process_start_program(Arena *arena, String8 program, String8 args, String8 dir, String8 env_extra, OsProcess *p);
 // The first PATH entry holding the file `name` (never the current directory), its full path in `arena`; false: none.
 b32           os_find_program(Arena *arena, String8 name, String8 *path);
+// Fire and forget (Phase 20: terminals): "<program>" <args> started in `dir` with nothing inherited, no pipe and no job of
+// ours; new_console: its own console window (CREATE_NEW_CONSOLE), else none for a console program. Out of ronin's own
+// job when that job allows it, else inside it. Both handles closed at once. 0, or the Win32 error. Temporary memory in
+// `arena` (popped again). The main thread (the tests' --child too).
+u32           os_process_launch(Arena *arena, String8 program, String8 args, String8 dir, b32 new_console);
+// `name` in the system directory (C:\Windows\System32\cmd.exe), in `arena`; empty on failure.
+String8       os_system_program(Arena *arena, String8 name);
 // Waits for output, the end of cmd.exe or `cancel` (an event set only to cancel; it is left set), whichever
 // comes first; with idle_ms (0: no limit), OS_PROCESS_TIMEOUT when nothing of these came for that long.
 OsProcessRead os_process_read(OsProcess *p, OsEvent cancel, u32 idle_ms, void *dst, i64 cap, i64 *got);
@@ -233,6 +240,7 @@ void os_dev_kill_pid(u32 pid);         // tests: a leftover they made goes
 i32  os_dev_handle_count(void);        // the process's open kernel handles
 i32  os_dev_live_handles(void);        // the ledger: kernel handles the os_* layer opened and has not closed (the worker
                                        // thread slots' handles apart: OsDevMetrics.worker_slots)
+String8 os_dev_last_launch(void);      // os_process_launch's last outcome, as it logged it ("launch: ... (breakaway)")
 // The leak check's sample (Phase 16). Verdict metrics first, then the informational ones.
 typedef struct OsDevMetrics {
     u64 private_bytes;   // committed private memory
