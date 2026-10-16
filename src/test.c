@@ -14688,7 +14688,10 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
                 s.keys, s.texts, s.mice, s.resizes, s.focus, s.modal_sessions, s.git_sessions, s.killed, s.truncated, os_dev_writes_refused());
             u64 settled = soak_settle(&s, initial_buffers), undo = 0;
             for (i32 i = 0; i < app->buffers.count; i++) undo += buffer_undo_memory(app->buffers.entries[i].buffer);
+            // The fastest of three: other programs' load on the machine slows a single run by up to a third (Phase 19);
+            // a real slowdown slows every run.
             per = soak_probe(&s);
+            for (i32 k = 0; k < 2; k++) per = MIN(per, soak_probe(&s));
             LOG("soak:   settled: private bytes %U KB; undo logs %U KB, kill ring %U KB; the probe %U ns an event", settled >> 10,
                 undo >> 10, app->kills.small_committed >> 10, per);
             {
@@ -14718,7 +14721,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
         }
         done = e;
     }
-    // Slowdown and growth: the last probe against the faster of the first two; the memory after the last block against
+    // Slowdown and growth: the last probe (each the fastest of three) against the faster of the first two; the memory after the last block against
     // the highest of the first half (the random walk's high-water by then; Phase 19: one first block alone is too low
     // a reference when the walk reaches its larger states later).
     if (!t.failures && events >= 3 * SOAK_BLOCK) {
