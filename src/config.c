@@ -14,6 +14,7 @@ void config_init(Config *c) {
     c->search_results.name = "search-results";
     c->compilation.name = "compilation";
     c->command_list.name = "command-list";
+    c->git_changes.name = "git-changes";
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,9 @@ static const struct { const char *name; u32 offset; i32 lo, hi; } config_int_set
     { "search_max_results", offsetof(Settings, search_max_results), 1, 1000000 },
     { "compilation_max_output_mb", offsetof(Settings, compilation_max_output_mb), 1, 1024 },
     { "max_cursors", offsetof(Settings, max_cursors), 1, 100000 },
+    { "git_diff_max_lines", offsetof(Settings, git_diff_max_lines), 100, 1000000 },
+    { "git_status_max_files", offsetof(Settings, git_status_max_files), 10, 100000 },
+    { "git_timeout_ms", offsetof(Settings, git_timeout_ms), 1000, 600000 },
 };
 
 // Text settings: the bytes and their length, at most cap - 1 bytes.
@@ -158,6 +162,7 @@ static const struct { const char *name; u32 offset, len_offset, cap; } config_te
     { "font", offsetof(Settings, font), offsetof(Settings, font_len), CONFIG_FONT_CAP },
     { "project_markers", offsetof(Settings, project_markers), offsetof(Settings, project_markers_len), CONFIG_LIST_CAP },
     { "project_ignore", offsetof(Settings, project_ignore), offsetof(Settings, project_ignore_len), CONFIG_LIST_CAP },
+    { "git_path", offsetof(Settings, git_path), offsetof(Settings, git_path_len), CONFIG_PATH_CAP },
 };
 
 static const struct { const char *name; u32 offset; } config_bool_settings[] = {
@@ -257,6 +262,11 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "modal_selection", offsetof(Theme, modal_selection) },
     { "modal_description", offsetof(Theme, modal_description) },
     { "modal_key", offsetof(Theme, modal_key) },
+    { "diff_added", offsetof(Theme, diff_added) },
+    { "diff_removed", offsetof(Theme, diff_removed) },
+    { "diff_hunk", offsetof(Theme, diff_hunk) },
+    { "diff_header", offsetof(Theme, diff_header) },
+    { "git_status", offsetof(Theme, git_status) },
 };
 _Static_assert(ARRAY_COUNT(config_colors) <= 64, "Config.colors_set has a bit per color");
 
@@ -269,6 +279,9 @@ static void config_derived_colors(Config *c) {
         { offsetof(Theme, search_line_number), offsetof(Theme, number) },
         { offsetof(Theme, modal_selection), offsetof(Theme, selection) },
         { offsetof(Theme, modal_key), offsetof(Theme, number) },
+        { offsetof(Theme, diff_hunk), offsetof(Theme, number) },
+        { offsetof(Theme, diff_header), offsetof(Theme, variable) },
+        { offsetof(Theme, git_status), offsetof(Theme, string) },
     };
     for (i32 d = 0; d < ARRAY_COUNT(derived); d++) {
         for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {
@@ -366,7 +379,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         i32 header = config_header(line, &head);
         if (header) {
             if (header < 0) {
-                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])");
+                config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])");
                 section = CONFIG_SECTION_UNKNOWN;
                 continue;
             }
@@ -374,7 +387,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
                     : str8_equal(head, STR8_LIT("colors"))   ? CONFIG_SECTION_COLORS
                     : CONFIG_SECTION_UNKNOWN;
             // [keys] and [keys global] bind in the global map, [keys minibuffer], [keys isearch],
-            // [keys search-results], [keys compilation] and [keys command-list] in theirs.
+            // [keys search-results], [keys compilation], [keys command-list] and [keys git-changes] in theirs.
             if (str8_starts_with(head, STR8_LIT("keys")) && (head.len == 4 || config_is_blank(head.data[4]))) {
                 String8 map = config_trim(str8(head.data + 4, head.len - 4));
                 p.keys = !map.len || str8_equal(map, STR8_LIT("global")) ? &c->global
@@ -382,7 +395,8 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
                        : str8_equal(map, STR8_LIT("isearch"))          ? &c->isearch
                        : str8_equal(map, STR8_LIT("search-results"))   ? &c->search_results
                        : str8_equal(map, STR8_LIT("compilation"))      ? &c->compilation
-                       : str8_equal(map, STR8_LIT("command-list"))     ? &c->command_list : NULL;
+                       : str8_equal(map, STR8_LIT("command-list"))     ? &c->command_list
+                       : str8_equal(map, STR8_LIT("git-changes"))      ? &c->git_changes : NULL;
                 if (p.keys) section = CONFIG_SECTION_KEYS;
             }
             if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "unknown section [%S]", config_quote(head));
@@ -390,7 +404,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         }
         switch (section) {
         case CONFIG_SECTION_NONE:
-            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])");
+            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])");
             break;
         case CONFIG_SECTION_UNKNOWN:
             break;

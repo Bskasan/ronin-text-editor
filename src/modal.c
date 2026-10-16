@@ -163,7 +163,7 @@ b32 modal_open(App *app, const ModalSpec *spec) {
     m->spec = *spec;
     m->spec.panes = CLAMP(spec->panes, 1, MODAL_PANES_MAX);
     m->focus = 0;
-    m->rows_high = 0;
+    m->rows_high = spec->full_height ? (i64)1 << 40 : 0;
     m->then = NULL;
     for (i32 p = 0; p < MODAL_PANES_MAX; p++) m->lists[p] = (ModalList){ 0, -1, 0 };
     if (spec->field) { // empty, no undo history, point and the scroll position at the start

@@ -3741,6 +3741,10 @@ static i32 win32_write_outputs(Platform *p) {
                 if (os_dev_wake_wait(50) && app_wake(p->app)) win32_frame(p);
                 continue;
             }
+            if (app_dev_git_busy(p->app) && os_time_us() - pass_start < 10000000) { // git's answers (C-x g), 10 s at most
+                if (os_dev_wake_wait(50) && app_wake(p->app)) win32_frame(p);
+                continue;
+            }
             if (!os_dev_wake_wait(300)) break;
             if (app_wake(p->app)) win32_frame(p);
         }

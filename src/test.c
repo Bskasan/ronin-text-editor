@@ -5279,7 +5279,7 @@ static b32 test_config(Test *t, u64 seed) {
         "font = x\n");                        // 25: a key sequence "font =", command "x"
     config_parse(c, &t->arena, bad, STR8_LIT("t.conf"));
     static const char *expected[] = {
-        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])",
+        "t.conf:1: line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])",
         "t.conf:3: font_size: 'big' is not a number",
         "t.conf:4: unknown setting 'nosuch'",
         "t.conf:5: expected name = value",
@@ -5289,7 +5289,7 @@ static b32 test_config(Test *t, u64 seed) {
         "t.conf:11: unknown command 'no-such-command'",
         "t.conf:12: expected a key sequence and a command",
         "t.conf:13: unknown section [bogus]",
-        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation] or [keys command-list])",
+        "t.conf:15: bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])",
         "t.conf:17: warning: line_height 50 is out of range (80 to 300), using 80",
         "t.conf:18: warning: font_size 200 is out of range (4 to 96), using 96",
         "t.conf:19: render_mode: 'fancy' is not symmetric, natural or classic",
@@ -12531,7 +12531,10 @@ static b32 test_modal_layer(Test *t) {
     git.scroll_panes = 1u << 1;
     git.selected = test_modal_selected;
     git.status = test_modal_status;
+    git.full_height = 1;
     TEST_CHECK(t, modal_open(app, &git), "modal: status line: did not open");
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, g->rows == 37, "modal: full height before any row: %d rows", g->rows);
     modal_set_rows(app, 0, 10);
     modal_set_rows(app, 1, 100);
     app_dev_feed_events(app, NULL, 0, &t->arena);
@@ -12956,6 +12959,9 @@ static b32 test_git_parse(Test *t) {
         { "## Initial commit on master\0", 28, "branch 'master' no head\n" },
         { "## HEAD (no branch)\0 M x\0", 25, "branch 'HEAD (no branch)'\n M|x|\n" },
         { "## main\0", 8, "branch 'main'\n" },
+        // git's stderr in the shared pipe, before a record: the record is what follows it.
+        { "## main\0warning: in the working copy of 'a.c', LF will be replaced by CRLF\n M a.c\0 M b.c\0", 89,
+          "branch 'main'\n M|a.c|\n M|b.c|\n" },
         { "", 0, "branch ''\n" },
     };
     for (i32 i = 0; i < (i32)ARRAY_COUNT(branches); i++) {
@@ -13007,6 +13013,10 @@ static b32 test_git_parse(Test *t) {
         // Two files: the hunk of the first ends by its counts, the second file's header follows.
         { "@@ -1 +1 @@\n-a\n+b\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1,2 @@\n y\n+z\n",
           "@ @@ -1 +1 @@\n- -a\n+ +b\nH diff --git a/y b/y\nH --- a/y\nH +++ b/y\n@ @@ -1 +1,2 @@\nT  y\n+ +z\nfirst 1" },
+        // git's warnings on stderr (the shared pipe) are not the diff; inside a hunk the counts still decide.
+        { "warning: in the working copy of 'a.c', LF will be replaced by CRLF the next time Git touches it\ndiff --git a/a.c b/a.c\n"
+          "@@ -1 +1,2 @@\n a\n+warning: x\n",
+          "H diff --git a/a.c b/a.c\n@ @@ -1 +1,2 @@\nT  a\n+ +warning: x\nfirst 2" },
         // No trailing newline; empty output.
         { "@@ -1 +1 @@\n-a\n+b", "@ @@ -1 +1 @@\n- -a\n+ +b\nfirst 1" },
         { "", "first 0" },
@@ -13290,6 +13300,339 @@ static b32 test_git_job(Test *t) {
     return 1;
 }
 
+// The git changes view's jobs settled (none running, dying or being copied), with the wake and frames; false after `ms`.
+static b32 test_git_wait(Test *t, App *app, u32 ms) {
+    u64 deadline = os_time_us() + (u64)ms * 1000;
+    while (os_time_us() < deadline) {
+        if (os_dev_wake_wait(app_wants_frame(app) ? 0 : 5)) app_wake(app);
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+        if (!app_dev_git_busy(app)) return 1;
+    }
+    return 0;
+}
+
+// Until the box is open (rev-parse answered) or `ms`.
+static b32 test_git_wait_open(Test *t, App *app, u32 ms) {
+    u64 deadline = os_time_us() + (u64)ms * 1000;
+    while (os_time_us() < deadline && !modal_active(app)) {
+        if (os_dev_wake_wait(5)) app_wake(app);
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+    }
+    return modal_active(app);
+}
+
+// The diff calls of the fake git so far: "path path ..." (the last argument of each diff line).
+static String8 test_git_diff_calls(Test *t, String8 dir) {
+    String8 calls = test_git_calls(t, dir), out = str8(NULL, 0);
+    for (i64 at = 0; at < calls.len;) {
+        i64 end = at;
+        while (end < calls.len && calls.data[end] != '\n') end++;
+        String8 line = str8(calls.data + at, end - at);
+        at = end + 1;
+        String8 key = STR8_LIT(" diff ");
+        b32 diff = 0;
+        for (i64 i = 0; i + key.len <= line.len && !diff; i++) diff = mem_equal(line.data + i, key.data, key.len);
+        if (!diff) continue;
+        i64 dash = line.len;
+        while (dash > 2 && !(line.data[dash - 1] == ' ' && line.data[dash - 2] == '-' && line.data[dash - 3] == '-')) dash--;
+        String8 tail = str8(line.data + dash, line.len - dash);
+        if (str8_starts_with(tail, STR8_LIT("/dev/null "))) tail = str8(tail.data + 10, tail.len - 10);
+        out = str8_fmt(&t->arena, "%S%s%S", out, out.len ? "|" : "", tail);
+    }
+    return out;
+}
+
+static void test_git_use_fake(Test *t, App *app, String8 dir) {
+    app->git.dev_program = os_dev_exe_path(&t->arena);
+    app->git.dev_prefix = str8_fmt(&t->arena, "--fake-git \"%S\"", dir);
+    app->git.dev_env = str8(NULL, 0);
+}
+
+// A canned repository for the view: its files on disk (RET visits them) and git's answers.
+static String8 test_git_view_fake(Test *t, const char *name, const char *status) {
+    String8 dir = test_git_fake(t, name, NULL, 0);
+    String8 slash = str8_copy(&t->arena, dir);
+    for (i64 i = 0; i < slash.len; i++) if (slash.data[i] == '\\') slash.data[i] = '/';
+    os_write_file(str8_fmt(&t->arena, "%S\\a.c", dir), STR8_LIT("line 1\nline 2\nLINE 3\nline 4\nline 5\nline 6\nline 7\nline 8\n\tinserted\nline 9\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\new name.c", dir), STR8_LIT("y\nz\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\notes.txt", dir), STR8_LIT("one\ntwo\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\\xc4\x9f.c", dir), STR8_LIT("a\nb\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\img.png", dir), STR8_LIT("\x89PNG"));
+    os_write_file(str8_fmt(&t->arena, "%S\\big.c", dir), STR8_LIT("big\n"));
+    os_write_file(str8_fmt(&t->arena, "%S\\crlf.c", dir), STR8_LIT("new\r\n"));
+    const char *pairs[] = {
+        "rev-parse", (const char *)str8_fmt(&t->arena, "out %S\n%c", slash, 0).data,
+        "status", status,
+        "--no-index", "raw diff --git a/notes.txt b/notes.txt\\nnew file mode 100644\\n--- /dev/null\\n+++ b/notes.txt\\n@@ -0,0 +1,2 @@\\n+one\\n+two\\n\nexit 1\n",
+        "-M --", "raw diff --git a/old name.c b/new name.c\\nsimilarity index 90%\\nrename from old name.c\\nrename to new name.c\\n"
+                 "@@ -1,2 +1,2 @@\\n-x\\n+y\\n z\\n\n",
+        "-- a.c", "raw diff --git a/a.c b/a.c\\nindex 1111111..2222222 100644\\n--- a/a.c\\n+++ b/a.c\\n@@ -1,4 +1,4 @@\\n line 1\\n line 2\\n"
+                  "-line 3\\n+LINE 3\\n line 4\\n@@ -8,2 +8,3 @@\\n line 8\\n+\\tinserted\\n line 9\\n\n",
+        "-- gone.c", "raw diff --git a/gone.c b/gone.c\\ndeleted file mode 100644\\n--- a/gone.c\\n+++ /dev/null\\n@@ -1 +0,0 @@\\n-bye\\n\n",
+        "\xc4\x9f.c", "raw @@ -2 +2 @@\\n-a\\n+b\\n\n",
+        "img.png", "raw diff --git a/img.png b/img.png\\nindex 1..2 100644\\nBinary files a/img.png and b/img.png differ\\n\n",
+        "big.c", "raw @@ -0,0 +1,20005 @@\\n\nrepeat 20005 +big \n",
+        "crlf.c", "raw @@ -1 +1 @@\\r\\n-old\\r\\n+new\\r\\n\n",
+    };
+    return test_git_fake(t, name, pairs, (i32)ARRAY_COUNT(pairs));
+}
+
+#define TEST_GIT_STATUS "raw ## main...origin/main\\x00 M a.c\\x00R  new name.c\\x00old name.c\\x00?? notes.txt\\x00 D gone.c\\x00" \
+                        "M  \xc4\x9f.c\\x00 M img.png\\x00 M big.c\\x00 M crlf.c\\x00\n"
+
+// The visit after RET: the buffer's name and point's 1-based line.
+static b32 test_git_visited(App *app, const char *name, i64 line) {
+    View *v = app_selected_view(app);
+    Buffer *b = v->buffer;
+    return !modal_active(app) && str8_equal(b->name, str8_cstr(name)) && buffer_line_of(b, view_point(v, view_primary(v))) == line - 1;
+}
+
+static b32 test_git_changes(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events(), ledger0 = os_dev_live_handles();
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "git changes: no app");
+    String8 dir = test_git_view_fake(t, "view", TEST_GIT_STATUS);
+    test_git_use_fake(t, app, dir);
+    Modal *m = &app->modal;
+    // C-x g: nothing opens before rev-parse answered; then the list, the status line, the first file's diff.
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, !modal_active(app) && app->git.pending && test_app_echo_is(app, "Running git\xe2\x80\xa6"), "git changes: C-x g opened at once");
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && modal_active(app), "git changes: did not open");
+    GitView *v = app->git.view;
+    TEST_CHECK(t, v && v->count == 8 && v->listed && str8_equal(v->branch, STR8_LIT("main")) && str8_equal(v->toplevel, dir),
+               "git changes: %D rows, top '%S'", v ? v->count : -1, v ? v->toplevel : str8(NULL, 0));
+    if (!v || v->count != 8) return 0;
+    String8 rows = str8(NULL, 0);
+    for (i64 i = 0; i < v->count; i++) rows = str8_fmt(&t->arena, "%S%c%c %S%s%S|", rows, v->rows[i].xy[0], v->rows[i].xy[1], v->rows[i].orig,
+                                                       v->rows[i].orig.len ? " -> " : "", v->rows[i].path);
+    TEST_CHECK(t, str8_equal(rows, STR8_LIT(" M a.c|R  old name.c -> new name.c|?? notes.txt| D gone.c|M  \xc4\x9f.c| M img.png| M big.c| M crlf.c|")),
+               "git changes: the rows: %S", rows);
+    TEST_CHECK(t, str8_equal(git_changes_status(app, v, &t->arena), STR8_LIT("main: 8 changed files")) && m->lists[0].count == 8 &&
+                      m->lists[0].selected == 0 && m->lists[1].count == 14 && m->lists[1].selected == -1 && m->focus == 0,
+               "git changes: status '%S', panes %D / %D", git_changes_status(app, v, &t->arena), m->lists[0].count, m->lists[1].count);
+    GitRow *a = &v->rows[0];
+    TEST_CHECK(t, a->state == GIT_ROW_CACHED && a->first_changed == 3 && a->lines[7].kind == GIT_LINE_REMOVED &&
+                      str8_equal(str8(a->text.data + a->lines[12].off, a->lines[12].len), STR8_LIT("+\tinserted")),
+               "git changes: a.c's diff: state %u, first %D", a->state, a->first_changed);
+    // The cache: going back fetches nothing; keys that pass over files fetch only where the selection ends.
+    app_dev_feed(app, "<down>", &t->arena);
+    test_git_wait(t, app, 10000);
+    app_dev_feed(app, "<up>", &t->arena);
+    test_git_wait(t, app, 10000);
+    test_app_feed_batch(t, app, "<down> <down> <down>"); // row 1 is cached: row 2 starts, row 3 waits for it
+    test_git_wait(t, app, 10000);
+    String8 diffs = test_git_diff_calls(t, dir);
+    TEST_CHECK(t, str8_equal(diffs, STR8_LIT("a.c|old name.c new name.c|notes.txt|gone.c")) && app->git.dev_diff_jobs == 4 && m->lists[0].selected == 3,
+               "git changes: the diffs fetched: '%S' (%U jobs)", diffs, app->git.dev_diff_jobs);
+    // A deleted file: RET says so, the box stays.
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "gone.c is deleted in the working tree"), "git changes: RET on gone.c: '%S'", test_echo(app));
+    // Keys that pass over files: row 4 starts, rows 5 and 6 are passed over, row 7 is fetched when row 4's ends.
+    test_app_feed_batch(t, app, "<down> <down> <down> <down>");
+    test_git_wait(t, app, 10000);
+    diffs = test_git_diff_calls(t, dir);
+    TEST_CHECK(t, str8_equal(diffs, STR8_LIT("a.c|old name.c new name.c|notes.txt|gone.c|\xc4\x9f.c|crlf.c")) && v->rows[5].state == GIT_ROW_NONE &&
+                      v->rows[6].state == GIT_ROW_NONE && m->lists[0].selected == 7, "git changes: passed over: '%S'", diffs);
+    test_modal_click(t, app, (i32)m->g.panes[0].x0 + 20, (i32)m->g.panes[0].y0 + 2 * 16 + 5, 1); // back to row 2 at once
+    test_git_wait(t, app, 10000);
+    TEST_CHECK(t, str8_equal(test_git_diff_calls(t, dir), diffs) && m->lists[0].selected == 2 && app->git.dev_diff_jobs == 6 &&
+                      m->lists[1].count == v->rows[2].count, "git changes: going back fetched again: '%S'", test_git_diff_calls(t, dir));
+    // A long diff copied over frames (4,096 lines a frame here): the pane grows, the cut line last; TAB scrolls it.
+    app->dev_work_budget = 4096;
+    app_dev_feed(app, "<down> <down> <down> <down>", &t->arena);
+    u64 deadline = os_time_us() + 10000 * 1000ull;
+    while (os_time_us() < deadline) { // img.png's diff and its copy first, then big.c's diff comes
+        if (os_dev_wake_wait(5)) app_wake(app);
+        if (v->rows[6].state == GIT_ROW_COPYING) break;
+        app_dev_feed_events(app, NULL, 0, &t->arena);
+    }
+    app_dev_feed_events(app, NULL, 0, &t->arena); // one frame: 4,096 lines
+    TEST_CHECK(t, v->rows[6].state == GIT_ROW_COPYING && m->lists[1].count == 4096 && app_wants_frame(app), "git changes: copied over frames: %D",
+               m->lists[1].count);
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && v->rows[6].state == GIT_ROW_CACHED && m->lists[1].count == 20001 &&
+                      v->rows[6].lines[20000].kind == GIT_LINE_CUT && v->rows[6].lines[19999].kind == GIT_LINE_ADDED,
+               "git changes: big.c: %D lines", m->lists[1].count);
+    app->dev_work_budget = 0;
+    app_dev_feed(app, "TAB <down> <down>", &t->arena);
+    TEST_CHECK(t, m->focus == 1 && m->lists[1].top == 2 && m->lists[0].selected == 6, "git changes: TAB, then the diff scrolls: top %D",
+               m->lists[1].top);
+    app_dev_feed(app, "C-v", &t->arena);
+    i32 page = m->g.rows;
+    TEST_CHECK(t, m->lists[1].top == 2 + page, "git changes: C-v scrolls a page: top %D", m->lists[1].top);
+    Event wheel = { .kind = EVENT_MOUSE_WHEEL, .x = (i32)m->g.panes[1].x0 + 50, .y = (i32)m->g.panes[1].y0 + 50, .wheel = -120 };
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 2 + page + 3 && m->lists[0].selected == 6, "git changes: the wheel scrolls the pane under it: %D",
+               m->lists[1].top);
+    app_dev_feed(app, "TAB <down>", &t->arena);
+    test_git_wait(t, app, 10000);
+    GitRow *crlf = &v->rows[7];
+    TEST_CHECK(t, m->focus == 0 && crlf->state == GIT_ROW_CACHED && crlf->count == 3 &&
+                      str8_equal(str8(crlf->text.data + crlf->lines[2].off, crlf->lines[2].len), STR8_LIT("+new")),
+               "git changes: TAB back; CRLF lines without their CR");
+    // A config applied while it is open: its keys and colors.
+    String8 conf = test_results_conf(t, "p19keys.conf", "[keys git-changes]\nC-j modal-previous\n[colors]\ndiff_added = #010203\n");
+    app_dev_use_config(app, conf);
+    app_dev_feed(app, "C-j C-j", &t->arena);
+    test_git_wait(t, app, 10000);
+    TEST_CHECK(t, modal_active(app) && m->lists[0].selected == 5 && app->config->theme.diff_added == 0x010203 &&
+                      app->config->theme.diff_hunk == app->config->theme.number, "git changes: after a reload: selected %D", m->lists[0].selected);
+    TEST_CHECK(t, v->rows[5].state == GIT_ROW_CACHED && v->rows[5].first_changed == 0 && v->rows[5].count == 3, "git changes: a binary file's diff");
+    app_dev_use_config(app, str8(NULL, 0));
+    // Other commands are refused by name; g runs status again and forgets every diff.
+    app_dev_feed(app, "C-x C-s", &t->arena);
+    TEST_CHECK(t, modal_active(app) && test_app_echo_is(app, "save-buffer is not available in the git changes view"), "git changes: C-x C-s: '%S'",
+               test_echo(app));
+    os_write_file(str8_fmt(&t->arena, "%S\\calls.txt", dir), str8(NULL, 0));
+    app_dev_feed(app, "g", &t->arena);
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && v->count == 8 && m->lists[0].selected == 0 && v->rows[6].state == GIT_ROW_NONE &&
+                      v->rows[0].state == GIT_ROW_CACHED, "git changes: g");
+    String8 calls = test_git_calls(t, dir);
+    TEST_CHECK(t, str8_starts_with(calls, str8_fmt(&t->arena, "%s status", GIT_COMMON_ARGS)) && str8_equal(test_git_diff_calls(t, dir), STR8_LIT("a.c")),
+               "git changes: g's calls:\n%S", calls);
+    // RET visits the selected file in the selected window at its first change: a.c (line 3), the untracked file (line
+    // 1), the renamed one (its new name, line 1), a binary one where find-file puts point.
+    static const struct { const char *keys, *name; i64 line; } visits[] = {
+        { "RET", "a.c", 3 }, { "<down> <down>", "notes.txt", 1 }, { "<down>", "new name.c", 1 }, { "<down> <down> <down> <down> <down>", "img.png", 1 },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(visits); i++) {
+        if (i) {
+            app_dev_feed(app, "C-x g", &t->arena);
+            test_git_wait(t, app, 10000);
+            app_dev_feed(app, visits[i].keys, &t->arena);
+            test_git_wait(t, app, 10000);
+            app_dev_feed(app, "RET", &t->arena);
+        } else {
+            app_dev_feed(app, visits[i].keys, &t->arena);
+        }
+        test_git_wait(t, app, 10000);
+        TEST_CHECK(t, test_git_visited(app, visits[i].name, visits[i].line) && app->git.view == NULL,
+                   "git changes: RET visits %s at line %D (shown: '%S')", visits[i].name, visits[i].line, app_selected_view(app)->buffer->name);
+    }
+    // Not over the minibuffer; C-g drops a C-x g still waiting for git; M-x git-changes-refresh outside it.
+    app_dev_feed(app, "M-x C-x g", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "The git changes view is not available in the minibuffer") && !app->git.pending, "git changes: in the minibuffer");
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    app_dev_feed(app, "C-x g C-g", &t->arena);
+    TEST_CHECK(t, !app->git.pending && app->git.dying_count == 1, "git changes: C-g while pending");
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && !modal_active(app) && !app->git.dying_count, "git changes: the dropped job ended, nothing opened");
+    app_dev_feed(app, "M-x g i t - c h a n g e s - r e f r e s h RET", &t->arena);
+    TEST_CHECK(t, test_app_echo_is(app, "The git changes view is not open"), "git changes: refresh outside: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "git changes")) return 0;
+    TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0 &&
+                      os_dev_live_handles() == ledger0, "git changes: counters back (%d processes, %d threads, %d events, ledger %d -> %d)",
+               os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events(), ledger0, os_dev_live_handles());
+    LOG("test: ok: git changes (opened after rev-parse, the rows and the status line, a diff with kinds; each diff fetched once per open, "
+        "none for the files passed over; a deleted file refused; a diff copied over frames, the cut; TAB, scrolling, the wheel; CRLF; a "
+        "reload; refusals; g; RET at the first change for a modified, an untracked, a renamed and a binary file; the minibuffer; C-g while "
+        "pending; nothing left)");
+    return 1;
+}
+
+// The error paths through the app: no git, not a work tree, git's own refusal, a failing status and diff, the timeout
+// (pending and open), a cancel on close, the shutdown with a git that hangs.
+static b32 test_git_changes_errors(Test *t) {
+    i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), ledger0 = os_dev_live_handles();
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "git errors: no app");
+    // No git: git_path pointing nowhere; no git.exe on PATH.
+    String8 dir = test_git_fake(t, "err_none", NULL, 0);
+    app->git.dev_program = str8_fmt(&t->arena, "%S\\no_git.exe", dir);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    String8 nowhere = str8_fmt(&t->arena, "git not found: %S", app->git.dev_program);
+    for (i64 k = 0; k < nowhere.len; k++) if (nowhere.data[k] == '\\') nowhere.data[k] = '/'; // as files_echo shows paths
+    TEST_CHECK(t, !modal_active(app) && str8_equal(test_echo(app), nowhere), "git errors: git_path nowhere: '%S'", test_echo(app));
+    app->git.dev_program = str8(NULL, 0);
+    String8 old_path = os_get_env(&t->arena, STR8_LIT("PATH"));
+    os_dev_set_env(STR8_LIT("PATH"), dir, 0);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    os_dev_set_env(STR8_LIT("PATH"), old_path, 0);
+    TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, "git not found on PATH (set git_path in [settings])"), "git errors: no git on PATH: '%S'",
+               test_echo(app));
+    // Not a work tree; another refusal in git's words.
+    static const char *const refusals[][3] = {
+        { "err_notree", "rawerr fatal: not a git repository (or any of the parent directories): .git\\n\nexit 128\n", NULL },
+        { "err_dubious", "rawerr fatal: detected dubious ownership in repository at 'C:/x/y'\\n'C:/x/y' is owned by:\\n\\tS-1-5-21\\n"
+                         "To add an exception for this directory, call:\\n\\n\\tgit config --global --add safe.directory C:/x/y\\n\nexit 128\n",
+          "git: fatal: detected dubious ownership in repository at 'C:/x/y'" },
+    };
+    for (i32 i = 0; i < (i32)ARRAY_COUNT(refusals); i++) {
+        const char *pairs[] = { "rev-parse", refusals[i][1] };
+        dir = test_git_fake(t, refusals[i][0], pairs, 2);
+        test_git_use_fake(t, app, dir);
+        app_dev_feed(app, "C-x g", &t->arena);
+        test_git_wait(t, app, 10000);
+        String8 want = refusals[i][2] ? str8_cstr(refusals[i][2]) : str8_fmt(&t->arena, "Not a git work tree: %S", app->git.pending_dir);
+        for (i64 k = 0; !refusals[i][2] && k < want.len; k++) if (want.data[k] == '\\') want.data[k] = '/';
+        TEST_CHECK(t, !modal_active(app) && str8_equal(test_echo(app), want), "git errors: %s: '%S', not '%S'", refusals[i][0], test_echo(app), want);
+    }
+    // A status that fails: the box open, empty, the status line in git's words. A diff that fails: its output shown.
+    String8 slash = str8_copy(&t->arena, dir);
+    for (i64 i = 0; i < slash.len; i++) if (slash.data[i] == '\\') slash.data[i] = '/';
+    const char *rev = (const char *)str8_fmt(&t->arena, "out %S\n%c", slash, 0).data;
+    const char *status_fail[] = { "rev-parse", rev, "status", "rawerr fatal: unable to read index\\n\nexit 128\n" };
+    dir = test_git_fake(t, "err_dubious", status_fail, 4);
+    test_git_use_fake(t, app, dir);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    TEST_CHECK(t, modal_active(app) && app->git.view && !app->git.view->count &&
+                      str8_equal(git_changes_status(app, app->git.view, &t->arena), STR8_LIT("git: fatal: unable to read index")),
+               "git errors: a failing status");
+    app_dev_feed(app, "C-g", &t->arena);
+    const char *diff_fail[] = { "rev-parse", rev, "status", "raw ## main\\x00 M a.c\\x00\n", "diff", "raw partial\\n\nrawerr fatal: bad object HEAD\\n\nexit 128\n" };
+    dir = test_git_fake(t, "err_dubious", diff_fail, 6);
+    test_git_use_fake(t, app, dir);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    GitView *v = app->git.view;
+    TEST_CHECK(t, v && v->count == 1 && v->rows[0].state == GIT_ROW_FAILED && v->rows[0].count == 2 &&
+                      str8_equal(git_changes_status(app, v, &t->arena), STR8_LIT("git: fatal: bad object HEAD")) && app->modal.lists[1].count == 2,
+               "git errors: a failing diff");
+    app_dev_feed(app, "C-g", &t->arena);
+    // The timeout: rev-parse silent (nothing opens), then status silent (the box says so).
+    app->config->settings.git_timeout_ms = 1000;
+    const char *slow_rev[] = { "rev-parse", "hang\n" };
+    dir = test_git_fake(t, "err_slow", slow_rev, 2);
+    test_git_use_fake(t, app, dir);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    TEST_CHECK(t, !modal_active(app) && test_app_echo_is(app, "git timed out"), "git errors: a silent rev-parse: '%S'", test_echo(app));
+    const char *slow_status[] = { "rev-parse", rev, "status", "hang\n" };
+    dir = test_git_fake(t, "err_dubious", slow_status, 4);
+    test_git_use_fake(t, app, dir);
+    app_dev_feed(app, "C-x g", &t->arena);
+    test_git_wait(t, app, 10000);
+    TEST_CHECK(t, modal_active(app) && str8_equal(git_changes_status(app, app->git.view, &t->arena), STR8_LIT("git timed out")),
+               "git errors: a silent status");
+    app_dev_feed(app, "C-g", &t->arena);
+    app->config->settings.git_timeout_ms = 30000;
+    // A cancel on close: status hangs, C-g closes the box in that frame; git is gone soon after, never waited for.
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, test_git_wait_open(t, app, 10000), "git errors: the hanging status did not open");
+    u64 t0 = os_time_us();
+    app_dev_feed(app, "C-g", &t->arena);
+    u64 close_us = os_time_us() - t0;
+    TEST_CHECK(t, !modal_active(app) && app->git.dying_count == 1 && close_us < 50000, "git errors: C-g took %U us", close_us);
+    TEST_CHECK(t, test_git_wait(t, app, 2000) && os_dev_live_processes() == procs0, "git errors: the cancelled git still runs (%d processes)",
+               os_dev_live_processes());
+    // A click outside closes it the same way.
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, test_git_wait_open(t, app, 10000), "git errors: reopen");
+    test_modal_click(t, app, 2, 2, 1);
+    TEST_CHECK(t, !modal_active(app) && test_git_wait(t, app, 2000) && os_dev_live_processes() == procs0, "git errors: a click outside");
+    // The shutdown with a git that hangs: cancelled and joined, nothing abandoned.
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, test_git_wait_open(t, app, 10000), "git errors: open before the shutdown");
+    if (!test_app_destroy(t, app, "git errors")) return 0;
+    TEST_CHECK(t, app->git.dev_abandoned == 0 && os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 &&
+                      os_dev_live_handles() == ledger0, "git errors: the shutdown: %d abandoned, %d processes, ledger %d -> %d", app->git.dev_abandoned,
+               os_dev_live_processes(), ledger0, os_dev_live_handles());
+    LOG("test: ok: git errors (git_path nowhere, no git on PATH, not a work tree, a refusal in git's words: nothing opens; a failing status "
+        "and diff; the timeout before and after the open; C-g and a click outside cancel without waiting; the shutdown with a hanging git)");
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -13434,6 +13777,10 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_git_parse(&t);
     arena_reset(&t.arena);
     test_git_job(&t);
+    arena_reset(&t.arena);
+    test_git_changes(&t);
+    arena_reset(&t.arena);
+    test_git_changes_errors(&t);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);

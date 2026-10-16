@@ -45,6 +45,7 @@ typedef struct ModalSpec {
     i32 width_pct;                                   // of the frame's width; 0 = MODAL_WIDTH_PCT
     i32 height_pct;                                  // at most this much of the window area's height; 0 = MODAL_HEIGHT_PCT
     i32 pane_split_pct;                              // two panes: the left pane's share of the width; 0 = MODAL_PANE_SPLIT_PCT
+    b32 full_height;                                 // the box is height_pct high from the open (its rows come later)
     void *data;                                      // the owner's state
     void (*field_changed)(App *app, void *data, String8 text); // the field's text changed (also once at open)
     void (*accept)(App *app, void *data, i32 pane, i64 row);   // modal-accept (RET) or a double-click on a row

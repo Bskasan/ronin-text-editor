@@ -8,6 +8,7 @@
 
 #define CONFIG_FONT_CAP 128        // bytes of the font family name
 #define CONFIG_LIST_CAP 2048       // bytes of a blank-separated list setting (project_markers, project_ignore)
+#define CONFIG_PATH_CAP 260        // bytes of a path setting (git_path)
 #define CONFIG_MAX_FILE_SIZE MB(4) // a larger ronin.conf is refused
 #define CONFIG_DIAG_CAP 1000       // diagnostics kept per load (all are counted)
 
@@ -45,6 +46,11 @@ struct Settings {
     i32 compilation_max_output_mb; // a build's output kept in *compilation*
     i32 max_cursors;          // multiple cursors: commands that would add more stop there
     b32 compilation_relative_paths; // an absolute path under the project root shown relative to it in *compilation*
+    u8 git_path[CONFIG_PATH_CAP]; // the git changes view (C-x g): the git program; empty = git.exe on PATH
+    i32 git_path_len;
+    i32 git_diff_max_lines;   // a diff is cut there (a last line says so)
+    i32 git_status_max_files; // the file list is cut there
+    i32 git_timeout_ms;       // a git that prints nothing for this long is stopped
 };
 
 enum { COMPILATION_SAVE_ASK, COMPILATION_SAVE_ALL, COMPILATION_SAVE_NONE };            // asked one by one, all saved, left
@@ -66,6 +72,9 @@ typedef struct Theme { // 0xRRGGBB
     u32 modal_background, modal_border; // a modal box (the command list): its inside and its frame and separators
     u32 modal_selection;               // its selected row (selection unless set)
     u32 modal_description, modal_key;  // the command list's descriptions and key bindings (number unless set)
+    u32 diff_added, diff_removed;      // the git changes view (Phase 19): a diff's added and removed lines,
+    u32 diff_hunk, diff_header;        // its @@ lines and file headers (number and variable unless set),
+    u32 git_status;                    // the file list's two-letter status (string unless set)
 } Theme;
 
 typedef struct ConfigDiag {
@@ -89,6 +98,7 @@ typedef struct Config {
     Keymap search_results; // [keys search-results]: before global in a results buffer (*search*, *occur*)
     Keymap compilation;    // [keys compilation]: before global in *compilation*
     Keymap command_list;   // [keys command-list]: before global while the command list is open
+    Keymap git_changes;    // [keys git-changes]: before global while the git changes view is open
     u64 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
     ConfigDiags diags;
 } Config;
