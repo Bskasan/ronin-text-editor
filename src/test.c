@@ -5332,13 +5332,13 @@ static b32 test_config(Test *t, u64 seed) {
     String8 user = STR8_LIT("[keys]\nC-x C-s none\n[colors]\ncursor = #ff0000\n");
     TEST_CHECK(t, os_write_file(path, user), "config: writing %S", path);
     OsFileInfo info;
-    TEST_CHECK(t, config_load(c, &t->arena, path, &info) == OS_FILE_OK && info.size == user.len && c->diags.errors == 0 &&
+    TEST_CHECK(t, config_load(c, &t->arena, path, &info, NULL) == OS_FILE_OK && info.size == user.len && c->diags.errors == 0 &&
                   !test_binding(c, "C-x C-s") && test_binding(c, "C-f") == &CMD_FORWARD_CHAR && c->theme.cursor == 0xff0000 &&
                   c->theme.background == 0x072626 && c->settings.font_size == 12.0f, "config: load layers the user file over the defaults");
     String8 missing = str8_fmt(&t->arena, "%S\\cfg_missing.conf", t->tmp_dir);
     os_file_delete(missing);
-    TEST_CHECK(t, config_load(c, &t->arena, missing, &info) == OS_FILE_NOT_FOUND && test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER &&
-                  config_load(c, &t->arena, str8(NULL, 0), &info) == OS_FILE_NOT_FOUND && c->diags.errors == 0,
+    TEST_CHECK(t, config_load(c, &t->arena, missing, &info, NULL) == OS_FILE_NOT_FOUND && test_binding(c, "C-x C-s") == &CMD_SAVE_BUFFER &&
+                  config_load(c, &t->arena, str8(NULL, 0), &info, NULL) == OS_FILE_NOT_FOUND && c->diags.errors == 0,
                "config: no user file gives the defaults");
     TEST_CHECK(t, str8_equal(config_file_name(STR8_LIT("C:\\a\\b\\ronin.conf")), STR8_LIT("ronin.conf")), "config: file name");
 
@@ -8755,6 +8755,292 @@ static b32 test_manual_config(Test *t) {
     if (!test_app_destroy(t, app, "manual config")) return 0;
     LOG("test: ok: manual I1 I2 I5 I6 I7 (open-config creates and visits ronin.conf; a saved change reloads with 'Reloaded ronin.conf'; "
         "tab_width; C-z undo; an unknown command reported, editing goes on)");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Themes (Phase 21): the built-in ones, the resolution order under ronin.conf's [colors], the diagnostics, the
+// folders and their order, the masked-theme note.
+
+static String8 test_theme_dir(Test *t, const char *sub) {
+    String8 base = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p21themes", t->tmp_dir));
+    os_make_dir(base);
+    if (!sub) return base;
+    String8 dir = str8_fmt(&t->arena, "%S\\%s", base, sub);
+    os_make_dir(dir);
+    os_make_dir(str8_fmt(&t->arena, "%S\\themes", dir));
+    return dir;
+}
+
+static b32 test_theme_file(Test *t, String8 dir, const char *name, const char *text) {
+    String8 path = str8_fmt(&t->arena, "%S\\themes\\%s.conf", dir, name);
+    TEST_CHECK(t, os_write_file(path, str8_cstr(text)), "themes: cannot write %S", path);
+    return 1;
+}
+
+// A [colors] section setting the first n keys of the color table to #0000NN-ish values (n of them, all distinct).
+static String8 test_theme_user_colors(Test *t, i32 n) {
+    String8 out = STR8_LIT("[colors]\n");
+    for (i32 i = 0; i < n; i++) out = str8_fmt(&t->arena, "%S%s = #%06x\n", out, config_colors[i].name, 0x010000 + i);
+    return out;
+}
+
+static u32 test_theme_color(Config *c, const char *name) {
+    for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {
+        if (str8_equal(str8_cstr(config_colors[i].name), str8_cstr(name))) return *(u32 *)((u8 *)&c->theme + config_colors[i].offset);
+    }
+    return 0xdeadbeef;
+}
+
+// Loads ronin.conf from `dir` (written from `user`) with the theme folders cfg and exe.
+static Config *test_theme_load(Test *t, String8 dir, String8 exe, String8 user, ThemeLoad *tl) {
+    String8 path = str8_fmt(&t->arena, "%S\\ronin.conf", dir);
+    os_write_file(path, user);
+    Config *c = PUSH_STRUCT(&t->arena, Config);
+    *tl = (ThemeLoad){ .dirs = { dir, exe } };
+    OsFileInfo info;
+    config_load(c, &t->arena, path, &info, tl);
+    return c;
+}
+
+static String8 test_theme_diags(Test *t, Config *c) {
+    String8 out = str8(NULL, 0);
+    for (ConfigDiag *d = c->diags.first; d; d = d->next) out = str8_fmt(&t->arena, "%S%S\n", out, d->text);
+    return out;
+}
+
+static b32 test_themes(Test *t) {
+    // The built-in themes: in name order, ronin among them, each clean on top of the defaults; ronin resolves to the
+    // colors of every phase before (the CLAUDE.md table and the derived keys).
+    i32 builtins = theme_builtin_count();
+    b32 ordered = 1, ronin = 0;
+    for (i32 i = 0; i < builtins; i++) {
+        String8 name = theme_builtin_name(i);
+        if (i) { // strictly ascending bytes
+            String8 prev = theme_builtin_name(i - 1);
+            i64 k = 0;
+            while (k < prev.len && k < name.len && prev.data[k] == name.data[k]) k++;
+            if (!(k < name.len && (k == prev.len || prev.data[k] < name.data[k]))) ordered = 0;
+        }
+        if (str8_equal(name, STR8_LIT("ronin"))) ronin = 1;
+        Config *c = PUSH_STRUCT(&t->arena, Config);
+        config_defaults(c, &t->arena);
+        config_parse_theme(c, &t->arena, theme_builtin(name), STR8_LIT("t"), name);
+        TEST_CHECK(t, c->diags.errors == 0 && c->diags.warnings == 0, "themes: the built-in theme %S: %S", name, test_theme_diags(t, c));
+    }
+    TEST_CHECK(t, builtins >= 1 && ordered && ronin && theme_builtin(STR8_LIT("RONIN")).len && !theme_builtin(STR8_LIT("nosuch")).len,
+               "themes: the built-in list (%d, ordered %d, ronin %d)", builtins, ordered, ronin);
+    {
+        Config *c = PUSH_STRUCT(&t->arena, Config);
+        config_defaults(c, &t->arena);
+        Theme want = {
+            .background = 0x072626, .text = 0xd3b58d, .cursor = 0x90ee90, .selection = 0x0000ff, .comment = 0x3fdf1f,
+            .string = 0x0fdfaf, .keyword = 0xffffff, .number = 0x7ad0c6, .type = 0x8cde94, .variable = 0xc1d1e3,
+            .constant = 0x7ad0c6, .function = 0xffffff, .directive = 0x8cde94, .paren_match = 0x4f94cd, .prompt = 0x0fdfaf,
+            .completion_selection = 0x0000ff, .completion_match = 0xffffff, .isearch = 0xcd00cd, .isearch_text = 0xb0e2ff,
+            .lazy_highlight = 0x668b8b, .isearch_fail = 0x8b0000, .window_divider = 0x126367, .mode_line_background = 0xd3b58d,
+            .mode_line_text = 0x072626, .mode_line_inactive_background = 0x072626, .mode_line_inactive_text = 0xd3b58d,
+            .search_file = 0xffffff, .search_line_number = 0x7ad0c6, .compilation_error = 0xff0000, .compilation_warning = 0xffaa00,
+            .compilation_info = 0x8cde94, .modal_background = 0x0c3434, .modal_border = 0x2e8b8b, .modal_selection = 0x0000ff,
+            .modal_description = 0xa8977a, .modal_key = 0x7ad0c6, .diff_added = 0x73e673, .diff_removed = 0xff6e6e,
+            .diff_hunk = 0x7ad0c6, .diff_header = 0xc1d1e3, .git_status = 0x0fdfaf,
+        };
+        i32 wrong = -1;
+        for (i32 i = 0; i < ARRAY_COUNT(config_colors) && wrong < 0; i++) {
+            u32 off = config_colors[i].offset;
+            if (*(u32 *)((u8 *)&c->theme + off) != *(u32 *)((u8 *)&want + off)) wrong = i;
+        }
+        TEST_CHECK(t, wrong < 0 && ARRAY_COUNT(config_colors) == 41 && str8_equal(str8(c->settings.theme, c->settings.theme_len), STR8_LIT("ronin")),
+                   "themes: ronin's colors: %s is %06x", wrong < 0 ? "-" : config_colors[wrong].name, wrong < 0 ? 0 : test_theme_color(c, config_colors[wrong].name));
+    }
+
+    String8 cfg = test_theme_dir(t, "cfg"), exe = test_theme_dir(t, "exe");
+    // The resolution order: ronin, the theme's keys, ronin.conf's [colors] on top, then what derives.
+    test_theme_file(t, cfg, "t1", "# a test theme\n[theme]\nname = t1\nsource = here\ncommit = 0\nlicense = MIT\nauthor = me\n"
+                                  "[colors]\nbackground = #111111\nkeyword = #222222\nconstant = #333333\ntype = #444444\n");
+    ThemeLoad tl;
+    Config *c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = T1\n[colors]\nkeyword = #aaaaaa\nnumber = #bbbbbb\n"), &tl);
+    Theme *th = &c->theme;
+    TEST_CHECK(t, c->diags.errors == 0 && c->diags.warnings == 0, "themes: order: %S", test_theme_diags(t, c));
+    TEST_CHECK(t, th->cursor == 0x90ee90, "themes: order: a key only ronin sets (cursor %06x)", th->cursor);
+    TEST_CHECK(t, th->background == 0x111111, "themes: order: a key the theme sets (background %06x)", th->background);
+    TEST_CHECK(t, th->keyword == 0xaaaaaa, "themes: order: [colors] over the theme (keyword %06x)", th->keyword);
+    TEST_CHECK(t, th->constant == 0x333333, "themes: order: a derived key the theme sets (constant %06x)", th->constant);
+    TEST_CHECK(t, th->directive == 0x444444 && th->mode_line_text == 0x111111, "themes: order: derived keys the theme leaves out follow its "
+               "base (directive %06x, mode_line_text %06x)", th->directive, th->mode_line_text);
+    TEST_CHECK(t, th->diff_hunk == 0xbbbbbb && th->function == 0xaaaaaa, "themes: order: derived keys follow [colors] (diff_hunk %06x, "
+               "function %06x)", th->diff_hunk, th->function);
+    TEST_CHECK(t, str8_equal(c->theme_name, STR8_LIT("t1")) && c->theme_overrides == 2 && tl.loc.where == THEME_CONFIG_DIR,
+               "themes: order: theme '%S', %d overrides, where %d", c->theme_name, c->theme_overrides, tl.loc.where);
+
+    // The diagnostics: an unknown theme (ronin's colors, no note), a bad name, a theme with other sections, a bad color
+    // in a theme (the rest applies), the [theme] block's keys.
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = nosuch\n[colors]\ntext = #010101\n"), &tl);
+    TEST_CHECK(t, str8_equal(test_theme_diags(t, c), STR8_LIT("ronin.conf:2: theme: no theme 'nosuch' (using ronin)\n")) &&
+                  c->theme.background == 0x072626 && c->theme.text == 0x010101 && str8_equal(c->theme_name, STR8_LIT("ronin")) &&
+                  c->theme_overrides == 0 && tl.loc.where == THEME_NONE, "themes: unknown: %S", test_theme_diags(t, c));
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = a b\n"), &tl);
+    TEST_CHECK(t, str8_equal(test_theme_diags(t, c), STR8_LIT("ronin.conf:2: theme: 'a b' is not a theme name (letters, digits, '_', '-' and "
+                                                              "'.', at most 64 bytes)\n")) && str8_equal(c->theme_name, STR8_LIT("ronin")),
+               "themes: bad name: %S", test_theme_diags(t, c));
+    test_theme_file(t, cfg, "t2", "[theme]\nname = t2\n[settings]\nfont = Arial\n[colors]\nbackground = #121212\n[keys]\nC-a undo\n"
+                                  "[colors]\ncursor = #131313\n");
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t2\n"), &tl);
+    TEST_CHECK(t, str8_equal(test_theme_diags(t, c), STR8_LIT("themes\\t2.conf:3: a theme has only [theme] and [colors] sections\n"
+                                                              "themes\\t2.conf:7: a theme has only [theme] and [colors] sections\n")) &&
+                  c->theme.background == 0x121212 && c->theme.cursor == 0x131313 &&
+                  str8_equal(str8(c->settings.font, c->settings.font_len), STR8_LIT("Consolas")) && test_binding(c, "C-a") == &CMD_MOVE_BEGINNING_OF_LINE,
+               "themes: other sections: %S", test_theme_diags(t, c));
+    test_theme_file(t, cfg, "t3", "[theme]\nname = other\nfoo = bar\n[colors]\nbackground = #141414\ndiff_added = zz\ntext = #151515\n");
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t3\n"), &tl);
+    TEST_CHECK(t, str8_equal(test_theme_diags(t, c), STR8_LIT("themes\\t3.conf:2: warning: name 'other' is not the file's name 't3'\n"
+                                                              "themes\\t3.conf:3: unknown theme key 'foo' (name, source, commit, license or author)\n"
+                                                              "themes\\t3.conf:6: diff_added: 'zz' is not a color (#rrggbb)\n")) &&
+                  c->theme.background == 0x141414 && c->theme.text == 0x151515 && c->theme.diff_added == 0x73e673,
+               "themes: bad color: %S", test_theme_diags(t, c));
+
+    // The folders: ronin.conf's before the executable's, both before the built-in theme of the same name.
+    test_theme_file(t, cfg, "t4", "[colors]\nbackground = #161616\n");
+    test_theme_file(t, exe, "t4", "[colors]\nbackground = #171717\n");
+    test_theme_file(t, exe, "t5", "[colors]\nbackground = #181818\n");
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t4\n"), &tl);
+    b32 first = c->theme.background == 0x161616 && tl.loc.where == THEME_CONFIG_DIR;
+    os_file_delete(str8_fmt(&t->arena, "%S\\themes\\t4.conf", cfg));
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t4\n"), &tl);
+    b32 second = c->theme.background == 0x171717 && tl.loc.where == THEME_EXE_DIR;
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t5\n"), &tl);
+    b32 exe_only = c->theme.background == 0x181818 && tl.loc.where == THEME_EXE_DIR;
+    test_theme_file(t, cfg, "ronin", "[colors]\nbackground = #191919\n");
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[colors]\ntext = #010101\n"), &tl);
+    b32 replaced = c->theme.background == 0x191919 && c->theme.cursor == 0x90ee90 && tl.loc.where == THEME_CONFIG_DIR && c->theme_overrides == 0;
+    os_file_delete(str8_fmt(&t->arena, "%S\\themes\\ronin.conf", cfg));
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[colors]\ntext = #010101\n"), &tl);
+    b32 builtin = c->theme.background == 0x072626 && tl.loc.where == THEME_BUILTIN;
+    TEST_CHECK(t, first && second && exe_only && replaced && builtin, "themes: folders: config dir first %d, then the exe's %d, exe only %d, "
+               "a file replacing ronin %d, the built-in again %d", first, second, exe_only, replaced, builtin);
+
+    // The masked-theme count: the keys ronin.conf's [colors] set over a theme other than ronin (all 30 of a ronin.conf
+    // written by C-c , before Phase 21; 2; none), and none under ronin.
+    String8 thirty = str8_fmt(&t->arena, "[settings]\ntheme = t1\n%S", test_theme_user_colors(t, 30));
+    c = test_theme_load(t, cfg, exe, thirty, &tl);
+    i32 n30 = c->theme_overrides;
+    b32 won = c->theme.background == 0x010000 && c->theme.keyword == 0x010006;
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t1\n[colors]\ncursor = #020202\nselection = #030303\n"), &tl);
+    i32 n2 = c->theme_overrides;
+    b32 won2 = c->theme.cursor == 0x020202 && c->theme.selection == 0x030303 && c->theme.background == 0x111111;
+    c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = t1\n"), &tl);
+    i32 n0 = c->theme_overrides;
+    c = test_theme_load(t, cfg, exe, test_theme_user_colors(t, 30), &tl);
+    i32 nr = c->theme_overrides;
+    TEST_CHECK(t, n30 == 30 && won && n2 == 2 && won2 && n0 == 0 && nr == 0, "themes: overrides: %d (won %d), %d (won %d), %d, ronin %d",
+               n30, won, n2, won2, n0, nr);
+    LOG("test: ok: themes (%d built-in, each clean; ronin's colors; the order: ronin, the theme, [colors], derived; an unknown theme, a "
+        "bad name, other sections, a bad color, the [theme] keys; the config folder, the exe's, a file replacing ronin; the overrides "
+        "counted)", builtins);
+    return 1;
+}
+
+// The masked-theme note through the headless app: in the echo area and once in *Messages*; an error keeps the echo
+// area; none without overrides or under ronin.
+static i32 test_messages_count(Test *t, App *app, String8 what) {
+    Buffer *messages = buffer_list_find_name(&app->buffers, STR8_LIT("*Messages*"));
+    String8 log = messages ? buffer_text(messages, &t->arena, 0, buffer_size(messages)) : str8(NULL, 0);
+    i32 n = 0;
+    for (i64 i = 0; i + what.len <= log.len; i++) if (mem_equal(log.data + i, what.data, what.len)) n++;
+    return n;
+}
+
+static b32 test_theme_masked(Test *t) {
+    String8 dir = test_theme_dir(t, "app"), conf = str8_fmt(&t->arena, "%S\\ronin.conf", dir);
+    test_theme_file(t, dir, "t1", "[colors]\nbackground = #111111\n");
+    os_write_file(conf, STR8_LIT("[settings]\ntheme = t1\n"));
+    App *app = test_manual_app(t, str8(NULL, 0), 0, 0, conf);
+    TEST_CHECK(t, app && app->config->theme.background == 0x111111 && str8_equal(app->config->theme_name, STR8_LIT("t1")),
+               "themes: app: theme t1 at startup");
+    String8 note = STR8_LIT("ronin.conf: 30 [colors] keys override theme t1");
+    String8 thirty = str8_fmt(&t->arena, "[settings]\ntheme = t1\n%S", test_theme_user_colors(t, 30));
+    test_manual_reload(t, app, conf, thirty);
+    TEST_CHECK(t, str8_equal(test_echo(app), note) && test_messages_count(t, app, note) == 1 && app->config->theme.background == 0x010000,
+               "themes: app: 30 overrides: echo '%S', %d in *Messages*", test_echo(app), test_messages_count(t, app, note));
+    test_manual_reload(t, app, conf, str8_fmt(&t->arena, "%S[keys]\nC-z no-such-command\n", thirty));
+    TEST_CHECK(t, test_echo_has(app, "ronin.conf:35: unknown command 'no-such-command'") && test_messages_count(t, app, note) == 2,
+               "themes: app: an error keeps the echo area: '%S', %d notes", test_echo(app), test_messages_count(t, app, note));
+    test_manual_reload(t, app, conf, STR8_LIT("[settings]\ntheme = t1\n[colors]\ncursor = #020202\n"));
+    TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("ronin.conf: 1 [colors] key overrides theme t1")), "themes: app: one: '%S'", test_echo(app));
+    test_manual_reload(t, app, conf, STR8_LIT("[settings]\ntheme = t1\n"));
+    TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("Reloaded ronin.conf")), "themes: app: none: '%S'", test_echo(app));
+    test_manual_reload(t, app, conf, test_theme_user_colors(t, 30));
+    TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("Reloaded ronin.conf")), "themes: app: ronin with 30: '%S'", test_echo(app));
+    if (!test_app_destroy(t, app, "themes masked")) return 0;
+    LOG("test: ok: themes masked (the note in the echo area and once in *Messages* per load, an error first, one key, none, none under ronin)");
+    return 1;
+}
+
+// The resolution against a reference (the seeded group "themes"): random keys with random colors in a theme file and
+// in ronin.conf's [colors], resolved by config_load, against: ronin.conf's key, else the theme's, else ronin's, else
+// the key it derives from (restated here, not taken from config.c).
+static b32 test_theme_fuzz(Test *t, u64 seed) {
+    t->rng = seed ^ 0x7e3e;
+    static const struct { const char *key, *from; } derives[] = {
+        { "constant", "number" }, { "function", "keyword" }, { "directive", "type" }, { "prompt", "string" },
+        { "completion_selection", "selection" }, { "completion_match", "keyword" }, { "compilation_info", "type" },
+        { "mode_line_background", "text" }, { "mode_line_text", "background" }, { "mode_line_inactive_background", "background" },
+        { "mode_line_inactive_text", "text" }, { "search_file", "keyword" }, { "search_line_number", "number" },
+        { "modal_selection", "selection" }, { "modal_key", "number" }, { "diff_hunk", "number" }, { "diff_header", "variable" },
+        { "git_status", "string" },
+    };
+    enum { KEYS = ARRAY_COUNT(config_colors) };
+    String8 dir = test_theme_dir(t, "fuzz");
+    Config *base = PUSH_STRUCT(&t->arena, Config);
+    config_defaults(base, &t->arena);
+    i32 rounds = 300, wrong = 0;
+    for (i32 round = 0; round < rounds && !wrong; round++) {
+        u64 mark = arena_pos(&t->arena);
+        u32 theme_val[KEYS], user_val[KEYS];
+        b32 theme_set[KEYS], user_set[KEYS];
+        String8 theme_text = STR8_LIT("[theme]\nname = fz\n[colors]\n"), user_text = STR8_LIT("[settings]\ntheme = fz\n[colors]\n");
+        i64 density_t = (i64)test_below(t, 4), density_u = (i64)test_below(t, 4); // none, few, half, most
+        for (i32 i = 0; i < KEYS; i++) {
+            theme_set[i] = (i64)test_below(t, 8) < density_t * 2;
+            user_set[i] = (i64)test_below(t, 8) < density_u;
+            theme_val[i] = (u32)test_below(t, 0x1000000);
+            user_val[i] = (u32)test_below(t, 0x1000000);
+            if (theme_set[i]) theme_text = str8_fmt(&t->arena, "%S%s = #%06x\n", theme_text, config_colors[i].name, theme_val[i]);
+            if (user_set[i]) user_text = str8_fmt(&t->arena, "%S%s = #%06x\n", user_text, config_colors[i].name, user_val[i]);
+        }
+        String8 path = str8_fmt(&t->arena, "%S\\themes\\fz.conf", dir);
+        os_write_file(path, theme_text);
+        ThemeLoad tl;
+        Config *c = test_theme_load(t, dir, str8(NULL, 0), user_text, &tl);
+        u32 want[KEYS];
+        b32 derived[KEYS] = { 0 };
+        for (i32 i = 0; i < KEYS; i++) {
+            u32 ronin = *(u32 *)((u8 *)&base->theme + config_colors[i].offset);
+            want[i] = user_set[i] ? user_val[i] : theme_set[i] ? theme_val[i] : ronin;
+            if (!user_set[i] && !theme_set[i] && !(base->colors_set & (1ull << i))) derived[i] = 1;
+        }
+        for (i32 d = 0; d < ARRAY_COUNT(derives); d++) {
+            i32 key = -1, from = -1;
+            for (i32 i = 0; i < KEYS; i++) {
+                if (str8_equal(str8_cstr(config_colors[i].name), str8_cstr(derives[d].key))) key = i;
+                if (str8_equal(str8_cstr(config_colors[i].name), str8_cstr(derives[d].from))) from = i;
+            }
+            if (key < 0 || from < 0) wrong = 1;
+            else if (derived[key]) want[key] = want[from];
+        }
+        i32 bad = -1;
+        for (i32 i = 0; i < KEYS && bad < 0; i++) if (*(u32 *)((u8 *)&c->theme + config_colors[i].offset) != want[i]) bad = i;
+        i32 overrides = 0;
+        for (i32 i = 0; i < KEYS; i++) overrides += user_set[i];
+        if (bad >= 0 || c->diags.errors || c->theme_overrides != overrides) {
+            TEST_CHECK(t, 0, "themes fuzz: round %d (seed 0x%X): %s is %06x, want %06x; overrides %d / %d; %S", round, seed,
+                       bad >= 0 ? config_colors[bad].name : "-", bad >= 0 ? test_theme_color(c, config_colors[bad].name) : 0,
+                       bad >= 0 ? want[bad] : 0, c->theme_overrides, overrides, test_theme_diags(t, c));
+        }
+        arena_pop_to(&t->arena, mark);
+    }
+    TEST_CHECK(t, !wrong, "themes fuzz: a derived key or its source is not in the color table");
+    LOG("test: ok: themes fuzz (%d rounds against the reference resolution, seed 0x%X)", rounds, seed);
     return 1;
 }
 
@@ -14525,6 +14811,12 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_manual_config(&t);
     arena_reset(&t.arena);
+    test_themes(&t);
+    arena_reset(&t.arena);
+    test_theme_masked(&t);
+    arena_reset(&t.arena);
+    test_theme_fuzz(&t, seed);
+    arena_reset(&t.arena);
     test_manual_disk_search(&t);
     arena_reset(&t.arena);
     test_crash_recovery(&t);
@@ -15603,6 +15895,7 @@ i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
         { "search", test_search }, { "undo fuzz", test_undo_fuzz }, { "kbd", test_kbd }, { "config", test_config },
         { "fuzzy", test_fuzzy }, { "grep file", test_grep_file }, { "modal", test_modal_fuzz },
         { "git", test_git_fuzz },
+        { "themes", test_theme_fuzz },
     };
     Test t = { 0 };
     t.arena = arena_create(GB(4));

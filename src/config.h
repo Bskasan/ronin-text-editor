@@ -55,6 +55,8 @@ struct Settings {
     u8 ai_command[CONFIG_PATH_CAP]; // ... this command line instead, for any provider; empty = the provider's
     i32 ai_command_len;
     i32 terminal_program;     // TERMINAL_PROGRAM_* ("terminal" in a file): Windows Terminal, the classic console, or wt if found
+    u8 theme[THEME_NAME_CAP]; // the color theme (Phase 21), lowercase
+    i32 theme_len;
 };
 
 enum { AI_PROVIDER_CLAUDE, AI_PROVIDER_OPENAI, AI_PROVIDER_CUSTOM };                 // claude, codex, ai_command
@@ -109,6 +111,10 @@ typedef struct Config {
     Keymap git_changes;    // [keys git-changes]: before global while the git changes view is open
     u64 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
     u64 colors_last;   // the colors the last parsed text set (a theme goes under the user's [colors]; Phase 21)
+    String8 theme_file; // the file and the line of the theme setting last parsed (its diagnostics)
+    i64 theme_line;
+    String8 theme_name; // the theme in effect (ronin when the chosen one could not be loaded)
+    i32 theme_overrides; // the colors ronin.conf's [colors] set over a theme other than ronin (they win: reported)
     ConfigDiags diags;
 } Config;
 
@@ -120,10 +126,11 @@ void    config_parse(Config *c, Arena *arena, String8 text, String8 file_name);
 void    config_parse_theme(Config *c, Arena *arena, String8 text, String8 file_name, String8 theme_name);
 // The built-in configuration and the ronin theme, into an empty config (what config_load starts from).
 void    config_defaults(Config *c, Arena *arena);
-// The built-in defaults, then the user file at `path` on top (if path is not empty). Returns the
-// status of reading that file (OS_FILE_NOT_FOUND when it does not exist or path is empty); `info`
-// gets the size and write time of what was read.
-OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info);
+// The built-in defaults and the ronin theme, then the user file at `path` on top (if path is not empty), then
+// the chosen theme under the user file's [colors] (Phase 21: the theme setting, or theme->override; theme NULL:
+// built-in themes only). Returns the status of reading the user file (OS_FILE_NOT_FOUND when it does not exist or
+// path is empty); `info` gets the size and write time of what was read, `theme` what became of the theme.
+OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info, ThemeLoad *theme);
 OsFileStatus config_read_file(Arena *arena, String8 path, String8 *text, OsFileInfo *info);
 String8 config_file_name(String8 path); // the last path component
 
@@ -159,6 +166,18 @@ typedef struct ConfigSource {
     b32 settling;        // a change notification arrived; read at settle_at_us
     u64 settle_at_us;
     OsFileStatus status; // of the last read
+    // Themes (Phase 21): where theme files are looked for, and set-theme's choice for the session with ronin.conf's
+    // theme when it was made (ronin.conf naming another theme since ends it).
+    ThemeDirs themes;
+    u8 override[THEME_NAME_CAP];
+    i32 override_len;
+    u8 override_file[THEME_NAME_CAP];
+    i32 override_file_len;
+    u8 theme[THEME_NAME_CAP];  // the theme asked for at the last load (found or not) and what its name found then:
+    i32 theme_len;             // a notification reloads when that changed (its file written, added or removed)
+    ThemeWhere theme_where;
+    i64 theme_size;
+    u64 theme_write_time;
 } ConfigSource;
 
 // force: read now (startup, reload-config). Otherwise only a changed file is read, once a settle

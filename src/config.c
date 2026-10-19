@@ -47,7 +47,8 @@ static void config_diag(ConfigParser *p, b32 warning, const char *fmt, ...) {
     va_end(args);
     ConfigDiag *d = PUSH_STRUCT(p->arena, ConfigDiag);
     d->warning = warning;
-    d->text = str8_fmt(p->arena, "%S:%D: %s%S", p->file, p->line, warning ? "warning: " : "", str8(message, n));
+    d->text = p->line ? str8_fmt(p->arena, "%S:%D: %s%S", p->file, p->line, warning ? "warning: " : "", str8(message, n))
+                      : str8_fmt(p->arena, "%S: %s%S", p->file, warning ? "warning: " : "", str8(message, n)); // not on a line
     if (c->last) c->last->next = d;
     else c->first = d;
     c->last = d;
@@ -244,6 +245,16 @@ static void config_setting(ConfigParser *p, String8 name, String8 value) {
         else if (str8_equal(value, STR8_LIT("wt"))) s->terminal_program = TERMINAL_PROGRAM_WT;
         else if (str8_equal(value, STR8_LIT("cmd"))) s->terminal_program = TERMINAL_PROGRAM_CMD;
         else config_diag(p, 0, "terminal: '%S' is not auto, wt or cmd", config_quote(value));
+    } else if (str8_equal(name, STR8_LIT("theme"))) {
+        if (!theme_name_valid(value)) {
+            config_diag(p, 0, "theme: '%S' is not a theme name (letters, digits, '_', '-' and '.', at most %d bytes)",
+                        config_quote(value), (i32)THEME_NAME_CAP);
+            return;
+        }
+        for (i64 i = 0; i < value.len; i++) s->theme[i] = value.data[i] >= 'A' && value.data[i] <= 'Z' ? value.data[i] + 32 : value.data[i];
+        s->theme_len = (i32)value.len;
+        p->config->theme_file = p->file;
+        p->config->theme_line = p->line;
     } else {
         config_diag(p, 0, "unknown setting '%S'", config_quote(name));
     }
@@ -524,7 +535,47 @@ void config_defaults(Config *c, Arena *arena) {
     config_parse_theme(c, arena, theme_builtin(STR8_LIT("ronin")), STR8_LIT("<built-in theme ronin>"), STR8_LIT("ronin"));
 }
 
-OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info) {
+// The chosen theme under the user file's colors (Phase 21): the colors the user file set (user_colors) are kept, the
+// theme is parsed over the rest, and what derives is derived again. ronin is the base already: only a file that
+// replaces it is applied for it. A theme that cannot be found or read leaves ronin, with an error on the theme
+// setting's line (or set-theme's).
+static void config_resolve_theme(Config *c, Arena *arena, u64 user_colors, ThemeLoad *tl) {
+    ThemeLoad none = { 0 };
+    if (!tl) tl = &none;
+    String8 file_theme = str8(c->settings.theme, c->settings.theme_len);
+    if (tl->override.len && !theme_name_equal(file_theme, tl->override_file)) tl->override_dropped = 1; // ronin.conf changed it
+    b32 session = tl->override.len && !tl->override_dropped;
+    String8 name = session ? tl->override : file_theme;
+    tl->name = name;
+    String8 ronin = STR8_LIT("ronin");
+    c->theme_name = ronin;
+    ConfigParser at = { .config = c, .diags = &c->diags, .arena = arena, .file = session ? STR8_LIT("set-theme") : c->theme_file,
+                        .line = session ? 0 : c->theme_line };
+    String8 text;
+    tl->status = theme_read(arena, &tl->dirs, name, &tl->loc, &text);
+    if (tl->loc.where == THEME_NONE) {
+        config_diag(&at, 0, "theme: no theme '%S' (using ronin)", config_quote(name));
+        return;
+    }
+    if (tl->status != OS_FILE_OK) {
+        config_diag(&at, 0, "theme: cannot read %S: %s (using ronin)", tl->loc.path, buffer_status_text(tl->status));
+        return;
+    }
+    c->theme_name = str8_copy(arena, name);
+    if (tl->loc.where == THEME_BUILTIN && theme_name_equal(name, ronin)) return; // the base already
+    Theme kept = c->theme;
+    String8 label = tl->loc.where == THEME_BUILTIN ? str8_fmt(arena, "<built-in theme %S>", name) : str8_fmt(arena, "themes\\%S.conf", name);
+    config_parse_theme(c, arena, text, label, name);
+    for (i32 i = 0; i < ARRAY_COUNT(config_colors); i++) {
+        if (!(user_colors & (1ull << i))) continue;
+        u32 offset = config_colors[i].offset;
+        *(u32 *)((u8 *)&c->theme + offset) = *(u32 *)((u8 *)&kept + offset);
+    }
+    config_derived_colors(c);
+    if (!theme_name_equal(name, ronin)) c->theme_overrides = bits_count(user_colors);
+}
+
+OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info, ThemeLoad *theme) {
     config_defaults(c, arena);
     // Dev: the built-in config parses cleanly, so every command it names exists.
 #if RONIN_DEV
@@ -532,10 +583,17 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
 #endif
     ASSERT(c->diags.errors == 0 && c->diags.warnings == 0);
     memset(info, 0, sizeof(*info));
-    if (!path.len) return OS_FILE_NOT_FOUND;
-    String8 text;
-    OsFileStatus status = config_read_file(arena, path, &text, info);
-    if (status == OS_FILE_OK) config_parse(c, arena, text, config_file_name(path));
+    OsFileStatus status = OS_FILE_NOT_FOUND;
+    u64 user_colors = 0;
+    if (path.len) {
+        String8 text;
+        status = config_read_file(arena, path, &text, info);
+        if (status == OS_FILE_OK) {
+            config_parse(c, arena, text, config_file_name(path));
+            user_colors = c->colors_last;
+        }
+    }
+    config_resolve_theme(c, arena, user_colors, theme);
     return status;
 }
 
@@ -551,6 +609,16 @@ b32 config_pending(ConfigSource *src) {
     return src->settling || src->attempts > 0;
 }
 
+// The theme loaded last is no longer what its name finds (Phase 21): its file changed, appeared or went.
+static b32 config_theme_changed(ConfigSource *src, Arena *arena) {
+    if (!src->theme_len) return 0; // nothing loaded yet
+    ThemeLocation loc;
+    u64 mark = arena_pos(arena);
+    theme_locate(arena, &src->themes, str8(src->theme, src->theme_len), &loc);
+    arena_pop_to(arena, mark);
+    return loc.where != src->theme_where || loc.info.size != src->theme_size || loc.info.write_time != src->theme_write_time;
+}
+
 ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, u64 now_us) {
     if (src->settling && !force) {
         if (now_us < src->settle_at_us) return CONFIG_POLL_UNCHANGED;
@@ -560,13 +628,20 @@ ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, 
     if (src->attempts > 0) {
         if (!force && now_us < src->retry_at_us) return CONFIG_POLL_UNCHANGED;
     } else if (!force) {
-        OsFileInfo now;
-        if (!src->path.len || os_file_info(src->path, &now) != OS_FILE_OK) return CONFIG_POLL_UNCHANGED; // missing for now
-        if (src->loaded_file && now.size == src->size && now.write_time == src->write_time) return CONFIG_POLL_UNCHANGED;
+        OsFileInfo now = { 0 };
+        b32 present = src->path.len && os_file_info(src->path, &now) == OS_FILE_OK;
+        b32 same = present ? src->loaded_file && now.size == src->size && now.write_time == src->write_time
+                           : 1; // missing for now (saved through a rename), or never there
+        if (!present && src->loaded_file) return CONFIG_POLL_UNCHANGED;
+        if (same && !config_theme_changed(src, arena)) return CONFIG_POLL_UNCHANGED;
     }
     OsFileInfo info;
-    src->status = config_load(out, arena, src->path, &info);
-    if (src->status == OS_FILE_SHARING_VIOLATION && ++src->attempts < CONFIG_RETRY_ATTEMPTS) {
+    ThemeLoad theme = { .dirs = src->themes, .override = str8(src->override, src->override_len),
+                        .override_file = str8(src->override_file, src->override_file_len) };
+    src->status = config_load(out, arena, src->path, &info, &theme);
+    // A theme file being written (a sharing violation) is retried as ronin.conf is.
+    b32 busy = src->status == OS_FILE_SHARING_VIOLATION || theme.status == OS_FILE_SHARING_VIOLATION;
+    if (busy && ++src->attempts < CONFIG_RETRY_ATTEMPTS) {
         src->retry_at_us = now_us + (u64)CONFIG_RETRY_MS * 1000;
         return CONFIG_POLL_RETRY;
     }
@@ -575,6 +650,12 @@ ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, 
     src->loaded_file = src->status == OS_FILE_OK;
     src->size = info.size;
     src->write_time = info.write_time;
+    if (theme.override_dropped) src->override_len = src->override_file_len = 0;
+    src->theme_len = (i32)MIN(theme.name.len, (i64)THEME_NAME_CAP);
+    memcpy(src->theme, theme.name.data, (size_t)src->theme_len);
+    src->theme_where = theme.loc.where;
+    src->theme_size = theme.loc.info.size;
+    src->theme_write_time = theme.loc.info.write_time;
     return CONFIG_POLL_LOADED;
 }
 

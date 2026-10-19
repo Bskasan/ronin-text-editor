@@ -60,6 +60,7 @@ struct App {
     String8 config_path;         // the user's ronin.conf; empty = built-in defaults only
     ConfigSource config_source;  // when to read it again
     OsWatch config_watch;        // its directory
+    String8 exe_dir;             // ronin.exe's folder (its themes\ holds theme files too; Phase 21)
     i32 forced_render_mode;      // dev --render-mode, -1 = from the config
     i32 text_scale;              // text-scale-increase / decrease steps, session only
     i32 wheel_scale_accum;       // Ctrl + wheel units not yet turned into text scale steps
@@ -880,6 +881,23 @@ static FontParams app_font_params(App *app) {
     return fp;
 }
 
+// The directory of ronin.conf (no trailing separator but a drive root's), a view into config_path.
+static String8 app_config_dir(App *app) {
+    if (!app->config_path.len) return str8(NULL, 0);
+    String8 dir = str8(app->config_path.data, app->config_path.len - config_file_name(app->config_path).len);
+    if (dir.len > 1 && dir.data[dir.len - 1] == '\\' && dir.data[dir.len - 2] != ':') dir.len--;
+    return dir;
+}
+
+// Where theme files are looked for (Phase 21): themes\ next to ronin.conf, then next to ronin.exe when that is
+// another folder. Without a config file (the built-in configuration only, as the dev batch runs read it) only the
+// built-in themes.
+static void app_theme_dirs(App *app) {
+    ThemeDirs *d = &app->config_source.themes;
+    d->config_dir = app_config_dir(app);
+    d->exe_dir = !d->config_dir.len || theme_name_equal(app->exe_dir, d->config_dir) ? str8(NULL, 0) : app->exe_dir;
+}
+
 // Polls the config source (config_poll): a read parses into the other arena, and the app switches
 // to it when it loaded (at startup also with the defaults alone, while a retry is pending).
 static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
@@ -909,8 +927,7 @@ static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
 // Watches the config file's directory (when it exists), so edits apply live.
 static void app_watch_config(App *app) {
     if (app->config_watch || !app->config_path.len) return;
-    String8 dir = str8(app->config_path.data, app->config_path.len - config_file_name(app->config_path).len);
-    if (dir.len > 1 && dir.data[dir.len - 1] == '\\' && dir.data[dir.len - 2] != ':') dir.len--;
+    String8 dir = app_config_dir(app);
     app->config_watch = os_watch_dir(dir);
     LOG("config: watching %S: %s", dir, app->config_watch ? "yes" : "no (no such directory)");
 }
@@ -932,6 +949,15 @@ static void app_report_config(App *app, ConfigPoll result, b32 reload) {
         i64 n = fmt_buf(text, sizeof(text), "%S: %d more not listed", name, c->diags.errors + c->diags.warnings - stored);
         echo_log(&app->echo, str8(text, n));
     }
+    // A theme other than ronin under a [colors] section that sets keys (a ronin.conf written by C-c , before Phase 21
+    // sets them all): not an error, but said once per load, in the echo area unless an error is shown there.
+    u8 masked[160];
+    i64 masked_len = 0;
+    if (c->theme_overrides) {
+        masked_len = fmt_buf(masked, sizeof(masked), "%S: %d [colors] key%s override%s theme %S", name, c->theme_overrides,
+                             c->theme_overrides == 1 ? "" : "s", c->theme_overrides == 1 ? "s" : "", c->theme_name);
+        echo_log(&app->echo, str8(masked, masked_len));
+    }
     for (ConfigDiag *d = c->diags.first; c->diags.errors && d; d = d->next) {
         if (d->warning) continue;
         u8 text[ECHO_CAP];
@@ -941,6 +967,7 @@ static void app_report_config(App *app, ConfigPoll result, b32 reload) {
         return;
     }
     if (c->diags.errors) echo_message(&app->echo, "%S: %d errors", name, c->diags.errors);
+    else if (masked_len) echo_set(&app->echo, str8(masked, masked_len)); // logged above
     else if (reload) echo_message(&app->echo, "Reloaded %S", name);
 }
 
@@ -1110,6 +1137,8 @@ App *app_create(Arena *perm, AppArgs *args) {
     app->config_arenas[1] = arena_create(APP_CONFIG_RESERVE);
     app->config_path = app_config_path(perm, args);
     app->config_source.path = app->config_path;
+    app->exe_dir = os_exe_dir(perm);
+    app_theme_dirs(app);
     ConfigPoll config_result = app_poll_config(app, 1, 1);
     APP_STAGE("app: config read and parsed");
     FontParams fp = app_font_params(app);
@@ -2365,6 +2394,7 @@ void app_dev_use_config(App *app, String8 path) {
     app->config_watch = 0;
     app->config_path = path;
     app->config_source = (ConfigSource){ .path = path };
+    app_theme_dirs(app);
     app_watch_config(app);
     app_reload_config(app, 1);
 }
