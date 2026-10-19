@@ -512,7 +512,7 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
   old way too, activated, in the same session: 76.2-76.5, 76.1-78.0, 192.2-193.3, 217.0-217.9 MB, so
   --no-activate reads 0-1 MB lower (the focus sets up the IME and text services); the tables before
   Phase 12 compare with the activated figures.
-- Startup (`--startup-ms`, release, 15 runs each, the order rotating with the Phase 11 build from 38afcb5):
+- Startup (`--startup-ms`, release, 15 runs each, the order rotating with the Phase 11 build from 5f18041):
   174 ms median (172-194) against 175 ms (172-181).
 - Release exe 416,768 bytes (378,368 after Phase 11); the same six DLLs; kernel32 adds SetThreadPriority and
   GetActiveProcessorCount.
@@ -540,11 +540,11 @@ Same machine (AMD Ryzen 7 7700X, 16 logical processors, 2560x1440 at 144 Hz), 12
 - Memory (release, private bytes 3 s after the start, 3 runs, `--no-activate`): *scratch* 76.7-77.0 MB;
   src\keymap.c 76.4-77.3 MB; the 100 MB .txt 191.8-193.0 MB; the 100 MB .c 216.7-217.5 MB (Phase 12:
   75.6-77.2, 75.8-76.2, 191.9-193.5, 216.0-216.8).
-- Startup (`--startup-ms`, release, 15 runs each, alternating with the Phase 12 build rebuilt from 6d57cee):
+- Startup (`--startup-ms`, release, 15 runs each, alternating with the Phase 12 build rebuilt from c4ca9c7):
   177 ms median (175-186) against 178 ms (175-182).
 - `--idle-check` (debug): 0 frames, 0 us of CPU in 5 s, with no build and right after C-x p c RET on a small
   project (a 0.05 s build that ended in the check's first second).
-- Release exe 453,632 bytes (416,768 after Phase 12, rebuilt from 6d57cee to compare); the same six DLLs;
+- Release exe 453,632 bytes (416,768 after Phase 12, rebuilt from c4ca9c7 to compare); the same six DLLs;
   kernel32 adds 18 functions: CreateProcessW, ResumeThread, GetExitCodeProcess, CreateJobObjectW,
   AssignProcessToJobObject, SetInformationJobObject, TerminateJobObject, CreateNamedPipeW, PeekNamedPipe,
   GetOverlappedResult, CancelIoEx, ResetEvent, WaitForMultipleObjects, InitializeProcThreadAttributeList,
@@ -556,7 +556,7 @@ Same machine (AMD Ryzen 7 7700X, 2560x1440 at 144 Hz), 1280x800 client; `ronin_b
 command plus the frame's build (Present not included). Averages over 100 commands (10 at 10,000 cursors); ranges are
 over several runs.
 
-- The old pass first (commit 6d7ea9a, every edit adjusting every marker), on the 100 MB file with the cursors on
+- The old pass first (commit 22587ca, every edit adjusting every marker), on the 100 MB file with the cursors on
   consecutive lines from line 1,000,000: a self-insert at 1,000 cursors 2.1 ms, at 10,000 177 ms (on src/app.c 192
   ms). That is what chose the batch.
 - With the batch, the same layout: a self-insert at 10 cursors 31-34 us (one cursor in the same bench: DEL 39-47
@@ -587,7 +587,7 @@ over several runs.
   | ':' ending a case label (electric reindent) | 11-12.8 ms | 0.92-1.07 s | one per cursor |
 
   The two classes that flushed once per cursor (an edit before point after inserting at point) were fixed by the
-  join (commit f8fff0f, the arrows); the case label's colon keeps text between its two edits and still flushes
+  join (commit 4427d83, the arrows); the case label's colon keeps text between its two edits and still flushes
   ("Later").
 - The undo of a self-insert at 10,000 cursors (one group of 10,000 records and its cursors): 1.07-1.53 ms, with the
   10,000 cursors back; its undo-redo 1.17-1.73 ms. The undo of 20 merged self-inserts at 10,000 cursors (200,000
@@ -602,8 +602,8 @@ over several runs.
 - Memory: 10,000 cursors +760-916 KB of private bytes, 100,000 +7.1-8.7 MB (the cursor array, 40 bytes a cursor,
   and two markers of 16 bytes plus 8 bytes of the live list each).
 - A single cursor after 100,000 cursors were made and collapsed: DEL 106 us and RET 265 us before the live marker
-  list (every pass walked the 200,000 slots ever used), 39 us after it (commit 467f493).
-- One cursor, against Phase 13 (rebuilt from 1fd5708, alternated): `--bench-view` self-insert at line 1,000,000
+  list (every pass walked the 200,000 slots ever used), 39 us after it (commit 0c82463).
+- One cursor, against Phase 13 (rebuilt from 44e7900, alternated): `--bench-view` self-insert at line 1,000,000
   8-22 us avg against 8-20 us (the quiet rounds 9 us against 8 us); `--bench-edit` (undo on) 16-24 us against
   9-23 us. Unchanged within the noise.
 - `--test` takes ~22.5 s on ronin_bench.exe; the Phase 13 build took 23.8-24.7 s on the same day (Phase 13 recorded ~21 s):
@@ -621,7 +621,7 @@ over several runs.
 ## Measurements (Phase 15)
 
 Same machine (AMD Ryzen 7 7700X, NVIDIA GPU, 2560x1440 at 144 Hz), 1280x800 client. The "before" builds are Phase 14
-(e12cc29) built from a clean copy into build\base\, run alternately with the new ones.
+(4007b53) built from a clean copy into build\base\, run alternately with the new ones.
 
 ### Baseline (before the Phase 15 changes)
 
@@ -686,11 +686,11 @@ Each "before" is the Phase 14 build (or the commit before the change), run alter
 
 **Correctness.** Seeds 22 and 33 failed `test_undo_commands`; a ddmin reducer took both to three steps
 (backward-word, newline twice, then backward-word to the buffer's start and a delete-backward-char that is
-refused). The test's bug: it took a refused delete as an edit when point had moved (760277f); undo was right.
+refused). The test's bug: it took a refused delete as an edit when point had moved (d1e9d38); undo was right.
 The seed sweep (`--fuzz-seeds 1 256`, 8 workers) takes ~160 s and passes; with the fix reverted in a scratch
 copy, the fixed case fails, and without that case the sweep stops at seed 22. The soak (1,000,000 events,
 ~9-11 s on the bench build) found two real bugs, the wheel and other windows' commands leaving several cursors
-out of order (6e4ca11, 18d6e94); it now passes on both builds: peak ~13 MB of our memory, the settled memory
+out of order (1efc7a4, ae1266f); it now passes on both builds: peak ~13 MB of our memory, the settled memory
 without the undo logs 7.0 -> 7.9 MB, the typing probe flat, no leak. Its five slowest events are saves (5-7
 ms in ReplaceFileW, once 146 ms).
 
@@ -758,7 +758,7 @@ compares each recovery file with a save of the same edited buffer: CRLF UTF-8, U
 astral character, UTF-16 BE, a UTF-8 BOM, mixed endings; broken in a scratch copy (the contents not written),
 `--test` fails on it.
 
-**Against Phase 1 and Phase 14** (Phase 1 = 05a45e5, a window and a rectangle renderer, rebuilt for its size;
+**Against Phase 1 and Phase 14** (Phase 1 = de587ac, a window and a rectangle renderer, rebuilt for its size;
 its startup from the Phase 1 notes):
 
 | | Phase 1 | Phase 14 | Phase 15 |
@@ -781,12 +781,12 @@ Same machine (AMD Ryzen 7 7700X, NVIDIA GPU, 2560x1440 at 144 Hz), the debug bui
 
 | leak | module | cause | fix |
 |---|---|---|---|
-| a finished scan's, search's or build's results not taken while idle, its workers not joined | platform (win32_main.c) | the workers' wake is an auto-reset event in the main loop's wait: when it ended the wait, the wait reset it and the look after it found nothing, so app_wake did not run until a wake came while a frame was due. Found by finder-, grep- and compile-cycle never settling; confirmed in the real main loop (the wait ended by the wake three times, app_wake never called) | e335924 |
-| ~215 bytes of process heap per worker thread that ended | platform (win32_main.c) | with a hardware D3D11 device the NVIDIA driver keeps that much for every thread that ends (0 with nothing loaded, with only d3d11.dll and dxgi.dll, or with WARP: 2,000 threads each); ronin started a thread for every scan, search worker and build (finder-cycle/rescan, grep-cycle/cancel: ~700 bytes a cycle over 800 cycles) | e11ba96 (threads reused) |
-| the remembered build commands' arena grew on every accepted compile prompt | results.c | results_compile_remember copied the command, the key and recompile's directory and root into an append-only arena (compile-cycle: ~160 bytes a cycle; 64 MB reserved, then os_fatal) | 11e4ab5 |
-| files_arena grew on every project search and occur | results.c | their header's text was built there and only the file commands reset it (grep-cycle/done: ~330 bytes a cycle) | 6840e88 |
-| a buffer's meta arena grew on every write-file under a new name and every name made unique | buffer.c, app.c | the old path and the names tried stayed after the struct (1 MB reserved, then os_fatal) | 0507553 |
-| the font's atlas and glyph table never released | font.c | font_shutdown closed DirectWrite only (once a process; the exit check requires every arena released) | 338173e |
+| a finished scan's, search's or build's results not taken while idle, its workers not joined | platform (win32_main.c) | the workers' wake is an auto-reset event in the main loop's wait: when it ended the wait, the wait reset it and the look after it found nothing, so app_wake did not run until a wake came while a frame was due. Found by finder-, grep- and compile-cycle never settling; confirmed in the real main loop (the wait ended by the wake three times, app_wake never called) | f0be41a |
+| ~215 bytes of process heap per worker thread that ended | platform (win32_main.c) | with a hardware D3D11 device the NVIDIA driver keeps that much for every thread that ends (0 with nothing loaded, with only d3d11.dll and dxgi.dll, or with WARP: 2,000 threads each); ronin started a thread for every scan, search worker and build (finder-cycle/rescan, grep-cycle/cancel: ~700 bytes a cycle over 800 cycles) | 5699bfe (threads reused) |
+| the remembered build commands' arena grew on every accepted compile prompt | results.c | results_compile_remember copied the command, the key and recompile's directory and root into an append-only arena (compile-cycle: ~160 bytes a cycle; 64 MB reserved, then os_fatal) | 3ae2cd9 |
+| files_arena grew on every project search and occur | results.c | their header's text was built there and only the file commands reset it (grep-cycle/done: ~330 bytes a cycle) | 753afbd |
+| a buffer's meta arena grew on every write-file under a new name and every name made unique | buffer.c, app.c | the old path and the names tried stayed after the struct (1 MB reserved, then os_fatal) | 84f9401 |
+| the font's atlas and glyph table never released | font.c | font_shutdown closed DirectWrite only (once a process; the exit check requires every arena released) | 7316e73 |
 
 Each fix has a regression test shown to fail on a scratch copy with the fix reverted: "wake (the wait ended by the
 wake, app_wake called 0 time(s))"; "thread reuse (2,000 tasks with the GPU driver loaded: 2000 ran, the process
@@ -934,7 +934,7 @@ open).
 ### Size and imports
 
 Release exe 398,336 bytes (397,312 after Phase 15: +1,024, the fixes); the same three DLLs (KERNEL32, USER32, GDI32)
-and the same 145 imported functions (dumpbin /imports against the Phase 15 build, d81c785). Everything else of the
+and the same 145 imported functions (dumpbin /imports against the Phase 15 build, 3b91a15). Everything else of the
 phase is in the dev builds only.
 
 ### Every scenario
@@ -1683,9 +1683,9 @@ removed it fails: "clean-check: junction (exit 0); junction: removed" (even then
 ### The fresh clone
 
 `git clone` of the repository into build\tmp\fresh, then there, with nothing else; twice: after the build
-changes (be293bd) and with the final code (f21521a; the commits after it change only documents):
+changes (466d840) and with the final code (7aad9d0; the commits after it change only documents):
 
-| step | be293bd | f21521a |
+| step | 466d840 | 7aad9d0 |
 |---|---|---|
 | git clone (91 files) | 1.1 s | 1.2 s |
 | build.bat | 2.9 s, build\ronin_debug.exe 2,581,504 bytes | 2.8 s, 2,588,672 bytes |
@@ -1694,13 +1694,13 @@ changes (be293bd) and with the final code (f21521a; the commits after it change 
 | verify.bat | 40.6 s, PASS (clean-check 110 ms) | 40.1 s, PASS (clean-check 100 ms) |
 
 Both: check-imports KERNEL32 77, USER32 50, GDI32 6 functions; "ronin 0.1.0". The release exe was unchanged from
-Phase 16 until f21521a (398,336 bytes) and is 398,848 bytes after it (the results fix: release code); the same
+Phase 16 until 7aad9d0 (398,336 bytes) and is 398,848 bytes after it (the results fix: release code); the same
 three DLLs. dumpbin /imports, counting every line that starts with an address, gives 145 as in Phase 16; 12 of
 them are the four header lines of each DLL, so 133 functions, as --check-imports counts.
 
 ### The measurement flags and the built-in config
 
-Before be293bd `--memory-report`, `--bench-latency`, `--startup-capture` and `--bench-longline` read
+Before 466d840 `--memory-report`, `--bench-latency`, `--startup-capture` and `--bench-longline` read
 %APPDATA%\ronin\ronin.conf. Run once each afterwards (built-in config, bench build), against Phase 15:
 
 | `--memory-report` (KB) | built-in, run 1 | built-in, run 2 | `--config` the user's ronin.conf | Phase 15 (MB) |
@@ -1751,7 +1751,7 @@ end cost the final frame: timed in one run, 1,498 runs ended, 762 with nothing a
 others held[0] 4.5-4.9 MB, held[1] 2.0-2.2 MB, pend 320 KB above them, given back in 294-456 us at most. The kept
 floor runs exactly the old code per search (one 768 KB commit at the buffer's first run), within noise everywhere.
 
-After f21521a, `--leak-check grep-cycle` 5 times: grep-cycle/done OK in every run, "our committed bytes"
+After 7aad9d0, `--leak-check grep-cycle` 5 times: grep-cycle/done OK in every run, "our committed bytes"
 6,459,392 in every sample of every run (5,742,592 before: three 256 KB floors in place of held[0]'s 64 KB and pend's 4 KB); grep-cycle/
 cancel OK, 5,369,856. The regression test "results transient" fails with the floor off (held 4096 / 0, pend 4096
 after a search) and with the trim off (3,145,728 / 2,097,152 / 1,048,576 after a minimize).
@@ -1761,7 +1761,7 @@ the same three DLLs.
 
 ### verify.bat phase
 
-At f21521a: PASS in 387 s. The seed sweep: 256 seeds PASS (166.7 s). The soak: bench 1,000,000 events PASS in
+At 7aad9d0: PASS in 387 s. The seed sweep: 256 seeds PASS (166.7 s). The soak: bench 1,000,000 events PASS in
 11.6 s (private bytes peak 16,772 KB, 14,264 at the end), debug PASS in 13.0 s (16,744 / 17,040 KB). The leak
 check: 22 scenarios, 0 LEAK, 126 s; STEP: file-cycle-100mb and config-reload-cycle/color private commit (the
 process heap's irregular moves Phase 16 accepted); the exit check PASS.
@@ -1803,7 +1803,7 @@ to +28 KB over the next four). The rest of the first open's growth is not ours (
 `ronin_debug.exe --keys "C-S-p a" --idle-check`: PASS, 0 frames, 0 us of CPU in 5 s with the command list open
 (the same as without it: 10 main loop passes for the shell's WM_GETICON messages in both).
 
-`--bench-latency` against the Phase 17 code (2079239, a bench build of it in build\proof), alternated, 3 runs
+`--bench-latency` against the Phase 17 code (972d6ef, a bench build of it in build\proof), alternated, 3 runs
 each, the window composed by DWM for its first 100 keys and shown directly (overlay) after:
 
 | | arrival to Present returned p50 / p99 | command + frame build p50 | on screen (DWM) p50 | on screen (overlay) p50 |
@@ -1842,7 +1842,7 @@ the window below the box #072626; the first row's keys contain #7ad0c6 and a des
 
 ### verify.bat phase
 
-At 4003df9 (the code of this phase): PASS. The seed sweep: 256 seeds PASS (168.9 s; the new "modal" group ~34 ms a
+At 32fb63b (the code of this phase): PASS. The seed sweep: 256 seeds PASS (168.9 s; the new "modal" group ~34 ms a
 seed). The soak: bench 1,000,000 events PASS in 10.8 s (private bytes peak 17,164 KB, 14,632 at the end; 3,082
 scripted command list sessions besides the random keys that open it), debug PASS in 14.8 s (17,760 / 16,984 KB).
 The leak check: 24 scenarios, 0 LEAK, 120 s, modal-cycle/browse and modal-cycle/run OK (browse's frames before and
@@ -1899,7 +1899,7 @@ bench exe started with `--fake-git`, its script, its exit) takes ~15 ms on the w
 open 1, git jobs running or pending 0" when the 5 s began, then PASS, 0 frames, 0 us of CPU, 0 main loop passes
 besides the marks.
 
-`--bench-latency` against the Phase 18 code (28e614a, a bench build of it in build\proof\p18), alternated, 3 runs each;
+`--bench-latency` against the Phase 18 code (811ea0e, a bench build of it in build\proof\p18), alternated, 3 runs each;
 DWM composed the window throughout this time (no overlay rows):
 
 | | arrival to Present returned p50 / p99 | command + frame build p50 | on screen (DWM) p50 |
@@ -1937,21 +1937,21 @@ just under the limit. Three findings, each measured before anything changed (the
 
 - At the 600,000 checkpoint the soak counted 2 more threads, 2 more events and 2 more handles of ours, back by 700,000
   (LEAK rows). Logged at the sample: no git job busy, a project search running ("results busy 1", its two workers). The
-  settle had never waited for searches; this stream starts one just before a checkpoint. Fixed (64fec0c).
+  settle had never waited for searches; this stream starts one just before a checkpoint. Fixed (463e8cb).
 - Settled memory without the undo logs, 2,000,000 debug events: 8,469 KB after the first block, then 10.3-14.5 MB with
   no trend (12.2 MB at 1,000,000, 12.8 MB at 2,000,000). By owner from the first block to the plateau: our arenas
   without the undo logs +1.95 MB (buffers of the random walk, as Phase 16 found), process heaps +0.4 MB (560 -> 976 KB,
   flat from the middle on; CreateProcess's), thread stacks +0.15 MB (worker slots 9 -> 11), image pages and views +0,
   and +1.8 MB the walk does not classify (page tables and the like; Phase 18's soak, run alone with the same log: +1.1
   MB). Phase 18 on the same machine: 11.6 -> 12.1 MB, its first block already high. A walk that reaches its large states
-  later, not a leak: judged now against the first half's highest (fec6d72).
+  later, not a leak: judged now against the first half's highest (e03431d).
 - The debug probe stepped from ~1.6 to ~2.4 us after the first block in some runs and not in others, with the same code
   and seed (the walk is not fully deterministic: when workers' answers come depends on the clock). The same state probed
   twice in a row: up to 35% apart (1,941 and 2,325 ns; 1,763 and 2,293); a fixed computation of 20,000,000 multiplies
   slowed at the same checkpoints (15.2 -> 16.6-17.4 ms); the app's state at the probe (buffers, windows, the modal, jobs,
   *Messages*, the kill ring, the history) the same in fast and slow blocks; during one soak Chrome used 35.6 s of CPU in
   25 s and NVIDIA Broadcast 4.6 s. The bench build's probe stayed flat (457-565 ns). No cost of ronin's: the probe is now
-  the fastest of three runs (f1b92ca). After the three changes: debug PASS (8,520 KB, the first half's highest 12,588 KB,
+  the fastest of three runs (fc139e3). After the three changes: debug PASS (8,520 KB, the first half's highest 12,588 KB,
   12,992 KB at the end; probes 1,570-1,763 ns), bench PASS (11,704 / 12,368 KB; 457-565 ns), every leak metric OK.
 
 ### Screenshots
@@ -1963,7 +1963,7 @@ the selected row #0000ff, the box #0c3434 inside a #2e8b8b frame, the status lin
 
 ### verify.bat phase
 
-At f1b92ca (the code of this phase): PASS in 7 min 56 s. The seed sweep: 256 seeds PASS (199.0 s, 168.9 s in Phase 18;
+At fc139e3 (the code of this phase): PASS in 7 min 56 s. The seed sweep: 256 seeds PASS (199.0 s, 168.9 s in Phase 18;
 the new "git" group ~0.5 s a seed). The soak: bench 1,000,000 events PASS in 21.2 s (10.8 s in Phase 18; 148 git
 sessions besides the random keys that reach C-x g; settled 8,460 KB after the first block, 11,712 KB at most in the
 first half, 11,656 KB at the end), debug PASS in 27.4 s (8,396 / 13,092 / 13,396 KB). The leak check: 26 scenarios,
@@ -1979,7 +1979,7 @@ Same machine (AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800 windo
 
 `ronin_debug.exe --idle-check`: PASS, 0 frames, 0 us of CPU in 5 s, 0 main loop passes besides the marks.
 
-`--bench-latency` against the Phase 19 code (db8061e, a bench build of it in build\proof\p19), alternated, 3 runs each;
+`--bench-latency` against the Phase 19 code (974c142, a bench build of it in build\proof\p19), alternated, 3 runs each;
 DWM composed the window throughout:
 
 | | arrival to Present returned p50 / p99 | command + frame build p50 | on screen (DWM) p50 |
@@ -2005,7 +2005,7 @@ On a scratch copy (build\proof\p20, deleted afterwards), each break alone, `--te
 |---|---|
 | open-terminal resolves the project's root instead of the file's directory | exit 9: "terminal: line 1: got '...\term proj\|wt.exe\|0\|-d "...\term proj"' want '...\term proj\sub\|...'" |
 | `os_process_launch` leaves the thread handle open | exit 9: "launch: 100 launches: ... ledger 0 -> 101, ... handles 189 -> 288" and "terminal: 200 launches: ledger 119 -> 319, ... handles 307 -> 506" |
-| git.c before d941010 | exit 9: "git parse: a warning before a source" and "git changes: status 'main: 8 changed files', panes 8 / 15" |
+| git.c before ed58c90 | exit 9: "git parse: a warning before a source" and "git changes: status 'main: 8 changed files', panes 8 / 15" |
 | only the hunk body's warning skip taken out | exit 9: "git parse: diff 9" (the warning a context line, "-b" and "+B" headers) and the same "panes 8 / 15" |
 
 ### The terminals under the soak and the leak check
@@ -2026,7 +2026,7 @@ larger state early. Recorded, not pursued.
 
 ### verify.bat phase
 
-At 24dc383 (the code of this phase): PASS in 7 min 45 s. The seed sweep: 256 seeds PASS (175.0 s). The soak: bench
+At e418c60 (the code of this phase): PASS in 7 min 45 s. The seed sweep: 256 seeds PASS (175.0 s). The soak: bench
 PASS in 30.0 s (above), debug PASS in 33.4 s (settled 10,196 KB after the first block, 12,688 KB at most in the first
 half, 13,732 KB at the end). The leak check: 27 scenarios, 0 LEAK, 137 s, terminal-cycle OK; STEP:
 config-reload-cycle/color private commit (as in Phase 19); the exit check PASS. No run reached the guard
@@ -2044,7 +2044,7 @@ them waited for, then C-g, RET or a click), the timer wraps all of it, and the l
 the ring: the closing key. Each wait covers fake-git processes (the bench exe started with `--fake-git`, ~15 ms each
 on git's worker): opening takes rev-parse, status and the first diff, a waited move one diff or (g) status and a diff.
 C-g closes the box with a cancel flag and no join, RET visits a small file; the soak runs no builds and saves without
-FlushFileBuffers. A soak artefact, by your rule: recorded, no fix. Since 6c07f4f a slow event names its kind, its first
+FlushFileBuffers. A soak artefact, by your rule: recorded, no fix. Since 956a5ec a slow event names its kind, its first
 and last notes, how many it made and its time in `soak_git_wait`, and a second list ranks the events without those
 waits. The confirming run (bench, `--soak 1000000`, seed 0x7ea1, PASS in 26.2 s):
 
@@ -2063,7 +2063,7 @@ background thread".
 ### Startup, idle, latency
 
 `--startup-ms` (release, with a user's own ronin.conf), alternated, 3 runs each:
-Phase 20's build (44d40c2, build\proof\p20) 207 / 182 / 175 ms, Phase 21's 187 / 175 / 173 ms: unchanged. The config's
+Phase 20's build (cbcd5b5, build\proof\p20) 207 / 182 / 175 ms, Phase 21's 187 / 175 / 173 ms: unchanged. The config's
 parse at startup, with the defaults and the ronin theme: 362 us in the bench build (Phase 20: 294 us; the built-in
 configuration is the same size, the theme is one more parse of 601 bytes).
 
@@ -2124,7 +2124,7 @@ the cursor, both mode lines' backgrounds and the divider, all equal.
 
 ### verify.bat phase
 
-At 90fe03e (the code of this phase): PASS in 8 min 51 s. `--test` (debug) PASS in 38.5 s. The seed sweep: 256 seeds
+At 8d94202 (the code of this phase): PASS in 8 min 51 s. `--test` (debug) PASS in 38.5 s. The seed sweep: 256 seeds
 PASS (242.6 s; the new group "themes" with them). The soak, now with theme sessions (485 in a million events) and
 set-theme in the command list sessions: bench PASS in 22.4 s (settled 9,940 KB after the first block, 18,600 KB at most
 in the first half, 12,380 KB after the last), debug PASS in 28.1 s (10,528 / 18,452 / 12,812 KB); the slowest event of
@@ -2190,7 +2190,7 @@ HUMAN step 50, and the informational smoke's outcome is recorded here once it is
 
 ### verify.bat phase
 
-Twice at b49ff05 (the phase's code before the soak fix), 572 s and 553 s: FAIL, both times only `soak-debug` (exit 6); every other step
+Twice at 13ba2c5 (the phase's code before the soak fix), 572 s and 553 s: FAIL, both times only `soak-debug` (exit 6); every other step
 PASS. `--test` (debug) PASS in 40 s (the README check 5-6 ms of it); the seed sweep 256 seeds PASS (266 s); the bench soak
 PASS (22 s; settled 9,196 KB after the first block, 14,136 KB at most in the first half, 15,484 KB after the last); the
 leak check 28 scenarios, 0 LEAK (142 s; STEP: config-reload-cycle/color and external-change-cycle private commit); the exit
@@ -2202,18 +2202,18 @@ watch from about event 600,000 to the end. It is not this phase's code:
 - The soak deletes only the top-level files of build\tmp\soak. Its git\ folder keeps what random write-files put there,
   and the bench soak, which verify.bat phase runs just before, leaves about 150 such files; the debug soak with the same
   seed then opens a buffer in git\ late in the run and keeps it (12 buffers at the end, the exit check clean: live state).
-- Phase 21's code (b099c97, built in a scratch copy) does exactly the same on the same sequence: from an empty
+- Phase 21's code (1b64ef2, built in a scratch copy) does exactly the same on the same sequence: from an empty
   build\tmp\soak its bench soak PASS (3 watches throughout), then its debug soak exit 6 on the same 3 -> 4 row. On the
   folder as the first run left it, Phase 21's debug soak alone: exit 6 as well.
 - From an empty folder, the debug soak alone passes the watch rule, but its settled-memory rule (+2 MB over the first
   half's highest) sits at the edge: Phase 22's code exit 9 / 0 / 0 (16,208, 14,760, 15,532 KB at the end against 13,472,
   13,408, 13,736), Phase 21's 0 / 0 / 9 (15,832, 16,040, 16,992 against 14,904, 14,168, 14,380).
 
-One fix in this phase, d1691cc: the soak empties build\tmp\soak, subfolders included, at its start; the
+One fix in this phase, 1058124: the soak empties build\tmp\soak, subfolders included, at its start; the
 memory rule unchanged here. Proof before the rerun, bench then debug on the old leftovers (168 files in git\): both PASS,
 3 watches throughout, and each refused as many writes as on an empty folder (818 bench, 946 debug: the same events).
 
-The rerun at d1691cc, 520 s: FAIL, only `soak-bench` (exit 9, the memory rule). The debug soak PASS (3 watches throughout;
+The rerun at 1058124, 520 s: FAIL, only `soak-bench` (exit 9, the memory rule). The debug soak PASS (3 watches throughout;
 settled 9,544 / 13,776 / 15,372 KB); `--test` (debug) PASS in 38.4 s (the README check 5 ms); the seed sweep PASS (243 s);
 the leak check 28 scenarios, 0 LEAK (140 s; STEP: config-reload-cycle/color and theme-cycle private commit); the exit check
 PASS. Not rerun: the bench soak's memory, by owner, at each checkpoint (KB; "settled" without the undo
@@ -2241,8 +2241,8 @@ listings, the worker threads' own). The soak stopped at the memory check, so no 
 build and seed passed the bench soak in the proof run just before (and 14,136 -> 15,484 KB in this phase's first run):
 which run crosses depends on the heaps and the slots, not on the events, which are the same.
 
-The rule (Decisions, Phase 22, 7): 3e2f1ed judges our arenas without the undo logs, the rest shown. The
-final run at 3e2f1ed, 502 s: PASS, every step. `--test` (debug) PASS in 37.7 s (the README check 5 ms); the seed sweep 256
+The rule (Decisions, Phase 22, 7): fed6900 judges our arenas without the undo logs, the rest shown. The
+final run at fed6900, 502 s: PASS, every step. `--test` (debug) PASS in 37.7 s (the README check 5 ms); the seed sweep 256
 seeds PASS (227 s); the bench soak PASS in 18.5 s and the debug soak PASS in 22.5 s, both with our arenas without the
 undo logs at 5,308 KB after the first block, 6,056 KB at most in the first half and 6,336 KB after the last (+280 KB;
 settled in all, informational: 13,392 -> 14,572 and 13,680 -> 15,048 KB), 3 directory watches throughout, the only WATCH
@@ -2256,8 +2256,8 @@ src\app\app.c, and so on: the module map has every file).
 
 ### The executables before and after
 
-Before: the three builds at 0916877 (Phase 22's last commit), kept in build\proof\p23\before; after: the code's last
-commit, a5fb7b6 (the commits after it change only documents). Compared byte for byte by a PowerShell script that names
+Before: the three builds at 9677814 (Phase 22's last commit), kept in build\proof\p23\before; after: the code's last
+commit, c4ddc9a (the commits after it change only documents). Compared byte for byte by a PowerShell script that names
 each differing byte by the PE field holding it.
 
 | exe | before | after | what differs |
@@ -2266,14 +2266,14 @@ each differing byte by the PE field holding it.
 | ronin_bench.exe | 1,676,288 | 1,676,800 | +512: ASSERT's `__FILE__` (full paths, /FC: src\app.c is now src\app\app.c) and `__LINE__` (8 header lines and a blank more), and the two dev edits the move forced |
 | ronin_debug.exe | 2,974,208 | 2,974,720 | +512, the same |
 
-Two links of the same commit differ exactly there: release linked twice at 0916877 differs in the same two timestamps
+Two links of the same commit differ exactly there: release linked twice at 9677814 differs in the same two timestamps
 (the noise floor; build.bat has no /Brepro, decided before this phase). build\gen\quad_vs.h, quad_ps.h and ronin.res are
 identical before and after (fxc without /Zi embeds no source path). `--check-imports`: KERNEL32 79, USER32 50, GDI32 6
 functions, 3 DLLs, unchanged.
 
 The dev builds, proved the same in scratch clones of equal path length (build\proof\p23b and p23a, deleted
-afterwards): p23b is 0916877 with the two dev edits (win32_main.c's benches open src\app\app.c, test.c's map report
-reads src\'s folders), p23a is a5fb7b6; in both, base.h's ASSERT passes `"", 0` instead of `__FILE__, __LINE__` (the
+afterwards): p23b is 9677814 with the two dev edits (win32_main.c's benches open src\app\app.c, test.c's map report
+reads src\'s folders), p23a is c4ddc9a; in both, base.h's ASSERT passes `"", 0` instead of `__FILE__, __LINE__` (the
 same one-line edit). Then:
 
 | exe (both clones) | bytes | what differs |
@@ -2306,7 +2306,7 @@ reported `tools/check_source.c: not in docs/ARCHITECTURE.md's module map (a row 
 
 ### The headers
 
-75 files got the header in one commit (0513627), check_source.c came with its own: 76. Each file's old first line
+75 files got the header in one commit (ef41430), check_source.c came with its own: 76. Each file's old first line
 repeated its file name ("// base.c — see base.h."): all 75 lost that prefix ("// see base.h."), none was left with only
 the description, so no line was deleted (Decisions, Phase 23, 4). Nothing else in the comments changed.
 
@@ -2319,7 +2319,7 @@ not found in src" equal to the run on Phase 22's map; only the map's path in the
 
 ### The fresh clone
 
-`git clone` of the repository into build\tmp\fresh at a5fb7b6, then there, with nothing else:
+`git clone` of the repository into build\tmp\fresh at c4ddc9a, then there, with nothing else:
 
 | step | result |
 |---|---|
@@ -2339,7 +2339,7 @@ write time are unchanged (config.c), so two writes in one timestamp tick lose th
 
 ### verify.bat phase
 
-Twice with the code of a5fb7b6 and these documents. The first, 562 s: FAIL, only `test-debug` (exit 9), the set-theme
+Twice with the code of c4ddc9a and these documents. The first, 562 s: FAIL, only `test-debug` (exit 9), the set-theme
 race above ("the session's theme across a reload 1, ended by ronin.conf's theme 0" and its 2 handles); every other step
 PASS. The second, 749 s: PASS, every step. The source check PASS (76 files). `--test` PASS on debug (46.7 s) and bench
 (37.1 s), the README check in both; the seed sweep 256 seeds PASS (298 s); the bench soak PASS in 38.4 s and the debug
@@ -3011,7 +3011,7 @@ external-change-cycle private commit); the exit check PASS in the smoke (debug, 
   whose deadline leaves the last sort's time). When the input only grows, the next pass looks only at the
   previous survivors (also those of a pass cut short), then at what it never reached; entries that arrive
   during a pass extend it. Spans are computed only for the rows drawn.
-- The input tests' shield (Phase 10): the earlier retry (1b48e43) is gone. Each case waits (at most
+- The input tests' shield (Phase 10): the earlier retry (7cef5e6) is gone. Each case waits (at most
   2 s) until no physical modifier is down and records GetLastInputInfo. Since Phase 12: a case whose
   injected key state did not hold (or that started with a modifier still down) tested nothing and is
   inconclusive whether it passed or failed, and whether or not real input was seen (the log says which key
@@ -3645,7 +3645,7 @@ test_run removes it again after the group.
 9. git's warnings (the Phase 19 question): inside a hunk body a `warning: ` line was counted as a context line, so the
    hunk ended one line early and its last line was drawn as a header (and missed by the first changed line). Now it is
    skipped there without touching the counts (no body line starts with `w`; `+warning: x` stays an added line), and a
-   rename's or copy's source drops a warning in front of it as a record does (d941010).
+   rename's or copy's source drops a warning in front of it as a record does (ed58c90).
 
 ### Themes (Phase 21)
 
