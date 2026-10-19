@@ -2214,7 +2214,7 @@ config-reload-cycle/color private commit); the exit check PASS. No run reached t
 - [x] 19. The git changes modal
 - [x] 20. Terminal and AI terminal shortcuts
 - [x] 21. Themes: built-in themes, theme files, set-theme
-- [ ] 22. README, contribution guide and repository files
+- [x] 22. README, contribution guide and repository files
 
 ## Decisions
 
