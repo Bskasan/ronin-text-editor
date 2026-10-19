@@ -178,6 +178,26 @@ Only what exists today.
   the graphics device is ready (the first frame follows at ~180 ms); off by default, where the window
   appears with its first frame.
 
+**Themes**
+- Five built-in themes: `ronin` (the default, Jonathan Blow's colors), and four ported from Neovim color
+  schemes: `moonfly`, `oxide`, `vague` and `mellifluous` (see [Credits](#credits)). `theme = vague` in
+  `[settings]` changes every color as soon as the file is saved; M-x set-theme switches for the session only
+  (nothing is written), with completion over every theme there is, each marked with where it comes from.
+- A theme is a small file in the config format: `themes\<name>.conf` next to `ronin.conf` (or next to
+  `ronin.exe`). A file with a built-in theme's name replaces it. Theme files are watched like `ronin.conf`:
+  saving the theme in use applies it at once, and a file added to `themes\` (even a `themes\` folder created
+  later next to `ronin.conf`) is picked up without a restart.
+- `[colors]` in `ronin.conf` pins single colors over any theme. When the theme is not ronin, every load says how
+  many it pins ("ronin.conf: 2 [colors] keys override theme vague").
+- Switching re-reads the configuration (~0.25-0.3 ms) and draws one frame; the glyphs are not drawn again,
+  since their colors are applied when they are drawn.
+
+| moonfly | oxide |
+|---|---|
+| ![ronin with the moonfly theme: ring.c and shapes.ts side by side, a region](docs/images/themes/moonfly.png) | ![ronin with the oxide theme](docs/images/themes/oxide.png) |
+| **vague** | **mellifluous** |
+| ![ronin with the vague theme](docs/images/themes/vague.png) | ![ronin with the mellifluous theme](docs/images/themes/mellifluous.png) |
+
 ![M-x with the candidates for "window" and their key bindings](docs/images/mx.png)
 
 ## Numbers
@@ -188,8 +208,8 @@ window.
 
 | what | value |
 |---|---|
-| executable size (release) | 453,120 bytes, the icon and the version resource included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
-| startup to the first frame | 164 ms median from process creation to the first Present, of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; with `early_window` the window is visible after ~40 ms |
+| executable size (release) | 470,528 bytes, the icon, the version resource and the five built-in themes (4,730 bytes) included; no C runtime; imports only kernel32, user32 and gdi32 (d3d11, dwmapi and dwrite are loaded when first used) |
+| startup to the first frame | 164 ms median from process creation to the first Present (Phase 15), of which ~146 ms is waiting for `D3D11CreateDevice` (the driver) on its own thread; 173-187 ms in Phase 21's three runs, against 175-207 ms for Phase 20's build the same day; with `early_window` the window is visible after ~40 ms |
 | typing: one keystroke's command plus building its frame | 8-24 us average at line 1,000,000 of a 100 MB file; 23 us median for a key in *scratch* |
 | typing: from the key's arrival to the screen | median 0.4 ms to Present; to the vertical blank that shows the frame 17 ms when DWM composes the window (about 2.5 refreshes at 144 Hz), 4.4-4.9 ms when DWM shows it directly (overlay) |
 | typing at many cursors (consecutive lines of the 100 MB file), command plus frame | 1,000 cursors 0.2-0.4 ms, 10,000 cursors 1.7-2.1 ms |
@@ -237,8 +257,10 @@ link.
 
 The build is a single unity translation unit (`src/ronin.c`) plus one C++ file for DirectWrite. The
 icon is drawn by a small program, `tools/make_icon.c`, that every build compiles and runs; with the
-version (`src/version.h`) it goes into the exe through `res/ronin.rc`. `dist.bat` runs `verify.bat`
-and packs `dist\ronin-0.1.0-windows-x64.zip` (ronin.exe, this README and the license).
+version (`src/version.h`) it goes into the exe through `res/ronin.rc`. Another, `tools/make_themes.c`, embeds
+the built-in themes (`themes\*.conf`, the files themselves are the source) into a generated header, and stops
+the build when they reach 8 KB. `dist.bat` runs `verify.bat`
+and packs `dist\ronin-0.1.0-windows-x64.zip` (ronin.exe, this README, the license and THIRD_PARTY.md).
 
 ## Usage
 
@@ -327,13 +349,45 @@ contain only what it changes; a bad line is skipped and reported in the echo are
 `*Messages*`, and the rest still applies.
 
 ```
+[settings]
+theme = moonfly
+
 [colors]
-background = #101c24
 comment    = #7fbf7f
 
 [keys]
 C-c g       goto-line
 ```
+
+The colors come from the theme (`theme`, default `ronin`); a line in `[colors]` sets one color on top of it,
+whichever theme is chosen. To use themes, keep `[colors]` empty or keep only the keys you mean to pin. A
+`ronin.conf` created with `C-c ,` before themes existed (Phase 21) lists every color in `[colors]`,
+which pins them all: remove that section (ronin says "ronin.conf: 30 [colors] keys override theme ..." while it
+is there). An unknown theme is reported with its line and ronin falls back to `ronin`.
+
+A theme of your own is a file `themes\<name>.conf` next to `ronin.conf` (`%APPDATA%\ronin\themes\` in a normal
+install) holding a `[theme]` block and the colors it sets, with the keys `[colors]` takes (the list is in the
+`[colors]` section of the built-in configuration):
+
+```
+[theme]
+name    = dusk
+source  = where it comes from
+license = its license
+author  = who made it
+
+[colors]
+background = #1b1d22
+text       = #c8c8c8
+keyword    = #8fb4d8
+comment    = #6b7280
+```
+
+Every key is optional. A key the theme leaves out keeps ronin's color, or follows the key it derives from:
+`constant` follows `number`, `function` and `completion_match` follow `keyword`, `directive` and
+`compilation_info` follow `type`, `prompt` follows `string`, the selected mode line is `text` on `background`,
+and so on (the built-in configuration lists them). Save it, and `theme = dusk` or M-x set-theme uses it. The
+built-in themes are the files in [themes/](themes); a file of the same name replaces one.
 
 The sections are `[settings]` (font, size, line height, ClearType mode, tab and indentation
 widths, and more), `[colors]` and `[keys]` (plus `[keys minibuffer]`, `[keys isearch]`,
@@ -414,6 +468,12 @@ not look in the current directory when the environment sets `NoDefaultCurrentDir
   horizontal scrolling); a change that is only a line ending (CRLF against LF) shows as two equal lines.
   git's error output shares the pipe with its normal output, so the message shown is git's first `fatal:`,
   `error:` or `usage:` line.
+- Themes: colors only (no bold or italic, no colors per language). The built-in themes are dark: ClearType is
+  blended for light text on a dark background, so a light theme's text would look thinner. A `themes\` folder
+  created next to `ronin.exe` after ronin started (not the one next to `ronin.conf`) is seen at the next start. A
+  ported theme is a mapping of its Neovim highlight groups to ronin's keys, written down in
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); where a theme has no group for a key, that key keeps ronin's
+  color or follows another key.
 - Terminals: Windows Terminal or the classic console only (no other terminal program, no wt profile). ronin does not
   check that the AI tool exists: cmd says so in the new window. When ronin itself runs inside a job that kills its
   processes when it closes and does not let them leave it (some launchers do that), the terminals end with it.
@@ -464,20 +524,22 @@ Testing is built into the dev builds:
   command line, every kind of status and diff, git's refusals, a timeout, a cancel) and, when git is
   installed, against the real one on a repository made for the test; the terminal commands against a fake
   terminal that records its directory and command line (no test opens a real terminal or starts a git it did
-  not choose); file round trips; a crashing child
+  not choose); themes (the order a theme and `[colors]` resolve in, against a reference over random themes,
+  every diagnostic, the folders, set-theme, the reload through real folder watches); file round trips; a crashing child
   process whose recovery files must equal a save byte for byte; and a harness that posts
   real key messages through the window procedure on US, UK, Turkish Q and Finnish keyboard layouts.
 - `--fuzz-seeds` runs every seeded test group for hundreds of seeds; `--soak` sends a million random keys,
   clicks and resizes through the app, checking its invariants, its memory, its handles and threads and its
   speed as it goes.
-- `--leak-check` repeats 26 operations (files, windows, prompts, searches, the project finder, project
-  searches, builds, multiple cursors, the command list, the git changes view, undo, config reloads, files changed
-  on disk) hundreds of times and
+- `--leak-check` repeats 28 operations (files, windows, prompts, searches, the project finder, project
+  searches, builds, multiple cursors, the command list, the git changes view, the terminals, undo, config reloads,
+  theme switches, files changed on disk) hundreds of times and
   checks that memory, handles, threads, the glyph atlas and Direct3D objects stop growing; every exit of a
   dev build checks that nothing of ronin's is left (Direct3D objects, memory, handles).
 - `--smoke` renders real frames and checks pixels (theme colors, the cursor, ClearType, the region,
   the minibuffer, isearch, windows, the finder, a results buffer, a build, three cursors, the command list
-  and the frame under it after it closes, the git changes view with the real git), the D3D11 debug layer and
+  and the frame under it after it closes, the git changes view with the real git, every built-in theme against
+  its file and the frame back on ronin), the D3D11 debug layer and
   leaks (processes, threads and handles too).
 - Benchmarks (`--bench-*`) measure frames, typing, search, highlighting, project scans, the
   project-wide search, a build's output, typing at up to 10,000 cursors on a 100 MB file or tree, the
@@ -497,6 +559,14 @@ Focus and 4coder editors and GNU Emacs (the editing model, the default keys, the
 many messages). The naysayer-theme for Emacs and the Witness color scheme served as references for
 the colors. The fuzzy file finder's scoring weights follow fzf's. ronin is not affiliated with or
 endorsed by any of these projects or their authors.
+
+The four ported themes take their colors (only the color values and their names) from these Neovim color schemes,
+each under the MIT license, at the commit named in its file in [themes/](themes) and in
+[THIRD_PARTY.md](THIRD_PARTY.md):
+- moonfly: [bluz71/vim-moonfly-colors](https://github.com/bluz71/vim-moonfly-colors), by bluz71, MIT
+- oxide: [oxidescheme/nvim](https://github.com/oxidescheme/nvim), by oxidescheme (the Neovim port by jakmaz), MIT
+- vague: [vague-theme/vague.nvim](https://github.com/vague-theme/vague.nvim), by Alberto Hernandez (vague2k), MIT
+- mellifluous: [ramojus/mellifluous.nvim](https://github.com/ramojus/mellifluous.nvim), by Ramojus Lapinskas, MIT
 
 ## How this project is made
 

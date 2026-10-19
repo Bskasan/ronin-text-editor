@@ -115,7 +115,7 @@ the explicit `.\`):
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (once per phase)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
-                                     # README.md, LICENSE); the version is src/version.h's
+                                     # README.md, LICENSE, THIRD_PARTY.md); the version is src/version.h's
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
@@ -560,7 +560,14 @@ launched and let go (its working directory, a missing program or directory, 100 
 breakaway refused inside a build's job and the retry there); the terminal settings (every value, the length limit, each
 diagnostic); the terminal commands through the headless app with the fake terminal (--fake-terminal: the directories of
 both commands, every provider and program, the quoting of a drive root, a space and ';', each message, the minibuffer
-and the command list, a reload, the guard, 200 launches keeping nothing and every call exactly). In a batch run no
+and the command list, a reload, the guard, 200 launches keeping nothing and every call exactly). Phase 21: the built-in
+themes (each parses clean, ronin's colors exactly), the resolution order (ronin, the theme, ronin.conf's [colors] on
+top, then what derives) as a table and as the seeded group "themes" (300 random themes and [colors] against a
+reference resolver), every theme diagnostic with its line, the folders and their order (ronin.conf's, then the exe's,
+then the built-in theme; a file replacing a built-in one), the masked-theme note through the headless app, set-theme
+(the candidates and their notes, a theme for the session across a reload, ended by ronin.conf, C-g, the minibuffer, the
+command list), the reload through real folder watches (a themes\ created after the start, the theme added, written,
+another one written, removed; build\tmp\p21themes). In a batch run no
 test starts a real terminal, or a git it did not choose: the guard refuses it and counts it (os_dev_real_refused, 0 at
 the end of --test, every fuzz worker, the soak and the leak check). A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.
@@ -584,36 +591,43 @@ back by itself, and `build.bat clean` removes both. In build\:
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
-| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench) and verify's clean-check (tmp\clean_check, removed after it) |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench) and verify's clean-check (tmp\clean_check, removed after it) |
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |
 | `dist\` | dist.bat (the staging folder; the zip goes to dist\ at the root) |
 | `proof\` | scratch copies of the repository for a proof, made by hand; never required |
 
-## Theme (the built-in defaults: src/config_default.h, [colors])
+## Theme (the default theme: themes/ronin.conf, embedded by tools/make_themes.c)
 
-The config file's color names are the roles below (text is also the mode line; number is
-number/constant).
+The config file's color names are the roles below. Since Phase 21 the colors come from a theme (`[settings] theme`,
+default ronin; the built-in themes are themes\*.conf, user ones `<config dir>\themes\<name>.conf`), ronin.conf's
+`[colors]` pins single keys on top, and a key that no layer sets derives: the table names its source. Every probe of
+the smoke and the tests runs on ronin (smoke stage 14 switches through the others). mode_line_background /
+mode_line_text are the selected mode line (text / background: inverse video).
 
 | role             | color   |   | role            | color   |
 |------------------|---------|---|-----------------|---------|
 | background       | #072626 |   | comment         | #3fdf1f |
-| text / mode line | #d3b58d |   | string          | #0fdfaf |
+| text             | #d3b58d |   | string          | #0fdfaf |
 | cursor           | #90ee90 |   | keyword         | #ffffff |
-| selection        | #0000ff |   | number/constant | #7ad0c6 |
+| selection        | #0000ff |   | number          | #7ad0c6 |
 | type             | #8cde94 |   | variable        | #c1d1e3 |
-| prompt           | #0fdfaf |   | completion_match | #ffffff |
-| completion_selection | #0000ff | | function        | #ffffff |
-| directive        | #8cde94 |   | constant        | #7ad0c6 |
+| prompt           | string (#0fdfaf) | | completion_match | keyword (#ffffff) |
+| completion_selection | selection (#0000ff) | | function | keyword (#ffffff) |
+| directive        | type (#8cde94) | | constant     | number (#7ad0c6) |
 | paren_match (background) | #4f94cd | | isearch (background) | #cd00cd |
 | isearch_text     | #b0e2ff |   | lazy_highlight (background) | #668b8b |
 | isearch_fail (background) | #8b0000 | | window_divider | #126367 |
+| mode_line_background | text |   | mode_line_text  | background |
 | mode_line_inactive_background | background | | mode_line_inactive_text | text |
-| modal_background | #0c3434 |   | modal_border    | #2e8b8b |
-| modal_selection  | selection |  | modal_description | #a8977a |
-| modal_key        | number  |   | diff_added      | #73e673 |
-| diff_removed     | #ff6e6e |   | diff_hunk       | number  |
-| diff_header      | variable |  | git_status      | string  |
+| search_file      | keyword |   | search_line_number | number |
+| compilation_error | #ff0000 |  | compilation_warning | #ffaa00 |
+| compilation_info | type    |   | modal_background | #0c3434 |
+| modal_border     | #2e8b8b |   | modal_selection  | selection |
+| modal_description | #a8977a |  | modal_key       | number  |
+| diff_added       | #73e673 |   | diff_removed    | #ff6e6e |
+| diff_hunk        | number  |   | diff_header     | variable |
+| git_status       | string  |   |                 |         |
 
 The swap chain is B8G8R8A8_UNORM (not sRGB): theme colors must reach the screen bit-exact.

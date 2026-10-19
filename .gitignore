@@ -16,6 +16,7 @@
 *.zip
 *.png
 !/docs/images/*.png
+!/docs/images/themes/*.png
 
 # Editor and Windows files.
 .vs/

@@ -540,6 +540,23 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | V13 | git's warning between two lines of a diff's hunk does not cut the hunk | FIXED | without the fix "git parse: diff 9" fails (the warning kept as a context line, `-b` and `+B` drawn as headers), and so does "git changes: status 'main: 8 changed files', panes 8 / 15" (the warning on the fake git's stderr made a row); with the rename's source left alone "git parse: a warning before a source" fails; fixed in d941010. |
 | V14 | Typing is as fast as before | AUTOMATED | `--bench-latency` against Phase 19 (Measurements (Phase 20)). |
 
+## W. Themes (Phase 21)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| W1 | `theme = vague` in ronin.conf changes every color on the next save | AUTOMATED-NEW | "test: ok: set-theme" (a reload of ronin.conf naming another theme applies it), "test: ok: themes masked" (a theme named in ronin.conf at the start); the look: HUMAN step 47. |
+| W2 | M-x set-theme switches live, with completion over every theme (built-in and files, each marked with where it comes from, the current one marked); nothing is written | AUTOMATED-NEW | "test: ok: set-theme" (the exact candidates and notes, ronin.conf's bytes unchanged); smoke stage 14 (every built-in theme through the keys, its frame against its file); `--leak-check theme-cycle`. |
+| W3 | ronin.conf's `[colors]` still overrides single keys, over any theme; the masked-theme note ("ronin.conf: N [colors] keys override theme X") in the echo area and once in *Messages* per load, none for N = 0 or under ronin, an error first | AUTOMATED-NEW | "test: ok: themes" (the order), "test: ok: themes fuzz" (300 random themes and [colors] against a reference), "test: ok: themes masked" (30, 2, 1, 0 keys, ronin, an error), "test: ok: set-theme" (the combined echo). |
+| W4 | An unknown theme falls back to ronin with a message naming its line | AUTOMATED-NEW | "test: ok: themes" ("ronin.conf:2: theme: no theme 'nosuch' (using ronin)"), "test: ok: theme reload" (the theme file removed). |
+| W5 | A file in themes\ is picked up without a restart, also when themes\ itself is created after the start; another theme's file reloads nothing | AUTOMATED-NEW | "test: ok: theme reload" (real watches: the folder created, the file added, written while chosen, another written, removed). |
+| W6 | A file with a built-in theme's name replaces it; ronin.conf's folder before ronin.exe's | AUTOMATED-NEW | "test: ok: themes" (ronin and vague replaced, then the built-in again; the two folders' order), "test: ok: set-theme" (marked "replaces the built-in one"). |
+| W7 | A theme file with a bad color is reported with its file and line, the rest applies; [settings] or [keys] in a theme are reported and ignored | AUTOMATED-NEW | "test: ok: themes" (every diagnostic's exact text). |
+| W8 | The four ported themes look right | HUMAN | a judgement by eye; HUMAN step 47 (docs/images/themes/*.png are the reference). Their colors are checked exactly: smoke stage 14 (background, selection, cursor, text, both mode lines, the divider against each file) and six pixels of each screenshot (Measurements (Phase 21)). |
+| W9 | Switching a theme draws one frame: no font set-up, nothing grows, ronin's frame comes back byte for byte | AUTOMATED-NEW | smoke stage 14 (the frame back on ronin equal; the smoke's later check that the font was set up once); `--leak-check theme-cycle` (220 cycles of five switches, 0 LEAK, the screenshots equal). |
+| W10 | The built-in themes stay under 8 KB in the exe; the build stops otherwise (and without themes\ronin.conf, or with a file name that is no theme name) | AUTOMATED | every build (make_themes: "5 themes, 4730 bytes embedded"); the three refusals were run once on scratch folders (Measurements (Phase 21)). |
+| W11 | Typing, idle and startup are as before | AUTOMATED | `--bench-latency` and `--startup-ms` against Phase 20, `--idle-check` (Measurements (Phase 21)). |
+| W12 | A ronin.conf created by C-c , before Phase 21 masks every theme and says so | AUTOMATED-NEW | "test: ok: themes masked" (a [colors] with the 30 keys); with your own file: HUMAN step 48. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -679,6 +696,16 @@ Phase 20, terminals (Windows Terminal installed, `claude` on PATH; each step ope
 46. **V8**: Make a folder `C:\temp\a;b c` with a file x.txt in it, `build\ronin.exe "C:\temp\a;b c\x.txt"`, C-c t: wt's
     prompt is in exactly `C:\temp\a;b c` (one tab, not two). Then `ronin C:\`, C-x b `*scratch*` RET, C-c t: the prompt
     is in `C:\`.
+
+Phase 21, themes:
+
+47. **W1, W8**: With `build\ronin.exe src\app.c` open, add `theme = vague` under [settings] in ronin.conf (C-c ,) and
+    save: every color changes at once. Then M-x set-theme RET moonfly, oxide and mellifluous in turn, with a region and a
+    second window (C-x 3) on screen: each looks like its picture in docs/images/themes (and like the theme in Neovim, if at
+    hand); the text stays readable on every background, the region and the cursor are visible.
+48. **W12**: If your ronin.conf was written by C-c , before Phase 21, its [colors] section lists every color: with
+    `theme = vague` the echo area says "ronin.conf: 30 [colors] keys override theme vague" and the colors stay ronin's.
+    Delete the [colors] lines (keep the header) and save: vague's colors appear and the message does not.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

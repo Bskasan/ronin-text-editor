@@ -1,6 +1,6 @@
 @echo off
 rem ronin dist: runs verify.bat (which builds the release exe), then packs dist\ronin-<version>-windows-x64.zip with
-rem ronin.exe, README.md and LICENSE in a ronin-<version> folder. The version comes from src\version.h.
+rem ronin.exe, README.md, LICENSE and THIRD_PARTY.md (the ported themes' licenses) in a ronin-<version> folder. The version comes from src\version.h.
 rem From Git Bash: cmd //c ".\dist.bat"
 rem The last line is "dist: PASS: <zip> (<bytes> bytes)" or "dist: FAIL: <what failed>".
 setlocal
@@ -28,6 +28,7 @@ mkdir "build\dist\%NAME%"
 copy /y build\ronin.exe "build\dist\%NAME%\" >nul || goto copy_failed
 copy /y README.md "build\dist\%NAME%\" >nul || goto copy_failed
 copy /y LICENSE "build\dist\%NAME%\" >nul || goto copy_failed
+copy /y THIRD_PARTY.md "build\dist\%NAME%\" >nul || goto copy_failed
 if not exist dist mkdir dist
 if exist "%ZIP%" del /q "%ZIP%"
 rem Windows' own bsdtar (Windows 10 1803 and later) writes zip files with -a; another tar on PATH may not.
