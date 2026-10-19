@@ -2088,7 +2088,7 @@ STEP: config-reload-cycle/color private commit (as in Phases 19 and 20); the exi
 - [x] 18. Modal overlay and the command list
 - [x] 19. The git changes modal
 - [x] 20. Terminal and AI terminal shortcuts
-- [ ] 21. Themes: built-in themes, theme files, set-theme
+- [x] 21. Themes: built-in themes, theme files, set-theme
 
 ## Decisions
 
