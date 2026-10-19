@@ -15911,7 +15911,7 @@ i32 test_map_report(String8 map_path, String8 src_dir) {
     }
     // The source index.
     MapIdent *idents = PUSH_ARRAY(&arena, MapIdent, MAP_IDENTS);
-    String8 dirs[2] = { src_dir, str8_fmt(&arena, "%S\\..\\build\\gen", src_dir) }; // the sources, the compiled shaders
+    String8 dirs[2] = { src_dir, str8_fmt(&arena, "%S\\..\\build\\gen", src_dir) }; // the sources, the generated headers
     for (i32 d = 0; d < 2; d++) {
         OsDirEntry *entries;
         i64 entry_count;
@@ -15925,7 +15925,9 @@ i32 test_map_report(String8 map_path, String8 src_dir) {
                 if (entries[i].is_dir || (pass == 0 ? !header : !source)) continue;
                 String8 text;
                 if (os_read_small_file(&arena, str8_fmt(&arena, "%S\\%S", dirs[d], n), MB(16), &text) == OS_FILE_OK) {
-                    map_index_file(&arena, idents, d ? str8_fmt(&arena, "shaders (%S)", n) : str8_copy(&arena, n), text);
+                    // build\gen: the compiled shaders, and since Phase 21 the embedded themes (themes.h)
+                    String8 kind = str8_equal(n, STR8_LIT("themes.h")) ? STR8_LIT("built-in themes") : STR8_LIT("shaders");
+                    map_index_file(&arena, idents, d ? str8_fmt(&arena, "%S (%S)", kind, n) : str8_copy(&arena, n), text);
                 }
             }
         }
