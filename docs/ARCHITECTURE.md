@@ -3642,8 +3642,14 @@ faithful to them, the current match is not set apart.
    Claude Code, under the direction and review of its owner; the Co-Authored-By line in every commit says so."
    CONTRIBUTING, the same and that a pull request is judged the same way whoever or whatever wrote it.
 7. Nothing in src/ changed but oxide's diff_added (its palette's documented "added" green, #5bb661, decided with the
-   user), the test, and one fix the phase gate needed (decided with the user): the soak now empties build\tmp\soak,
-   subfolders included, at its start (`soak_clear`), so a seed gives the same run whatever ran before.
+   user), the test, and two soak fixes the phase gate needed (decided with the user): the soak empties build\tmp\soak,
+   subfolders included, at its start (`soak_clear`), so a seed gives the same run whatever ran before; and the rule below.
+8. The soak's memory rule (decided by the user): the +2 MB settled-growth check (the last checkpoint against the first
+   half's highest) applies to our arenas without the undo logs only, the number ronin controls, which was flat (-52 KB)
+   in the failing run. The total settled memory, the process heaps, the thread stacks and "other" are informational rows
+   of the leak-metric table (WATCH when they rose at every checkpoint of the second half), never a verdict; the counters
+   are measured as before. Reason: the growth came from the system's heaps around process creation and from parked
+   worker stacks, neither of them ronin's memory, and it varies between runs of identical events.
 
 ## Later
 
@@ -3720,6 +3726,9 @@ faithful to them, the current match is not set apart.
 - Columns in characters instead of bytes in results lines (now 1-based byte columns, as grep and ripgrep).
 - Worker thread slots stay until the exit (as many as tasks ever ran at once, each parked thread keeping its
   stack); ending a slot idle for a while would give that back, at the GPU driver's per-thread cost (Phase 16).
+- Parked worker threads above a small number (say 8) ended in the minimize trim path, next to the results buffers'
+  give-back, so the pool shrinks when the user minimizes (Phase 22, from the user: the soak's stacks grew 2.3 -> 3.0 MB as
+  the slots went 24 -> 32).
 - Builds: run and debug commands; several named build commands per project; input to the process;
   "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
   line); a save question limited to the project's buffers; a unique-suffix lookup in the project index for
@@ -3738,12 +3747,9 @@ faithful to them, the current match is not set apart.
 - Terminals (Phase 20): a terminal program of the user's choice (any command line, a Windows Terminal profile); the
   region or the file's name handed to the AI tool; looking for the AI command before the window opens (cmd says it is
   missing inside the new window now).
-- The soak's rules (found in Phase 22; its folder is emptied at its start since then, so a seed is one run): the watch
-  rule counts a buffer opened late in a new folder (live state) as LEAK; it could count only the watches the open
-  buffers' folders do not explain. The settled-memory rule (+2 MB over the first half's highest) sits at the edge in
-  both builds: before the fix, on fresh folders, the debug soak failed it in 1 of 3 runs for each of Phase 21's and
-  Phase 22's code; after it, the bench soak of the phase rerun failed it with our arenas flat and the growth in process
-  heaps and parked worker stacks (Measurements (Phase 22)); the rule is the user's to decide.
+- The soak's watch rule (found in Phase 22; its folder is emptied at its start since then, so a seed is one run): it
+  counts a buffer opened late in a new folder (live state) as LEAK; it could count only the watches the open buffers'
+  folders do not explain. (Its memory rule judges our arenas since Phase 22: Decisions, Phase 22, 8.)
 - README's git changes picture (Phase 22): a screenshot run cannot start the real git (Phase 20's guard refuses it in
   every batch run), so docs/images/git-changes.png is Phase 19's; a screenshot flag that chooses the real git, as smoke
   stage 12 does, would let it be retaken.

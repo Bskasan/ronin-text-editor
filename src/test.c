@@ -15971,6 +15971,10 @@ enum {
     SOAK_M_USER,
     SOAK_M_WORKING_SET,
     SOAK_M_PROCESS_THREADS,
+    SOAK_M_ARENAS, // the private memory by owner (Phase 22): our arenas without the undo logs (the memory rule's number),
+    SOAK_M_HEAPS,  // the process heaps, the thread stacks and the rest: informational, never a verdict
+    SOAK_M_STACKS,
+    SOAK_M_OTHER,
     SOAK_M_COUNT
 };
 #define SOAK_CHECKPOINTS 64
@@ -15981,9 +15985,15 @@ static const char *const soak_metric_names[SOAK_M_COUNT] = {
     "private commit without the undo logs (bytes)", "our committed bytes without the undo logs", "our reservations", "process handles",
     "USER objects",
     "working set (bytes)", "process threads (Toolhelp)",
+    "our arenas without the undo logs (bytes; the memory rule's)", "process heaps (bytes)", "thread stacks (bytes)", "other private (bytes)",
 };
 
-static void soak_sample(i64 *v, u64 settled_private, u64 undo, i64 *slots_max) {
+// Our arenas' private memory without the undo logs: the number the soak's memory rule judges (Phase 22). The process
+// heaps (the system's: ronin allocates none), the parked worker threads' stacks and the rest vary between runs of the
+// same events, so they are only shown.
+static u64 soak_arenas(OsDevMemoryOwners *ow, u64 undo) { return ow->arenas > undo ? ow->arenas - undo : 0; }
+
+static void soak_sample(i64 *v, u64 settled_private, u64 undo, OsDevMemoryOwners *ow, i64 *slots_max) {
     OsDevMetrics m;
     os_dev_metrics(&m);
     v[SOAK_M_RESERVATIONS] = m.reservations;
@@ -16001,6 +16011,10 @@ static void soak_sample(i64 *v, u64 settled_private, u64 undo, i64 *slots_max) {
     v[SOAK_M_USER] = m.user_objects;
     v[SOAK_M_WORKING_SET] = (i64)m.working_set;
     v[SOAK_M_PROCESS_THREADS] = m.process_threads;
+    v[SOAK_M_ARENAS] = (i64)soak_arenas(ow, undo);
+    v[SOAK_M_HEAPS] = (i64)ow->heaps;
+    v[SOAK_M_STACKS] = (i64)ow->stacks;
+    v[SOAK_M_OTHER] = (i64)ow->other;
 }
 
 // The table over the checkpoints from 500,000 events on (index 4); returns the LEAK verdicts.
@@ -16015,6 +16029,8 @@ static i32 soak_leak_verdict(SoakMetrics *v, i32 count, i64 slots_max) {
             if (j >= count - 3) rising += d > 0;
         }
         const char *verdict = k >= SOAK_M_PRIVATE ? (rising == 3 ? "WATCH" : "") : steps ? "LEAK" : "OK";
+        // The memory rows (Phase 22): WATCH when they rose at every checkpoint of the second half.
+        if (k == SOAK_M_PRIVATE || k >= SOAK_M_ARENAS) verdict = steps == count - 1 - first ? "WATCH" : "";
         if (k == SOAK_M_SLOTS) { // bounded: the slots grow to the most tasks ever running at once, at most the cap
             verdict = "OK (under its cap)";
             for (i32 j = first; j < count; j++) if (v[j][k] > slots_max) verdict = "LEAK (over its cap)";
@@ -16112,6 +16128,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
 
     u64 t0 = os_time_us(), block_t0 = t0, peak = 0, first_us = 0, second_us = 0, last_us = 0, mem_after_first = 0, mem_last = 0;
     u64 mem_first_half = 0; // the highest settled value of the blocks in the first half of the run
+    u64 arenas_after_first = 0, arenas_first_half = 0, arenas_last = 0; // the same for our arenas without the undo logs
     u64 done = 0;
     // The slowest events, to look for slow commands: by their whole time, and without the time a git session spent
     // waiting for the fake git's processes (soak_git_wait), which no key of a user waits for.
@@ -16165,9 +16182,9 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             for (i32 k = 0; k < 2; k++) per = MIN(per, soak_probe(&s));
             LOG("soak:   settled: private bytes %U KB; undo logs %U KB, kill ring %U KB; the probe %U ns an event", settled >> 10,
                 undo >> 10, app->kills.small_committed >> 10, per);
+            OsDevMemoryOwners ow;
             {
                 OsDevMetrics dm;
-                OsDevMemoryOwners ow;
                 os_dev_metrics(&dm);
                 os_dev_memory_owners(&ow);
                 LOG("soak:   by owner: our arenas %U KB, heaps %U KB, stacks %U KB, other %U KB, image pages %U KB, views %U KB; "
@@ -16177,17 +16194,23 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             }
             // The undo logs grow up to their limit (undo_limit_mb a buffer): the rest is what must stay flat.
             settled = settled > undo ? settled - undo : 0;
-            if (checkpoints < SOAK_CHECKPOINTS) soak_sample(metrics[checkpoints++], settled, undo, &slots_max);
+            u64 arenas = soak_arenas(&ow, undo);
+            if (checkpoints < SOAK_CHECKPOINTS) soak_sample(metrics[checkpoints++], settled, undo, &ow, &slots_max);
             if (checkpoints == 5) res_mid_count = os_dev_reservations(res_mid, 16384);
             res_last_count = os_dev_reservations(res_last, 16384);
             if (e == SOAK_BLOCK) {
                 first_us = per;
                 mem_after_first = settled;
+                arenas_after_first = arenas;
             }
             if (e == 2 * SOAK_BLOCK) second_us = per;
-            if (e <= events / 2) mem_first_half = MAX(mem_first_half, settled);
+            if (e <= events / 2) {
+                mem_first_half = MAX(mem_first_half, settled);
+                arenas_first_half = MAX(arenas_first_half, arenas);
+            }
             last_us = per;
             mem_last = settled;
+            arenas_last = arenas;
             block_t0 = now;
         }
         done = e;
@@ -16202,10 +16225,15 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             t.failures++;
         }
         // Leaks: settled (the starting buffers in one window), without the undo logs, after the first block and the last.
-        LOG("soak: settled, without the undo logs: %U KB after the first block, %U KB at most in the first half, %U KB after the last",
-            mem_after_first >> 10, mem_first_half >> 10, mem_last >> 10);
-        if (mem_last > mem_first_half + MB(2)) {
-            LOG("test: FAIL: soak: private bytes grew from %U KB (the first half's highest) to %U KB", mem_first_half >> 10, mem_last >> 10);
+        // The rule judges our arenas (Phase 22, decided with the user): the process heaps around process creation and
+        // the parked worker threads' stacks grew by 2.8 MB in one run and not in another with the same events.
+        LOG("soak: settled, without the undo logs: %U KB after the first block, %U KB at most in the first half, %U KB after the last"
+            " (informational)", mem_after_first >> 10, mem_first_half >> 10, mem_last >> 10);
+        LOG("soak: our arenas, without the undo logs: %U KB after the first block, %U KB at most in the first half, %U KB after the "
+            "last", arenas_after_first >> 10, arenas_first_half >> 10, arenas_last >> 10);
+        if (arenas_last > arenas_first_half + MB(2)) {
+            LOG("test: FAIL: soak: our arenas grew from %U KB (the first half's highest) to %U KB", arenas_first_half >> 10,
+                arenas_last >> 10);
             t.failures++;
         }
     }

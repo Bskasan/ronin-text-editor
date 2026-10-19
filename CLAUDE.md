@@ -273,7 +273,9 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # build\tmp\soak, the only place it may write (emptied at its
                                                           # start, subfolders too: a seed is one run); invariants every
                                                           # 1,000 events, settled memory (searches and git waited for;
-                                                          # the last against the first half's highest, +2 MB) and a typing
+                                                          # our arenas without the undo logs, the last against the first
+                                                          # half's highest, +2 MB; the total, heaps, stacks and other
+                                                          # only shown, Phase 22) and a typing
                                                           # probe (the fastest of three) every 100,000; logs peak / final
                                                           # memory, its owners, and the 5 slowest events;
                                                           # the leak metrics every 100,000, judged over the last 500,000
