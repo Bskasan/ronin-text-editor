@@ -349,6 +349,3 @@ editors, and by GNU Emacs (the editing model, the default keys, the command name
 naysayer-theme for Emacs and the Witness color scheme served as references for the colors, and the fuzzy finder's
 scoring weights follow fzf's. ronin is not affiliated with or endorsed by any of these projects or their authors.
 The four ported themes are credited in [THIRD_PARTY.md](THIRD_PARTY.md).
-
-ronin's code is written with Claude Code, under the direction and review of its owner; the Co-Authored-By line in
-every commit says so.

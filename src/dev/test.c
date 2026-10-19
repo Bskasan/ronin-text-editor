@@ -16234,7 +16234,7 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             t.failures++;
         }
         // Leaks: settled (the starting buffers in one window), without the undo logs, after the first block and the last.
-        // The rule judges our arenas (Phase 22, decided with the user): the process heaps around process creation and
+        // The rule judges our arenas (Phase 22): the process heaps around process creation and
         // the parked worker threads' stacks grew by 2.8 MB in one run and not in another with the same events.
         LOG("soak: settled, without the undo logs: %U KB after the first block, %U KB at most in the first half, %U KB after the last"
             " (informational)", mem_after_first >> 10, mem_first_half >> 10, mem_last >> 10);

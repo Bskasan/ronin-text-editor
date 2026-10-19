@@ -3,9 +3,7 @@
 ## How this project is made
 
 ronin is a learning project. I am building it to learn how a text editor works, from the renderer
-and the text buffer to the keymap and the search, and it was developed with the support of AI: the
-code was written with Claude Code under my direction, one phase at a time. I review the source code
-day by day and improve it as I come to understand each part of it. It is an experimental project,
+and the text buffer to the keymap and the search, one phase at a time. It is an experimental project,
 not a finished product.
 
 ## Module map
@@ -569,7 +567,7 @@ over several runs.
   0.19-0.29 ms, at 10,000 1.95-2.25 ms; RET 4.8 ms at 1,000, 29-45 ms at 10,000.
 - Cursors spread evenly over the whole 100 MB file: 13-22 ms per key from 10 cursors on (one cursor 26-109 us):
   the gap travels ~100 MB every command (back to the first cursor, then forward), whatever the markers cost. Not
-  reordered (the approved plan); see "Later".
+  reordered; see "Later".
 - RET on the 100 MB file's consecutive lines: 0.16 ms at 10 cursors, 4.4-5.5 ms at 100, 0.38-0.5 s at 1,000, 5.5-7 s
   at 10,000, with 0 flushes: each new line's indentation looks back for a matching brace through the bench text's
   random, unbalanced braces (up to SYNTAX_MATCH_MAX, 256 KB, with a 256 KB stack zeroed per walk), ~0.4-0.6 ms a
@@ -2064,7 +2062,7 @@ background thread".
 
 ### Startup, idle, latency
 
-`--startup-ms` (release, with the user's own ronin.conf, run with the user's permission), alternated, 3 runs each:
+`--startup-ms` (release, with a user's own ronin.conf), alternated, 3 runs each:
 Phase 20's build (44d40c2, build\proof\p20) 207 / 182 / 175 ms, Phase 21's 187 / 175 / 173 ms: unchanged. The config's
 parse at startup, with the defaults and the ronin theme: 362 us in the bench build (Phase 20: 294 us; the built-in
 configuration is the same size, the theme is one more parse of 601 bytes).
@@ -2188,7 +2186,7 @@ configuration) and compared pixel for pixel with System.Drawing:
 Its steps were tried locally in Windows PowerShell as written (the runner's pwsh 7 runs the same lines):
 `--check-imports` PASS, `--version` "ronin 0.1.0", `ronin_bench.exe --test` PASS in 32 s, `ronin_bench.exe --smoke` PASS
 (89 frames, "d3d11: device created ..., debug layer off"). The workflow itself runs only on GitHub: its first run is
-HUMAN step 50, and the informational smoke's outcome is recorded here once the user reports it.
+HUMAN step 50, and the informational smoke's outcome is recorded here once it is known.
 
 ### verify.bat phase
 
@@ -2211,14 +2209,14 @@ watch from about event 600,000 to the end. It is not this phase's code:
   half's highest) sits at the edge: Phase 22's code exit 9 / 0 / 0 (16,208, 14,760, 15,532 KB at the end against 13,472,
   13,408, 13,736), Phase 21's 0 / 0 / 9 (15,832, 16,040, 16,992 against 14,904, 14,168, 14,380).
 
-The user decided: one fix in this phase, d1691cc, the soak empties build\tmp\soak, subfolders included, at its start; the
+One fix in this phase, d1691cc: the soak empties build\tmp\soak, subfolders included, at its start; the
 memory rule unchanged here. Proof before the rerun, bench then debug on the old leftovers (168 files in git\): both PASS,
 3 watches throughout, and each refused as many writes as on an empty folder (818 bench, 946 debug: the same events).
 
 The rerun at d1691cc, 520 s: FAIL, only `soak-bench` (exit 9, the memory rule). The debug soak PASS (3 watches throughout;
 settled 9,544 / 13,776 / 15,372 KB); `--test` (debug) PASS in 38.4 s (the README check 5 ms); the seed sweep PASS (243 s);
 the leak check 28 scenarios, 0 LEAK (140 s; STEP: config-reload-cycle/color and theme-cycle private commit); the exit check
-PASS. As the user asked, not rerun: the bench soak's memory, by owner, at each checkpoint (KB; "settled" without the undo
+PASS. Not rerun: the bench soak's memory, by owner, at each checkpoint (KB; "settled" without the undo
 logs, "arenas" ours without the undo logs, from the soak's "settled" and "by owner" lines):
 
 | events | settled | arenas | process heaps | thread stacks (worker slots) | other | undo logs |
@@ -2243,7 +2241,7 @@ listings, the worker threads' own). The soak stopped at the memory check, so no 
 build and seed passed the bench soak in the proof run just before (and 14,136 -> 15,484 KB in this phase's first run):
 which run crosses depends on the heaps and the slots, not on the events, which are the same.
 
-The user decided the rule (Decisions, Phase 22, 8): 3e2f1ed judges our arenas without the undo logs, the rest shown. The
+The rule (Decisions, Phase 22, 7): 3e2f1ed judges our arenas without the undo logs, the rest shown. The
 final run at 3e2f1ed, 502 s: PASS, every step. `--test` (debug) PASS in 37.7 s (the README check 5 ms); the seed sweep 256
 seeds PASS (227 s); the bench soak PASS in 18.5 s and the debug soak PASS in 22.5 s, both with our arenas without the
 undo logs at 5,308 KB after the first block, 6,056 KB at most in the first half and 6,336 KB after the last (+280 KB;
@@ -2310,7 +2308,7 @@ reported `tools/check_source.c: not in docs/ARCHITECTURE.md's module map (a row 
 
 75 files got the header in one commit (0513627), check_source.c came with its own: 76. Each file's old first line
 repeated its file name ("// base.c — see base.h."): all 75 lost that prefix ("// see base.h."), none was left with only
-the description, so no line was deleted (the user's rule, Decisions, Phase 23, 4). Nothing else in the comments changed.
+the description, so no line was deleted (Decisions, Phase 23, 4). Nothing else in the comments changed.
 
 ### The benches that read src\app\app.c, the map report
 
@@ -3276,7 +3274,7 @@ external-change-cycle private commit); the exit check PASS in the smoke (debug, 
   insertion does not flush the marker batch once per cursor.
 - `early_window` (default off): the window is shown in the background color as soon as the config and the
   buffers exist (cloaked, painted, one composition, uncloaked, DWM transitions off), activated as the
-  normal start; dev batch runs never show it early. The default is the user's call (HUMAN step).
+  normal start; dev batch runs never show it early. The default is a HUMAN step.
 - Crash safety net: an unhandled-exception filter (and a 64 KB stack guarantee on each of our threads, so a
   stack overflow can still run it; not tested) calls `app_crash_write` for every buffer, each inside its own
   `__try`; a modified file buffer is written with `buffer_write_to` (the save's encoder) through a 16 KB
@@ -3504,7 +3502,7 @@ test_run removes it again after the group.
    AutoRun): `git_path` in [settings] when set (a file), else the first `git.exe` of PATH (`os_find_program`: every
    entry, quoted ones too, never the current directory). Both are KERNEL32 calls: no new DLL.
 2. show-git-changes (C-x g) opens a box of two panes (90% x 80%, the left one 30%), its keys in `[keys git-changes]`.
-   The box opens only once `git rev-parse --show-toplevel` has answered (decided with the user): the command echoes
+   The box opens only once `git rev-parse --show-toplevel` has answered: the command echoes
    "Running git…" and starts a worker; no git, a folder git does not know, or a refusal of git's say so in the echo
    area and nothing ever opens (keys typed in those 20-50 ms go to the window). Then "Running git…" stands in the
    box's status line while git status runs. The main thread never waits for git.
@@ -3552,7 +3550,7 @@ test_run removes it again after the group.
    accepted). A diff line is stored cut at 4,096 bytes.
 9. stdout and stderr share the one pipe, so git's warnings ("LF will be replaced by CRLF") arrive inside its output: a
    `warning: ` line outside a hunk is not part of the diff, and a status record is what follows the last newline in
-   it (no record holds one on Windows). A failed run's message is git's own line (decided with the user): its first
+   it (no record holds one on Windows). A failed run's message is git's own line: its first
    non-empty line starting with `fatal:`, `error:` or `usage:`, else its first non-empty line, CR dropped, cut at
    120 bytes on a character boundary; "git: <line>" in the echo area (before the box) or the status line. Output
    holding "not a git repository" says "Not a git work tree: <dir>" instead. No git, and the timeout, have fixed
@@ -3571,14 +3569,14 @@ test_run removes it again after the group.
     (20,000; 100 to 1,000,000), `git_status_max_files` (5,000; 10 to 100,000), `git_timeout_ms` (30,000; 1,000 to
     600,000), applied from the next git run (`git_path` from the next C-x g or g); colors diff_added (#73e673) and
     diff_removed (#ff6e6e) with their own defaults, diff_hunk, diff_header and git_status following number, variable
-    and string (decided with the user: hunk lines must not be green beside added ones); 39 colors now.
+    and string (hunk lines must not be green beside added ones); 39 colors now.
 14. Tests: `--fake-git DIR ARGS` (dev builds) is the tests' git: it logs its arguments to DIR\calls.txt and runs the
     `--child` script that DIR\map.txt names for the first key found in them. The real-git test and smoke stage 12 run
     on build\tmp\gitrepo\repo (made once, its working tree set each time) with the system and global configuration shut
     out through `env_extra` (GIT_CONFIG_NOSYSTEM=1, GIT_CONFIG_GLOBAL to an empty file, HOME and XDG_CONFIG_HOME for a
     git older than 2.32); without git on PATH they log a skip, never a failure. The fake git's canned answers for that
     repository and the real git's give the same text.
-15. The soak (found by this phase's `verify.bat phase`, decided with the user): its settle waits, 10 s at most, for a
+15. The soak (found by this phase's `verify.bat phase`): its settle waits, 10 s at most, for a
     running project search and git's jobs before the checkpoint's sample (a search still running had counted its two
     workers as LEAK); the settled memory after the last block is judged against the highest settled value of the first
     half of the run, +2 MB, matching the Phase 16 plateau rule (one first block alone was too low a reference: with this
@@ -3601,7 +3599,7 @@ test_run removes it again after the group.
    inherited environment, CREATE_NEW_CONSOLE for the classic console or CREATE_NO_WINDOW otherwise (ignored by a GUI
    program such as wt.exe), and closes both handles at once (the ledger +2 -2; `live_processes`, "started minus
    closed", is not touched). It returns 0 or the Win32 error.
-3. ronin's own job (decided with the user): the first attempt adds CREATE_BREAKAWAY_FROM_JOB (no effect when ronin is
+3. ronin's own job: the first attempt adds CREATE_BREAKAWAY_FROM_JOB (no effect when ronin is
    in no job); on ERROR_ACCESS_DENIED (a job that does not allow breaking away) it retries once without it. Dev builds
    log which ("launch: <program> started outside any job (breakaway)" or "launch: breakaway refused (error 5),
    <program> started inside ronin's job"; `os_dev_last_launch`). When the retry starts it inside a launcher's
@@ -3625,9 +3623,9 @@ test_run removes it again after the group.
    | open-ai-terminal | `"W" -d "<dir>" "C" /s /k "<command>"` | `"C" /s /k "<command>"` |
 
    each started in `<dir>`. cmd /k is always the AI command's shell: npm's `claude.cmd` resolves there and the window
-   stays open after the command ends. /s (decided with the user) makes cmd strip exactly the outer quotes, so a quoted
+   stays open after the command ends. /s makes cmd strip exactly the outer quotes, so a quoted
    program path in `ai_command` (`"C:\Program Files\x\claude.exe" --continue`) survives; Phase 13's builds use /s /c
-   too. The wt form passes cmd by its full system path (decided with the user): PATH cannot change which cmd runs.
+   too. The wt form passes cmd by its full system path: PATH cannot change which cmd runs.
    wt splits its command line into tabs at `;`, so in the wt form only a `;` (in the directory or the command) is
    written `\;`, wt's escape.
 7. Tests never open a real terminal. Dev builds: `--fake-terminal DIR PROGRAM CONSOLE ARGS` (win32_child.c, before
@@ -3636,7 +3634,7 @@ test_run removes it again after the group.
    instead of the real program when `app->terminal.dev_program` is set (as git's `dev_program`), always without a
    console; `dev_wt_present` makes the wt lookup deterministic. Opening a real terminal takes the foreground: HUMAN
    only (V1-V5).
-8. One guard for git and the terminals (decided with the user): in a dev batch run (`--test`, `--smoke`, a bench,
+8. One guard for git and the terminals: in a dev batch run (`--test`, `--smoke`, a bench,
    `--soak`, `--fuzz-seeds`, `--leak-check`, a screenshot run: `os_dev_batch_run`), open-terminal and open-ai-terminal
    without the fake, and show-git-changes without a chosen git (the fake, or the real one with its configuration shut
    out, as the real-git test and smoke stage 12 set it), start nothing: "terminal: no real terminal in a test run",
@@ -3672,15 +3670,15 @@ test_run removes it again after the group.
    ones derived again: nothing is parsed twice. An unknown theme is an error on the theme setting's line,
    `ronin.conf:N: theme: no theme 'foo' (using ronin)` (a file that cannot be read the same, "cannot read"), and the
    colors stay ronin's; a theme file being written (a sharing violation) is retried as ronin.conf is. The built-in
-   configuration's `[colors]` is a commented list of the keys and what derives from what (decided with the user): a
+   configuration's `[colors]` is a commented list of the keys and what derives from what: a
    ronin.conf written by C-c , pins no color.
 4. Eight more keys derive, all pairs that had one value in ronin, so ronin is unchanged bit for bit and a theme that
-   leaves them out gets its own colors (decided with the user): constant from number, function and completion_match
+   leaves them out gets its own colors: constant from number, function and completion_match
    from keyword, directive and compilation_info from type, prompt from string, completion_selection from selection.
    The selected mode line has two keys of its own, `mode_line_background` and `mode_line_text`, derived from text and
    background (inverse video as before), so a theme's StatusLine has somewhere to go. 41 keys, within the 64-bit mask.
    A key that cannot derive and that a theme leaves out keeps ronin's color, by the order of 3.
-5. The masked-theme note (decided with the user): when the theme in effect is not ronin and ronin.conf's `[colors]`
+5. The masked-theme note: when the theme in effect is not ronin and ronin.conf's `[colors]`
    set N keys, every load (startup, a reload, set-theme) says "ronin.conf: N [colors] keys override theme X" in
    *Messages* and, unless the load shows an error there, in the echo area. Not an error: the colors apply as resolved.
    A ronin.conf written by C-c , before this phase sets 30 keys.
@@ -3688,7 +3686,7 @@ test_run removes it again after the group.
    notification reloads when ronin.conf changed or when that changed (the theme file written, added, removed), with the
    same 50 ms settle; another theme's file reloads nothing. The app watches both themes\ folders that exist with
    `os_watch_dir`; the config folder's watch also reports folder names (`os_watch_dir`'s `subdirs` flag:
-   FILE_NOTIFY_CHANGE_DIR_NAME, decided with the user), so a themes\ created next to ronin.conf later is watched from
+   FILE_NOTIFY_CHANGE_DIR_NAME), so a themes\ created next to ronin.conf later is watched from
    then on and one removed is let go. 15 watch slots of 16 at most (config, two themes\, 8 buffer folders, 4 projects).
    An exe-side themes\ created after the start is seen at the next start (Later).
 7. M-x set-theme (no key; "Switch the colors to another theme for this session"): a MINI_CHOICE prompt with
@@ -3697,7 +3695,7 @@ test_run removes it again after the group.
    ronin.exe", ", replaces the built-in one") and the one in effect marked ", current" (instead of a default: the
    minibuffer has no default input). The choice is a session override in `ConfigSource` applied through the normal
    reload (ronin.conf is read again: one load, ~0.25-0.3 ms in the bench build, and one frame); nothing is written. It
-   holds across reloads until ronin.conf's own theme setting changes (decided with the user), and choosing ronin.conf's
+   holds across reloads until ronin.conf's own theme setting changes, and choosing ronin.conf's
    theme ends it. The echo: "Theme vague", "(ronin.conf says ronin)" while they differ, "; ronin.conf: N [colors] keys
    override it", "; 1 error, see *Messages*". It is refused in the minibuffer (as every prompting command) and runs from
    the command list. The command lives in app.c, beside set-language: commands need the App, which theme.c, a core
@@ -3708,7 +3706,7 @@ test_run removes it again after the group.
 9. Tests keep ronin: every pixel probe of the smoke and the tests runs on it. Smoke stage 14 switches to each built-in
    theme through M-x set-theme and probes its frame against the theme's file resolved by the smoke itself (not the
    app's colors), then switches back to ronin and compares the frame byte for byte.
-10. Porting (decided with the user): each theme from its repository's Lua source at a pinned commit, fetched into a
+10. Porting: each theme from its repository's Lua source at a pinned commit, fetched into a
     scratch folder outside the repository (deleted afterwards). moonfly, oxide and vague were read as text (their hex
     values, links resolved by hand). mellifluous writes no color values (it computes them from OkHSL when it loads):
     its colors were read from the installed Neovim (v0.11.5) running it, with the exact command in its file. Only
@@ -3720,7 +3718,7 @@ Statement, Number → Constant, Boolean → Constant, PreProc's Include and Macr
 Added, `diffRemoved` → Removed, `diffLine` → Statement, `diffFile` → Type); a color of Neovim's own default color
 scheme does not. A group with a background and no foreground keeps the text in Normal's color; an undefined Cursor
 is reverse video, Normal's foreground. Neovim's DiffAdd / DiffDelete / DiffChange / DiffText are line backgrounds
-while ronin's diff keys color text, so the foreground groups come first (decided with the user).
+while ronin's diff keys color text, so the foreground groups come first.
 
 | ronin key | Neovim group (attribute) |
 |---|---|
@@ -3748,7 +3746,7 @@ while ronin's diff keys color text, so the foreground groups come first (decided
 | modal_border | FloatBorder fg (equal to the float's bg, i.e. invisible: WinSeparator fg) |
 | modal_selection | PmenuSel bg |
 | modal_description, modal_key | Comment fg, Special fg |
-| diff_added | diffAdded fg → Added fg → GitSignsAdd fg → DiagnosticOk fg → GitGutterAdd fg (decided with the user) |
+| diff_added | diffAdded fg → Added fg → GitSignsAdd fg → DiagnosticOk fg → GitGutterAdd fg |
 | diff_removed | diffRemoved fg → Removed fg → GitSignsDelete fg → DiagnosticError fg → GitGutterDelete fg |
 | diff_hunk | diffLine fg → Changed fg |
 | diff_header | diffFile fg → Title fg |
@@ -3757,7 +3755,7 @@ while ronin's diff keys color text, so the foreground groups come first (decided
 What the four themes have no group for (each file says so): oxide defines no completion-match group (it follows
 keyword), no Changed or GitSignsChange (git_status follows string) and none of diff_added's chain (since Phase 22
 diff_added is its palette's `green`, #5bb661, which lua/oxide/colors.lua:26 documents as "Strings, success, added
-items"; before, it kept ronin's #73e673; decided with the user; diff_removed is its DiagnosticError red); vague no PmenuSel (completion_selection and modal_selection follow
+items"; before, it kept ronin's #73e673; diff_removed is its DiagnosticError red); vague no PmenuSel (completion_selection and modal_selection follow
 selection), no StatusLineNC background (follows background), no FloatBorder (WinSeparator) and no Cursor (Normal fg);
 mellifluous's FloatBorder is invisible (WinSeparator) and its CurSearch has no foreground (Normal fg); moonfly has a
 group for every key. vague and mellifluous draw the current search match like the others (CurSearch = Search):
@@ -3772,9 +3770,9 @@ faithful to them, the current match is not set apart.
    five minutes (a key table), configuration (where ronin.conf is, `C-c ,`, hot reload, the common settings as a table),
    themes (the four pictures, picking and adding one, credits), one section each for projects, search, builds, git,
    terminals and multiple cursors with their key tables, known limits, the roadmap after 1.0, contributing, license and
-   credits. No version is written in it (decided with the user): the zip's name comes from dist.bat and src/app/version.h.
+   credits. No version is written in it: the zip's name comes from dist.bat and src/app/version.h.
    The numbers table and the testing notes stay here, the build instructions moved to CONTRIBUTING.md, the
-   learning-project paragraph moved to this file's introduction (decided with the user).
+   learning-project paragraph moved to this file's introduction.
 2. The README check is a `--test` group (`test_readme`, src/dev/test.c), so `verify.bat` runs it on every commit (3-6 ms).
    It reads README.md and CONTRIBUTING.md from the exe's folder's parent. Its markers are what a reader sees anyway: a
    key table is headed exactly `| keys | command | what it does |`, a settings table `| setting | default | what it
@@ -3787,7 +3785,7 @@ faithful to them, the current match is not set apart.
    `config_parse` over the built-in configuration and must give no diagnostic, so the name exists and its default is
    valid, through the real parser (config.c has no table to ask, and needs none). ini blocks of Configuration and Themes
    parse the same way (a `[theme]` block in theme mode), laid out on their own lines, so a diagnostic already names the
-   README line. Beyond the user's two checks, cheap ones of the same kind: `M-x name` names a command, a C- / M- key in
+   README line. Beyond those two checks, cheap ones of the same kind: `M-x name` names a command, a C- / M- key in
    prose is bound in some keymap (Known limits and Roadmap name keys that do not exist yet), names with '_' in
    Configuration are a setting or a color, relative links and #anchors resolve (GitHub's slug rule), external links are
    logged. Every failure is counted, each names its file and line; a README without a key table fails, so a
@@ -3803,17 +3801,14 @@ faithful to them, the current match is not set apart.
    Studio (nothing pinned: the flags need VS 2019 16.10 or later), the toolset and the sizes in the job summary,
    `--test` on debug and bench, `--check-imports`, `--version`; each GUI exe started and waited for itself (not the
    grandchildren some tests let go), its log uploaded. The debug smoke cannot run there: it requires the D3D11 debug
-   layer (exit 4), an optional Windows feature. The bench smoke runs as an informational step (`continue-on-error`,
-   decided with the user) that prints the session, the exit code's meaning and the device lines of the log, so the first
-   run says whether WARP renders on the runner's desktop; its outcome goes into the Measurements once the user reports
-   it. The smoke gate and `verify.bat phase` stay local (CONTRIBUTING.md says so).
-6. How the code is written, said once in each place (decided with the user): README, "ronin's code is written with
-   Claude Code, under the direction and review of its owner; the Co-Authored-By line in every commit says so."
-   CONTRIBUTING, the same and that a pull request is judged the same way whoever or whatever wrote it.
-7. Nothing in src/ changed but oxide's diff_added (its palette's documented "added" green, #5bb661, decided with the
-   user), the test, and two soak fixes the phase gate needed (decided with the user): the soak empties build\tmp\soak,
+   layer (exit 4), an optional Windows feature. The bench smoke runs as an informational step (`continue-on-error`)
+   that prints the session, the exit code's meaning and the device lines of the log, so the first
+   run says whether WARP renders on the runner's desktop; its outcome goes into the Measurements once it is
+   known. The smoke gate and `verify.bat phase` stay local (CONTRIBUTING.md says so).
+6. Nothing in src/ changed but oxide's diff_added (its palette's documented "added" green, #5bb661), the test, and two
+   soak fixes the phase gate needed: the soak empties build\tmp\soak,
    subfolders included, at its start (`soak_clear`), so a seed gives the same run whatever ran before; and the rule below.
-8. The soak's memory rule (decided by the user): the +2 MB settled-growth check (the last checkpoint against the first
+7. The soak's memory rule: the +2 MB settled-growth check (the last checkpoint against the first
    half's highest) applies to our arenas without the undo logs only, the number ronin controls, which was flat (-52 KB)
    in the failing run. The total settled memory, the process heaps, the thread stacks and "other" are informational rows
    of the leak-metric table (WATCH when they rose at every checkpoint of the second half), never a verdict; the counters
@@ -3822,13 +3817,13 @@ faithful to them, the current match is not set apart.
 
 ### Decisions, Phase 23 (source layout and file headers)
 
-1. src/ is in folders by layer, so the folder a file is in says what it may include (decided with the user):
+1. src/ is in folders by layer, so the folder a file is in says what it may include:
    `src/base/` (types, arenas, strings), `src/platform/` (the os_* and r_* interfaces, everything that touches Win32,
    D3D or DirectWrite: the only folder that may include Windows SDK headers), `src/text/` (the buffer, the lexers, the
    search engine), `src/editor/` (commands, keys, config, views, windows, editing, the minibuffer, the modal layer,
    themes, the font), `src/project/` (projects, the finder, the project search, builds, git, terminals), `src/app/`
    (app.c, version.h) and `src/dev/` (the tests, the leak check, the PNG encoder). The module map lists every file
-   under its folder. Placed differently from the first proposal, with the user's approval: fuzzy.h/.c in project/ (it
+   under its folder. Placed differently from the first proposal: fuzzy.h/.c in project/ (it
    ranks a ProjectIndex and calls project_mask and project_index_*; in text/ it would depend on project/);
    check_macros.c in platform/ (it includes every system header on purpose; there the Windows-header rule has no
    exception); ronin.c stays at src/ronin.c (build.bat clean and verify's clean-check recognize the repository root by
@@ -3852,7 +3847,7 @@ faithful to them, the current match is not set apart.
    another kind.
 4. A file's existing top comment stays below the header; a comment line that only repeated the file name or the
    header's description lost that repetition ("// base.c — see base.h." became "// see base.h."; a line left with the
-   description alone was deleted; decided by the user). Nothing else in them changed.
+   description alone was deleted). Nothing else in them changed.
 5. The checker is a build-time program (tools/, compiled by build.bat on every build, run by verify.bat), not a dev
    flag: the three exes get no code from it. Nothing else changed: no identifiers renamed, no files split or merged.
    The release exe is identical to Phase 22's apart from the link timestamp; the dev builds differ in the paths and
@@ -3938,7 +3933,7 @@ faithful to them, the current match is not set apart.
 - Worker thread slots stay until the exit (as many as tasks ever ran at once, each parked thread keeping its
   stack); ending a slot idle for a while would give that back, at the GPU driver's per-thread cost (Phase 16).
 - Parked worker threads above a small number (say 8) ended in the minimize trim path, next to the results buffers'
-  give-back, so the pool shrinks when the user minimizes (Phase 22, from the user: the soak's stacks grew 2.3 -> 3.0 MB as
+  give-back, so the pool shrinks when the user minimizes (Phase 22: the soak's stacks grew 2.3 -> 3.0 MB as
   the slots went 24 -> 32).
 - Builds: run and debug commands; several named build commands per project; input to the process;
   "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
@@ -3960,7 +3955,7 @@ faithful to them, the current match is not set apart.
   missing inside the new window now).
 - The soak's watch rule (found in Phase 22; its folder is emptied at its start since then, so a seed is one run): it
   counts a buffer opened late in a new folder (live state) as LEAK; it could count only the watches the open buffers'
-  folders do not explain. (Its memory rule judges our arenas since Phase 22: Decisions, Phase 22, 8.)
+  folders do not explain. (Its memory rule judges our arenas since Phase 22: Decisions, Phase 22, 7.)
 - README's git changes picture (Phase 22): a screenshot run cannot start the real git (Phase 20's guard refuses it in
   every batch run), so docs/images/git-changes.png is Phase 19's; a screenshot flag that chooses the real git, as smoke
   stage 12 does, would let it be retaken.

@@ -97,6 +97,5 @@ What may come later is the "Later" list in [docs/ARCHITECTURE.md](docs/ARCHITECT
 The maintainer reviews every pull request against the priority order: latency and speed, then small and simple, then
 features.
 
-Most of ronin was written with Claude Code under the maintainer's direction and review (see each commit's
-Co-Authored-By line). Pull requests are judged the same way whoever or whatever wrote them: you must have read,
-understood and tested every line you submit.
+Pull requests are judged the same way whoever or whatever wrote them: you must have read, understood and tested every
+line you submit.
