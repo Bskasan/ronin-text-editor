@@ -1,4 +1,13 @@
-// finder.h — the projects the app keeps and the project finder (C-x p f). Part of the app: finder.c is
+/* ======================================================================
+   ronin: the projects kept, their scans and watches, the project finder
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the projects the app keeps and the project finder (C-x p f). Part of the app: finder.c is
 // included after files.c and uses App directly.
 
 #ifndef FINDER_H

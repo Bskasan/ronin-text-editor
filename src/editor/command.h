@@ -1,4 +1,13 @@
-// command.h — every user action is a named command (Emacs names) in one table. Keys only ever
+/* ======================================================================
+   ronin: the command table: every command's name, description and flags
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// every user action is a named command (Emacs names) in one table. Keys only ever
 // map to commands (keymap.h). A command takes one context argument and nothing else.
 
 #ifndef COMMAND_H

@@ -1,4 +1,13 @@
-// theme.c — see theme.h.
+/* ======================================================================
+   ronin: the built-in themes and theme files: lookup, list, read
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see theme.h.
 
 #include "themes.h" // generated: theme_builtins[], THEME_BUILTIN_COUNT
 

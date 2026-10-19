@@ -1,4 +1,13 @@
-// git_changes.h — the git changes view (Phase 19): show-git-changes (C-x g) opens a two-pane modal over the uncommitted
+/* ======================================================================
+   ronin: the git changes view (C-x g): status and diffs in a modal box
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the git changes view (Phase 19): show-git-changes (C-x g) opens a two-pane modal over the uncommitted
 // changes of the project's git work tree, the files on the left, the selected file's diff on the right. Read only.
 // git runs on workers (git.h); this is the app side: the job waiting for rev-parse before the box opens, the jobs
 // of the open box, the jobs cancelled and still ending, and the copy of a diff into the modal's arena. Part of the

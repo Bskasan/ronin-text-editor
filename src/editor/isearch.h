@@ -1,4 +1,13 @@
-// isearch.h — incremental search (Emacs' isearch), query-replace and replace-string, on the search
+/* ======================================================================
+   ronin: isearch, query-replace and replace-string
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// incremental search (Emacs' isearch), query-replace and replace-string, on the search
 // engine (search.h). Plain C, headless: the app routes keys here and draws the echo line and the
 // highlighting from this state.
 //

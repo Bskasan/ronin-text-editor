@@ -1,4 +1,13 @@
-// win32_main.c — entry point, window, message loop, input translation, os_* primitives.
+/* ======================================================================
+   ronin: entry point, window, message loop, input, os_* on Win32, dev flags
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// entry point, window, message loop, input translation, os_* primitives.
 
 #define UNICODE
 #define _UNICODE

@@ -1,4 +1,13 @@
-// config.c — see config.h.
+/* ======================================================================
+   ronin: the config parser, layering, diagnostics and hot reload
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see config.h.
 
 #include "config_default.h"
 

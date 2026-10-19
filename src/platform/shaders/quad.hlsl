@@ -1,4 +1,13 @@
-// quad.hlsl — one pipeline for everything: instanced quads.
+/* ======================================================================
+   ronin: vertex and pixel shader of the instanced-quad pipeline
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// one pipeline for everything: instanced quads.
 // The vertex shader builds the four corners of a triangle strip from SV_VertexID;
 // the only vertex buffer is the per-instance buffer.
 

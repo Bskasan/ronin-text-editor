@@ -1,4 +1,13 @@
-// isearch.c — see isearch.h.
+/* ======================================================================
+   ronin: isearch, query-replace and replace-string
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see isearch.h.
 
 void isearch_init(Isearch *is, Minibuffer *mini) {
     memset(is, 0, sizeof(*is));

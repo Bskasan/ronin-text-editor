@@ -1,4 +1,13 @@
-// modal.c — see modal.h. Part of the app (included after app.c): the box's geometry, opening and closing, its keys
+/* ======================================================================
+   ronin: the modal box over the windows: geometry, keys, mouse, drawing
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see modal.h. Part of the app (included after app.c): the box's geometry, opening and closing, its keys
 // and mouse events, its drawing, and the layer's commands (modal-next ... modal-other-pane).
 
 static b32 modal_inside(Rect r, i32 x, i32 y) {

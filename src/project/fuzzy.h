@@ -1,4 +1,13 @@
-// fuzzy.h — fuzzy matching of project paths: subsequences, smart case, a score that prefers the file
+/* ======================================================================
+   ronin: fuzzy matching of paths and the sliced ranking over a project index
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// fuzzy matching of project paths: subsequences, smart case, a score that prefers the file
 // name, segment starts and consecutive characters; ranking over a ProjectIndex in slices within the
 // frame budget, keeping the best FUZZY_TOP. Plain C, headless.
 

@@ -1,4 +1,13 @@
-// view.h — an Emacs window onto a buffer: cursors, scrolling, motion and editing commands.
+/* ======================================================================
+   ronin: views: cursors, scrolling, the command driver, motion, buffer list
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// an Emacs window onto a buffer: cursors, scrolling, motion and editing commands.
 // Plain C, headless: positions and logic only; drawing lives in app.c.
 
 #ifndef VIEW_H

@@ -1,4 +1,13 @@
-// search.h — literal text search, forward and backward, exact or case-folded. One engine for isearch,
+/* ======================================================================
+   ronin: literal text search over plain bytes and the gap buffer, resumable
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// literal text search, forward and backward, exact or case-folded. One engine for isearch,
 // query-replace, occur and the project-wide search (grep.c). Plain C, headless.
 //
 // Two layers. The core works on plain byte ranges: a SearchPattern (the needle, folded when folding) and

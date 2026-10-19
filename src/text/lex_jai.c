@@ -1,4 +1,13 @@
-// lex_jai.c — the Jai lexer. // comments and nested /* */; strings (ending at the end of the line);
+/* ======================================================================
+   ronin: the Jai lexer
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the Jai lexer. // comments and nested /* */; strings (ending at the end of the line);
 // here-strings (#string TERM ... TERM); numbers with 0x, 0b, 0h and '_'; keywords and built-in
 // types; every #identifier and @note as a directive; --- as a constant. Declarations: an identifier
 // followed by :: is a function, followed by := or a single : a variable.

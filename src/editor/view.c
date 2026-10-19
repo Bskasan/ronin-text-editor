@@ -1,4 +1,13 @@
-// view.c — see view.h.
+/* ======================================================================
+   ronin: views: cursors, scrolling, the command driver, motion, buffer list
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see view.h.
 
 #include <emmintrin.h> // SSE2: runs of printable ASCII in view_walk (compiler intrinsics, not the CRT)
 #include <intrin.h>    // _BitScanForward

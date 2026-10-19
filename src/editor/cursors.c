@@ -1,4 +1,13 @@
-// cursors.c — see cursors.h.
+/* ======================================================================
+   ronin: the multiple-cursors commands and their search over frames
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see cursors.h.
 
 // A cursor's goal column holds only across vertical motions (next-line, previous-line, and the line forms of the
 // commands here, which go on from the last cursor's): after any other command its column is taken afresh.

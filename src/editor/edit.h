@@ -1,4 +1,13 @@
-// edit.h — editing commands beyond the basic ones in view.c: undo and undo-redo, the kill ring
+/* ======================================================================
+   ronin: kill ring, undo, kill and yank, indentation, other editing commands
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// editing commands beyond the basic ones in view.c: undo and undo-redo, the kill ring
 // and its commands (this phase adds indentation and the other editing commands). Plain C,
 // headless; commands take a CommandContext like every other command.
 

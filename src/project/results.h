@@ -1,4 +1,13 @@
-// results.h — results buffers and their locations: the project-wide search (*search*), occur (*occur*),
+/* ======================================================================
+   ronin: results buffers: *search*, *occur*, *compilation*, next-error
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// results buffers and their locations: the project-wide search (*search*), occur (*occur*),
 // and a build's output (*compilation*). Part of the app: results.c is included after finder.c and uses
 // App directly.
 //

@@ -1,4 +1,13 @@
-// commands_list.c — show-command-list (Phase 18): every command of the table in a modal box, with its description
+/* ======================================================================
+   ronin: the command list (C-S-p): every command, filtered, run on RET
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// show-command-list (Phase 18): every command of the table in a modal box, with its description
 // and its key bindings in the active keymaps; the field filters it with the fuzzy matcher, RET runs the selected
 // command on the selected window as M-x does. Part of the app (included after modal.c). Its own file rather than
 // command.c: command.c is the bare table (headless, compiled for size); this needs the app, drawing, fuzzy.c and

@@ -1,4 +1,13 @@
-// modal.h — a modal box drawn over the windows (Phase 18): one at a time, drawn last in the frame, owning every key
+/* ======================================================================
+   ronin: the modal box over the windows: geometry, keys, mouse, drawing
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// a modal box drawn over the windows (Phase 18): one at a time, drawn last in the frame, owning every key
 // and mouse event while it is open. An owner module (the command list; Phase 19's git changes) supplies its rows,
 // their drawing and what accepting a row does; the layer knows nothing about commands or git. It has an optional
 // one-line text field at the top and one or two lists side by side (panes), which it moves, pages, scrolls and

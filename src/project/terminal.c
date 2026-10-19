@@ -1,4 +1,13 @@
-// terminal.c — see terminal.h. The command lines (W wt.exe's full path, C the system's cmd.exe, <dir> quoted):
+/* ======================================================================
+   ronin: open-terminal and open-ai-terminal: a terminal started and let go
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see terminal.h. The command lines (W wt.exe's full path, C the system's cmd.exe, <dir> quoted):
 //
 //                      terminal = wt (or auto with wt.exe on PATH)       terminal = cmd (or auto without it)
 //   open-terminal      "W" -d "<dir>"                                    "C"                    (a new console)

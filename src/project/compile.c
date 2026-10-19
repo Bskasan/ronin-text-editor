@@ -1,4 +1,13 @@
-// compile.c — see compile.h. Builds, the worker side.
+/* ======================================================================
+   ronin: builds, the worker side: the process, its lines, error matchers
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see compile.h. Builds, the worker side.
 
 // ---------------------------------------------------------------------------
 // Matching

@@ -1,4 +1,13 @@
-// buffer.c — see buffer.h.
+/* ======================================================================
+   ronin: gap buffer, line index, undo log, markers, file load and save
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see buffer.h.
 
 #include <emmintrin.h> // SSE2 newline scan (compiler intrinsics, not the CRT)
 #include <intrin.h>    // _BitScanForward

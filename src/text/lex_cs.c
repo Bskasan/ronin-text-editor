@@ -1,4 +1,13 @@
-// lex_cs.c — the C# lexer. Comments; regular, verbatim (@"", multi-line), interpolated ($"", $@"",
+/* ======================================================================
+   ronin: the C# lexer
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the C# lexer. Comments; regular, verbatim (@"", multi-line), interpolated ($"", $@"",
 // @$"") and raw ("""...""", multi-line, $"""...""" with $ count) strings, interpolation holes as
 // code; chars; numbers; keywords including the contextual ones; built-in types; preprocessor lines
 // (the directive word, the rest lexed).

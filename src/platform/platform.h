@@ -1,4 +1,13 @@
-// platform.h — the only OS interface the editor core sees.
+/* ======================================================================
+   ronin: the os_* interface: all the editor core sees of the operating system
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the only OS interface the editor core sees.
 // Implemented by win32_main.c.
 
 #ifndef PLATFORM_H

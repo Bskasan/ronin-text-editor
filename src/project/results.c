@@ -1,4 +1,13 @@
-// results.c — see results.h. Part of the app (included after finder.c).
+/* ======================================================================
+   ronin: results buffers: *search*, *occur*, *compilation*, next-error
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see results.h. Part of the app (included after finder.c).
 
 // ---------------------------------------------------------------------------
 // Slots and the buffer's text

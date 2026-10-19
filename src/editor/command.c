@@ -1,4 +1,13 @@
-// command.c — see command.h. The table lists every command; lookup is by name (a linear scan,
+/* ======================================================================
+   ronin: the command table: every command's name, description and flags
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see command.h. The table lists every command; lookup is by name (a linear scan,
 // only done while parsing the config, never per key).
 
 static const Command *const command_table[] = {

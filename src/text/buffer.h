@@ -1,4 +1,13 @@
-// buffer.h — a text buffer: gap buffer of raw bytes (treated as UTF-8) with an incremental
+/* ======================================================================
+   ronin: gap buffer, line index, undo log, markers, file load and save
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// a text buffer: gap buffer of raw bytes (treated as UTF-8) with an incremental
 // line index, file load / save. Plain C; files go through the os_* functions of platform.h.
 //
 // Positions are byte offsets into the logical text. Every modification goes through

@@ -1,4 +1,13 @@
-// font.c — see font.h.
+/* ======================================================================
+   ronin: monospace text: metrics, CPU glyph atlas, glyph cache, drawing
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see font.h.
 
 #define FONT_SLOT_EMPTY 0xFFFFFFFFu
 #define FONT_ATLAS_MIN_GLYPHS 2000

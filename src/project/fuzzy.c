@@ -1,4 +1,13 @@
-// fuzzy.c — see fuzzy.h.
+/* ======================================================================
+   ronin: fuzzy matching of paths and the sliced ranking over a project index
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see fuzzy.h.
 
 // The score: every matched character earns FUZZY_MATCH and the bonus of its position (a segment start
 // after '/' or at the path's start, a word start after '_', '-', '.' or ' ', a lower-to-upper change),

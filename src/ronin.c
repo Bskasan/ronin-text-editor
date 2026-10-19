@@ -1,4 +1,13 @@
-// ronin.c — the unity translation unit. (src/platform/win32_dwrite.cpp is compiled separately: dwrite.h is C++ only.)
+/* ======================================================================
+   ronin: the unity build: every header, then every .c file, in order
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the unity translation unit. (src/platform/win32_dwrite.cpp is compiled separately: dwrite.h is C++ only.)
 // Headers first, then the editor core, then the backends that touch Win32 / D3D.
 
 #include "base/base.h"

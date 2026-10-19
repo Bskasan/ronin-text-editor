@@ -1,4 +1,13 @@
-// win32_dwrite.cpp — DirectWrite glyph rasterization behind font_backend.h.
+/* ======================================================================
+   ronin: DirectWrite glyph rasterization behind font_backend.h (C-style C++)
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// DirectWrite glyph rasterization behind font_backend.h.
 //
 // The only C++ file in ronin, because the SDK's dwrite.h cannot be consumed from C.
 // Written in C style: no exceptions (/EH off), no RTTI (/GR-), no STL, no new/delete,

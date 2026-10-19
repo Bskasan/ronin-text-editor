@@ -1,4 +1,13 @@
-// font.h — monospace cell-grid text: metrics, glyph atlas (CPU side), glyph cache, text drawing.
+/* ======================================================================
+   ronin: monospace text: metrics, CPU glyph atlas, glyph cache, drawing
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// monospace cell-grid text: metrics, glyph atlas (CPU side), glyph cache, text drawing.
 // Plain C. Rasterizes through font_backend.h, draws through render.h; never touches D3D.
 
 #ifndef FONT_H

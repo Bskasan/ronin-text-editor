@@ -1,4 +1,13 @@
-// window.c — see window.h.
+/* ======================================================================
+   ronin: the frame's window tree: splits, layout, selection, hit tests
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see window.h.
 
 static i32 window_alloc(WindowTree *t) {
     for (i32 i = 0; i < WINDOW_NODE_MAX; i++) {

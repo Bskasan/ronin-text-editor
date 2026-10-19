@@ -1,4 +1,13 @@
-// minibuffer.c — see minibuffer.h.
+/* ======================================================================
+   ronin: the minibuffer: prompts, completion, the matcher, M-x, goto-line
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see minibuffer.h.
 
 #include <emmintrin.h> // SSE2 scan in the matcher (compiler intrinsics, not the CRT)
 #include <intrin.h>    // _BitScanForward

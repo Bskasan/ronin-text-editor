@@ -1,4 +1,13 @@
-// git_changes.c — see git_changes.h. show-git-changes, the modal layer's second owner: the files git status lists
+/* ======================================================================
+   ronin: the git changes view (C-x g): status and diffs in a modal box
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see git_changes.h. show-git-changes, the modal layer's second owner: the files git status lists
 // on the left, the selected file's diff on the right, each diff fetched once per open and copied into the modal's
 // arena inside the frame budget; RET visits the file at its first change; g runs git status again.
 //

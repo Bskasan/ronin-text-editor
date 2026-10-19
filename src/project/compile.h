@@ -1,4 +1,13 @@
-// compile.h — builds, the worker side: a command run as a child process (platform.h's processes), its output
+/* ======================================================================
+   ronin: builds, the worker side: the process, its lines, error matchers
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// builds, the worker side: a command run as a child process (platform.h's processes), its output
 // read on a worker thread (CLAUDE.md has the threading rules), cleaned, split into lines and matched for
 // error locations, handed to the main thread in batches through one locked queue (os_wake_main). Plain C,
 // headless: platform.h only. The app side (*compilation*, the commands) is results.c.

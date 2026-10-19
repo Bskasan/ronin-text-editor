@@ -1,4 +1,13 @@
-// lex_js.c — the JavaScript and TypeScript lexer (one, with a TypeScript flag). Comments; strings
+/* ======================================================================
+   ronin: the JavaScript and TypeScript lexer
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the JavaScript and TypeScript lexer (one, with a TypeScript flag). Comments; strings
 // with backslash continuation; template literals with ${ } holes lexed as code, nested and across
 // lines; regex literals told apart from division by the previous significant token; numbers;
 // keywords; TypeScript's extra keywords and built-in type names.

@@ -1,4 +1,13 @@
-// search.c — see search.h.
+/* ======================================================================
+   ronin: literal text search over plain bytes and the gap buffer, resumable
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see search.h.
 
 #include <emmintrin.h> // SSE2 scan for the first byte (compiler intrinsics, not the CRT)
 #include <intrin.h>    // _BitScanForward / _BitScanReverse

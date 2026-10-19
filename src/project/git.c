@@ -1,4 +1,13 @@
-// git.c — see git.h. The parsers of git's output; the worker that runs git.
+/* ======================================================================
+   ronin: git, the worker side: git's commands run and their output parsed
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see git.h. The parsers of git's output; the worker that runs git.
 
 // ---------------------------------------------------------------------------
 // Parsing

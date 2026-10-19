@@ -1,4 +1,13 @@
-// make_themes.c: embeds the built-in themes (build-time tool, not part of the editor; build.bat compiles and runs it
+/* ======================================================================
+   ronin: build tool: embeds themes/*.conf into build/gen/themes.h
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// embeds the built-in themes (build-time tool, not part of the editor; build.bat compiles and runs it
 // on every build: make_themes <themes dir> <out.h>).
 //
 // Every <name>.conf of the folder becomes one C string in the header, in name order, with its comment lines and

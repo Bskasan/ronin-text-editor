@@ -1,4 +1,13 @@
-// check_macros.c — compiled by build.bat with /Zs (syntax only, no output), never linked.
+/* ======================================================================
+   ronin: build check: every system header, then the unity build, syntax only
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// compiled by build.bat with /Zs (syntax only, no output), never linked.
 // Every system header ronin uses comes first, then the whole unity build: a ronin identifier that a
 // system header defines as a macro (winuser.h's MOD_ALT, rpcndr.h's small, minwindef.h's near) is
 // replaced before the compiler sees it and fails the build, and a ronin macro that redefines a

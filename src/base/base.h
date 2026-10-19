@@ -1,4 +1,13 @@
-// base.h — fixed-width types, assert, arena, String8, UTF-8/16, formatter, dev log.
+/* ======================================================================
+   ronin: types, ASSERT, arenas, String8, UTF-8 and UTF-16, formatter, dev log
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// fixed-width types, assert, arena, String8, UTF-8/16, formatter, dev log.
 // Pure code. OS primitives come from platform.h (os_*).
 
 #ifndef BASE_H

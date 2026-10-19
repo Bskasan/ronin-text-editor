@@ -1,4 +1,13 @@
-// grep.h — the project-wide search's worker side: files searched for a literal string on worker threads
+/* ======================================================================
+   ronin: project-wide search, the worker side: files searched on threads
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the project-wide search's worker side: files searched for a literal string on worker threads
 // (CLAUDE.md has the threading rules). Plain C, headless: platform.h only. The app side (the results
 // buffer, the order, the file list's source) is results.c.
 //

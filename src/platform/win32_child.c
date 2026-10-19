@@ -1,4 +1,13 @@
-// win32_child.c — dev builds only: --child <script>, the scripted program the build tests run. It reads one
+/* ======================================================================
+   ronin: dev: the tests' scripted program, fake git and fake terminal
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// dev builds only: --child <script>, the scripted program the build tests run. It reads one
 // command per line and writes to the stdout and stderr it was given (the build's pipe), with no window and
 // no log (the run that started it writes build\ronin.log):
 //

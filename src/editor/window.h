@@ -1,4 +1,13 @@
-// window.h — the frame's windows, as in Emacs: a binary tree of splits whose leaves are Views, one of
+/* ======================================================================
+   ronin: the frame's window tree: splits, layout, selection, hit tests
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the frame's windows, as in Emacs: a binary tree of splits whose leaves are Views, one of
 // them selected. The minibuffer line is not part of it. Plain C, headless: geometry and structure only
 // (the tree never looks inside a View); app.c draws and runs the commands.
 //

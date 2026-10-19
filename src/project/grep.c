@@ -1,4 +1,13 @@
-// grep.c — see grep.h. Everything from grep_scan_init to grep_worker_main runs on a worker (or in tests on
+/* ======================================================================
+   ronin: project-wide search, the worker side: files searched on threads
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see grep.h. Everything from grep_scan_init to grep_worker_main runs on a worker (or in tests on
 // the main thread): it touches only the GrepSearch (its request read-only, the list below `published`, the
 // atomics, the queue under the lock), the worker's own arena and the os_* functions platform.h marks "any
 // thread". No LOG, no ASSERT.

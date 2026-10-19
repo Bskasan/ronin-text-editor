@@ -1,4 +1,13 @@
-// lex_c.c — the C and C++ lexer (one for both: a .h file can be either). Comments, strings and
+/* ======================================================================
+   ronin: the C and C++ lexer
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the C and C++ lexer (one for both: a .h file can be either). Comments, strings and
 // chars with escapes, raw strings, numbers, keywords of C11 and C++20, built-in and fixed-width
 // types, preprocessor lines (the directive word; the <header> of #include as a string; the name of
 // #define as a function), and function names in definitions at column 0.

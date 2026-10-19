@@ -1,4 +1,13 @@
-// syntax.c — see syntax.h. The helpers every lexer shares (tokens, character classes, keyword
+/* ======================================================================
+   ronin: tokens, the lexer interface, line state catch-up, bracket matching
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see syntax.h. The helpers every lexer shares (tokens, character classes, keyword
 // tables, numbers), the catch-up of line states and the language table. The lexers are in
 // lex_*.c, included after this file.
 

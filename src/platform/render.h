@@ -1,4 +1,13 @@
-// render.h — the renderer interface the editor core sees.
+/* ======================================================================
+   ronin: the r_* interface: rects, glyphs, atlas; all the core sees of the GPU
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the renderer interface the editor core sees.
 // Implemented by render_d3d11.c. Pixel coordinates, origin top-left.
 
 #ifndef RENDER_H

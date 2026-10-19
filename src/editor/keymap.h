@@ -1,4 +1,13 @@
-// keymap.h — keys as Emacs sees them: chords, key sequences in kbd notation ("C-x C-s"),
+/* ======================================================================
+   ronin: chords, kbd notation, keymaps, the key sequence state machine
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// keys as Emacs sees them: chords, key sequences in kbd notation ("C-x C-s"),
 // keymaps and the key sequence state machine. Plain C, headless.
 //
 // Keys match by the character they produce, not by their position: C-/ is Ctrl plus whatever

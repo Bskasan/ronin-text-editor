@@ -1,4 +1,13 @@
-// test.c — dev-only tests (--test). Headless: buffers and files only, no window, no GPU.
+/* ======================================================================
+   ronin: dev: the headless tests (--test), the fuzz groups, the soak
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// dev-only tests (--test). Headless: buffers and files only, no window, no GPU.
 // Results go to build\ronin.log; test_run returns the number of failures.
 
 #if RONIN_DEV

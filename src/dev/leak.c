@@ -1,4 +1,13 @@
-// leak.c — dev only: --leak-check (Phase 16; docs/ARCHITECTURE.md, "Memory and resource leak audit"). Each scenario
+/* ======================================================================
+   ronin: dev: the leak check (--leak-check), its scenarios and verdicts
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// dev only: --leak-check (Phase 16; docs/ARCHITECTURE.md, "Memory and resource leak audit"). Each scenario
 // repeats an operation that ends in the state it started from. After a prime step that fills the bounded caches
 // (*Messages*, the minibuffer history, the kill ring) come 20 warm-up cycles, then 4 windows of N/4 cycles; every
 // metric is sampled at the end of the warm-up and of each window. A verdict metric that grows from one window to

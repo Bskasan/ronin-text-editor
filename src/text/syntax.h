@@ -1,4 +1,13 @@
-// syntax.h — highlighting. Hand-written lexers, one per language family (lex_*.c), that lex one
+/* ======================================================================
+   ronin: tokens, the lexer interface, line state catch-up, bracket matching
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// highlighting. Hand-written lexers, one per language family (lex_*.c), that lex one
 // line at a time: a line's start state in, its tokens and its end state out. Line start states are
 // stored in the buffer (buffer.h) and kept current lazily: only as far as some view needs them,
 // within a time budget per frame, re-lexing from an edit until the states converge with the ones

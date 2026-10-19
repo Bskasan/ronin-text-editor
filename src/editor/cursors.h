@@ -1,4 +1,13 @@
-// cursors.h — the multiple-cursors commands (Phase 14). The names and default keys follow Emacs' multiple-cursors
+/* ======================================================================
+   ronin: the multiple-cursors commands and their search over frames
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the multiple-cursors commands (Phase 14). The names and default keys follow Emacs' multiple-cursors
 // package without its "mc/" prefix. Plain C, headless; commands take a CommandContext like every other command.
 // The cursors themselves, their merging and the ordered edit pass are the driver's (view.c).
 //

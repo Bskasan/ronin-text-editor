@@ -1,4 +1,13 @@
-// app.c — the editor core: the config (loaded before the font), keys through the keymap,
+/* ======================================================================
+   ronin: the editor core: config, keys, buffers, windows, the frame, drawing
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the editor core: the config (loaded before the font), keys through the keymap,
 // views laid out in the frame, drawing of text in its token colors, cursors, mode lines and the
 // echo area. View logic lives in view.c.
 

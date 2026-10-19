@@ -1,4 +1,13 @@
-// font_backend.h — glyph rasterization interface, implemented by win32_dwrite.cpp (DirectWrite).
+/* ======================================================================
+   ronin: glyph rasterization interface, no Win32 or DirectWrite types
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// glyph rasterization interface, implemented by win32_dwrite.cpp (DirectWrite).
 // Plain C, no Win32 or DirectWrite types. All caching, packing and atlas logic lives in font.c.
 
 #ifndef FONT_BACKEND_H

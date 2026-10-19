@@ -1,4 +1,13 @@
-// files.c — the file and buffer commands built on prompts: finding, writing and saving files,
+/* ======================================================================
+   ronin: the file and buffer commands: find, write, save, kill, revert, quit
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the file and buffer commands built on prompts: finding, writing and saving files,
 // switching and killing buffers. Part of the app (included after app.c): it uses App directly.
 
 // ---------------------------------------------------------------------------

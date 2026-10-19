@@ -1,4 +1,13 @@
-// render_d3d11.c — D3D11 renderer: one instanced-quad pipeline, flip-model swap chain,
+/* ======================================================================
+   ronin: D3D11 renderer: flip-model swap chain, instanced quads, atlas texture
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// D3D11 renderer: one instanced-quad pipeline, flip-model swap chain,
 // glyph atlas with ClearType through dual-source blending.
 
 #define COBJMACROS

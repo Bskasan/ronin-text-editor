@@ -1,4 +1,13 @@
-// git.h — the git changes view's worker side (Phase 19): git's output parsed. git is an external program, run as
+/* ======================================================================
+   ronin: git, the worker side: git's commands run and their output parsed
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the git changes view's worker side (Phase 19): git's output parsed. git is an external program, run as
 // a child process (platform.h's processes); no git code is in ronin. Plain C, headless: platform.h only. The app
 // side (the modal, its commands) is git_changes.c.
 //

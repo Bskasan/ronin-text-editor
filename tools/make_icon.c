@@ -1,4 +1,13 @@
-// make_icon.c: draws ronin's icon and writes it as an .ico (build-time tool, not part of the editor; build.bat
+/* ======================================================================
+   ronin: build tool: draws ronin's icon into build/gen/ronin.ico
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// draws ronin's icon and writes it as an .ico (build-time tool, not part of the editor; build.bat
 // compiles and runs it on every build: make_icon <out.ico>).
 //
 // The design: a lowercase "r" (a stem and a shoulder) in the theme's text color and a block cursor after it in the

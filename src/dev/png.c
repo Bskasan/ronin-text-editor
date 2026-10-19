@@ -1,4 +1,13 @@
-// png.c — dev-only PNG encoder. 8-bit RGB, filter 0, zlib stream made of stored
+/* ======================================================================
+   ronin: dev: PNG encoder for screenshots (stored deflate)
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// dev-only PNG encoder. 8-bit RGB, filter 0, zlib stream made of stored
 // (uncompressed) deflate blocks. Correct, not small or fast.
 
 #if RONIN_DEV

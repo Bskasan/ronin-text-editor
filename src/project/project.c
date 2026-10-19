@@ -1,4 +1,13 @@
-// project.c — see project.h.
+/* ======================================================================
+   ronin: projects: ignore rules, roots, .ronin-project, the scanner thread
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// see project.h.
 
 // ---------------------------------------------------------------------------
 // Ignore rules

@@ -1,4 +1,13 @@
-// win32_input_test.c — dev builds, part of --test: the real Win32 input path. Key messages go to a
+/* ======================================================================
+   ronin: dev: the real Win32 input path on four keyboard layouts (--test)
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// dev builds, part of --test: the real Win32 input path. Key messages go to a
 // window that is never shown (it never gets focus or input) and uses the real window procedure; it is
 // a top-level window, so Alt+F4 takes the system's close path. The thread's key state is set as Windows
 // would set it (SetKeyboardState), the message Windows sends is posted with its scan code and flags,

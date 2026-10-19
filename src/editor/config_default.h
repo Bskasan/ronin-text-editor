@@ -1,4 +1,13 @@
-// config_default.h — the built-in configuration, embedded in the exe. The same format as the
+/* ======================================================================
+   ronin: the built-in configuration, embedded as a C string
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the built-in configuration, embedded in the exe. The same format as the
 // user's ronin.conf and parsed by the same code at startup; open-config writes it out as the
 // starting point of a new ronin.conf. Keep it documenting every setting, color and the key notation.
 

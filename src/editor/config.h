@@ -1,4 +1,13 @@
-// config.h — one plain-text config file holds settings, colors and key bindings. The built-in
+/* ======================================================================
+   ronin: the config parser, layering, diagnostics and hot reload
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// one plain-text config file holds settings, colors and key bindings. The built-in
 // defaults (config_default.h) are the same format, parsed by the same code at startup; the user's
 // file is applied on top. An error never stops a load: bad lines are skipped and reported with
 // file and line number. Plain C, headless.

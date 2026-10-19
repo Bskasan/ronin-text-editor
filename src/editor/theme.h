@@ -1,4 +1,13 @@
-// theme.h — color themes (Phase 21). A theme is a file in the config format holding only a [theme] block (name,
+/* ======================================================================
+   ronin: the built-in themes and theme files: lookup, list, read
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// color themes (Phase 21). A theme is a file in the config format holding only a [theme] block (name,
 // source, commit, license, author) and a [colors] section. The built-in ones are themes\*.conf of the repository,
 // embedded by tools\make_themes.c into build\gen\themes.h; ronin is the default and the base every other theme lies
 // on. A theme named N is <config dir>\themes\N.conf, else <exe dir>\themes\N.conf, else the built-in N: a file

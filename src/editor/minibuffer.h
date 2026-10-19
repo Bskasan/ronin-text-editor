@@ -1,4 +1,13 @@
-// minibuffer.h — the minibuffer: prompts that read a line (or a key) from the user, with a
+/* ======================================================================
+   ronin: the minibuffer: prompts, completion, the matcher, M-x, goto-line
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+
+// the minibuffer: prompts that read a line (or a key) from the user, with a
 // vertical list of completion candidates above it. Plain C, headless.
 
 #ifndef MINIBUFFER_H
