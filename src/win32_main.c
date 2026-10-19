@@ -3746,6 +3746,73 @@ static i32 win32_smoke_terminal(Platform *p) {
     return code;
 }
 
+// M-x set-theme <name> RET through the keys (the letters spaced), then a captured frame.
+static void win32_smoke_set_theme(Platform *p, String8 name) {
+    char keys[256];
+    i32 k = 0;
+    const char *head = "M-x s e t - t h e m e RET ";
+    for (i32 i = 0; head[i]; i++) keys[k++] = head[i];
+    for (i64 i = 0; i < name.len && k < (i32)sizeof(keys) - 8; i++) {
+        keys[k++] = (char)name.data[i];
+        keys[k++] = ' ';
+    }
+    keys[k++] = 'R';
+    keys[k++] = 'E';
+    keys[k++] = 'T';
+    keys[k] = 0;
+    win32_smoke_feed_no_frame(p, keys);
+    r_request_capture(p->renderer);
+    win32_frame(p);
+}
+
+// Stage 14 (Phase 21): two windows and a region (app_dev_smoke_themes); M-x set-theme ronin, that frame kept; then every
+// built-in theme in turn through M-x set-theme, its frame probed against the theme's own file laid on the built-in
+// configuration (background, the region's selection, the cursor, the text, both mode lines, the divider); then
+// set-theme ronin again, whose frame must equal the kept one byte for byte.
+static i32 win32_smoke_themes(Platform *p) {
+    app_dev_smoke_themes(p->app);
+    win32_smoke_set_theme(p, STR8_LIT("ronin"));
+    arena_reset(&p->scratch);
+    i32 w, h, w2, h2;
+    u8 *before = win32_smoke_keep_frame(p, &w, &h);
+    i32 code = EXIT_OK;
+    for (i32 i = 0; i < theme_builtin_count(); i++) {
+        String8 name = theme_builtin_name(i);
+        win32_smoke_set_theme(p, name);
+        u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w2, &h2);
+        Config *c = PUSH_STRUCT(&p->scratch, Config);
+        config_defaults(c, &p->scratch);
+        config_parse_theme(c, &p->scratch, theme_builtin(name), name, name);
+        FrameInput input = win32_frame_input(p);
+        DevProbe probes[16];
+        i32 count = app_dev_theme_probes(p->app, &input, &c->theme, probes, ARRAY_COUNT(probes));
+        b32 named = str8_equal(app_dev_theme_name(p->app), name);
+        i32 failed = !pixels || count < 8 || !named || c->diags.errors;
+        for (i32 k = 0; pixels && k < count; k++) failed += !win32_check_probe(&probes[k], pixels, w2, h2);
+        LOG("smoke: %s: theme %S (in effect: %S): %d probes", failed ? "FAIL" : "ok", name, app_dev_theme_name(p->app), count);
+        if (failed && code == EXIT_OK) code = EXIT_PIXEL_MISMATCH;
+        arena_reset(&p->scratch);
+    }
+    win32_smoke_set_theme(p, STR8_LIT("ronin"));
+    u8 *pixels = r_read_capture(p->renderer, &p->scratch, &w2, &h2);
+    i64 differ = -1;
+    u64 bytes = (u64)w * (u64)h * 4;
+    if (before && pixels && w2 == w && h2 == h) {
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+    }
+    if (!before || !pixels || w2 != w || h2 != h || differ >= 0) {
+        LOG("smoke: FAIL: themes: the frame back on ronin differs from the one before (first pixel (%D, %D))",
+            differ >= 0 ? differ % w : -1, differ >= 0 ? differ / w : -1);
+        if (code == EXIT_OK) code = EXIT_PIXEL_MISMATCH;
+    } else {
+        LOG("smoke: ok: themes: the frame back on ronin equals the one before, byte for byte (%dx%d)", w, h);
+    }
+    arena_reset(&p->scratch);
+    app_dev_smoke_themes_end(p->app);
+    win32_frame(p);
+    return code;
+}
+
 static b32 win32_smoke_has_reason(Platform *p) {
     WCHAR reason[128];
     DWORD len = ARRAY_COUNT(reason);
@@ -7436,6 +7503,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                 if (code3 == EXIT_OK) code3 = win32_smoke_git(p); // stage 12: the git changes view (the real git); it visits
                                                                   // files, so after the title's check
                 if (code3 == EXIT_OK) code3 = win32_smoke_terminal(p); // stage 13: the terminals, with the fake terminal
+                if (code3 == EXIT_OK) code3 = win32_smoke_themes(p); // stage 14: every built-in theme through set-theme
                 i32 code5 = win32_smoke_config_and_keys(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_text_scale(p);
                 if (code5 == EXIT_OK) code5 = win32_smoke_end_session(p);

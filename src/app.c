@@ -2673,6 +2673,68 @@ void app_dev_smoke_windows_end(App *app) {
     cmd_delete_other_windows(&ctx);
 }
 
+// Smoke stage 14 (Phase 21): two windows side by side, focus on. The left one (selected) shows *scratch* with
+// "abc\nscratch ttt eee\n" (line 1: letters whose strokes have full ClearType coverage, '|' has none), point at 0 and
+// the mark after line 0's newline (an active region over line 0); the right one another buffer.
+void app_dev_smoke_themes(App *app) {
+    app_dev_show_scratch(app, STR8_LIT("abc\nscratch ttt eee\n"));
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    i32 right = app_split(app, app->windows.selected, WINDOW_SIDE_BY_SIDE, ctx.echo);
+    if (right < 0) return;
+    Buffer *buf = app_new_buffer(app, STR8_LIT("smoke-themes"));
+    buffer_replace(buf, 0, 0, STR8_LIT("right\n"));
+    app_switch_buffer(app, app->windows.nodes[right].view, buf);
+    View *v = app_selected_view(app);
+    view_set_mark(v, view_primary(v), 4, 1);
+    view_set_point(v, view_primary(v), 0);
+    app->force_focus = 1;
+}
+
+// ... and back to one window, the region gone.
+void app_dev_smoke_themes_end(App *app) {
+    CommandContext ctx = app->ctx;
+    ctx.view = app_selected_view(app);
+    cmd_delete_other_windows(&ctx);
+    view_deactivate_mark(ctx.view);
+}
+
+String8 app_dev_theme_name(App *app) {
+    return app->config->theme_name;
+}
+
+// The probes of stage 14's frame, against `th` (the theme's file resolved by the smoke, not the app's colors): an empty
+// cell, the region past line 0's selected newline, the filled cursor, the text, the selected mode line (its background
+// and its text), the other window's mode line, the divider.
+i32 app_dev_theme_probes(App *app, FrameInput *in, const struct Theme *th, DevProbe *out, i32 cap) {
+    AppLayout l = app_layout(app, in);
+    i32 n = 0, cw = l.cell_w, lh = l.line_h;
+    i32 leaves[WINDOW_MAX];
+    if (window_leaves(&app->windows, leaves) != 2) return 0;
+    View *left = app->windows.nodes[leaves[0]].view, *right = app->windows.nodes[leaves[1]].view;
+    i32 d = app_divider_px(in), edge = left->x + left->w, x = left->x + l.pad;
+    i32 my = left->y + left->h - lh;
+#define APP_PUSH_PROBE(...) do { if (n < cap) out[n++] = (DevProbe){ __VA_ARGS__ }; } while (0)
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 8 * cw, .y0 = 3 * lh, .x1 = x + 30 * cw, .y1 = 5 * lh, .rgb = th->background,
+                   .what = "themes: empty cells in background");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x + 5 * cw, .y0 = 0, .x1 = x + 12 * cw, .y1 = lh, .rgb = th->selection,
+                   .what = "themes: the region past line 0's selected newline in selection");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = x, .y0 = 0, .x1 = x + 1, .y1 = 1, .rgb = th->cursor,
+                   .what = "themes: the filled cursor in cursor");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = lh, .x1 = x + 17 * cw, .y1 = 2 * lh, .rgb = th->text,
+                   .what = "themes: line 1 drawn in text");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = edge - d - 1, .y0 = my + lh / 2, .rgb = th->mode_line_background,
+                   .what = "themes: the selected mode line in mode_line_background");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_HAS, .x0 = x, .y0 = my, .x1 = x + 24 * cw, .y1 = my + lh, .rgb = th->mode_line_text,
+                   .what = "themes: the selected mode line's text in mode_line_text");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_PIXEL_EQ, .x0 = right->x + right->w - 1, .y0 = my + lh / 2, .rgb = th->mode_line_inactive_background,
+                   .what = "themes: the other mode line in mode_line_inactive_background");
+    APP_PUSH_PROBE(.kind = DEV_PROBE_REGION_EQ, .x0 = edge - d, .y0 = 0, .x1 = edge, .y1 = my + lh, .rgb = th->window_divider,
+                   .what = "themes: the divider in window_divider");
+#undef APP_PUSH_PROBE
+    return n;
+}
+
 i32 app_dev_buffer_probes(App *app, FrameInput *in, DevProbe *out, i32 cap, i32 stage) {
     AppLayout l = app_layout(app, in);
     i32 n = 0;

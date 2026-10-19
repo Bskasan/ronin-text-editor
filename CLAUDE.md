@@ -381,7 +381,12 @@ visit a.c at line 2 (exit 9 otherwise); C-x g again and C-g: that frame must equ
 3). Then the terminals (stage 13) with the fake terminal: build\tmp\smoke_term (a .ronin-project, sub\a.c in the window,
 wt.exe "found"), C-c t, then C-c a: its calls must be exactly `<sub>|wt.exe|0|-d "<sub>"` and `<root>|wt.exe|0|-d
 "<root>" "<system>\cmd.exe" /s /k "claude"` (exit 9 otherwise), the frame above the echo line equal to the one before
-byte for byte (exit 3), the echo "Opened claude in <root>". Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
+byte for byte (exit 3), the echo "Opened claude in <root>". Then the themes (stage 14): two windows side by side, a
+region over line 0 of the selected one, M-x set-theme ronin and that frame kept; then every built-in theme in turn through
+M-x set-theme, each frame probed against that theme's own file laid on the built-in configuration (an empty cell in
+background, the region past a selected newline in selection, the filled cursor, a text pixel, the selected mode line's
+mode_line_background and mode_line_text, the other one's mode_line_inactive_background, window_divider); then set-theme
+ronin, whose frame must equal the kept one byte for byte (exit 3). Then: the font was set up exactly once at startup; build\tmp\smoke_keys.txt is
 edited and saved through the --keys path ("M-> RET h i C-x C-s") and its bytes compared, and
 so is a scripted session in build\tmp\smoke_session.c (a function typed with RET only, a region
 killed and yanked, undo, undo-redo, a merged run of typing undone, comment-line); a config with background = #102030 is loaded (as C-c r), the

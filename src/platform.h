@@ -438,6 +438,12 @@ void app_dev_smoke_region(App *app);      // stage 2: an active region over line
 void app_dev_smoke_isearch(App *app);     // stage 4: "foo bar foo", point 0 (then C-s f o o C-s)
 void app_dev_smoke_windows(App *app);     // stage 6: two windows side by side, a long line in the left one
 void app_dev_smoke_windows_end(App *app); // ... and back to one window
+void app_dev_smoke_themes(App *app);      // stage 14: two windows, a region in the selected one, focus on
+void app_dev_smoke_themes_end(App *app);  // ... and back to one window
+String8 app_dev_theme_name(App *app);     // the theme in effect
+// Stage 14's probes against `th` (a theme resolved by the caller from its file, not the app's colors).
+struct Theme;
+i32  app_dev_theme_probes(App *app, FrameInput *input, const struct Theme *th, DevProbe *out, i32 cap);
 void app_dev_smoke_finder(App *app);      // stage 7: the project finder over a known list (then "a p" is typed)
 void app_dev_smoke_finder_end(App *app);  // ... and closed
 void app_dev_smoke_results(App *app, String8 tmp_dir); // stage 8: *search* for "foo" over tmp_dir\smoke_grep (not selected)
