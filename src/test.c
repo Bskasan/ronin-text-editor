@@ -13678,7 +13678,7 @@ static b32 test_modal_fuzz(Test *t, u64 seed) {
     app_dev_show_scratch(app, STR8_LIT("int main(void) {\n    return 0;\n}\n"));
     static const char chars[] = "abcdefgilnoprstuwxyz-";
     static const char *moves[] = { "<down>", "<up>", "C-n", "C-p", "C-v", "M-v", "<next>", "<prior>" };
-    i32 ops = 0, opens = 0, runs = 0, closes = 0, checks = 0;
+    i32 ops = 0, opens = 0, runs = 0, closes = 0, checks = 0, themes = 0;
     Buffer *before_buf = NULL;
     i64 before_point = 0;
     i32 before_windows = 0;
@@ -13700,6 +13700,7 @@ static b32 test_modal_fuzz(Test *t, u64 seed) {
             TEST_CHECK(t, modal_active(app) && test_cmdlist(app), "modal fuzz %U: op %d: C-S-p did not open it (echo '%S')", seed, ops, test_echo(app));
             open_pos = arena_pos(&app->modal.arena);
             opens++;
+            if (test_below(t, 10) == 0) app_dev_feed(app, "s e t - t h e m e", &t->arena); // now and then set-theme on top
             continue;
         }
         ModalGeometry *g = &app->modal.g;
@@ -13742,6 +13743,15 @@ static b32 test_modal_fuzz(Test *t, u64 seed) {
             TEST_CHECK(t, modal_active(app) == (!sel || sel == &CMD_SHOW_COMMAND_LIST), "modal fuzz %U: op %d: RET on %s left it open %d", seed,
                        ops, sel ? sel->name : "no row", modal_active(app));
             if (sel) closed = 2;
+            if (sel == &CMD_SET_THEME && app->mini.active) { // Phase 21: a built-in theme chosen in its prompt
+                String8 name = theme_builtin_name((i32)test_below(t, theme_builtin_count()));
+                String8 keys = str8(NULL, 0);
+                for (i64 i = 0; i < name.len; i++) keys = str8_fmt(&t->arena, "%S%c ", keys, (u32)name.data[i]);
+                test_feed8(t, app, str8_fmt(&t->arena, "%SRET", keys));
+                TEST_CHECK(t, !app->mini.active && str8_equal(app->config->theme_name, name), "modal fuzz %U: op %d: set-theme %S left '%S'",
+                           seed, ops, name, app->config->theme_name);
+                themes++;
+            }
         }
         if (closed == 1) {
             View *v = app_selected_view(app);
@@ -13782,8 +13792,8 @@ static b32 test_modal_fuzz(Test *t, u64 seed) {
         checks++;
     }
     if (!test_app_destroy(t, app, "modal fuzz")) return 0;
-    LOG("test: ok: modal fuzz (seed %U: %d operations, %d opens, %d closed by C-g / ESC / a click outside, %d commands run, %d checks)",
-        seed, ops, opens, closes, runs, checks);
+    LOG("test: ok: modal fuzz (seed %U: %d operations, %d opens, %d closed by C-g / ESC / a click outside, %d commands run (%d set-theme), "
+        "%d checks)", seed, ops, opens, closes, runs, themes, checks);
     return 1;
 }
 
@@ -15023,7 +15033,7 @@ typedef struct Soak {
     i32 seq_count;
     i32 w, h;      // the frame (h 0: minimized)
     b32 after_key; // the last event was a key: the selected window's point must be visible
-    u64 keys, texts, mice, resizes, focus, truncated, killed, modal_sessions, git_sessions;
+    u64 keys, texts, mice, resizes, focus, truncated, killed, modal_sessions, git_sessions, theme_sessions;
     char recent[32][64]; // the last events, logged when a check fails
     u64 recent_count;
     // The event being run, for the slowest events: its kind, its first note (a session notes many frames while it
@@ -15322,7 +15332,7 @@ static void soak_event(Soak *s) {
                                   "<prior>", "<next>", "S-<right>", "S-<down>", "C-<right>", "<backtab>", "<delete>", "ESC" };
     u64 r = test_below(t, 1000);
     s->kind = r < 430 ? "text" : r < 520 ? "key" : r < 850 ? "key sequence" : r < 856 ? "command list session"
-            : r < 858 ? "git session" : r < 860 ? "unbound chord" : r < 985 ? "mouse" : r < 990 ? "resize" : r < 995 ? "focus" : "frame";
+            : r < 858 ? "git session" : r < 859 ? "theme session" : r < 860 ? "unbound chord" : r < 985 ? "mouse" : r < 990 ? "resize" : r < 995 ? "focus" : "frame";
     if (r < 430) {
         char c = app->mini.active ? prompt[test_below(t, (i64)sizeof(prompt) - 1)] : code[test_below(t, (i64)sizeof(code) - 1)];
         soak_keys(s, c == ' ' ? STR8_LIT("SPC") : str8((u8 *)&c, 1), 0);
@@ -15336,7 +15346,8 @@ static void soak_event(Soak *s) {
     } else if (r < 856) { // a command list session: open, filter, move, then C-g, RET or a click outside
         if (!soak_busy(app)) {
             static const char *const sessions[] = { "C-S-p", "C-S-p g o", "C-S-p s a v e", "C-S-p e n d <down>", "C-S-p o t h e r C-n C-v M-v",
-                                                    "C-S-p w i n d o w <down> <down>", "C-S-p z q z", "C-S-p l i n e DEL DEL <up>" };
+                                                    "C-S-p w i n d o w <down> <down>", "C-S-p z q z", "C-S-p l i n e DEL DEL <up>",
+                                                    "C-S-p s e t - t h e m e" };
             soak_keys(s, str8_cstr(sessions[test_below(t, ARRAY_COUNT(sessions))]), 0);
             u64 how = test_below(t, 3);
             if (how == 0) soak_keys(s, STR8_LIT("C-g"), 0);
@@ -15366,6 +15377,16 @@ static void soak_event(Soak *s) {
                 soak_feed(s, e, 2);
             }
             s->git_sessions++;
+        }
+    } else if (r < 859) { // a theme for the session (Phase 21): M-x set-theme with a built-in theme, now and then C-g instead
+        if (!soak_busy(app)) {
+            String8 name = theme_builtin_name((i32)test_below(t, theme_builtin_count()));
+            u64 mark = arena_pos(&t->arena);
+            String8 kbd = STR8_LIT("M-x s e t - t h e m e RET");
+            for (i64 i = 0; i < name.len; i++) kbd = str8_fmt(&t->arena, "%S %c", kbd, (u32)name.data[i]);
+            soak_keys(s, str8_fmt(&t->arena, "%S %s", kbd, test_below(t, 4) == 0 ? "C-g" : "RET"), 0);
+            arena_pop_to(&t->arena, mark);
+            s->theme_sessions++;
         }
     } else if (r < 860) { // a chord nothing may be bound to
         static const char *mods[] = { "C-", "M-", "C-M-", "C-x C-", "C-c ", "C-x " };
@@ -15628,9 +15649,10 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
             u64 per = (now - block_t0) * 1000 / SOAK_BLOCK; // ns an event
             peak = MAX(peak, mem);
             LOG("soak: %U events: %U ns an event in this block, private bytes %U KB, %d buffers, %d windows, %d cursors; keys %U, "
-                "text %U, mouse %U, resizes %U, focus %U, command list sessions %U, git sessions %U; buffers killed %U, truncated %U; "
-                "writes refused %U", e, per, mem >> 10, app->buffers.count, window_count(&app->windows), app_selected_view(app)->cursor_count,
-                s.keys, s.texts, s.mice, s.resizes, s.focus, s.modal_sessions, s.git_sessions, s.killed, s.truncated, os_dev_writes_refused());
+                "text %U, mouse %U, resizes %U, focus %U, command list sessions %U, git sessions %U, theme sessions %U; buffers killed %U, "
+                "truncated %U; writes refused %U", e, per, mem >> 10, app->buffers.count, window_count(&app->windows),
+                app_selected_view(app)->cursor_count, s.keys, s.texts, s.mice, s.resizes, s.focus, s.modal_sessions, s.git_sessions,
+                s.theme_sessions, s.killed, s.truncated, os_dev_writes_refused());
             u64 settled = soak_settle(&s, initial_buffers), undo = 0;
             for (i32 i = 0; i < app->buffers.count; i++) undo += buffer_undo_memory(app->buffers.entries[i].buffer);
             // The fastest of three: other programs' load on the machine slows a single run by up to a third (Phase 19);
