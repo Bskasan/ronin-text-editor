@@ -2178,8 +2178,15 @@ is 900,000. From the first half's highest (500,000) to the end, +2,784 KB: proce
 allocates no heap itself, so the heaps are the system's (process creation for the fake git and terminal, directory
 listings, the worker threads' own). The soak stopped at the memory check, so no leak-metric table was logged. The same
 build and seed passed the bench soak in the proof run just before (and 14,136 -> 15,484 KB in this phase's first run):
-which run crosses depends on the heaps and the slots, not on the events, which are the same. The rule is the user's to
-decide in the next phase; "docs: mark phase 22 done" waits for a passing verify.bat phase.
+which run crosses depends on the heaps and the slots, not on the events, which are the same.
+
+The user decided the rule (Decisions, Phase 22, 8): 3e2f1ed judges our arenas without the undo logs, the rest shown. The
+final run at 3e2f1ed, 502 s: PASS, every step. `--test` (debug) PASS in 37.7 s (the README check 5 ms); the seed sweep 256
+seeds PASS (227 s); the bench soak PASS in 18.5 s and the debug soak PASS in 22.5 s, both with our arenas without the
+undo logs at 5,308 KB after the first block, 6,056 KB at most in the first half and 6,336 KB after the last (+280 KB;
+settled in all, informational: 13,392 -> 14,572 and 13,680 -> 15,048 KB), 3 directory watches throughout, the only WATCH
+row the working set; the leak check 28 scenarios, 0 LEAK (147 s; WATCH git-cycle/browse working set, STEP
+config-reload-cycle/color private commit); the exit check PASS. No run reached the guard.
 
 ## Roadmap
 
