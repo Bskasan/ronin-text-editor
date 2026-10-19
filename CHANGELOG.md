@@ -61,6 +61,23 @@ Terminals (Phase 20):
 - The git changes view: a warning git printed while it was writing a diff (such as "LF will be replaced by CRLF")
   no longer ends that file's hunk one line early, and no longer shows up in a renamed file's old name.
 
+Themes (Phase 21):
+
+- Five built-in themes: ronin (the default, unchanged), and moonfly, oxide, vague and mellifluous, ported from
+  their Neovim color schemes (MIT; credited in README.md and THIRD_PARTY.md). The new setting `theme` chooses one;
+  M-x set-theme switches for the session, with completion over every theme. A theme is a file in the config format
+  (a [theme] block and [colors]); `themes\<name>.conf` next to ronin.conf (or ronin.exe) adds one or replaces a
+  built-in one, and theme files are watched and applied as soon as they are saved.
+- ronin.conf's [colors] still pins single colors, over any theme; the built-in configuration (what C-c , writes
+  into a new ronin.conf) no longer lists the color values, only the keys. A ronin.conf written before lists them
+  all and pins every color: with a theme other than ronin, each load says "ronin.conf: N [colors] keys override
+  theme X". Remove that section to use themes.
+- Two new color keys, `mode_line_background` and `mode_line_text`, for the selected mode line (inverse video as
+  before), and seven colors that had another color's value now follow it unless set: constant (number), function
+  and completion_match (keyword), directive and compilation_info (type), prompt (string), completion_selection
+  (selection). ronin's colors are unchanged; a ronin.conf that sets number but not constant now moves both.
+- `dist.bat` puts THIRD_PARTY.md into the zip.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).

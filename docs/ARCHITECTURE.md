@@ -20,8 +20,10 @@
 | `src/window.h/.c` | headless: the frame's windows, a binary tree of splits whose leaves are Views (fixed node array), the selected window and use ticks (LRU / MRU), layout in whole cells by ratios (minimum sizes, frames too small for them), split, delete, move a split line (adjacent windows only), resize, balance, cyclic order, hit tests (window, divider, mode line) |
 | `src/edit.h/.c` | the kill ring (shared arena, large entries, clipboard link, a multiple-cursor kill's pieces), undo / undo-redo (every cursor back), kill and yank commands, rule-based indentation and its commands, the other editing commands (open-line, whitespace, transpose, case, comment-line) |
 | `src/keymap.h/.c` | chords, kbd notation, chords from key events, keymaps, the key sequence state machine, where-is (the sequences that run a command with a keymap stack); dev: `--keys` events |
-| `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`) |
-| `src/config_default.h` | the built-in configuration (the same format as ronin.conf), embedded as a C string |
+| `src/config.h/.c` | the config parser (settings, colors, keys), defaults + user file layering, diagnostics, the reload state machine (`config_poll`); since Phase 21 a theme file's parse mode ([theme] and [colors] only), the theme setting, the chosen theme laid under the user file's [colors] (`config_resolve_theme`), the theme file's identity in the reload's check |
+| `src/config_default.h` | the built-in configuration (the same format as ronin.conf), embedded as a C string; since Phase 21 its [colors] section is a commented list of the keys (the values are in themes\ronin.conf) |
+| `src/theme.h/.c` | Phase 21: the built-in themes (build\gen\themes.h), the theme names, the lookup in the two themes\ folders before the built-in theme (`theme_read`, `theme_locate`), every theme there is (`theme_list`, set-theme's candidates) |
+| `themes/*.conf` | the built-in themes' sources (ronin, moonfly, oxide, vague, mellifluous): a [theme] block (name, source, commit, license, author) and [colors]; embedded by tools/make_themes.c |
 | `src/minibuffer.h/.c` | the matcher (folding, terms, exact / prefix / substring ranking, narrowing); the minibuffer: a one-line View on its own Buffer, prompt kinds, continuations and chains, abort, history, candidates and filtering, a prompt's own matcher (`MiniMatcher`: ranking across frames, rows, spans, a status), the minibuffer commands, M-x, goto-line |
 | `src/project.h/.c` | ignore rules (a .gitignore subset, scopes chained per directory), project roots (markers, the command-line directory, drive roots) and their cache, `.ronin-project` (the config parser's lines and diagnostics), the file index (relative paths, 16 bytes a file, a character mask each), the scanner: a worker thread walking a root breadth first, its batches through one locked queue, cancel, join |
 | `src/fuzzy.h/.c` | fuzzy matching of paths (subsequences, smart case, terms, '/', the score and its spans) and the resumable ranking over an index (slices against a deadline, narrowing, the best 1,000 in a heap) |
@@ -39,22 +41,23 @@
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout; while a modal box is open every key and mouse event goes to modal.c) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak) and the `--bench-buffer` core |
-| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19, terminal-cycle since Phase 20) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits) and the `--bench-buffer` core |
+| `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19, terminal-cycle since Phase 20, theme-cycle since Phase 21) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
 | `src/shaders/quad.hlsl` | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
-| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison; Phase 19: `--bench-git`, the smoke's stage 12, the git view's wait in screenshot runs, `--fake-git`'s dispatch; Phase 20: `os_process_launch`, the smoke's stage 13, `--fake-terminal`'s dispatch, the guard's `os_dev_batch_run` and its count), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
+| `src/win32_main.c` | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison; Phase 19: `--bench-git`, the smoke's stage 12, the git view's wait in screenshot runs, `--fake-git`'s dispatch; Phase 20: `os_process_launch`, the smoke's stage 13, `--fake-terminal`'s dispatch, the guard's `os_dev_batch_run` and its count; Phase 21: the smoke's stage 14, `os_watch_dir`'s subdirs flag), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
 | `src/win32_child.c` | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten, an environment variable, numbered lines); `--fake-git DIR ARGS`, the tests' git (Phase 19): the calls logged, a script picked by the arguments; Phase 20: `launch FILE` (a grandchild through `os_process_launch`) and `--fake-terminal DIR ...`, the tests' terminal (its working directory and raw command line logged) |
 | `src/win32_input_test.c` | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 | `res/ronin.rc`, `src/version.h` | the icon (build\gen\ronin.ico) and the version resource; the version for the code (`--version`) |
 | `res/imports.txt` | the DLLs the release exe may import (checked by verify.bat with `--check-imports`) |
 | `tools/make_icon.c` | build-time tool, not part of the exe: draws the icon into build\gen\ronin.ico on every build |
+| `tools/make_themes.c` | build-time tool, not part of the exe (Phase 21): embeds themes\*.conf into build\gen\themes.h on every build (comment and blank lines dropped, name order, ronin required, at most 8 KB in all) |
 | `build.bat`, `verify.bat`, `dist.bat` | the build, the gate before every commit, the release zip |
 
 Core (`app.c`, `files.c`, `finder.c`, `results.c`, `modal.c`, `commands_list.c`, `git_changes.c`, `terminal.c`, `git.c`, `cursors.c`, `font.c`, `buffer.c`, `view.c`, `window.c`, `edit.c`, `minibuffer.c`, `project.c`,
-`fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
+`fuzzy.c`, `search.c`, `grep.c`, `compile.c`, `command.c`, `keymap.c`, `config.c`, `theme.c`, `test.c`) includes only `platform.h` and `render.h`; `font.c`
 additionally calls `font_backend.h`. The scanner's worker (project.c), the search's workers (grep.c), the build's reader
 (compile.c) and git's worker (git.c) call only the os_* functions platform.h marks "any thread".
 
@@ -1960,6 +1963,106 @@ half, 13,732 KB at the end). The leak check: 27 scenarios, 0 LEAK, 137 s, termin
 config-reload-cycle/color private commit (as in Phase 19); the exit check PASS. No run reached the guard
 (`os_dev_real_refused` 0 at every end).
 
+## Measurements (Phase 21)
+
+Same machine (AMD Ryzen 7 7700X, a 2560x1440 display at 144 Hz, a 1280x800 window).
+
+### The soak's slowest events (the Phase 20 question)
+
+The 70-99 ms "C-g" and "RET" events of Phase 19's and 20's soaks are not those keys. `soak_event` runs a whole git
+changes session as one event (C-x g, then `soak_git_wait` pumping until the fake git is idle, up to 3 moves, half of
+them waited for, then C-g, RET or a click), the timer wraps all of it, and the log named an event by the last note of
+the ring: the closing key. Each wait covers fake-git processes (the bench exe started with `--fake-git`, ~15 ms each
+on git's worker): opening takes rev-parse, status and the first diff, a waited move one diff or (g) status and a diff.
+C-g closes the box with a cancel flag and no join, RET visits a small file; the soak runs no builds and saves without
+FlushFileBuffers. A soak artefact, by your rule: recorded, no fix. Since 6c07f4f a slow event names its kind, its first
+and last notes, how many it made and its time in `soak_git_wait`, and a second list ranks the events without those
+waits. The confirming run (bench, `--soak 1000000`, seed 0x7ea1, PASS in 26.2 s):
+
+| | event | kind | notes | in all | waiting for git |
+|---|---|---|---|---|---|
+| 1 | 648,820 | git session: C-x g .. a click | 20 | 68,446 us | 68,351 us |
+| 2 | 112,295 | git session: C-x g .. C-g | 14 | 66,159 us | 66,068 us |
+| 3 | 536,762 | git session: C-x g .. RET | 13 | 64,770 us | 64,319 us |
+| 4 | 992,418 | git session: C-x g .. C-g | 12 | 59,545 us | 59,474 us |
+| 5 | 111,238 | git session: C-x g .. C-g | 13 | 58,776 us | 58,659 us |
+
+Without the waits these sessions take 71-451 us. The slowest events then are saves: C-x C-s 45.0, 22.6 and 20.6 ms
+and the save question's `y` 20.7 and 18.7 ms (ReplaceFileW; the soak saves without fsync), the Later item "saving on a
+background thread".
+
+### Startup, idle, latency
+
+`--startup-ms` (release, with the user's own ronin.conf, run with the user's permission), alternated, 3 runs each:
+Phase 20's build (44d40c2, build\proof\p20) 207 / 182 / 175 ms, Phase 21's 187 / 175 / 173 ms: unchanged. The config's
+parse at startup, with the defaults and the ronin theme: 362 us in the bench build (Phase 20: 294 us; the built-in
+configuration is the same size, the theme is one more parse of 601 bytes).
+
+`ronin_debug.exe --idle-check`: PASS, 0 frames, 0 us of CPU in 5 s, 0 main loop passes besides the marks.
+
+`--bench-latency` against Phase 20, alternated, 3 runs each, nobody at the desktop (DWM composed the first 99 keys
+and showed the window directly afterwards in every run):
+
+| | arrival to Present returned p50 / p99 | command + frame build p50 | on screen p50 (composed / overlay) |
+|---|---|---|---|
+| Phase 20 | 480-500 us / 3,398-4,976 us | 18-20 us | 17.8-18.0 ms / 4.1-4.2 ms |
+| Phase 21 | 458-497 us / 3,075-4,800 us | 18-19 us | 17.8-18.1 ms / 4.2-4.4 ms |
+
+Unchanged: nothing on the typing path changed. Earlier runs the same day, with someone at the desktop, lost keys in
+both builds (Phase 20 in 1 of 15 runs, Phase 21 in 8 of 26: exit 9, some keys without a frame). Instrumented once (not
+committed): for 46-62 ms per key the main loop drew no frame while a redraw was pending, the window shown and not
+minimized; the cause logged was WM_NCLBUTTONDOWN dispatched for 362 and 480 ms (Windows' modal move loop: a click on
+the bench window's title bar, which opens under the pointer), once Ctrl held. Not ronin's; the Later list has the move
+loop.
+
+### Switching a theme
+
+M-x set-theme reads ronin.conf again and parses the defaults, the ronin theme and the chosen one: 243-320 us a switch
+in the bench build (the log's "parsed with the defaults"), then one frame; the font is not set up again (smoke stage 14
+and the smoke's later check; `--leak-check theme-cycle`: 220 cycles of five switches, every metric flat, the font never
+reset, the screenshots equal, 5.4 s).
+
+### Size and imports
+
+The release exe: 470,528 bytes, 17,408 more than Phase 20's 453,120. By module (`--map-report`, bytes in sections):
+the built-in themes (build\gen\themes.h) 4,752 (their texts 4,730); app.c +9,424 (`config_poll` and the theme lookup
+inlined into `app_poll_config` by /GL, ~4.7 KB that left config.c; set-theme's candidates with `theme_list` inlined
+2,048, its done callback 880, the shared diagnostics log 704, the themes\ watches 528); string literals +1,024;
+config.c +892 (the theme mode and the resolution, after what moved to app.c); config_default.h +544 (the commented
+list of colors and the theme setting); unwind tables +532; ronin.obj +264; theme.c 212. No dev code in the release map.
+Imports: KERNEL32, USER32, GDI32, unchanged (`--check-imports`); no new DLL.
+
+### The new tests fail when they should
+
+On a scratch copy (build\proof\p21, deleted afterwards), each break alone, `--test` (debug):
+
+| break | result |
+|---|---|
+| the theme laid over ronin.conf's [colors] (the user's keys not restored) | exit 9: "themes: order: [colors] over the theme (keyword 222222)", "themes: app: 30 overrides: echo ..., 1 in *Messages*", "themes fuzz: round 0 (seed 0x7ea1): text is d3297c, want b679e0" |
+| the themes\ folders never watched | exit 9: "theme reload: themes\ created after the start: 1 notification(s), watched 0" |
+
+`tools\make_themes.c` on scratch folders: one with a 9 KB theme ("the embedded themes take 8192 bytes or more"), one
+without ronin.conf ("themes\ronin.conf is missing") and one with "bad name.conf" ("not a theme name"): each exit 1, no
+header written.
+
+### Screenshots
+
+docs\images\themes\moonfly.png, oxide.png, vague.png, mellifluous.png: `ronin_debug.exe --config
+build\tmp\shot_<name>.conf +17:5 samples\ring.c --keys "C-x 3 C-x o C-x C-f s h a p e s . t s RET C-x o C-SPC C-n C-n
+C-e" --screenshot ...` (a config with `theme = <name>` only), each looked at, re-encoded with System.Drawing (3,073,098
+-> 103,827-107,738 bytes, every pixel identical) and six pixels read back against its file: an empty cell, the region,
+the cursor, both mode lines' backgrounds and the divider, all equal.
+
+### verify.bat phase
+
+At 90fe03e (the code of this phase): PASS in 8 min 51 s. `--test` (debug) PASS in 38.5 s. The seed sweep: 256 seeds
+PASS (242.6 s; the new group "themes" with them). The soak, now with theme sessions (485 in a million events) and
+set-theme in the command list sessions: bench PASS in 22.4 s (settled 9,940 KB after the first block, 18,600 KB at most
+in the first half, 12,380 KB after the last), debug PASS in 28.1 s (10,528 / 18,452 / 12,812 KB); the slowest event of
+each a git session (61.7 and 60.6 ms, all but ~0.1 ms of it waiting for git), the slowest without the waits a C-x C-s
+(39.0 and 36.8 ms). The leak check: 28 scenarios, 0 LEAK, 148 s, theme-cycle OK (its frames equal pixel for pixel);
+STEP: config-reload-cycle/color private commit (as in Phases 19 and 20); the exit check PASS. No run reached the guard.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -1985,6 +2088,7 @@ config-reload-cycle/color private commit (as in Phase 19); the exit check PASS. 
 - [x] 18. Modal overlay and the command list
 - [x] 19. The git changes modal
 - [x] 20. Terminal and AI terminal shortcuts
+- [ ] 21. Themes: built-in themes, theme files, set-theme
 
 ## Decisions
 
@@ -3257,6 +3361,119 @@ test_run removes it again after the group.
    skipped there without touching the counts (no body line starts with `w`; `+warning: x` stays an added line), and a
    rename's or copy's source drops a warning in front of it as a record does (d941010).
 
+### Themes (Phase 21)
+
+1. A theme is a file in the config format holding a `[theme]` block (`name`, `source`, `commit`, `license`,
+   `author`: informational, the file name is the theme's name; a `name` that differs is a warning, an unknown key an
+   error) and a `[colors]` section with the keys ronin.conf takes. It is read by `config_parse` in a theme mode
+   (`config_parse_theme`): any other section is an error ("a theme has only [theme] and [colors] sections") and its
+   lines are skipped, the rest applies. No second parser. Every key is optional.
+2. Built-in themes: ronin (the colors of every phase before, still the default), moonfly, oxide, vague and
+   mellifluous. Their sources are `themes\*.conf` in the repository; `tools\make_themes.c` embeds them into
+   `build\gen\themes.h` on every build (comment and blank lines dropped, blanks around `=` dropped, name order, ronin
+   required) and stops the build when they reach 8,192 bytes together (4,730 today), when a file name is no theme name
+   or ronin.conf is missing. A theme named N is `<config dir>\themes\N.conf`, else `<ronin.exe's dir>\themes\N.conf`
+   (when that is another folder: not in a portable install), else the built-in N; a file replaces the built-in theme
+   of its name. The config dir is the folder of the ronin.conf in use; without one (the dev batch runs' built-in
+   configuration) only the built-in themes. Names: letters, digits, `_`, `-`, `.`, at most 64 bytes, compared ASCII
+   case-insensitively and kept lowercase.
+3. `[settings] theme = <name>` (default ronin). The colors resolve in this order: the built-in configuration, the
+   ronin theme, ronin.conf, the chosen theme's colors, then ronin.conf's `[colors]` keys restored on top, then what
+   derives (`config_derived_colors`). `config_parse` records the keys the text it parsed set (`colors_last`); after
+   the user file the user's keys are kept, the theme parsed over everything, the kept keys copied back and the derived
+   ones derived again: nothing is parsed twice. An unknown theme is an error on the theme setting's line,
+   `ronin.conf:N: theme: no theme 'foo' (using ronin)` (a file that cannot be read the same, "cannot read"), and the
+   colors stay ronin's; a theme file being written (a sharing violation) is retried as ronin.conf is. The built-in
+   configuration's `[colors]` is a commented list of the keys and what derives from what (decided with the user): a
+   ronin.conf written by C-c , pins no color.
+4. Eight more keys derive, all pairs that had one value in ronin, so ronin is unchanged bit for bit and a theme that
+   leaves them out gets its own colors (decided with the user): constant from number, function and completion_match
+   from keyword, directive and compilation_info from type, prompt from string, completion_selection from selection.
+   The selected mode line has two keys of its own, `mode_line_background` and `mode_line_text`, derived from text and
+   background (inverse video as before), so a theme's StatusLine has somewhere to go. 41 keys, within the 64-bit mask.
+   A key that cannot derive and that a theme leaves out keeps ronin's color, by the order of 3.
+5. The masked-theme note (decided with the user): when the theme in effect is not ronin and ronin.conf's `[colors]`
+   set N keys, every load (startup, a reload, set-theme) says "ronin.conf: N [colors] keys override theme X" in
+   *Messages* and, unless the load shows an error there, in the echo area. Not an error: the colors apply as resolved.
+   A ronin.conf written by C-c , before this phase sets 30 keys.
+6. Hot reload: `ConfigSource` also remembers the theme asked for and what its name found (where, size, write time); a
+   notification reloads when ronin.conf changed or when that changed (the theme file written, added, removed), with the
+   same 50 ms settle; another theme's file reloads nothing. The app watches both themes\ folders that exist with
+   `os_watch_dir`; the config folder's watch also reports folder names (`os_watch_dir`'s `subdirs` flag:
+   FILE_NOTIFY_CHANGE_DIR_NAME, decided with the user), so a themes\ created next to ronin.conf later is watched from
+   then on and one removed is let go. 15 watch slots of 16 at most (config, two themes\, 8 buffer folders, 4 projects).
+   An exe-side themes\ created after the start is seen at the next start (Later).
+7. M-x set-theme (no key; "Switch the colors to another theme for this session"): a MINI_CHOICE prompt with
+   require_match over every theme there is (`theme_list`: the built-in ones and both folders' `*.conf`, each once, in
+   name order), each annotated with where it comes from ("built-in", "themes\ next to ronin.conf", "themes\ next to
+   ronin.exe", ", replaces the built-in one") and the one in effect marked ", current" (instead of a default: the
+   minibuffer has no default input). The choice is a session override in `ConfigSource` applied through the normal
+   reload (ronin.conf is read again: one load, ~0.25-0.3 ms in the bench build, and one frame); nothing is written. It
+   holds across reloads until ronin.conf's own theme setting changes (decided with the user), and choosing ronin.conf's
+   theme ends it. The echo: "Theme vague", "(ronin.conf says ronin)" while they differ, "; ronin.conf: N [colors] keys
+   override it", "; 1 error, see *Messages*". It is refused in the minibuffer (as every prompting command) and runs from
+   the command list. The command lives in app.c, beside set-language: commands need the App, which theme.c, a core
+   file included before app.c, does not see.
+8. Switching costs no atlas work: glyphs are white-on-black coverage and the color is per instance in quad.hlsl, and
+   `font_reconfigure` returns at once when the font parameters are unchanged. The caption color follows background
+   (`os_set_caption_color` on every apply).
+9. Tests keep ronin: every pixel probe of the smoke and the tests runs on it. Smoke stage 14 switches to each built-in
+   theme through M-x set-theme and probes its frame against the theme's file resolved by the smoke itself (not the
+   app's colors), then switches back to ronin and compares the frame byte for byte.
+10. Porting (decided with the user): each theme from its repository's Lua source at a pinned commit, fetched into a
+    scratch folder outside the repository (deleted afterwards). moonfly, oxide and vague were read as text (their hex
+    values, links resolved by hand). mellifluous writes no color values (it computes them from OkHSL when it loads):
+    its colors were read from the installed Neovim (v0.11.5) running it, with the exact command in its file. Only
+    color values and their names were taken; all four are MIT (THIRD_PARTY.md).
+
+The mapping from Neovim highlight groups to ronin's keys. `A → B`: the first group the theme defines wins; a group
+the theme does not define but Neovim resolves by its own default link to one the theme does define counts (Keyword →
+Statement, Number → Constant, Boolean → Constant, PreProc's Include and Macro, and syntax/diff.vim's `diffAdded` →
+Added, `diffRemoved` → Removed, `diffLine` → Statement, `diffFile` → Type); a color of Neovim's own default color
+scheme does not. A group with a background and no foreground keeps the text in Normal's color; an undefined Cursor
+is reverse video, Normal's foreground. Neovim's DiffAdd / DiffDelete / DiffChange / DiffText are line backgrounds
+while ronin's diff keys color text, so the foreground groups come first (decided with the user).
+
+| ronin key | Neovim group (attribute) |
+|---|---|
+| background / text | Normal bg / fg |
+| cursor | Cursor bg (undefined: Normal fg) |
+| selection | Visual bg |
+| comment, string | Comment fg, String fg |
+| keyword | Keyword fg (→ Statement) |
+| number | Number fg (→ Constant) |
+| constant | Boolean fg (→ Constant): true, false, null |
+| type, variable, function, directive | Type fg, Identifier fg, Function fg, PreProc fg |
+| paren_match | MatchParen bg |
+| prompt | Question fg → Title fg |
+| completion_selection | PmenuSel bg |
+| completion_match | PmenuMatch fg → CmpItemAbbrMatch fg → BlinkCmpLabelMatch fg |
+| isearch / isearch_text | CurSearch bg / fg (no fg: Normal fg) → IncSearch bg / fg |
+| lazy_highlight | Search bg |
+| isearch_fail | DiffDelete bg (the failing text stays in text over it) |
+| window_divider | WinSeparator fg (→ VertSplit) |
+| mode_line_background / mode_line_text | StatusLine bg / fg |
+| mode_line_inactive_background / _text | StatusLineNC bg / fg |
+| search_file, search_line_number | Directory fg, LineNr fg |
+| compilation_error / _warning / _info | DiagnosticError / DiagnosticWarn / DiagnosticInfo fg |
+| modal_background | NormalFloat bg → Pmenu bg |
+| modal_border | FloatBorder fg (equal to the float's bg, i.e. invisible: WinSeparator fg) |
+| modal_selection | PmenuSel bg |
+| modal_description, modal_key | Comment fg, Special fg |
+| diff_added | diffAdded fg → Added fg → GitSignsAdd fg → DiagnosticOk fg → GitGutterAdd fg (decided with the user) |
+| diff_removed | diffRemoved fg → Removed fg → GitSignsDelete fg → DiagnosticError fg → GitGutterDelete fg |
+| diff_hunk | diffLine fg → Changed fg |
+| diff_header | diffFile fg → Title fg |
+| git_status | GitSignsChange fg → Changed fg |
+
+What the four themes have no group for (each file says so): oxide defines no completion-match group (it follows
+keyword), no Changed or GitSignsChange (git_status follows string) and none of diff_added's chain (it keeps ronin's
+#73e673; diff_removed is its DiagnosticError red); vague no PmenuSel (completion_selection and modal_selection follow
+selection), no StatusLineNC background (follows background), no FloatBorder (WinSeparator) and no Cursor (Normal fg);
+mellifluous's FloatBorder is invisible (WinSeparator) and its CurSearch has no foreground (Normal fg); moonfly has a
+group for every key. vague and mellifluous draw the current search match like the others (CurSearch = Search):
+faithful to them, the current match is not set apart.
+
 ## Later
 
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
@@ -3270,6 +3487,12 @@ test_run removes it again after the group.
 - Wide (East Asian) characters and emoji occupying two cells; color emoji.
 - System font fallback for codepoints Consolas lacks.
 - Bold / italic faces, if a theme ever wants them.
+- Themes (Phase 21): an exe-side themes\ folder created after the start (a non-portable install) is seen at the next
+  start (the exe's folder is not watched for folder names); a default input for set-theme's prompt (the minibuffer has
+  none; the current theme is marked instead); light themes wait for the gamma-correct ClearType blending above.
+- Keys typed while ronin's window is being moved or sized by its frame (Windows' modal move loop, a click held on the
+  title bar) are handled but drawn only when the move ends (found while measuring Phase 21: `--bench-latency` loses
+  keys when its window is clicked).
 - Linear-space (gamma-corrected) ClearType blending for dark text on light backgrounds.
 - Line wrapping (visual lines).
 - Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
