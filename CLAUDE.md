@@ -6,7 +6,7 @@ side-by-side windows, inverse-video mode line, minibuffer, block cursor, point/m
 ring, isearch, M-x), pure Emacs default keys rebindable from a hot-reloaded text config.
 Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no LSP, no
 tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
-decisions and the "Later" list. Implement only the phase you are asked for. For strangers (Phase 22): README.md,
+decisions and the "Later" list. A change implements only its own phase. For strangers (Phase 22): README.md,
 CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
 windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the imports, --version; the
 bench smoke informational only, the smoke gate and `verify.bat phase` stay local).
@@ -87,11 +87,11 @@ bench smoke informational only, the smoke gate and `verify.bat phase` stay local
   check (`--leak-check all`, debug; ~2 minutes): once per phase, before its final commit. Each run's log
   is kept as build\verify\<step>.log. Take a screenshot after a visual change and look at it.
 - Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
-  run without asking the user first, and then only once per request: they may be typing in another
-  window. Everything else that is run must keep not taking the focus.
-- Code, comments, docs and all communication with the user (plans, reports, questions) in English.
-- Whenever the user asks for changes to a plan, show the full revised plan again with the
-  changes marked and wait for approval before implementing.
+  run by a script or a tool: only by hand, by the person at the machine, one run at a time (keys typed
+  in another window meanwhile would go astray). Everything else that is run must keep not taking the focus.
+- Code, comments, docs, commit messages, issues and pull requests in English.
+- A change of more than a few lines starts with a written plan that is reviewed before implementation;
+  a revised plan is shown in full with the changes marked.
 - Every phase appends its own manual test steps to docs/MANUAL_TESTS.md, each with one status:
   AUTOMATED (an existing test, named), AUTOMATED-NEW (a test added for it in that phase: the input
   harness, --keys, the headless app, a smoke probe, a bench check or a dev helper), FIXED (the
@@ -107,9 +107,10 @@ bench smoke informational only, the smoke gate and `verify.bat phase` stay local
   `verify: PASS` right before it. No single giant commit at the end of a phase.
 - Categorized messages: `<type>(<scope>): <summary>`, type one of feat, fix, perf, refactor,
   test, docs, build, chore. Example: `feat(buffer): gap buffer with incremental line index`.
-- Never push. Never amend or rewrite existing commits. The user pushes.
-- Never commit build outputs or scratch files. If a pending change looks unintended, list it
-  and ask instead of committing it.
+- Never amend or rewrite existing commits. Only the maintainer pushes to the repository.
+- No attribution trailers (Co-Authored-By or similar) in commit messages or pull request descriptions.
+- Never commit build outputs or scratch files. A pending change that looks unintended stays out
+  of the commit until it is understood.
 - Never make an empty commit.
 - A phase ends with a clean working tree. Its last commit is `docs: mark phase N done`, and the
   phase's roadmap checkbox in docs/ARCHITECTURE.md changes in that commit only, together with
@@ -117,8 +118,7 @@ bench smoke informational only, the smoke gate and `verify.bat phase` stay local
 
 ## Build / run / verify
 
-From Git Bash (this environment sets `NoDefaultCurrentDirectoryInExePath=1`, so cmd needs
-the explicit `.\`):
+From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the explicit `.\`):
 
     cmd //c ".\build.bat"            # build\ronin_debug.exe  (/Od /Zi /MTd, RONIN_DEV=1)
     cmd //c ".\build.bat release"    # build\ronin.exe        (/O2 /GL ..., RONIN_DEV=0, no CRT)
@@ -158,7 +158,7 @@ PowerShell: `(Start-Process build\ronin.exe -ArgumentList --startup-ms -PassThru
 
 `--no-activate` works in both builds: the window is shown (cloaked for the first frame, as the benches
 show it) without taking the foreground. The memory table is measured with it: release build, private
-bytes (`Get-Process`) after the window settled, closed with CloseMainWindow; it may run without asking.
+bytes (`Get-Process`) after the window settled, closed with CloseMainWindow; it never takes the focus.
 
 Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
 
