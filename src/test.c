@@ -8916,6 +8916,14 @@ static b32 test_themes(Test *t) {
     os_file_delete(str8_fmt(&t->arena, "%S\\themes\\ronin.conf", cfg));
     c = test_theme_load(t, cfg, exe, STR8_LIT("[colors]\ntext = #010101\n"), &tl);
     b32 builtin = c->theme.background == 0x072626 && tl.loc.where == THEME_BUILTIN;
+    if (theme_builtin(STR8_LIT("vague")).len) { // a file replacing a ported theme: its keys only, on ronin
+        test_theme_file(t, cfg, "vague", "[colors]\nbackground = #1a1a1b\n");
+        c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = vague\n"), &tl);
+        replaced = replaced && c->theme.background == 0x1a1a1b && c->theme.text == 0xd3b58d && tl.loc.where == THEME_CONFIG_DIR;
+        os_file_delete(str8_fmt(&t->arena, "%S\\themes\\vague.conf", cfg));
+        c = test_theme_load(t, cfg, exe, STR8_LIT("[settings]\ntheme = vague\n"), &tl);
+        builtin = builtin && c->theme.background == 0x141415 && c->theme.text == 0xcdcdcd && tl.loc.where == THEME_BUILTIN;
+    }
     TEST_CHECK(t, first && second && exe_only && replaced && builtin, "themes: folders: config dir first %d, then the exe's %d, exe only %d, "
                "a file replacing ronin %d, the built-in again %d", first, second, exe_only, replaced, builtin);
 
