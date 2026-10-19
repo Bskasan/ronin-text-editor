@@ -49,7 +49,7 @@ not a finished product.
 | `src/isearch.h/.c` | isearch (a stack of steps resolved by sliced searches, its commands, the echo prompt), query-replace and replace-string (the prompts, the session, its answers and replace-all across frames, case conversion) |
 | `src/app.c` | editor core: config (read before the font, reloaded live), keys through the keymap stack (the isearch and query-replace routing), buffers (unique names), the kill ring, app commands (buffer cycling, open/reload config, text scale, describe-key, quoted-insert), the windows (their View slots, the window commands, the pop-up rule `app_display_buffer`), `app_update` (events, commands, the frame's background work: search slices then lexer states, layout; while a modal box is open every key and mouse event goes to modal.c) and drawing (each window cut to its rect: text, region, the search highlighting, mode line, divider; the minibuffer line, the search echo line, the candidate list), window title, mouse (click, drag, double / triple click, divider and mode-line drags, `app_mouse_cursor`); dev: smoke probes, the headless app of `--test`, `--bench-edit` memory, `--bench-complete` candidates, `--bench-search` helpers |
 | `src/files.c` | part of the app (included after app.c): find-file, write-file, save-buffer, switch-to-buffer, kill-buffer (and their other-window forms, kill-buffer-and-window), revert-buffer, save-some-buffers and quitting, the end of the Windows session, files changed on disk (checks, watches, the save guard) |
-| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits) and the `--bench-buffer` core |
+| `src/test.c` | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits; Phase 22: the README check, `test_readme`: README.md's key tables through describe-key or their keymap, its settings tables and ini blocks through the config parser, the prose keys, commands and names, README.md's and CONTRIBUTING.md's links and anchors, and the checker's own broken fragments) and the `--bench-buffer` core |
 | `src/leak.c` | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19, terminal-cycle since Phase 20, theme-cycle since Phase 21) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `src/png.c` | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 | `src/render_d3d11.c` | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
@@ -2071,6 +2071,86 @@ each a git session (61.7 and 60.6 ms, all but ~0.1 ms of it waiting for git), th
 (39.0 and 36.8 ms). The leak check: 28 scenarios, 0 LEAK, 148 s, theme-cycle OK (its frames equal pixel for pixel);
 STEP: config-reload-cycle/color private commit (as in Phases 19 and 20); the exit check PASS. No run reached the guard.
 
+## Measurements (Phase 22)
+
+Same machine.
+
+### Size and imports
+
+The release exe: 471,040 bytes, 512 more than Phase 21's 470,528: oxide's `diff_added` line made the embedded themes 4,749
+bytes (from 4,730), which crossed one section alignment. The README check is dev code (not in the release exe). Imports:
+KERNEL32, USER32, GDI32, unchanged (`--check-imports`); no new DLL.
+
+### The README check
+
+`test: ok: readme` in 3-6 ms (bench and debug): README.md's 59 keys in 11 key tables (global ones through describe-key
+itself, the search-results and compilation ones through describe-key in a buffer with that keymap, isearch and
+git-changes through their map then the global one), 12 settings, 2 config blocks, and in README.md and CONTRIBUTING.md 22
+prose keys, `M-x` commands and names, 34 links (29 relative, 5 external). The 16 broken fragments (a wrong command, a key
+not written as describe-key prints it, an unbound key, a key of the git-changes map, a row without `code`, an unknown
+setting, a value out of range, a bad color in an ini block, an unknown name, a [keys] section in a theme block, an
+unknown `M-x` command, an unbound prose key, a missing file, a missing anchor here and in another file, a README without
+a key table) are each caught at their line in every run.
+
+### The new test fails when it should
+
+On a scratch copy (build\proof\p22, deleted afterwards), each break alone, `--test` (debug):
+
+| break | result |
+|---|---|
+| README.md:180, `project-find-file` written `project-find-files` | exit 9, exactly one failure: "README.md:180: `C-x p f`: describe-key says "C-x p f runs the command project-find-file", the table says project-find-files" |
+| README.md:107, `font_size` written `font_sise` | exit 9, exactly one failure: "README.md:107: unknown setting 'font_sise'" |
+
+### Screenshots
+
+Every image README showed was retaken with `ronin_debug.exe --config build\tmp\none.conf` (an empty file: the built-in
+configuration) and compared pixel for pixel with System.Drawing:
+
+| image | retaken with | result |
+|---|---|---|
+| hero.png (new) | `--config build\tmp\shot_hero.conf` (`startup_windows = 2`) `+17:1 samples\particles.jai +13:4 samples\ring.c --keys "M-x w i n d o w"` | added, 3,073,098 -> 101,075 bytes, every pixel identical; read back: the divider #126367, the selected mode line #d3b58d, the other #072626, the selected candidate #0000ff, the cursor #90ee90 |
+| command-list.png | `src\modal.c --keys "C-S-p f i l e"` (as in Phase 18) | stale (31/136 rows, no open-terminal): replaced, 142,539 bytes, every pixel identical; the frame #2e8b8b, inside #0c3434, the selection #0000ff |
+| isearch.png | `+13:1 samples\ring.c --keys "C-s r i n g"` | identical, kept |
+| query-replace.png | `+26:1 samples\ring.c --keys "M-% r i n g RET q u e u e RET"` | identical; no longer shown, removed |
+| mx.png | `+13:1 samples\ring.c --keys "M-x w i n d o w"` | 64 pixels (1/15 -> 1/16 commands); the hero shows M-x now, removed |
+| windows.png | (the hero replaces it) | removed |
+| themes\*.png (4) | as in Phase 21 | identical, kept |
+| compilation.png | a stand-in Jai build in build\tmp\demo_build, `--keys "C-x p c RET" --compile-wait 5000 --keys-after "M-g n"` | one cell differs (the build's time, 0.05 against 0.04 s): kept |
+| cursors.png | `+131:62 src\cursors.c --keys "C-SPC C-f C-f C-f C-c C-<"` | the same UI (mc:111, "Marked 111 occurrences") over newer source: kept |
+| finder.png | `+406:1 src\finder.c --keys "C-x p f w i n"` | the same UI over newer source and file counts: kept |
+| git-changes.png | `build\tmp\gitrepo\repo\b.c --keys "C-x g"` (as in Phase 19) | cannot be retaken: "git: no real git in a test run" (Phase 20's guard, every batch run); the view is unchanged since Phase 19 and smoke stage 12 checks its colors on every verify: kept (Later) |
+
+### The CI workflow
+
+Its steps were tried locally in Windows PowerShell as written (the runner's pwsh 7 runs the same lines):
+`--check-imports` PASS, `--version` "ronin 0.1.0", `ronin_bench.exe --test` PASS in 32 s, `ronin_bench.exe --smoke` PASS
+(89 frames, "d3d11: device created ..., debug layer off"). The workflow itself runs only on GitHub: its first run is
+HUMAN step 50, and the informational smoke's outcome is recorded here once the user reports it.
+
+### verify.bat phase
+
+Twice at b49ff05 (the code of this phase), 572 s and 553 s: FAIL, both times only `soak-debug` (exit 6); every other step
+PASS. `--test` (debug) PASS in 40 s (the README check 5-6 ms of it); the seed sweep 256 seeds PASS (266 s); the bench soak
+PASS (22 s; settled 9,196 KB after the first block, 14,136 KB at most in the first half, 15,484 KB after the last); the
+leak check 28 scenarios, 0 LEAK (142 s; STEP: config-reload-cycle/color and external-change-cycle private commit); the exit
+check PASS. No run reached the guard.
+
+The debug soak's verdict: "directory watches 3 | 3 | 4 | 4 | 4 | 4 | LEAK" and the handle ledger with it, i.e. one more
+watch from about event 600,000 to the end. It is not this phase's code:
+
+- The soak deletes only the top-level files of build\tmp\soak. Its git\ folder keeps what random write-files put there,
+  and the bench soak, which verify.bat phase runs just before, leaves about 150 such files; the debug soak with the same
+  seed then opens a buffer in git\ late in the run and keeps it (12 buffers at the end, the exit check clean: live state).
+- Phase 21's code (b099c97, built in a scratch copy) does exactly the same on the same sequence: from an empty
+  build\tmp\soak its bench soak PASS (3 watches throughout), then its debug soak exit 6 on the same 3 -> 4 row. On the
+  folder as the first run left it, Phase 21's debug soak alone: exit 6 as well.
+- From an empty folder, the debug soak alone passes the watch rule, but its settled-memory rule (+2 MB over the first
+  half's highest) sits at the edge: Phase 22's code exit 9 / 0 / 0 (16,208, 14,760, 15,532 KB at the end against 13,472,
+  13,408, 13,736), Phase 21's 0 / 0 / 9 (15,832, 16,040, 16,992 against 14,904, 14,168, 14,380).
+
+Nothing was changed for it in this phase (outside its scope); the Later list has it, and the phase waits for the user's
+decision before "docs: mark phase 22 done".
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer
@@ -2097,6 +2177,7 @@ STEP: config-reload-cycle/color private commit (as in Phases 19 and 20); the exi
 - [x] 19. The git changes modal
 - [x] 20. Terminal and AI terminal shortcuts
 - [x] 21. Themes: built-in themes, theme files, set-theme
+- [ ] 22. README, contribution guide and repository files
 
 ## Decisions
 
@@ -3483,6 +3564,56 @@ mellifluous's FloatBorder is invisible (WinSeparator) and its CurSearch has no f
 group for every key. vague and mellifluous draw the current search match like the others (CurSearch = Search):
 faithful to them, the current match is not set apart.
 
+### Decisions, Phase 22 (README, contribution guide and repository files)
+
+1. README.md is for a user who has never seen ronin, in this order: one sentence, a line of links (Install, Keys,
+   Configuration, Themes, Contributing), the hero screenshot (two windows, both mode lines, M-x in the minibuffer, on
+   ronin), why (the three priorities and three numbers), what it does, install (the latest
+   `ronin-<version>-windows-x64.zip` from Releases, the unsigned exe's SmartScreen warning, the command line), the first
+   five minutes (a key table), configuration (where ronin.conf is, `C-c ,`, hot reload, the common settings as a table),
+   themes (the four pictures, picking and adding one, credits), one section each for projects, search, builds, git,
+   terminals and multiple cursors with their key tables, known limits, the roadmap after 1.0, contributing, license and
+   credits. No version is written in it (decided with the user): the zip's name comes from dist.bat and src/version.h.
+   The numbers table and the testing notes stay here, the build instructions moved to CONTRIBUTING.md, the
+   learning-project paragraph moved to this file's introduction (decided with the user).
+2. The README check is a `--test` group (`test_readme`, src/test.c), so `verify.bat` runs it on every commit (3-6 ms).
+   It reads README.md and CONTRIBUTING.md from the exe's folder's parent. Its markers are what a reader sees anyway: a
+   key table is headed exactly `| keys | command | what it does |`, a settings table `| setting | default | what it
+   does |`; a key table outside the global keymap has `<!-- keymap: NAME -->` (invisible on GitHub) on the line before.
+   Each key must be written as `key_seq_print` writes it, and run its row's command: through describe-key itself (the
+   keys "C-h k ..." fed to a headless app, the echo compared exactly) where describe-key can run (the global keymap, and
+   *scratch* given the search-results or compilation keymap), else through `keymap_get` on the section and then the
+   global map (minibuffer, isearch, command-list and git-changes: a box refuses describe-key, and it would end a prompt
+   or an isearch), the order key_lookup's stack has there. A settings row is parsed as `name = default` by
+   `config_parse` over the built-in configuration and must give no diagnostic, so the name exists and its default is
+   valid, through the real parser (config.c has no table to ask, and needs none). ini blocks of Configuration and Themes
+   parse the same way (a `[theme]` block in theme mode), laid out on their own lines, so a diagnostic already names the
+   README line. Beyond the user's two checks, cheap ones of the same kind: `M-x name` names a command, a C- / M- key in
+   prose is bound in some keymap (Known limits and Roadmap name keys that do not exist yet), names with '_' in
+   Configuration are a setting or a color, relative links and #anchors resolve (GitHub's slug rule), external links are
+   logged. Every failure is counted, each names its file and line; a README without a key table fails, so a
+   restructured README cannot switch the check off. 16 broken fragments are checked in every run.
+3. CONTRIBUTING.md fits one screen of scrolling (73 lines): building and the gate, the rules of a pull request from
+   CLAUDE.md, a feature as an issue first, a bug report without a log (release builds write none: the keys, the file,
+   ronin.conf's changed lines, *Messages*, a screenshot, Windows' version, scale and layout, the recovery folder), what
+   is out of scope and why, the review against the priority order.
+4. .github/ISSUE_TEMPLATE: bug_report.md, feature_request.md, config.yml (blank issues off); .github/
+   PULL_REQUEST_TEMPLATE.md, the checklist of CONTRIBUTING.md (named, not linked: a relative link in a pull request's
+   text does not resolve).
+5. CI, .github/workflows/build.yml on windows-latest, read-only, no secret: the three builds with the runner's Visual
+   Studio (nothing pinned: the flags need VS 2019 16.10 or later), the toolset and the sizes in the job summary,
+   `--test` on debug and bench, `--check-imports`, `--version`; each GUI exe started and waited for itself (not the
+   grandchildren some tests let go), its log uploaded. The debug smoke cannot run there: it requires the D3D11 debug
+   layer (exit 4), an optional Windows feature. The bench smoke runs as an informational step (`continue-on-error`,
+   decided with the user) that prints the session, the exit code's meaning and the device lines of the log, so the first
+   run says whether WARP renders on the runner's desktop; its outcome goes into the Measurements once the user reports
+   it. The smoke gate and `verify.bat phase` stay local (CONTRIBUTING.md says so).
+6. How the code is written, said once in each place (decided with the user): README, "ronin's code is written with
+   Claude Code, under the direction and review of its owner; the Co-Authored-By line in every commit says so."
+   CONTRIBUTING, the same and that a pull request is judged the same way whoever or whatever wrote it.
+7. Nothing in src/ changed but oxide's diff_added (its palette's documented "added" green, #5bb661, decided with the
+   user) and the test.
+
 ## Later
 
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
@@ -3576,6 +3707,17 @@ faithful to them, the current match is not set apart.
 - Terminals (Phase 20): a terminal program of the user's choice (any command line, a Windows Terminal profile); the
   region or the file's name handed to the AI tool; looking for the AI command before the window opens (cmd says it is
   missing inside the new window now).
+- The soak's own state (found in Phase 22): it deletes only the top-level files of build\tmp\soak, so what random
+  write-files leave in its git\ and term\ folders piles up across runs (since Phase 19), and verify.bat phase runs the
+  debug soak on what the bench soak left: then Phase 21's code and Phase 22's both end with one more directory watch after
+  event 500,000 (a buffer opened late in git\: live state, not a leak, the exit check clean) and the leak rule calls it
+  LEAK. Cleaning its subfolders at the start would make a seed reproducible; the watch rule could count the watches the
+  open buffers' folders explain. And its settled-memory rule (+2 MB over the
+  first half's highest) sits at the edge in the debug build: on fresh folders it failed in 1 of 3 runs for each phase's
+  code (Measurements (Phase 22)).
+- README's git changes picture (Phase 22): a screenshot run cannot start the real git (Phase 20's guard refuses it in
+  every batch run), so docs/images/git-changes.png is Phase 19's; a screenshot flag that chooses the real git, as smoke
+  stage 12 does, would let it be retaken.
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.

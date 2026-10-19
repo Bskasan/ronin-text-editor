@@ -6,7 +6,10 @@ side-by-side windows, inverse-video mode line, minibuffer, block cursor, point/m
 ring, isearch, M-x), pure Emacs default keys rebindable from a hot-reloaded text config.
 Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no LSP, no
 tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
-decisions and the "Later" list. Implement only the phase you are asked for.
+decisions and the "Later" list. Implement only the phase you are asked for. For strangers (Phase 22): README.md,
+CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
+windows-latest: the three builds, --test on debug and bench, the imports, --version; the bench smoke informational
+only, the smoke gate and `verify.bat phase` stay local).
 
 **Priorities, in order:** (1) input latency and speed, (2) small and simple, (3) features.
 
@@ -63,7 +66,8 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
   configurations (each with the macro check), checks `build.bat clean` on a scratch tree
   (clean-check), runs `--smoke` on the debug and the bench build and
-  `--test` on the bench build (the optimized build runs the fuzz tests quickly), checks the release
+  `--test` on the bench build (the optimized build runs the fuzz tests quickly; it includes the README check: README.md's
+  key tables, settings, config blocks, prose keys and links against the code, Phase 22), checks the release
   exe's imports (`--check-imports`) and its `--version`, checks every exit code and prints one last
   line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts: never run the steps
   by hand and judge them by eye. `verify.bat phase` also runs the full `--test` on the debug build,
@@ -567,7 +571,15 @@ reference resolver), every theme diagnostic with its line, the folders and their
 then the built-in theme; a file replacing a built-in one), the masked-theme note through the headless app, set-theme
 (the candidates and their notes, a theme for the session across a reload, ended by ronin.conf, C-g, the minibuffer, the
 command list), the reload through real folder watches (a themes\ created after the start, the theme added, written,
-another one written, removed; build\tmp\p21themes). In a batch run no
+another one written, removed; build\tmp\p21themes). Phase 22: the README check (`test_readme`): README.md and
+CONTRIBUTING.md read from the repository (the exe's folder's parent); every key of a key table ("| keys | command | what
+it does |", an optional "<!-- keymap: NAME -->" above it) written as describe-key prints it and running the command on
+its row (global, search-results and compilation keys through describe-key itself in the headless app, the other maps
+through the map then the global one); every row of a settings table ("| setting | default | what it does |") and every
+ini block of Configuration and Themes parsed over the built-in configuration without a diagnostic; names with '_' in
+Configuration a setting or a color; `M-x name` a command and a C- / M- key bound somewhere (Known limits and Roadmap
+aside); relative links and anchors resolving, external ones logged; 16 broken fragments each caught at its line. A
+failure names the file and the line ("README.md:180: ..."). README holds no version. In a batch run no
 test starts a real terminal, or a git it did not choose: the guard refuses it and counts it (os_dev_real_refused, 0 at
 the end of --test, every fuzz worker, the soak and the leak check). A failed
 dev ASSERT logs its file, line and condition before breaking, so a crash shows up in build\ronin.log.

@@ -78,6 +78,17 @@ Themes (Phase 21):
   (selection). ronin's colors are unchanged; a ronin.conf that sets number but not constant now moves both.
 - `dist.bat` puts THIRD_PARTY.md into the zip.
 
+The repository for other people (Phase 22):
+
+- README.md rewritten for someone who has never seen ronin: what it is, why, how to install it, the keys of the first
+  five minutes, configuration, themes, one short section per feature with its keys, known limits, the roadmap. A test
+  checks it against the code on every build: each key in its tables runs the command it names (through describe-key),
+  each setting exists with a valid default, its configuration examples load cleanly, and its links resolve.
+- CONTRIBUTING.md: how to build and verify, what a pull request must meet, how to propose a feature and report a bug.
+  Issue templates for bugs and features, a pull request checklist, and a GitHub Actions build that compiles the three
+  configurations and runs the tests on every push.
+- The oxide theme's added lines in the git changes view now use oxide's own "added" green (#5bb661) instead of ronin's.
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).

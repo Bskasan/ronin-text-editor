@@ -557,6 +557,19 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | W11 | Typing, idle and startup are as before | AUTOMATED | `--bench-latency` and `--startup-ms` against Phase 20, `--idle-check` (Measurements (Phase 21)). |
 | W12 | A ronin.conf created by C-c , before Phase 21 masks every theme and says so | AUTOMATED-NEW | "test: ok: themes masked" (a [colors] with the 30 keys); with your own file: HUMAN step 48. |
 
+## X. README, contribution guide and repository files (Phase 22)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| X1 | Every key in README's key tables runs the command named on its row, written as describe-key prints it | AUTOMATED-NEW | "test: ok: readme" (59 keys in 11 key tables: global, search-results and compilation through describe-key itself, isearch and git-changes through their keymap then the global one); the proof: `project-find-files` on README.md:180 of a scratch copy made `--test` exit 9 with "README.md:180: `C-x p f`: describe-key says ..." (Measurements (Phase 22)). |
+| X2 | Every setting in README exists, with a valid default, and README's config examples load without a message | AUTOMATED-NEW | "test: ok: readme" (12 settings, 2 config blocks, the Configuration section's names); the proof: `font_sise` on README.md:107 made `--test` exit 9 with "README.md:107: unknown setting 'font_sise'". |
+| X3 | Every relative link and #anchor of README and CONTRIBUTING resolves; `M-x` names and prose keys exist | AUTOMATED-NEW | "test: ok: readme" (34 links, 22 prose keys, commands and names); the checker's 16 broken fragments, each caught at its line, in every run. |
+| X4 | oxide's diff_added is its palette's "added" green | HUMAN | A comparison with oxide's source, which no test can fetch; done once in Phase 22. To repeat it: open https://github.com/oxidescheme/nvim/blob/838760c820821cce6a79706430883439c80dad4c/lua/oxide/colors.lua, line 26 (`green = "#5bb661", ... added items`), against `diff_added` in themes\oxide.conf. That the file still parses clean is AUTOMATED: "test: ok: themes" and smoke stage 14. |
+| X5 | README reads well on GitHub, also at phone width, and every image loads | HUMAN | GitHub's rendering after the push; HUMAN step 49. |
+| X6 | The workflow's first run: the builds and the tests pass on windows-latest; the informational smoke says whether WARP renders there | HUMAN | the user pushes; HUMAN step 50. The steps were tried locally in Windows PowerShell (the imports, --version, `--test` on bench, the smoke on bench: each exit 0); the YAML itself runs only on GitHub. |
+| X7 | New issue offers the two templates and no blank issue; a pull request opens with the checklist | HUMAN | GitHub's UI; HUMAN step 51. |
+| X8 | The external links of README and CONTRIBUTING lead where they say | HUMAN | the test logs them ("test: readme: README.md:N: external link ..."); HUMAN step 52. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -706,6 +719,20 @@ Phase 21, themes:
 48. **W12**: If your ronin.conf was written by C-c , before Phase 21, its [colors] section lists every color: with
     `theme = vague` the echo area says "ronin.conf: 30 [colors] keys override theme vague" and the colors stay ronin's.
     Delete the [colors] lines (keep the header) and save: vague's colors appear and the message does not.
+
+Phase 22, the repository on GitHub (after you push):
+
+49. **X5**: Open the repository's page on GitHub on a desktop browser and on a phone (or the browser's phone width): the
+    title, the sentence, the link line and the hero picture come first; every image loads (the hero, the command list,
+    the four themes, the finder, isearch, *compilation*, the git changes view, the cursors); the tables are readable
+    (on a phone they scroll sideways); the links of the top line jump to their sections.
+50. **X6**: The Actions tab: the first run of "build" on your push. The build, test, imports and version steps are green.
+    Open the step "Smoke (bench build; informational: ...)" and report its last lines (the session, "--smoke exited N",
+    the d3d11 lines): they go into Measurements (Phase 22). If a test step failed, the artifact "ronin-logs" holds its log.
+51. **X7**: Issues, New issue: "Bug report" and "Feature request" are offered and no blank issue. Start a pull request
+    from any branch (and close it): its text is the checklist.
+52. **X8**: Follow the external links (the list is in the report of Phase 22, and in build\ronin.log after `--test` as
+    "test: readme: ... external link ..."): Releases (empty until the first release), the four theme repositories.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
