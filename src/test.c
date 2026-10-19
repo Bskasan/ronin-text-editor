@@ -14553,6 +14553,11 @@ typedef struct Soak {
     u64 keys, texts, mice, resizes, focus, truncated, killed, modal_sessions, git_sessions;
     char recent[32][64]; // the last events, logged when a check fails
     u64 recent_count;
+    // The event being run, for the slowest events: its kind, its first note (a session notes many frames while it
+    // waits, so the ring may have lost it), its notes and the time it spent in soak_git_wait.
+    const char *kind;
+    char first[64];
+    u64 notes, git_wait_us;
 } Soak;
 
 static void soak_note(Soak *s, const char *fmt, ...) {
@@ -14562,6 +14567,7 @@ static void soak_note(Soak *s, const char *fmt, ...) {
     i64 n = fmt_v((u8 *)out, sizeof(s->recent[0]) - 1, fmt, args);
     out[MIN(n, (i64)sizeof(s->recent[0]) - 1)] = 0;
     va_end(args);
+    if (s->notes++ == 0) memcpy(s->first, out, sizeof(s->first));
 }
 
 static void soak_feed(Soak *s, Event *events, i32 n) {
@@ -14711,11 +14717,12 @@ static void soak_tidy(Soak *s, i32 max_buffers) {
 // one window. Returns the private bytes.
 // The git changes view's jobs settled (the fake git's answers in), 5 s at most.
 static void soak_git_wait(Soak *s) {
-    u64 deadline = os_time_us() + 5000000;
+    u64 t0 = os_time_us(), deadline = t0 + 5000000;
     while (app_dev_git_busy(s->app) && os_time_us() < deadline) {
         if (os_dev_wake_wait(app_wants_frame(s->app) ? 0 : 5)) app_wake(s->app);
         soak_feed(s, NULL, 0);
     }
+    s->git_wait_us += os_time_us() - t0;
 }
 
 static u64 soak_settle(Soak *s, i32 initial_buffers) {
@@ -14756,6 +14763,32 @@ static u64 soak_probe(Soak *s) {
     u64 ns = (os_time_us() - t0) * 1000 / 20000;
     files_kill_buffer(app, probe);
     return ns;
+}
+
+// One of the slowest events: its time (whole or without git waits), its kind, its notes and its git waits.
+typedef struct SoakSlow {
+    u64 us, took_us, git_wait_us, event, notes;
+    const char *kind;
+    char first[64], last[64];
+} SoakSlow;
+
+static void soak_slow_add(SoakSlow *slow, Soak *s, u64 event, u64 took, u64 us) {
+    if (us <= slow[4].us) return;
+    i32 k = 4;
+    while (k > 0 && slow[k - 1].us < us) {
+        slow[k] = slow[k - 1];
+        k--;
+    }
+    slow[k] = (SoakSlow){ .us = us, .took_us = took, .git_wait_us = s->git_wait_us, .event = event, .notes = s->notes, .kind = s->kind };
+    memcpy(slow[k].first, s->notes ? s->first : "", s->notes ? sizeof(slow[k].first) : 1);
+    memcpy(slow[k].last, s->notes ? s->recent[(s->recent_count - 1) % ARRAY_COUNT(s->recent)] : "", s->notes ? sizeof(slow[k].last) : 1);
+}
+
+static void soak_slow_log(SoakSlow *slow, const char *what) {
+    for (i32 k = 0; k < 5 && slow[k].us; k++) {
+        LOG("soak: %s %d: %U us at event %U: %s, %U note(s), '%s' .. '%s'; %U us in all, %U us waiting for git", what, k + 1,
+            slow[k].us, slow[k].event, slow[k].kind, slow[k].notes, slow[k].first, slow[k].last, slow[k].took_us, slow[k].git_wait_us);
+    }
 }
 
 static void soak_mouse(Soak *s) {
@@ -14815,6 +14848,8 @@ static void soak_event(Soak *s) {
     static const char *keys[] = { "RET", "TAB", "DEL", "C-d", "C-g", "SPC", "<left>", "<right>", "<up>", "<down>", "<home>", "<end>",
                                   "<prior>", "<next>", "S-<right>", "S-<down>", "C-<right>", "<backtab>", "<delete>", "ESC" };
     u64 r = test_below(t, 1000);
+    s->kind = r < 430 ? "text" : r < 520 ? "key" : r < 850 ? "key sequence" : r < 856 ? "command list session"
+            : r < 858 ? "git session" : r < 860 ? "unbound chord" : r < 985 ? "mouse" : r < 990 ? "resize" : r < 995 ? "focus" : "frame";
     if (r < 430) {
         char c = app->mini.active ? prompt[test_below(t, (i64)sizeof(prompt) - 1)] : code[test_below(t, (i64)sizeof(code) - 1)];
         soak_keys(s, c == ' ' ? STR8_LIT("SPC") : str8((u8 *)&c, 1), 0);
@@ -15080,21 +15115,17 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     u64 t0 = os_time_us(), block_t0 = t0, peak = 0, first_us = 0, second_us = 0, last_us = 0, mem_after_first = 0, mem_last = 0;
     u64 mem_first_half = 0; // the highest settled value of the blocks in the first half of the run
     u64 done = 0;
-    struct { u64 us, event; char what[64]; } slow[5] = { 0 }; // the slowest events, to look for slow commands
+    // The slowest events, to look for slow commands: by their whole time, and without the time a git session spent
+    // waiting for the fake git's processes (soak_git_wait), which no key of a user waits for.
+    SoakSlow slow[5] = { 0 }, slow_net[5] = { 0 };
     for (u64 e = 1; e <= events && !t.failures; e++) {
+        s.notes = 0;
+        s.git_wait_us = 0;
         u64 e0 = os_time_us();
         soak_event(&s);
         u64 took = os_time_us() - e0;
-        if (took > slow[4].us) {
-            i32 k = 4;
-            while (k > 0 && slow[k - 1].us < took) {
-                slow[k] = slow[k - 1];
-                k--;
-            }
-            slow[k].us = took;
-            slow[k].event = e;
-            memcpy(slow[k].what, s.recent[(s.recent_count - 1) % ARRAY_COUNT(s.recent)], sizeof(slow[k].what));
-        }
+        soak_slow_add(slow, &s, e, took, took);
+        soak_slow_add(slow_net, &s, e, took, took - MIN(s.git_wait_us, took));
         if (e % SOAK_CHECK_EVERY == 0) while (os_dev_wake_wait(0)) app_wake(app); // the workers' results (project search, scans)
         if (e % every == 0 && !soak_check(&s, e)) {
             *failed_at = e;
@@ -15231,7 +15262,8 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
         LOG("test: FAIL: soak: %d leak(s) at shutdown", leaks);
         t.failures++;
     }
-    for (i32 k = 0; k < 5 && slow[k].us; k++) LOG("soak: slowest event %d: %U us at event %U: %s", k + 1, slow[k].us, slow[k].event, slow[k].what);
+    soak_slow_log(slow, "slowest event");
+    soak_slow_log(slow_net, "slowest event without git waits");
     LOG("soak: %s, %U events in %U ms (seed 0x%X), private bytes peak %U KB, at the end %U KB; writes refused outside the directory %U",
         t.failures || *leak_verdicts ? "FAIL" : "PASS", done, (os_time_us() - t0) / 1000, seed, peak >> 10, os_dev_private_bytes() >> 10,
         refused);
