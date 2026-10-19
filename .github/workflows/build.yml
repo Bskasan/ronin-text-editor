@@ -1,0 +1,124 @@
+# ronin's continuous build (Phase 22): the three configurations, the tests of the debug and the bench build, the
+# release exe's imports and --version. It needs no secret. The smoke test (real frames on a GPU, the D3D11 debug
+# layer) and `verify.bat phase` stay local steps: see CONTRIBUTING.md. The bench build's smoke runs here only to
+# find out whether WARP renders on the runner's desktop; it never fails the job.
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # build.bat finds Visual Studio through vswhere and vcvars64, and fxc and rc on the Windows SDK path vcvars
+      # sets. No toolset is pinned: the flags need VS 2019 16.10 or later, and the runner has VS 2022 or later.
+      - name: Build debug, release and bench
+        shell: cmd
+        run: |
+          call .\build.bat || exit /b 1
+          call .\build.bat release || exit /b 1
+          call .\build.bat bench || exit /b 1
+
+      - name: Toolset and executable sizes
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property catalog_productDisplayVersion
+          $lines = @("| | |", "|---|---|", "| Visual Studio | $vs |")
+          foreach ($exe in "ronin.exe", "ronin_bench.exe", "ronin_debug.exe") {
+            $bytes = (Get-Item "build\$exe").Length
+            $lines += "| build\$exe | {0:N0} bytes |" -f $bytes
+          }
+          $lines | Out-Host
+          $lines | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      # The exes are GUI programs: each is started and waited for (only the process itself: some tests let a
+      # grandchild go on purpose), and its build\ronin.log kept as build\ci\<step>.log.
+      - name: Test (debug build)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          $p = Start-Process -FilePath build\ronin_debug.exe -ArgumentList "--test" -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          if (Test-Path build\ronin.log) {
+            Copy-Item build\ronin.log build\ci\test-debug.log
+            Select-String -Path build\ci\test-debug.log -Pattern "^test: (FAIL|inconclusive|skip)|^test: (PASS|FAIL), " | ForEach-Object { $_.Line }
+          }
+          if ($p.ExitCode -ne 0) { Write-Error "ronin_debug.exe --test exited $($p.ExitCode)"; exit 1 }
+
+      - name: Test (bench build)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          $p = Start-Process -FilePath build\ronin_bench.exe -ArgumentList "--test" -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          if (Test-Path build\ronin.log) {
+            Copy-Item build\ronin.log build\ci\test-bench.log
+            Select-String -Path build\ci\test-bench.log -Pattern "^test: (FAIL|inconclusive|skip)|^test: (PASS|FAIL), " | ForEach-Object { $_.Line }
+          }
+          if ($p.ExitCode -ne 0) { Write-Error "ronin_bench.exe --test exited $($p.ExitCode)"; exit 1 }
+
+      - name: Release imports (res\imports.txt)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          $p = Start-Process -FilePath build\ronin_debug.exe -ArgumentList "--check-imports", "build\ronin.exe", "res\imports.txt" -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          if (Test-Path build\ronin.log) {
+            Copy-Item build\ronin.log build\ci\check-imports.log
+            Select-String -Path build\ci\check-imports.log -Pattern "import" | ForEach-Object { $_.Line }
+          }
+          if ($p.ExitCode -ne 0) { Write-Error "--check-imports exited $($p.ExitCode)"; exit 1 }
+
+      - name: Release --version
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          $p = Start-Process -FilePath build\ronin.exe -ArgumentList "--version" -RedirectStandardOutput build\ci\version.log -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          $text = (Get-Content -Raw build\ci\version.log).Trim()
+          "ronin.exe --version: '$text', exit $($p.ExitCode)"
+          if ($p.ExitCode -ne 0 -or $text -notmatch '^ronin \d+\.\d+\.\d+$') { Write-Error "--version printed something else"; exit 1 }
+
+      - name: "Smoke (bench build; informational: does WARP render on the runner's desktop?)"
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          "This step's process: session $([System.Diagnostics.Process]::GetCurrentProcess().SessionId), interactive window station: $([Environment]::UserInteractive)"
+          if (Get-Command query.exe -ErrorAction SilentlyContinue) { query.exe session 2>&1 | Out-Host }
+          $p = Start-Process -FilePath build\ronin_bench.exe -ArgumentList "--smoke" -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          if (Test-Path build\ronin.log) { Copy-Item build\ronin.log build\ci\smoke-bench.log }
+          $meaning = @{ 0 = "pass"; 1 = "fatal"; 2 = "renderer initialization (no device or no swap chain)"; 3 = "pixel mismatch";
+                        5 = "debug-layer messages"; 6 = "leak"; 7 = "output file"; 8 = "font / ClearType"; 9 = "test failure" }
+          "--smoke exited $($p.ExitCode): $($meaning[$p.ExitCode])"
+          if (Test-Path build\ci\smoke-bench.log) {
+            Select-String -Path build\ci\smoke-bench.log -Pattern "^(d3d11|dxgi): |renderer initialization failed|swap chain|^smoke: (PASS|FAIL|skip)" |
+              ForEach-Object { $_.Line }
+          }
+          if ($p.ExitCode -ne 0) { exit 1 }
+          exit 0
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ronin-logs
+          path: build/ci/*.log
+          if-no-files-found: ignore
