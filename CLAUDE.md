@@ -270,7 +270,8 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # in build\fuzz\worker<k>.log); exit 9 names the seed
     build/ronin_bench.exe --soak N [--seed S]             # N random events through the headless app (keys of every
                                                           # keymap, typed code, mouse, focus, resizes) over the files of
-                                                          # build\tmp\soak, the only place it may write; invariants every
+                                                          # build\tmp\soak, the only place it may write (emptied at its
+                                                          # start, subfolders too: a seed is one run); invariants every
                                                           # 1,000 events, settled memory (searches and git waited for;
                                                           # the last against the first half's highest, +2 MB) and a typing
                                                           # probe (the fastest of three) every 100,000; logs peak / final

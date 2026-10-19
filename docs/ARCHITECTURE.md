@@ -2129,7 +2129,7 @@ HUMAN step 50, and the informational smoke's outcome is recorded here once the u
 
 ### verify.bat phase
 
-Twice at b49ff05 (the code of this phase), 572 s and 553 s: FAIL, both times only `soak-debug` (exit 6); every other step
+Twice at b49ff05 (the phase's code before the soak fix), 572 s and 553 s: FAIL, both times only `soak-debug` (exit 6); every other step
 PASS. `--test` (debug) PASS in 40 s (the README check 5-6 ms of it); the seed sweep 256 seeds PASS (266 s); the bench soak
 PASS (22 s; settled 9,196 KB after the first block, 14,136 KB at most in the first half, 15,484 KB after the last); the
 leak check 28 scenarios, 0 LEAK (142 s; STEP: config-reload-cycle/color and external-change-cycle private commit); the exit
@@ -2148,8 +2148,38 @@ watch from about event 600,000 to the end. It is not this phase's code:
   half's highest) sits at the edge: Phase 22's code exit 9 / 0 / 0 (16,208, 14,760, 15,532 KB at the end against 13,472,
   13,408, 13,736), Phase 21's 0 / 0 / 9 (15,832, 16,040, 16,992 against 14,904, 14,168, 14,380).
 
-Nothing was changed for it in this phase (outside its scope); the Later list has it, and the phase waits for the user's
-decision before "docs: mark phase 22 done".
+The user decided: one fix in this phase, d1691cc, the soak empties build\tmp\soak, subfolders included, at its start; the
+memory rule unchanged here. Proof before the rerun, bench then debug on the old leftovers (168 files in git\): both PASS,
+3 watches throughout, and each refused as many writes as on an empty folder (818 bench, 946 debug: the same events).
+
+The rerun at d1691cc, 520 s: FAIL, only `soak-bench` (exit 9, the memory rule). The debug soak PASS (3 watches throughout;
+settled 9,544 / 13,776 / 15,372 KB); `--test` (debug) PASS in 38.4 s (the README check 5 ms); the seed sweep PASS (243 s);
+the leak check 28 scenarios, 0 LEAK (140 s; STEP: config-reload-cycle/color and theme-cycle private commit); the exit check
+PASS. As the user asked, not rerun: the bench soak's memory, by owner, at each checkpoint (KB; "settled" without the undo
+logs, "arenas" ours without the undo logs, from the soak's "settled" and "by owner" lines):
+
+| events | settled | arenas | process heaps | thread stacks (worker slots) | other | undo logs |
+|---|---|---|---|---|---|---|
+| 100,000 | 9,304 | 5,308 | 700 | 812 (7) | 112 | 956 |
+| 200,000 | 11,149 | 5,421 | 1,044 | 900 (8) | 120 | 1,307 |
+| 300,000 | 11,477 | 5,741 | 1,048 | 900 (8) | 120 | 1,935 |
+| 400,000 | 13,029 | 5,989 | 1,384 | 1,780 (18) | 200 | 2,355 |
+| 500,000 | 14,777 | 6,893 | 1,596 | 2,308 (24) | 248 | 2,727 |
+| 600,000 | 14,613 | 6,545 | 1,656 | 2,472 (26) | 264 | 2,975 |
+| 700,000 | 16,333 | 6,493 | 3,436 | 2,472 (26) | 264 | 2,607 |
+| 800,000 | 16,473 | 6,493 | 3,568 | 2,472 (26) | 264 | 3,151 |
+| 900,000 | 17,209 | 6,493 | 3,724 | 2,976 (32) | 312 | 3,563 |
+| 1,000,000 | 17,561 | 6,841 | 3,724 | 2,976 (32) | 312 | 4,299 |
+
+(Image pages 1,116 and mapped views 68 throughout.) The limit was 14,777 + 2,048 = 16,825 KB; the first checkpoint over it
+is 900,000. From the first half's highest (500,000) to the end, +2,784 KB: process heaps +2,128 (1,780 of it between
+600,000 and 700,000), thread stacks +668 (worker slots 24 -> 32: parked threads keep their stacks, bounded by the cap of
+256, Phase 16's Later item), other +64; our arenas without the undo logs -52. Nothing of it is ronin's arenas: ronin
+allocates no heap itself, so the heaps are the system's (process creation for the fake git and terminal, directory
+listings, the worker threads' own). The soak stopped at the memory check, so no leak-metric table was logged. The same
+build and seed passed the bench soak in the proof run just before (and 14,136 -> 15,484 KB in this phase's first run):
+which run crosses depends on the heaps and the slots, not on the events, which are the same. The rule is the user's to
+decide in the next phase; "docs: mark phase 22 done" waits for a passing verify.bat phase.
 
 ## Roadmap
 
@@ -3612,7 +3642,8 @@ faithful to them, the current match is not set apart.
    Claude Code, under the direction and review of its owner; the Co-Authored-By line in every commit says so."
    CONTRIBUTING, the same and that a pull request is judged the same way whoever or whatever wrote it.
 7. Nothing in src/ changed but oxide's diff_added (its palette's documented "added" green, #5bb661, decided with the
-   user) and the test.
+   user), the test, and one fix the phase gate needed (decided with the user): the soak now empties build\tmp\soak,
+   subfolders included, at its start (`soak_clear`), so a seed gives the same run whatever ran before.
 
 ## Later
 
@@ -3707,14 +3738,12 @@ faithful to them, the current match is not set apart.
 - Terminals (Phase 20): a terminal program of the user's choice (any command line, a Windows Terminal profile); the
   region or the file's name handed to the AI tool; looking for the AI command before the window opens (cmd says it is
   missing inside the new window now).
-- The soak's own state (found in Phase 22): it deletes only the top-level files of build\tmp\soak, so what random
-  write-files leave in its git\ and term\ folders piles up across runs (since Phase 19), and verify.bat phase runs the
-  debug soak on what the bench soak left: then Phase 21's code and Phase 22's both end with one more directory watch after
-  event 500,000 (a buffer opened late in git\: live state, not a leak, the exit check clean) and the leak rule calls it
-  LEAK. Cleaning its subfolders at the start would make a seed reproducible; the watch rule could count the watches the
-  open buffers' folders explain. And its settled-memory rule (+2 MB over the
-  first half's highest) sits at the edge in the debug build: on fresh folders it failed in 1 of 3 runs for each phase's
-  code (Measurements (Phase 22)).
+- The soak's rules (found in Phase 22; its folder is emptied at its start since then, so a seed is one run): the watch
+  rule counts a buffer opened late in a new folder (live state) as LEAK; it could count only the watches the open
+  buffers' folders do not explain. The settled-memory rule (+2 MB over the first half's highest) sits at the edge in
+  both builds: before the fix, on fresh folders, the debug soak failed it in 1 of 3 runs for each of Phase 21's and
+  Phase 22's code; after it, the bench soak of the phase rerun failed it with our arenas flat and the growth in process
+  heaps and parked worker stacks (Measurements (Phase 22)); the rule is the user's to decide.
 - README's git changes picture (Phase 22): a screenshot run cannot start the real git (Phase 20's guard refuses it in
   every batch run), so docs/images/git-changes.png is Phase 19's; a screenshot flag that chooses the real git, as smoke
   stage 12 does, would let it be retaken.
