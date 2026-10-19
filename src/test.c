@@ -15892,6 +15892,32 @@ static String8 soak_file(Test *t, String8 dir, const char *name, String8 text) {
     return path;
 }
 
+// Everything the last run left in `dir` (an absolute path), its subfolders too, so a seed gives the same run whatever
+// ran before: what random write-files put in git\ and term\ changed the event stream (Phase 22). Deleted through \\?\
+// paths, which keep the names a random write-file can make ("rba.": Win32 would drop the trailing dot); a reparse point
+// is removed itself, never followed. Returns the entries that could not be removed.
+static i32 soak_clear(Test *t, String8 dir) {
+    OsDirEntry *entries;
+    i64 count;
+    if (os_list_dir(&t->arena, dir, &entries, &count) != OS_FILE_OK) return 0;
+    i32 left = 0;
+    for (i64 i = 0; i < count; i++) {
+        String8 path = str8_fmt(&t->arena, "%S\\%S", dir, entries[i].name);
+        String8 raw = str8_fmt(&t->arena, "\\\\?\\%S", path);
+        if (entries[i].is_dir && !entries[i].reparse) {
+            left += soak_clear(t, path);
+            left += !os_dev_remove_dir(raw);
+        } else if (entries[i].is_dir) {
+            left += !os_dev_remove_dir(raw); // a junction: the link only
+        } else {
+            os_file_delete(raw);
+            OsFileInfo info;
+            left += os_file_info(raw, &info) == OS_FILE_OK;
+        }
+    }
+    return left;
+}
+
 // One run; checks every `every` events (the workers' results and the tidying stay every SOAK_CHECK_EVERY, so a
 // rerun with every = 1 sees the same events). *failed_at: the event whose check failed.
 // Our reservations that grew from snapshot a to snapshot b (or are new), the largest first, each with the functions that
@@ -16011,10 +16037,10 @@ static i32 soak_run(u64 events, u64 seed, String8 tmp_dir, u64 every, u64 *faile
     Soak s = { .t = &t, .w = 1280, .h = 800 };
     s.dir = os_full_path(&t.arena, str8_fmt(&t.arena, "%S\\soak", tmp_dir));
     os_make_dir(s.dir);
-    OsDirEntry *entries;
-    i64 count;
-    if (os_list_dir(&t.arena, s.dir, &entries, &count) == OS_FILE_OK) { // the last run's files
-        for (i64 i = 0; i < count; i++) if (!entries[i].is_dir) os_file_delete(str8_fmt(&t.arena, "%S\\%S", s.dir, entries[i].name));
+    i32 left = soak_clear(&t, s.dir); // the last run's files and folders
+    if (left) {
+        LOG("soak: FAIL: %d entries of the last run left in %S", left, s.dir);
+        return 1;
     }
     // The files: C, JavaScript, Jai, plain text, and a 300 KB C file; the directory is the project.
     u8 *big = PUSH_ARRAY(&t.arena, u8, KB(320));
