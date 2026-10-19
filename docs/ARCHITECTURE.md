@@ -3467,8 +3467,9 @@ while ronin's diff keys color text, so the foreground groups come first (decided
 | git_status | GitSignsChange fg → Changed fg |
 
 What the four themes have no group for (each file says so): oxide defines no completion-match group (it follows
-keyword), no Changed or GitSignsChange (git_status follows string) and none of diff_added's chain (it keeps ronin's
-#73e673; diff_removed is its DiagnosticError red); vague no PmenuSel (completion_selection and modal_selection follow
+keyword), no Changed or GitSignsChange (git_status follows string) and none of diff_added's chain (since Phase 22
+diff_added is its palette's `green`, #5bb661, which lua/oxide/colors.lua:26 documents as "Strings, success, added
+items"; before, it kept ronin's #73e673; decided with the user; diff_removed is its DiagnosticError red); vague no PmenuSel (completion_selection and modal_selection follow
 selection), no StatusLineNC background (follows background), no FloatBorder (WinSeparator) and no Cursor (Normal fg);
 mellifluous's FloatBorder is invisible (WinSeparator) and its CurSearch has no foreground (Normal fg); moonfly has a
 group for every key. vague and mellifluous draw the current search match like the others (CurSearch = Search):
