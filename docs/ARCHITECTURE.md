@@ -2215,6 +2215,7 @@ config-reload-cycle/color private commit); the exit check PASS. No run reached t
 - [x] 20. Terminal and AI terminal shortcuts
 - [x] 21. Themes: built-in themes, theme files, set-theme
 - [x] 22. README, contribution guide and repository files
+- [ ] 23. Source layout and file headers
 
 ## Decisions
 
@@ -3658,6 +3659,45 @@ faithful to them, the current match is not set apart.
    are measured as before. Reason: the growth came from the system's heaps around process creation and from parked
    worker stacks, neither of them ronin's memory, and it varies between runs of identical events.
 
+### Decisions, Phase 23 (source layout and file headers)
+
+1. src/ is in folders by layer, so the folder a file is in says what it may include (decided with the user):
+   `src/base/` (types, arenas, strings), `src/platform/` (the os_* and r_* interfaces, everything that touches Win32,
+   D3D or DirectWrite: the only folder that may include Windows SDK headers), `src/text/` (the buffer, the lexers, the
+   search engine), `src/editor/` (commands, keys, config, views, windows, editing, the minibuffer, the modal layer,
+   themes, the font), `src/project/` (projects, the finder, the project search, builds, git, terminals), `src/app/`
+   (app.c, version.h) and `src/dev/` (the tests, the leak check, the PNG encoder). The module map lists every file
+   under its folder. Placed differently from the first proposal, with the user's approval: fuzzy.h/.c in project/ (it
+   ranks a ProjectIndex and calls project_mask and project_index_*; in text/ it would depend on project/);
+   check_macros.c in platform/ (it includes every system header on purpose; there the Windows-header rule has no
+   exception); ronin.c stays at src/ronin.c (build.bat clean and verify's clean-check recognize the repository root by
+   it, and from src/ its includes read "text/buffer.c" with no new /I). font.c is in editor/: core code without
+   Windows types that rasterizes through font_backend.h (platform/, no Win32 types) and draws through render.h.
+2. Two include rules, checked on every `verify.bat` (and in CI) by tools/check_source.c: no file outside src/platform/
+   includes a system header other than `<stdint.h> <stddef.h> <stdarg.h> <string.h> <emmintrin.h> <intrin.h>` (an
+   allow-list, so any Windows SDK header fails), and a quoted include must be a file of the repository or a generated
+   header (quad_vs.h, quad_ps.h, themes.h); no file in src/base/ or src/text/ includes from src/editor/, src/project/
+   or src/app/. tools/ is outside the first rule: standalone Win32 programs, never part of the exe. The check reads
+   `#include` lines only (lines whose first non-blank character is '#'). In the unity build the .c files include almost
+   nothing (ronin.c includes every header first), so the second rule guards against direct includes, not against uses;
+   a /Zs compile of base/ and text/ alone would catch uses (Later).
+3. Every .c, .h, .cpp and .hlsl under src/ and every file under tools/ starts with the standard header (CONTRIBUTING.md
+   shows it): the copyright and the MIT notice, and one line `ronin: <what this file does>` of at most 72 characters,
+   the same text as the file's row in the module map, so the two cannot disagree. The check compares the block byte for
+   byte except that line (a line may end in CRLF: the working tree mixes them under core.autocrlf), and the line
+   against the map. The map's rows are `| file(s) | description | details |` under a `` ### `src/<folder>/` `` heading;
+   a .h/.c pair shares a row and its line; the details column keeps the longer description the map had before. The
+   check fails a source file without a row, a row without a file, a file listed twice and a file under src/ of
+   another kind.
+4. A file's existing top comment stays below the header; a comment line that only repeated the file name or the
+   header's description lost that repetition ("// base.c — see base.h." became "// see base.h."; a line left with the
+   description alone was deleted; decided by the user). Nothing else in them changed.
+5. The checker is a build-time program (tools/, compiled by build.bat on every build, run by verify.bat), not a dev
+   flag: the three exes get no code from it. Nothing else changed: no identifiers renamed, no files split or merged.
+   The release exe is identical to Phase 22's apart from the link timestamp; the dev builds differ in the paths and
+   lines ASSERT embeds (`__FILE__` with /FC, `__LINE__`) and in the two paths the move forced on dev code (the benches
+   that open src\app\app.c, `--map-report` scanning src\'s folders). Measurements (Phase 23) has the comparison.
+
 ## Later
 
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
@@ -3678,6 +3718,9 @@ faithful to them, the current match is not set apart.
   title bar) are handled but drawn only when the move ends (found while measuring Phase 21: `--bench-latency` loses
   keys when its window is clicked).
 - Linear-space (gamma-corrected) ClearType blending for dark text on light backgrounds.
+- The layering by use, not only by include (Phase 23): a /Zs compile of src/base/ and src/text/ alone (their headers,
+  platform.h, then their .c files) would fail when text code calls into editor/, project/ or app/; the source check
+  sees only #include lines, and the unity build puts every header before every .c file.
 - Line wrapping (visual lines).
 - Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
   more layout).
