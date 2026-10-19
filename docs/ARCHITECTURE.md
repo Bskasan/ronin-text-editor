@@ -1,5 +1,13 @@
 # ronin architecture
 
+## How this project is made
+
+ronin is a learning project. I am building it to learn how a text editor works, from the renderer
+and the text buffer to the keymap and the search, and it was developed with the support of AI: the
+code was written with Claude Code under my direction, one phase at a time. I review the source code
+day by day and improve it as I come to understand each part of it. It is an experimental project,
+not a finished product.
+
 ## Module map
 
 | file | role |
