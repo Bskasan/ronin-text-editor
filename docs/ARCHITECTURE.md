@@ -2376,7 +2376,7 @@ external-change-cycle private commit); the exit check PASS in the smoke (debug, 
 - [x] 20. Terminal and AI terminal shortcuts
 - [x] 21. Themes: built-in themes, theme files, set-theme
 - [x] 22. README, contribution guide and repository files
-- [ ] 23. Source layout and file headers
+- [x] 23. Source layout and file headers
 
 ## Decisions
 
