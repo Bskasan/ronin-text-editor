@@ -19,7 +19,8 @@ decisions and the "Later" list. Implement only the phase you are asked for.
 - No third-party code or libraries. System DLLs only.
 - One build.bat, unity build: src/ronin.c includes the other .c files (win32_dwrite.cpp is
   the only second translation unit). No CMake, no .sln. tools/ holds build-time generators
-  (tools/make_icon.c draws the icon into build\gen\ronin.ico on every build): compiled and run by
+  (tools/make_icon.c draws the icon into build\gen\ronin.ico, tools/make_themes.c embeds themes\*.conf into
+  build\gen\themes.h, on every build): compiled and run by
   build.bat, never part of the exe, their output never committed; the same C rules apply to them.
 - No ronin identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
   rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/check_macros.c with
@@ -573,6 +574,8 @@ back by itself, and `build.bat clean` removes both. In build\:
 | `ronin_debug.exe`, `ronin.exe`, `ronin_bench.exe`, their `.obj`, `.pdb`, `*_cl.pdb`, `*_dwrite.obj` | build.bat (debug, release, bench) |
 | `ronin.map` | build.bat release (the linker's /MAP; read by --map-report) |
 | `make_icon.exe`, `make_icon.obj` | build.bat (tools\make_icon.c) |
+| `make_themes.exe`, `make_themes.obj` | build.bat (tools\make_themes.c) |
+| `gen\themes.h` | build.bat (make_themes, from themes\*.conf: the built-in themes) |
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |

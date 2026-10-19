@@ -15,6 +15,7 @@
 #include "edit.h"
 #include "keymap.h"
 #include "config.h"
+#include "theme.h"
 #include "project.h"
 #include "minibuffer.h"
 #include "fuzzy.h"
@@ -48,6 +49,7 @@
 // whose benches got slower that way (project.c's scanner, compile.c, results.c) stay at /O2.
 #pragma optimize("s", on)
 #include "config.c"
+#include "theme.c"
 #pragma optimize("", on)
 #include "project.c"
 #include "minibuffer.c"

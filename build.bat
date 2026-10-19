@@ -55,6 +55,18 @@ if errorlevel 1 (
 rc /nologo /Isrc /fo build\gen\ronin.res res\ronin.rc
 if errorlevel 1 exit /b 1
 
+rem --- the built-in themes: themes\*.conf embedded by tools\make_themes.c into build\gen\themes.h ---
+cl /nologo /W4 /WX /O2 tools\make_themes.c /Fobuild\make_themes.obj /Fdbuild\make_themes_cl.pdb /Febuild\make_themes.exe /link /INCREMENTAL:NO >nul
+if errorlevel 1 (
+    echo ERROR: tools\make_themes.c did not compile
+    exit /b 1
+)
+build\make_themes.exe themes build\gen\themes.h
+if errorlevel 1 (
+    echo ERROR: make_themes could not embed themes\*.conf
+    exit /b 1
+)
+
 rem --- C (unity build) + the one C++ file (DirectWrite: dwrite.h is C++ only) ---
 set COMMON=/nologo /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0
 set CFLAGS=%COMMON% /std:c11 /Ibuild\gen

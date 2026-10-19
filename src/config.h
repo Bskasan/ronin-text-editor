@@ -116,7 +116,9 @@ String8 config_default_text(void);
 void    config_init(Config *c); // empty: no settings, no bindings
 // Applies `text` on top of c. Diagnostics are allocated in `arena` and name `file_name`.
 void    config_parse(Config *c, Arena *arena, String8 text, String8 file_name);
-// The built-in configuration alone, into an empty config (what config_load starts from).
+// A theme file's text (Phase 21): only its [theme] block and its [colors]; theme_name is the file's.
+void    config_parse_theme(Config *c, Arena *arena, String8 text, String8 file_name, String8 theme_name);
+// The built-in configuration and the ronin theme, into an empty config (what config_load starts from).
 void    config_defaults(Config *c, Arena *arena);
 // The built-in defaults, then the user file at `path` on top (if path is not empty). Returns the
 // status of reading that file (OS_FILE_NOT_FOUND when it does not exist or path is empty); `info`

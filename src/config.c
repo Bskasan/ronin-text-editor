@@ -31,6 +31,8 @@ typedef struct ConfigParser {
     i64 pos;      // the next line starts here
     i64 line;     // 1-based: the line last returned
     Keymap *keys; // the map of the current [keys ...] section
+    b32 theme;    // a theme file: only [theme] and [colors] (Phase 21)
+    String8 theme_name; // ... its name (the file's), which its [theme] name should repeat
 } ConfigParser;
 
 static void config_diag(ConfigParser *p, b32 warning, const char *fmt, ...) {
@@ -370,6 +372,7 @@ typedef enum ConfigSection {
     CONFIG_SECTION_SETTINGS,
     CONFIG_SECTION_COLORS,
     CONFIG_SECTION_KEYS,
+    CONFIG_SECTION_THEME,   // a theme file's [theme] block
 } ConfigSection;
 
 // The next line that is neither blank nor a comment ('#' first), trimmed; false at the end. p->line is
@@ -394,14 +397,35 @@ static i32 config_header(String8 line, String8 *name) {
     return 1;
 }
 
-void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
-    ConfigParser p = { .config = c, .diags = &c->diags, .arena = arena, .file = file_name, .text = text, .keys = &c->global };
+// A theme's [theme] block: what it is and where it comes from. Only the name is checked (against the file's).
+static void config_theme_key(ConfigParser *p, String8 name, String8 value) {
+    static const char *const keys[] = { "name", "source", "commit", "license", "author" };
+    for (i32 i = 0; i < ARRAY_COUNT(keys); i++) {
+        if (!str8_equal(name, str8_cstr(keys[i]))) continue;
+        if (i == 0 && !theme_name_equal(value, p->theme_name)) {
+            config_diag(p, 1, "name '%S' is not the file's name '%S'", config_quote(value), p->theme_name);
+        }
+        return;
+    }
+    config_diag(p, 0, "unknown theme key '%S' (name, source, commit, license or author)", config_quote(name));
+}
+
+static void config_parse_text(Config *c, Arena *arena, String8 text, String8 file_name, b32 theme, String8 theme_name) {
+    ConfigParser p = { .config = c, .diags = &c->diags, .arena = arena, .file = file_name, .text = text, .keys = &c->global,
+                       .theme = theme, .theme_name = theme_name };
     ConfigSection section = CONFIG_SECTION_NONE;
     String8 line;
     c->colors_last = 0;
     while (config_next_line(&p, &line)) {
         String8 head;
         i32 header = config_header(line, &head);
+        if (header && theme) {
+            section = header > 0 && str8_equal(head, STR8_LIT("theme"))  ? CONFIG_SECTION_THEME
+                    : header > 0 && str8_equal(head, STR8_LIT("colors")) ? CONFIG_SECTION_COLORS
+                    : CONFIG_SECTION_UNKNOWN;
+            if (section == CONFIG_SECTION_UNKNOWN) config_diag(&p, 0, "a theme has only [theme] and [colors] sections");
+            continue;
+        }
         if (header) {
             if (header < 0) {
                 config_diag(&p, 0, "bad section header (expected [settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])");
@@ -429,7 +453,8 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
         }
         switch (section) {
         case CONFIG_SECTION_NONE:
-            config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])");
+            if (theme) config_diag(&p, 0, "line outside a section ([theme] or [colors])");
+            else config_diag(&p, 0, "line outside a section ([settings], [colors], [keys], [keys minibuffer], [keys isearch], [keys search-results], [keys compilation], [keys command-list] or [keys git-changes])");
             break;
         case CONFIG_SECTION_UNKNOWN:
             break;
@@ -437,7 +462,8 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
             config_key(&p, line);
             break;
         case CONFIG_SECTION_SETTINGS:
-        case CONFIG_SECTION_COLORS: {
+        case CONFIG_SECTION_COLORS:
+        case CONFIG_SECTION_THEME: {
             i64 eq = 0;
             while (eq < line.len && line.data[eq] != '=') eq++;
             if (eq == line.len) {
@@ -451,11 +477,20 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
                 break;
             }
             if (section == CONFIG_SECTION_SETTINGS) config_setting(&p, name, value);
+            else if (section == CONFIG_SECTION_THEME) config_theme_key(&p, name, value);
             else config_color(&p, name, value);
         } break;
         }
     }
     config_derived_colors(c);
+}
+
+void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
+    config_parse_text(c, arena, text, file_name, 0, str8(NULL, 0));
+}
+
+void config_parse_theme(Config *c, Arena *arena, String8 text, String8 file_name, String8 theme_name) {
+    config_parse_text(c, arena, text, file_name, 1, theme_name);
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +521,7 @@ OsFileStatus config_read_file(Arena *arena, String8 path, String8 *text, OsFileI
 void config_defaults(Config *c, Arena *arena) {
     config_init(c);
     config_parse(c, arena, config_default_text(), STR8_LIT("<built-in>"));
+    config_parse_theme(c, arena, theme_builtin(STR8_LIT("ronin")), STR8_LIT("<built-in theme ronin>"), STR8_LIT("ronin"));
 }
 
 OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info) {
