@@ -27,7 +27,7 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What a pull request must meet
 
-- C11 for MSVC, `/W4 /WX` clean. C++ only in `src/win32_dwrite.cpp`, and only C-style there.
+- C11 for MSVC, `/W4 /WX` clean. C++ only in `src/platform/win32_dwrite.cpp`, and only C-style there.
 - No C runtime functions: no stdio, no malloc / free, no `str*` (memcpy, memset and memmove are fine).
 - No third-party code or libraries, and no new DLL import: `res/imports.txt` stays as it is.
 - Memory from the arenas only; nothing allocated per keystroke or per frame; no idle timers or busy loops.

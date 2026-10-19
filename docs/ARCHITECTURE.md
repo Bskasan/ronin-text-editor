@@ -2224,7 +2224,7 @@ config-reload-cycle/color private commit); the exit check PASS. No run reached t
 - First frame is presented while the window is DWM-cloaked, then uncloaked.
 - `/external:anglebrackets /external:W0`: SDK headers do not break our /W4 /WX.
 - No ronin identifier may be a name a system header defines as a macro: build.bat compiles
-  `src/check_macros.c` (every system header we use, then the whole unity build) with /Zs in every
+  `src/platform/check_macros.c` (every system header we use, then the whole unity build) with /Zs in every
   configuration, so such a collision, or a ronin macro redefining a system one, fails the build where
   /external:W0 would have hidden it. Fixes are renames (KEYMOD_*, never #undef).
 - Import list kept minimal for startup: kernel32, user32 and gdi32 since Phase 15 (res/imports.txt,
@@ -3122,7 +3122,7 @@ config-reload-cycle/color private commit); the exit check PASS. No run reached t
   stack chunk to `%LOCALAPPDATA%\ronin\recovery`, plus a `.path` sidecar; no arena, no allocation, the gap
   never moved. The filter returns EXCEPTION_CONTINUE_SEARCH: Windows Error Reporting runs as before.
   Nothing deletes recovery files; recover-file opens the original and the copy side by side.
-- The version lives in src/version.h, for the code and res/ronin.rc. The icon is drawn by
+- The version lives in src/app/version.h, for the code and res/ronin.rc. The icon is drawn by
   tools/make_icon.c on every build (PNG images at 16-256 px with its own fixed-Huffman deflate, 9,230
   bytes) into build\gen; the .ico is never committed.
 - Tried and not kept (numbers under "Measurements (Phase 15)"): a waitable swap chain and Present(0, 0)
@@ -3426,7 +3426,7 @@ test_run removes it again after the group.
 
 ### Terminals (Phase 20)
 
-1. Two commands, one mechanism (src/terminal.c, part of the app, included after git_changes.c, compiled for size):
+1. Two commands, one mechanism (src/project/terminal.c, part of the app, included after git_changes.c, compiled for size):
    open-terminal (C-c t) opens a terminal window in the selected window's file's directory, else the directory given on
    the command line, else the current one (the order of `files_default_dir`); open-ai-terminal (C-c a) one in the
    project's root (`finder_root`), else the file's directory, else the default one, running the AI command. The
@@ -3611,10 +3611,10 @@ faithful to them, the current match is not set apart.
    five minutes (a key table), configuration (where ronin.conf is, `C-c ,`, hot reload, the common settings as a table),
    themes (the four pictures, picking and adding one, credits), one section each for projects, search, builds, git,
    terminals and multiple cursors with their key tables, known limits, the roadmap after 1.0, contributing, license and
-   credits. No version is written in it (decided with the user): the zip's name comes from dist.bat and src/version.h.
+   credits. No version is written in it (decided with the user): the zip's name comes from dist.bat and src/app/version.h.
    The numbers table and the testing notes stay here, the build instructions moved to CONTRIBUTING.md, the
    learning-project paragraph moved to this file's introduction (decided with the user).
-2. The README check is a `--test` group (`test_readme`, src/test.c), so `verify.bat` runs it on every commit (3-6 ms).
+2. The README check is a `--test` group (`test_readme`, src/dev/test.c), so `verify.bat` runs it on every commit (3-6 ms).
    It reads README.md and CONTRIBUTING.md from the exe's folder's parent. Its markers are what a reader sees anyway: a
    key table is headed exactly `| keys | command | what it does |`, a settings table `| setting | default | what it
    does |`; a key table outside the global keymap has `<!-- keymap: NAME -->` (invisible on GitHub) on the line before.

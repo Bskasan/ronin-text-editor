@@ -15,10 +15,10 @@ only, the smoke gate and `verify.bat phase` stay local).
 
 ## Hard rules
 
-- C11, MSVC (cl.exe), Windows 10 or later, x64; developed and tested on Windows 11 only. No C++, except src/win32_dwrite.cpp
+- C11, MSVC (cl.exe), Windows 10 or later, x64; developed and tested on Windows 11 only. No C++, except src/platform/win32_dwrite.cpp
   (dwrite.h cannot be consumed from C). That file is C-style C++: no exceptions (/EH off),
   no RTTI (/GR-), no STL, no new/delete, no classes, no static constructors, no CRT calls,
-  nothing but DirectWrite calls behind the extern "C" API in src/font_backend.h.
+  nothing but DirectWrite calls behind the extern "C" API in src/platform/font_backend.h.
 - No third-party code or libraries. System DLLs only.
 - One build.bat, unity build: src/ronin.c includes the other .c files (win32_dwrite.cpp is
   the only second translation unit). No CMake, no .sln. tools/ holds build-time generators
@@ -26,7 +26,7 @@ only, the smoke gate and `verify.bat phase` stay local).
   build\gen\themes.h, on every build): compiled and run by
   build.bat, never part of the exe, their output never committed; the same C rules apply to them.
 - No ronin identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
-  rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/check_macros.c with
+  rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/platform/check_macros.c with
   /Zs (every system header, then ronin.c, syntax only) and fails on a collision. Fix by renaming,
   never by #undef.
 - /W4 /WX clean, always.
@@ -57,7 +57,7 @@ only, the smoke gate and `verify.bat phase` stay local).
   ends it parks on an event (0% CPU) and takes the next os_thread_start (the GPU driver keeps heap for every thread
   that ends); joining a worker waits for its task's end.
 - Layering: editor core files use only platform.h and render.h (font.c also uses
-  font_backend.h). Only win32_*.c/.cpp and render_d3d11.c touch Win32 / D3D / DWrite types.
+  font_backend.h). Only the files in src/platform/ touch Win32 / D3D / DWrite types.
 - State lives in a few explicit structs (App, Platform, Renderer), not scattered globals.
 - Naming: types PascalCase; functions and variables snake_case with a module prefix
   (arena_push, r_push_rect, os_write_file); macros and enum constants UPPER_SNAKE.
@@ -119,14 +119,14 @@ the explicit `.\`):
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (once per phase)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
-                                     # README.md, LICENSE, THIRD_PARTY.md); the version is src/version.h's
+                                     # README.md, LICENSE, THIRD_PARTY.md); the version is src/app/version.h's
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
 
 build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
-src/shaders/*.hlsl with fxc into build\gen\*.h, runs the macro-collision check
-(src/check_macros.c, /Zs, ~0.3 s), compiles and runs tools/make_icon.c (build\gen\ronin.ico) and
+src/platform/shaders/*.hlsl with fxc into build\gen\*.h, runs the macro-collision check
+(src/platform/check_macros.c, /Zs, ~0.3 s), compiles and runs tools/make_icon.c (build\gen\ronin.ico) and
 compiles res/ronin.rc (the icon and the version resource, ~0.26 s with the icon), compiles
 win32_dwrite.cpp, then the unity build, and prints the exe size.
 
@@ -175,7 +175,7 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
     build/ronin_bench.exe --bench-search                  # 100 MB file: isearch for a needle at the end and
                                                           # a missing one (folded / exact, typed / pasted):
                                                           # time, frames, longest frame; isearch keystrokes
-                                                          # on src/app.c; replace-string x 1,000,000, its
+                                                          # on src/app/app.c; replace-string x 1,000,000, its
                                                           # undo and undo-redo; replace-string on the
                                                           # 100 MB file, its progress, C-g, one C-x u
                                                           # (exit 9 if wrong)
@@ -249,7 +249,7 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
     build/ronin_debug.exe <dir> --keys "C-x p c RET" --compile-wait MS --screenshot ..  # waits up to MS for
                                                           # running builds to end (also before --keys-after)
     build/ronin_bench.exe --bench-cursors                 # self-insert, DEL and RET at 1 to 10,000 cursors (the
-                                                          # 100 MB file: consecutive lines and spread; src/app.c)
+                                                          # 100 MB file: consecutive lines and spread; src/app/app.c)
                                                           # with the batch flushes per command; the classes that
                                                           # reindent on a generated C file at 1,000 / 10,000; the undo
                                                           # of a 10,000-cursor edit; mark-all on a million occurrences
@@ -293,7 +293,7 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # the window is never shown. Verdicts are meaningful only
                                                           # at --cycles 200 or more (fewer can flag the results
                                                           # arena's bounded growth)
-    build/ronin_debug.exe --map-report build\ronin.map    # the release exe's bytes by module (its linker map; src\ scanned)
+    build/ronin_debug.exe --map-report build\ronin.map    # the release exe's bytes by module (its linker map; src\ and its folders scanned)
     build/ronin_debug.exe --check-imports build\ronin.exe res\imports.txt   # its DLLs must equal the list, no CRT DLL
     build/ronin_bench.exe --memory-report                 # shown without activation; private bytes by owner (our
                                                           # arenas, heaps, stacks, the driver, image pages, views)
@@ -471,7 +471,7 @@ back: identical rects, scroll positions and points), startup_windows = 2 (app_de
 headless frame). The steps of docs/MANUAL_TESTS.md that had no test run through the
 headless app (test_manual_*, logged as "test: ok: manual <ids>"). Then the Win32 side: modifier keys
 set in the thread's key state read by win32_mods; keypad text right after a chord; and the input
-harness (src/win32_input_test.c): key messages posted, with their scan codes and flags (AltGr as the
+harness (src/platform/win32_input_test.c): key messages posted, with their scan codes and flags (AltGr as the
 synthetic Left Ctrl and Right Alt), to a top-level window that is never shown and uses the real
 window procedure, through the normal pump (TranslateMessage, DispatchMessage) into a headless app,
 on US (must pass completely), United Kingdom, Turkish Q and Finnish, each loaded and activated for
@@ -603,7 +603,7 @@ back by itself, and `build.bat clean` removes both. In build\:
 | `make_icon.exe`, `make_icon.obj` | build.bat (tools\make_icon.c) |
 | `make_themes.exe`, `make_themes.obj` | build.bat (tools\make_themes.c) |
 | `gen\themes.h` | build.bat (make_themes, from themes\*.conf: the built-in themes) |
-| `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\shaders\quad.hlsl) |
+| `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\platform\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
 | `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench) and verify's clean-check (tmp\clean_check, removed after it) |

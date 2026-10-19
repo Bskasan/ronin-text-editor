@@ -21,8 +21,8 @@ dev builds; they are not part of the repository.
 
 | Name used below | What it is |
 |---|---|
-| `--test` | `build/ronin_debug.exe --test` (or ronin_bench.exe): src/test.c, then `win32_dev_test_mods`, `win32_dev_test_keys` and the input harness. Each group logs a `test: ok: ...` line to build\ronin.log. |
-| harness | src/win32_input_test.c, inside `--test`: real key messages (scan codes, flags, AltGr, TranslateMessage, ToUnicodeEx) to a window that is never shown, using the real window procedure, on US, United Kingdom, Turkish Q and Finnish layouts loaded for the test thread only. Log: `test: ok: input <layout> ...`. |
+| `--test` | `build/ronin_debug.exe --test` (or ronin_bench.exe): src/dev/test.c, then `win32_dev_test_mods`, `win32_dev_test_keys` and the input harness. Each group logs a `test: ok: ...` line to build\ronin.log. |
+| harness | src/platform/win32_input_test.c, inside `--test`: real key messages (scan codes, flags, AltGr, TranslateMessage, ToUnicodeEx) to a window that is never shown, using the real window procedure, on US, United Kingdom, Turkish Q and Finnish layouts loaded for the test thread only. Log: `test: ok: input <layout> ...`. |
 | smoke | `build/ronin_debug.exe --smoke`: pixel probes on rendered frames. Log: `smoke: ok: ...`. |
 | manual tests | test.c `test_manual_*`: the steps of this list through the headless app. Log: `test: ok: manual <ids> ...`. |
 | `--idle-check` | Shows the window without focus. After 1 s it measures 5 s of idle: CPU time, frames, private bytes. |
@@ -37,7 +37,7 @@ dev builds; they are not part of the repository.
 | `--child <script>` | Dev builds: the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten). |
 | `--bench-compile` | A `--child` program printing 100 MB into *compilation* (with the cap raised and at the default 16 MB: time, frames, the longest frame, memory), typing at line 1,000,000 of the 100 MB file while builds print. Never takes the focus. |
 | build tests | The `--test` groups logged as "test: ok: processes", "compile matchers", "compile path resolution", "build settings and colors", "compile cleaning", "builds", "build kills", "builds in the app" and "the landing highlight" (Phase 13). |
-| `--bench-cursors` | Typing (self-insert, DEL, RET) at 1, 10, 100, 1,000 and 10,000 cursors on the 100 MB file (consecutive lines and spread) and on src/app.c; the language-aware classes on a C file at 1,000 and 10,000 cursors with the batch flushes per command; the undo of a 10,000-cursor edit; mark-all-like-this on a million occurrences and over the whole 100 MB file; the memory of 10,000 and 100,000 cursors. Never takes the focus. |
+| `--bench-cursors` | Typing (self-insert, DEL, RET) at 1, 10, 100, 1,000 and 10,000 cursors on the 100 MB file (consecutive lines and spread) and on src/app/app.c; the language-aware classes on a C file at 1,000 and 10,000 cursors with the batch flushes per command; the undo of a 10,000-cursor edit; mark-all-like-this on a million occurrences and over the whole 100 MB file; the memory of 10,000 and 100,000 cursors. Never takes the focus. |
 | cursor tests | The `--test` groups logged as "test: ok: marker batches", "the multiple-cursor driver", "multiple cursors collapsing", "multiple-cursor undo", "multiple-cursor kills and yanks", "multiple-cursor commands", "multiple-cursor commands in the app", "multiple cursors and the mouse" and "multiple-cursor differential fuzz" (Phase 14). |
 | project tests | The `--test` groups logged as "test: ok: threads", "tree watch", "junctions", "ignore rules", "project roots", ".ronin-project", "scanner", "fuzzy", "project finder" and "the region in windows". |
 | `--fuzz-seeds` / `--soak` | Phase 15, in `verify.bat phase`: every seeded `--test` group for seeds 1-256 (worker processes); a million random events through the headless app with invariants, settled memory and a typing probe checked as it goes. |
@@ -271,7 +271,7 @@ files".
 | L22 | The drag follows the pointer smoothly | HUMAN | How it feels needs a hand on the mouse. |
 | L23 | The pointer turns into the resize cursor over a divider and over a mode line with a window below; the arrow elsewhere | AUTOMATED-NEW + HUMAN | Which cursor: mouse in windows (app_mouse_cursor at the divider, a mode line, the bottom mode line, text, with the minibuffer reading, in a tiny frame); harness: a mouse move and WM_SETCURSOR request no frame. That Windows shows that cursor: HUMAN. |
 | L24 | A drag selection that leaves its window stays in it | AUTOMATED-NEW | mouse in windows "a drag selection stays in its window". |
-| L25 | Dividers and inactive mode lines look right at 100% and 150% | HUMAN | Visual. Smoke stage 6 checks the exact colors at 100%; dev helper for 150%: `ronin_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`. |
+| L25 | Dividers and inactive mode lines look right at 100% and 150% | HUMAN | Visual. Smoke stage 6 checks the exact colors at 100%; dev helper for 150%: `ronin_debug.exe src\app\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`. |
 | L26 | A long line in the left window never draws into the right one | AUTOMATED-NEW | smoke stage 6: the divider exactly window_divider next to the line, the right window's first column exactly background. |
 | L27 | window_divider, mode_line_inactive_background, mode_line_inactive_text in ronin.conf | AUTOMATED-NEW | config test "window settings and colors", "derived inactive mode line colors"; applying live is the hot reload's (AUTOMATED). |
 | L28 | startup_windows = 2 with two files: side by side, each file at its +LINE | AUTOMATED-NEW | startup_windows = 2 test. Screenshot build/shots/p10_5_startup_windows_2.png. |
@@ -279,7 +279,7 @@ files".
 | L30 | The OS window dragged to its smallest with several windows, then back: nothing breaks, the windows come back as they were | AUTOMATED-NEW + HUMAN | a frame too small for its windows (8 windows at 40x30, 1x0, 8x16 ...: identical rects, scroll positions and points afterwards). How it looks while small: HUMAN. |
 | L31 | Typing right after starting ronin (before its window appears) lands in ronin, in order | AUTOMATED-NEW | `--type-ahead-check` (on demand: real input): keys sent 20-83 ms after WinMain, first Present at 160 ms, "abCde". Keys typed in the first ~35-50 ms, before the window exists, still go to the launcher. |
 | L32 | Startup is not slower | AUTOMATED | `--startup-ms`, release, 15 runs in rotating order: 170 ms median against 169 for Phase 9. |
-| L33 | A ronin name that a Windows header defines as a macro breaks the build | AUTOMATED-NEW | build.bat's check (src/check_macros.c); the old MOD_ALT, KillRing.small and a test's near each fail it. |
+| L33 | A ronin name that a Windows header defines as a macro breaks the build | AUTOMATED-NEW | build.bat's check (src/platform/check_macros.c); the old MOD_ALT, KillRing.small and a test's near each fail it. |
 | L34 | Typing with two windows on one buffer stays fast | AUTOMATED-NEW | `--bench-windows`: 15-22 us a keystroke with two windows, 8-10 us with one. |
 
 ## M. Projects and fuzzy file open (Phase 11)
@@ -307,7 +307,7 @@ named as in the evidence table.
 | M16 | A path too long for the list is cut on the left, the file name kept | HUMAN | Visual. Screenshot build/shots/p11_5_long_path.png inspected: the row starts with "…", ends with the file name, the matched part highlighted. Dev helper: see HUMAN step 17. |
 | M17 | Typing in a buffer stays as fast while a big project is scanned | AUTOMATED-NEW | `--bench-project`: 9-19 us a keystroke during a scan of C:\Windows, 9-20 us without. |
 | M18 | Ranking a million files never holds a frame beyond the budget | AUTOMATED-NEW | `--bench-project`: longest frame 2,097 us, none over 2,100 us. |
-| M19 | After the scan ronin is idle: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe src\app.c --keys "C-x p f a p C-g" --idle-check`: 0 frames, 0 main loop passes. |
+| M19 | After the scan ronin is idle: 0% CPU | AUTOMATED-NEW | `ronin_debug.exe src\app\app.c --keys "C-x p f a p C-g" --idle-check`: 0 frames, 0 main loop passes. |
 | M20 | Closing ronin during a scan exits at once, also when a network path hangs | AUTOMATED-NEW | finder tests: shutdown with a scan running well under 1 s; a worker stuck in the "file system" is left after 1,000 ms and the process exits. A real dead network path: not tried. |
 | M21 | A huge tree stops at project_max_files and says so | AUTOMATED-NEW | finder tests (project_max_files = 1000: "Project has more than 1000 files; listed the first 1000", "stopped at 1000 files"). |
 | M22 | Only the selected window shows its active region | AUTOMATED-NEW | the region in windows (C-x o and back, while the minibuffer reads); smoke stage 6 (the other window's region not drawn). |
@@ -598,7 +598,7 @@ Phase 10, with two or three windows (C-x 3, C-x 2):
     follows the pointer without jumping; over the line and the mode line the pointer is the left-right /
     up-down resize cursor, the arrow over text and over the bottom mode line.
 14. **L25**: Look at the dividers and the inactive mode lines at 100% and at 150% display scale (dev
-    helper: `ronin_debug.exe src\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`).
+    helper: `ronin_debug.exe src\app\app.c --scale 150 --keys "C-x 3 C-x 2" --screenshot build\shots\l25.png`).
 15. **L30**: With four windows, drag the ronin window to its smallest size, then back. Nothing looks
     broken while it is small, and every window comes back as it was.
 
@@ -623,7 +623,7 @@ Phase 12, project-wide search:
 
 Phase 13, builds:
 
-21. **O23**: In ronin's repository put an error in a source file (say `int x = y;` in src/edit.c), C-x p c RET
+21. **O23**: In ronin's repository put an error in a source file (say `int x = y;` in src/editor/edit.c), C-x p c RET
     (`.\build.bat`). Look at *compilation*: the error in red with its file and line, M-g n opens the file at
     that line with the line highlighted. Undo the error and C-x p c RET again: "Compilation finished".
 22. **O20**: Start `build.bat release` with C-x p c and type in another window at once. The typing is never
@@ -678,9 +678,9 @@ Phase 17, cleanup:
 
 Phase 18, the command list:
 
-38. **T20**: `build\ronin.exe src\app.c`, C-S-p, type "file": the box is readable, the three columns line up, the keys
+38. **T20**: `build\ronin.exe src\app\app.c`, C-S-p, type "file": the box is readable, the three columns line up, the keys
     are right-aligned, the selected row stands out. The same at 150% display scale (dev helper for the picture:
-    `ronin_debug.exe src\app.c --scale 150 --keys "C-S-p f i l e" --screenshot build\shots\t20.png`).
+    `ronin_debug.exe src\app\app.c --scale 150 --keys "C-S-p f i l e" --screenshot build\shots\t20.png`).
 39. **T21**: In `build\ronin.exe` press Ctrl+Shift+P, type "find", RET: the box closes and "Find file:" asks;
     C-g. Ctrl+Shift+P again and click outside the box: it closes, nothing moved; once more and ESC: the same.
 
@@ -697,10 +697,10 @@ Phase 19, the git changes view:
 
 Phase 20, terminals (Windows Terminal installed, `claude` on PATH; each step opens real windows):
 
-42. **V1, V5**: `build\ronin.exe src\app.c`, C-c t: Windows Terminal opens with its prompt in ...\text-editor\src and
+42. **V1, V5**: `build\ronin.exe src\app\app.c`, C-c t: Windows Terminal opens with its prompt in ...\text-editor\src\app and
     the echo area says "Opened terminal in .../src". Then C-x b `*scratch*` RET, C-c t: the prompt is in the directory
     ronin was started from (its current directory). Close ronin, start `build\ronin.exe src`, C-c t: the prompt is in src.
-43. **V2**: In src\app.c, C-c a: Windows Terminal opens in ...\text-editor (the project's root) running claude. Leave
+43. **V2**: In src\app\app.c, C-c a: Windows Terminal opens in ...\text-editor (the project's root) running claude. Leave
     claude (`/exit`): the cmd prompt stays open.
 44. **V3**: C-c , and add `terminal = cmd` under [settings], save. C-c t: a classic console window opens in src; C-c a:
     one running claude in the root. Remove the line again.
@@ -712,7 +712,7 @@ Phase 20, terminals (Windows Terminal installed, `claude` on PATH; each step ope
 
 Phase 21, themes:
 
-47. **W1, W8**: With `build\ronin.exe src\app.c` open, add `theme = vague` under [settings] in ronin.conf (C-c ,) and
+47. **W1, W8**: With `build\ronin.exe src\app\app.c` open, add `theme = vague` under [settings] in ronin.conf (C-c ,) and
     save: every color changes at once. Then M-x set-theme RET moonfly, oxide and mellifluous in turn, with a region and a
     second window (C-x 3) on screen: each looks like its picture in docs/images/themes (and like the theme in Neovim, if at
     hand); the text stays readable on every background, the region and the cursor are visible.
