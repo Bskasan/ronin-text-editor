@@ -261,6 +261,8 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
     { "isearch", offsetof(Theme, isearch) },       { "isearch_text", offsetof(Theme, isearch_text) },
     { "lazy_highlight", offsetof(Theme, lazy_highlight) }, { "isearch_fail", offsetof(Theme, isearch_fail) },
     { "window_divider", offsetof(Theme, window_divider) },
+    { "mode_line_background", offsetof(Theme, mode_line_background) },
+    { "mode_line_text", offsetof(Theme, mode_line_text) },
     { "mode_line_inactive_background", offsetof(Theme, mode_line_inactive_background) },
     { "mode_line_inactive_text", offsetof(Theme, mode_line_inactive_text) },
     { "search_file", offsetof(Theme, search_file) },
@@ -281,9 +283,19 @@ static const struct { const char *name; u32 offset; } config_colors[] = {
 };
 _Static_assert(ARRAY_COUNT(config_colors) <= 64, "Config.colors_set has a bit per color");
 
-// The colors whose default is another color: set by no file so far, they follow it.
+// The colors whose default is another color: set by no file so far, they follow it. Since Phase 21 also the
+// pairs that had the same built-in value, so a theme that leaves one out gets its own color for it, not ronin's.
 static void config_derived_colors(Config *c) {
     static const struct { u32 offset, from; } derived[] = {
+        { offsetof(Theme, constant), offsetof(Theme, number) },
+        { offsetof(Theme, function), offsetof(Theme, keyword) },
+        { offsetof(Theme, directive), offsetof(Theme, type) },
+        { offsetof(Theme, prompt), offsetof(Theme, string) },
+        { offsetof(Theme, completion_selection), offsetof(Theme, selection) },
+        { offsetof(Theme, completion_match), offsetof(Theme, keyword) },
+        { offsetof(Theme, compilation_info), offsetof(Theme, type) },
+        { offsetof(Theme, mode_line_background), offsetof(Theme, text) },
+        { offsetof(Theme, mode_line_text), offsetof(Theme, background) },
         { offsetof(Theme, mode_line_inactive_background), offsetof(Theme, background) },
         { offsetof(Theme, mode_line_inactive_text), offsetof(Theme, text) },
         { offsetof(Theme, search_file), offsetof(Theme, keyword) },
@@ -312,6 +324,7 @@ static void config_color(ConfigParser *p, String8 name, String8 value) {
         }
         *(u32 *)((u8 *)&p->config->theme + config_colors[i].offset) = rgb;
         p->config->colors_set |= 1ull << i;
+        p->config->colors_last |= 1ull << i;
         return;
     }
     config_diag(p, 0, "unknown color '%S'", config_quote(name));
@@ -385,6 +398,7 @@ void config_parse(Config *c, Arena *arena, String8 text, String8 file_name) {
     ConfigParser p = { .config = c, .diags = &c->diags, .arena = arena, .file = file_name, .text = text, .keys = &c->global };
     ConfigSection section = CONFIG_SECTION_NONE;
     String8 line;
+    c->colors_last = 0;
     while (config_next_line(&p, &line)) {
         String8 head;
         i32 header = config_header(line, &head);
@@ -469,9 +483,13 @@ OsFileStatus config_read_file(Arena *arena, String8 path, String8 *text, OsFileI
     return status;
 }
 
-OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info) {
+void config_defaults(Config *c, Arena *arena) {
     config_init(c);
     config_parse(c, arena, config_default_text(), STR8_LIT("<built-in>"));
+}
+
+OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info) {
+    config_defaults(c, arena);
     // Dev: the built-in config parses cleanly, so every command it names exists.
 #if RONIN_DEV
     for (ConfigDiag *d = c->diags.first; d; d = d->next) LOG("config: built-in: %S", d->text);

@@ -677,8 +677,8 @@ static void app_draw_view(App *app, Renderer *r, AppLayout *l, FrameInput *in, i
     }
     // The mode line: inverse video in the selected window.
     r_set_clip(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)right, (f32)(mode_y + line_h) });
-    u32 mode_bg = selected ? th->text : th->mode_line_inactive_background;
-    u32 mode_fg = selected ? th->background : th->mode_line_inactive_text;
+    u32 mode_bg = selected ? th->mode_line_background : th->mode_line_inactive_background;
+    u32 mode_fg = selected ? th->mode_line_text : th->mode_line_inactive_text;
     r_push_rect(r, (Rect){ (f32)v->x, (f32)mode_y, (f32)right, (f32)(mode_y + line_h) }, COLOR_HEX(mode_bg));
     String8 mode = app_mode_line_format(v, in->scratch, results_mode_name(app, buf, in->scratch));
     font_draw_text(app->font, r, text_x, mode_y, app_clip_cells(mode, MAX((right - text_x) / l->cell_w, 0)), COLOR_HEX(mode_fg));

@@ -71,6 +71,8 @@ typedef struct Theme { // 0xRRGGBB
     u32 lazy_highlight;                // the background of the other matches on screen
     u32 isearch_fail;                  // the background of the failing part of a search string
     u32 window_divider;                // the line between windows side by side
+    u32 mode_line_background, mode_line_text; // the selected window's mode line (text and background unless set:
+                                       // inverse video; Phase 21)
     u32 mode_line_inactive_background; // the mode lines of the windows that are not selected; unless a file
     u32 mode_line_inactive_text;       // sets them, they are background and text
     u32 search_file, search_line_number; // a results line's file name and line:column (keyword and number unless set)
@@ -106,6 +108,7 @@ typedef struct Config {
     Keymap command_list;   // [keys command-list]: before global while the command list is open
     Keymap git_changes;    // [keys git-changes]: before global while the git changes view is open
     u64 colors_set;    // the colors some parsed text set (bit = index in the color table): the derived defaults
+    u64 colors_last;   // the colors the last parsed text set (a theme goes under the user's [colors]; Phase 21)
     ConfigDiags diags;
 } Config;
 
@@ -113,6 +116,8 @@ String8 config_default_text(void);
 void    config_init(Config *c); // empty: no settings, no bindings
 // Applies `text` on top of c. Diagnostics are allocated in `arena` and name `file_name`.
 void    config_parse(Config *c, Arena *arena, String8 text, String8 file_name);
+// The built-in configuration alone, into an empty config (what config_load starts from).
+void    config_defaults(Config *c, Arena *arena);
 // The built-in defaults, then the user file at `path` on top (if path is not empty). Returns the
 // status of reading that file (OS_FILE_NOT_FOUND when it does not exist or path is empty); `info`
 // gets the size and write time of what was read.

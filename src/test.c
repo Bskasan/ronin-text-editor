@@ -1805,8 +1805,7 @@ static b32 test_mc_driver(Test *t) {
 
     // max_cursors: the default, the range, the check.
     Config c;
-    config_init(&c);
-    config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    config_defaults(&c, &t->arena);
     TEST_CHECK(t, c.settings.max_cursors == 10000, "cursors: max_cursors default %d", c.settings.max_cursors);
     config_parse(&c, &t->arena, STR8_LIT("[settings]\nmax_cursors = 0\n"), STR8_LIT("t.conf"));
     TEST_CHECK(t, c.diags.first && str8_equal(c.diags.first->text, STR8_LIT("t.conf:2: warning: max_cursors 0 is out of range (1 to 100000), using 1")) &&
@@ -4881,8 +4880,7 @@ static String8 test_where_is(Test *t, Keymap **stack, i32 count, const Command *
 // that rebinds the command.
 static b32 test_keymap_where_is(Test *t) {
     Config *c = PUSH_STRUCT(&t->arena, Config);
-    config_init(c);
-    config_parse(c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    config_defaults(c, &t->arena);
     Keymap *global[] = { &c->global };
     Keymap *results[] = { &c->search_results, &c->global };
     struct { Keymap **stack; i32 count; const Command *cmd; i32 cap; i32 total; const char *want; } cases[] = {
@@ -5125,8 +5123,7 @@ static const Command *test_binding(Config *c, const char *keys) {
 // [keys global] in the global one; the new settings and colors.
 static b32 test_config_minibuffer(Test *t) {
     Config *c = PUSH_STRUCT(&t->arena, Config);
-    config_init(c);
-    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    config_defaults(c, &t->arena);
     TEST_CHECK(t, c->settings.completion_lines == 8 && c->settings.auto_revert && c->theme.prompt == 0x0fdfaf &&
                   c->theme.completion_selection == 0x0000ff && c->theme.completion_match == 0xffffff,
                "config minibuffer: defaults");
@@ -5157,8 +5154,7 @@ static b32 test_config(Test *t, u64 seed) {
     Config *c = PUSH_STRUCT(&t->arena, Config);
 
     // The built-in defaults: clean, and the CLAUDE.md theme.
-    config_init(c);
-    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    config_defaults(c, &t->arena);
     Settings *s = &c->settings;
     Theme *th = &c->theme;
     TEST_CHECK(t, c->diags.errors == 0 && c->diags.warnings == 0, "config: defaults: %d errors, %d warnings", c->diags.errors, c->diags.warnings);
@@ -5184,8 +5180,7 @@ static b32 test_config(Test *t, u64 seed) {
     {
         u64 mark = arena_pos(&t->arena);
         Config *w = PUSH_STRUCT(&t->arena, Config);
-        config_init(w);
-        config_parse(w, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+        config_defaults(w, &t->arena);
         config_parse(w, &t->arena, STR8_LIT("[colors]\nbackground = #101010\ntext = #202020\n[settings]\nstartup_windows = 3\n"), STR8_LIT("a.conf"));
         b32 follows = w->theme.mode_line_inactive_background == 0x101010 && w->theme.mode_line_inactive_text == 0x202020;
         b32 clamped = w->settings.startup_windows == 2 && w->diags.warnings == 1;
@@ -5196,13 +5191,37 @@ static b32 test_config(Test *t, u64 seed) {
         TEST_CHECK(t, follows && clamped && kept, "config: derived inactive mode line colors (%d %d %d), startup_windows clamped",
                    follows, clamped, kept);
     }
+    // Phase 21: the pairs that had one built-in value derive (a theme that leaves one out gets its own color), the
+    // selected mode line is inverse video through two derived keys; a key set by a file stays.
+    {
+        u64 mark = arena_pos(&t->arena);
+        Config *w = PUSH_STRUCT(&t->arena, Config);
+        config_defaults(w, &t->arena);
+        Theme *d = &w->theme;
+        b32 defaults = d->constant == 0x7ad0c6 && d->function == 0xffffff && d->directive == 0x8cde94 && d->prompt == 0x0fdfaf &&
+                       d->completion_selection == 0x0000ff && d->completion_match == 0xffffff && d->compilation_info == 0x8cde94 &&
+                       d->mode_line_background == 0xd3b58d && d->mode_line_text == 0x072626;
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nnumber = #010101\nkeyword = #020202\ntype = #030303\nstring = #040404\n"
+                                            "selection = #050505\ntext = #060606\nbackground = #070707\nfunction = #080808\n"),
+                     STR8_LIT("a.conf"));
+        b32 follows = d->constant == 0x010101 && d->function == 0x080808 && d->directive == 0x030303 && d->prompt == 0x040404 &&
+                      d->completion_selection == 0x050505 && d->completion_match == 0x020202 && d->compilation_info == 0x030303 &&
+                      d->mode_line_background == 0x060606 && d->mode_line_text == 0x070707;
+        b32 last = w->colors_last == (w->colors_set & w->colors_last) && bits_count(w->colors_last) == 8;
+        config_parse(w, &t->arena, STR8_LIT("[colors]\nmode_line_background = #111111\n"), STR8_LIT("b.conf"));
+        config_parse(w, &t->arena, STR8_LIT("[colors]\ntext = #121212\n"), STR8_LIT("c.conf"));
+        b32 kept = d->mode_line_background == 0x111111 && d->mode_line_text == 0x070707 && d->function == 0x080808 &&
+                   bits_count(w->colors_last) == 1;
+        arena_pop_to(&t->arena, mark);
+        TEST_CHECK(t, defaults && follows && last && kept, "config: Phase 21 derived colors: defaults %d, follow %d, colors_last %d, kept %d",
+                   defaults, follows, last, kept);
+    }
     // The modal colors (Phase 18; past the 32nd color): their defaults, the two derived ones, one set and kept; the
     // [keys command-list] section binds in its own map.
     {
         u64 mark = arena_pos(&t->arena);
         Config *w = PUSH_STRUCT(&t->arena, Config);
-        config_init(w);
-        config_parse(w, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+        config_defaults(w, &t->arena);
         Theme *m = &w->theme;
         b32 defaults = m->modal_background == 0x0c3434 && m->modal_border == 0x2e8b8b && m->modal_description == 0xa8977a &&
                        m->modal_selection == 0x0000ff && m->modal_key == 0x7ad0c6;
@@ -5228,8 +5247,7 @@ static b32 test_config(Test *t, u64 seed) {
     for (i32 i = 0; i < 1000; i++) {
         u64 mark = arena_pos(&t->arena);
         Config *tmp = PUSH_STRUCT(&t->arena, Config);
-        config_init(tmp);
-        config_parse(tmp, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+        config_defaults(tmp, &t->arena);
         arena_pop_to(&t->arena, mark);
     }
     LOG("test: config: parsing the built-in config (%D bytes, %d bindings) takes %U ns", config_default_text().len,
@@ -7886,8 +7904,7 @@ static b32 test_project_roots(Test *t) {
 
     // The settings' built-in values.
     Config *c = PUSH_STRUCT(&t->arena, Config);
-    config_init(c);
-    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    config_defaults(c, &t->arena);
     Settings *s = &c->settings;
     String8 ignore = str8(s->project_ignore, s->project_ignore_len);
     IgnoreScope builtin = { 0 };
@@ -8170,8 +8187,7 @@ static String8 test_index_paths(Test *t, ProjectIndex *x) {
 
 static ProjectScan *test_scan_make(Test *t, String8 root, i64 max_files) {
     Config *c = PUSH_STRUCT(&t->arena, Config);
-    config_init(c);
-    config_parse(c, &t->arena, config_default_text(), STR8_LIT("<built-in>"));
+    config_defaults(c, &t->arena);
     ProjectFile file;
     project_file_read(&t->arena, root, &file);
     return project_scan_create(root, str8(c->settings.project_ignore, c->settings.project_ignore_len), &file, max_files);
@@ -11122,8 +11138,7 @@ static b32 test_launch(Test *t) {
 // Phase 20: ai_provider, ai_command and terminal.
 static b32 test_terminal_config(Test *t) {
     Config c;
-    config_init(&c);
-    config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    config_defaults(&c, &t->arena);
     Settings *s = &c.settings;
     TEST_CHECK(t, c.diags.errors == 0 && s->ai_provider == AI_PROVIDER_CLAUDE && s->ai_command_len == 0 &&
                       s->terminal_program == TERMINAL_PROGRAM_AUTO, "terminal config: defaults %d '%S' %d", s->ai_provider,
@@ -11155,8 +11170,7 @@ static b32 test_terminal_config(Test *t) {
     }
     // Bad values: reported with their line, the value before them kept (here the built-in one).
     Config bad;
-    config_init(&bad);
-    config_parse(&bad, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    config_defaults(&bad, &t->arena);
     config_parse(&bad, &t->arena, STR8_LIT("[settings]\nai_provider = gemini\nterminal = powershell\nai_provider =\nterminal = WT\n"), STR8_LIT("t.conf"));
     static const char *const want[] = {
         "t.conf:2: ai_provider: 'gemini' is not claude, openai or custom",
@@ -11737,8 +11751,7 @@ static b32 test_compile_clean(Test *t) {
 // The build settings and colors: defaults, every value, the diagnostics.
 static b32 test_compile_config(Test *t) {
     Config c;
-    config_init(&c);
-    config_parse(&c, &t->arena, config_default_text(), STR8_LIT("defaults"));
+    config_defaults(&c, &t->arena);
     Settings *s = &c.settings;
     TEST_CHECK(t, s->compilation_save_buffers == COMPILATION_SAVE_ASK && s->compilation_scroll_output == COMPILATION_SCROLL_FIRST_ERROR &&
                       s->compilation_max_output_mb == 16 && s->compilation_relative_paths, "compile config: defaults %d %d %d %d",

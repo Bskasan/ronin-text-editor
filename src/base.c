@@ -80,6 +80,12 @@ b32 str8_equal(String8 a, String8 b) {
     return a.len == b.len && mem_equal(a.data, b.data, a.len);
 }
 
+i32 bits_count(u64 x) {
+    i32 n = 0;
+    for (; x; x &= x - 1) n++;
+    return n;
+}
+
 b32 mem_equal(const void *a, const void *b, i64 n) {
     const u8 *x = (const u8 *)a, *y = (const u8 *)b;
     i64 i = 0;
