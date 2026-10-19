@@ -1,6 +1,6 @@
 @echo off
 rem ronin dist: runs verify.bat (which builds the release exe), then packs dist\ronin-<version>-windows-x64.zip with
-rem ronin.exe, README.md, LICENSE and THIRD_PARTY.md (the ported themes' licenses) in a ronin-<version> folder. The version comes from src\version.h.
+rem ronin.exe, README.md, LICENSE and THIRD_PARTY.md (the ported themes' licenses) in a ronin-<version> folder. The version comes from src\app\version.h.
 rem From Git Bash: cmd //c ".\dist.bat"
 rem The last line is "dist: PASS: <zip> (<bytes> bytes)" or "dist: FAIL: <what failed>".
 setlocal
@@ -8,9 +8,9 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 set "VERSION="
-for /f "tokens=3" %%v in ('findstr /b /c:"#define RONIN_VERSION " src\version.h') do set "VERSION=%%~v"
+for /f "tokens=3" %%v in ('findstr /b /c:"#define RONIN_VERSION " src\app\version.h') do set "VERSION=%%~v"
 if not defined VERSION (
-    echo dist: FAIL: no RONIN_VERSION in src\version.h
+    echo dist: FAIL: no RONIN_VERSION in src\app\version.h
     exit /b 1
 )
 

@@ -36,9 +36,9 @@ if not exist build\tmp mkdir build\tmp
 if not exist build\shots mkdir build\shots
 
 rem --- shaders -> C headers --------------------------------------------------
-fxc /nologo /WX /O3 /T vs_4_0 /E vs_main /Vn quad_vs_bytes /Fh build\gen\quad_vs.h src\shaders\quad.hlsl >nul
+fxc /nologo /WX /O3 /T vs_4_0 /E vs_main /Vn quad_vs_bytes /Fh build\gen\quad_vs.h src\platform\shaders\quad.hlsl >nul
 if errorlevel 1 exit /b 1
-fxc /nologo /WX /O3 /T ps_4_0 /E ps_main /Vn quad_ps_bytes /Fh build\gen\quad_ps.h src\shaders\quad.hlsl >nul
+fxc /nologo /WX /O3 /T ps_4_0 /E ps_main /Vn quad_ps_bytes /Fh build\gen\quad_ps.h src\platform\shaders\quad.hlsl >nul
 if errorlevel 1 exit /b 1
 
 rem --- the icon (drawn by tools\make_icon.c, never committed) and the version resource ---
@@ -52,7 +52,7 @@ if errorlevel 1 (
     echo ERROR: make_icon could not write build\gen\ronin.ico
     exit /b 1
 )
-rc /nologo /Isrc /fo build\gen\ronin.res res\ronin.rc
+rc /nologo /Isrc\app /fo build\gen\ronin.res res\ronin.rc
 if errorlevel 1 exit /b 1
 
 rem --- the built-in themes: themes\*.conf embedded by tools\make_themes.c into build\gen\themes.h ---
@@ -92,10 +92,10 @@ if "%MODE%"=="release" (
     set LINKOPT=/DEBUG /INCREMENTAL:NO
 )
 rem No ronin identifier may collide with a system macro: every system header first, then the whole
-rem unity build, syntax only (src\check_macros.c says why).
-cl %CFLAGS% %DEFS% /Zs src\check_macros.c
+rem unity build, syntax only (src\platform\check_macros.c says why).
+cl %CFLAGS% %DEFS% /Zs src\platform\check_macros.c
 if errorlevel 1 exit /b 1
-cl %CPPFLAGS% %OPT% %DEFS% src\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
+cl %CPPFLAGS% %OPT% %DEFS% src\platform\win32_dwrite.cpp /Fobuild\%NAME%_dwrite.obj /Fdbuild\%NAME%_cl.pdb
 if errorlevel 1 exit /b 1
 cl %CFLAGS% %OPT% %DEFS% src\ronin.c build\%NAME%_dwrite.obj build\gen\ronin.res /Fobuild\%NAME%.obj /Fdbuild\%NAME%_cl.pdb /Febuild\%NAME%.exe /link %LFLAGS% %LINKOPT% %LIBS%
 if errorlevel 1 exit /b 1

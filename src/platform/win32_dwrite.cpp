@@ -12,7 +12,7 @@
 #include <windows.h>
 #include <dwrite.h>
 
-#include "base.h"
+#include "../base/base.h"
 #include "font_backend.h"
 
 #define FB_RELEASE(fb, p) do { if (p) { (p)->Release(); (p) = NULL; (fb)->live_refs--; } } while (0)

@@ -4544,8 +4544,8 @@ static void win32_bench_cursors(Platform *p) {
     win32_bench_cursors_layout(p, "(a) 100 MB, consecutive lines from 1,000,000", 0);
     win32_bench_cursors_undo(p);
     win32_bench_cursors_layout(p, "(b) 100 MB, spread over the file", 1);
-    String8 src = os_full_path(&p->perm, str8_fmt(&p->perm, "%S\\..\\src\\app.c", p->exe_dir));
-    if (app_dev_visit(p->app, src)) win32_bench_cursors_layout(p, "(c) src/app.c, spread over the file", 1);
+    String8 src = os_full_path(&p->perm, str8_fmt(&p->perm, "%S\\..\\src\\app\\app.c", p->exe_dir));
+    if (app_dev_visit(p->app, src)) win32_bench_cursors_layout(p, "(c) src/app/app.c, spread over the file", 1);
     else LOG("bench-cursors: cannot visit %S", src);
     win32_bench_cursors_classes(p, tmp);
     win32_bench_cursors_mark_all(p, tmp, big);
@@ -4752,7 +4752,7 @@ static u64 win32_bench_search_keys(Platform *p, const char *keys, BenchStat *st)
 
 // --bench-search: isearch on the 100 MB file for a needle only at its very end and one that does not
 // occur, each folded and exact (typed one key per frame, then the frames until the search is done);
-// keystroke latency of isearch on src/app.c; replace-string over 1,000,000 occurrences, then the undo
+// keystroke latency of isearch on src/app/app.c; replace-string over 1,000,000 occurrences, then the undo
 // of that one group and its undo-redo.
 static void win32_bench_search(Platform *p) {
     r_dev_set_present_interval(p->renderer, 0);
@@ -4788,7 +4788,7 @@ static void win32_bench_search(Platform *p) {
     }
 
     // Keystroke latency on an ordinary source file: C-s, typing, repeating, DEL, RET; 50 rounds.
-    String8 source = str8_fmt(&p->perm, "%S\\..\\src\\app.c", p->exe_dir);
+    String8 source = str8_fmt(&p->perm, "%S\\..\\src\\app\\app.c", p->exe_dir);
     if (app_dev_visit(p->app, source)) {
         BenchStat st = { 0 };
         r_dev_take_frame_stats(p->renderer);
@@ -4796,7 +4796,7 @@ static void win32_bench_search(Platform *p) {
             win32_bench_search_keys(p, "C-s v i e w C-s C-s C-s C-s C-r DEL DEL DEL _ d r a w RET", &st);
             app_dev_goto_line(p->app, round * 30);
         }
-        win32_bench_log(p, "bench-search", "isearch keystrokes on src/app.c (C-s, typing, repeats, DEL, RET; with lazy highlight)", &st);
+        win32_bench_log(p, "bench-search", "isearch keystrokes on src/app/app.c (C-s, typing, repeats, DEL, RET; with lazy highlight)", &st);
     }
 
     // replace-string over 1,000,000 occurrences ("foo bar\n" x 1,000,000 in *scratch*), its undo and undo-redo.

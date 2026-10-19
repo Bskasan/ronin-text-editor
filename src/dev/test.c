@@ -16441,25 +16441,38 @@ i32 test_map_report(String8 map_path, String8 src_dir) {
         LOG("map-report: cannot read %S", map_path);
         return 1;
     }
-    // The source index.
+    // The source index: src\ and its folders (Phase 23), then the generated headers of build\gen.
     MapIdent *idents = PUSH_ARRAY(&arena, MapIdent, MAP_IDENTS);
-    String8 dirs[2] = { src_dir, str8_fmt(&arena, "%S\\..\\build\\gen", src_dir) }; // the sources, the generated headers
-    for (i32 d = 0; d < 2; d++) {
-        OsDirEntry *entries;
-        i64 entry_count;
-        if (os_list_dir(&arena, dirs[d], &entries, &entry_count) != OS_FILE_OK) continue;
+    String8 dirs[16];
+    i32 dir_count = 0;
+    dirs[dir_count++] = src_dir;
+    OsDirEntry *folders;
+    i64 folder_count;
+    if (os_list_dir(&arena, src_dir, &folders, &folder_count) == OS_FILE_OK) {
+        for (i64 i = 0; i < folder_count && dir_count < ARRAY_COUNT(dirs) - 1; i++) {
+            if (folders[i].is_dir) dirs[dir_count++] = str8_fmt(&arena, "%S\\%S", src_dir, folders[i].name);
+        }
+    }
+    i32 source_dirs = dir_count;
+    dirs[dir_count++] = str8_fmt(&arena, "%S\\..\\build\\gen", src_dir);
+    for (i32 gen = 0; gen < 2; gen++) { // the sources, then the generated headers
         for (i32 pass = 0; pass < 2; pass++) { // headers first, so the .c files win
-            for (i64 i = 0; i < entry_count; i++) {
-                String8 n = entries[i].name;
-                b32 header = n.len > 2 && n.data[n.len - 1] == 'h' && n.data[n.len - 2] == '.';
-                b32 source = (n.len > 2 && n.data[n.len - 1] == 'c' && n.data[n.len - 2] == '.') ||
-                             (n.len > 4 && str8_equal(str8(n.data + n.len - 4, 4), STR8_LIT(".cpp")));
-                if (entries[i].is_dir || (pass == 0 ? !header : !source)) continue;
-                String8 text;
-                if (os_read_small_file(&arena, str8_fmt(&arena, "%S\\%S", dirs[d], n), MB(16), &text) == OS_FILE_OK) {
-                    // build\gen: the compiled shaders, and since Phase 21 the embedded themes (themes.h)
-                    String8 kind = str8_equal(n, STR8_LIT("themes.h")) ? STR8_LIT("built-in themes") : STR8_LIT("shaders");
-                    map_index_file(&arena, idents, d ? str8_fmt(&arena, "%S (%S)", kind, n) : str8_copy(&arena, n), text);
+            for (i32 d = gen ? source_dirs : 0; d < (gen ? dir_count : source_dirs); d++) {
+                OsDirEntry *entries;
+                i64 entry_count;
+                if (os_list_dir(&arena, dirs[d], &entries, &entry_count) != OS_FILE_OK) continue;
+                for (i64 i = 0; i < entry_count; i++) {
+                    String8 n = entries[i].name;
+                    b32 header = n.len > 2 && n.data[n.len - 1] == 'h' && n.data[n.len - 2] == '.';
+                    b32 source = (n.len > 2 && n.data[n.len - 1] == 'c' && n.data[n.len - 2] == '.') ||
+                                 (n.len > 4 && str8_equal(str8(n.data + n.len - 4, 4), STR8_LIT(".cpp")));
+                    if (entries[i].is_dir || (pass == 0 ? !header : !source)) continue;
+                    String8 text;
+                    if (os_read_small_file(&arena, str8_fmt(&arena, "%S\\%S", dirs[d], n), MB(16), &text) == OS_FILE_OK) {
+                        // build\gen: the compiled shaders, and since Phase 21 the embedded themes (themes.h)
+                        String8 kind = str8_equal(n, STR8_LIT("themes.h")) ? STR8_LIT("built-in themes") : STR8_LIT("shaders");
+                        map_index_file(&arena, idents, gen ? str8_fmt(&arena, "%S (%S)", kind, n) : str8_copy(&arena, n), text);
+                    }
                 }
             }
         }

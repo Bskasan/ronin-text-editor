@@ -76,9 +76,9 @@ layout: `C-/` is Ctrl with whichever key types `/`. Unlike Emacs, `ESC` cancels 
 | `C-c ,` | `open-config` | open the configuration file |
 
 M-x and `C-S-p` list every command; the complete default bindings, with comments, are
-[src/config_default.h](src/config_default.h), the file `C-c ,` writes for you.
+[src/editor/config_default.h](src/editor/config_default.h), the file `C-c ,` writes for you.
 
-![The command list filtered with "file", over src/modal.c](docs/images/command-list.png)
+![The command list filtered with "file", over src/editor/modal.c](docs/images/command-list.png)
 
 ## Configuration
 
@@ -292,7 +292,7 @@ cursor. Ctrl+Shift+click adds a cursor or removes the one there.
 | `C-c C-<` | `mark-all-like-this` | a cursor at every occurrence of the region |
 | `C-S-c C-S-c` | `edit-lines` | a cursor on every line of the region |
 
-![mark-all-like-this on "job" in src/cursors.c: 111 cursors with their regions](docs/images/cursors.png)
+![mark-all-like-this on "job" in src/editor/cursors.c: 111 cursors with their regions](docs/images/cursors.png)
 
 ## Known limits
 
