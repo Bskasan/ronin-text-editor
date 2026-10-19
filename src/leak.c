@@ -762,6 +762,38 @@ static b32 leak_external_cycle(Leak *L) {
     return !leak_current(L)->modified && leak_kill_current(L) && leak_current(L) == L->home;
 }
 
+// M-x set-theme through every built-in theme other than ronin, then ronin again (Phase 21): each config load parses into
+// the other of the two config arenas, so nothing may grow; the frame after the cycle equals the one before.
+static b32 leak_theme_setup(Leak *L) {
+    echo_clear(&L->app->echo); // the frames before and after are compared: no message left from earlier scenarios
+    return 1;
+}
+
+static b32 leak_set_theme(Leak *L, String8 name) {
+    u64 mark = arena_pos(L->arena);
+    String8 keys = STR8_LIT("M-x s e t - t h e m e RET ");
+    for (i64 i = 0; i < name.len; i++) keys = str8_fmt(L->arena, "%S%c ", keys, (u32)name.data[i]);
+    keys = str8_fmt(L->arena, "%SRET", keys);
+    leak_feed(L, keys, 1);
+    arena_pop_to(L->arena, mark);
+    if (!leak_settle(L)) return 0;
+    if (L->app->mini.active || !str8_equal(L->app->config->theme_name, name)) {
+        leak_fail(L, "theme-cycle: set-theme did not apply", name);
+        return 0;
+    }
+    return 1;
+}
+
+static b32 leak_theme_cycle(Leak *L) {
+    for (i32 i = 0; i < theme_builtin_count(); i++) {
+        String8 name = theme_builtin_name(i);
+        if (!str8_equal(name, STR8_LIT("ronin")) && !leak_set_theme(L, name)) return 0;
+    }
+    if (!leak_set_theme(L, STR8_LIT("ronin"))) return 0;
+    echo_clear(&L->app->echo); // "Theme ronin": the frame is compared with the one before the first cycle
+    return leak_settle(L);
+}
+
 static const LeakScenario leak_scenarios[] = {
     { "file-cycle", NULL, leak_file_cycle, NULL, 0, 0, 0 },
     { "file-cycle-100mb", NULL, leak_file_100mb_cycle, NULL, 1, 0, 0 },
@@ -789,6 +821,7 @@ static const LeakScenario leak_scenarios[] = {
     { "compile-cycle/error", leak_project_setup, leak_compile_error_cycle, leak_kill_teardown, 0, 0, 0 },
     { "config-reload-cycle/color", NULL, leak_config_color_cycle, NULL, 0, 1, 1 },
     { "config-reload-cycle/scale", NULL, leak_config_scale_cycle, NULL, 0, 1, 1 },
+    { "theme-cycle", leak_theme_setup, leak_theme_cycle, NULL, 0, 1, 1 },
     { "external-change-cycle", NULL, leak_external_cycle, NULL, 0, 0, 0 },
 };
 

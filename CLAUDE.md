@@ -277,7 +277,7 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # window-cycle, minibuffer-cycle, isearch-cycle, finder-cycle,
                                                           # grep-cycle, compile-cycle, multi-cursor-cycle, modal-cycle,
                                                           # git-cycle, terminal-cycle, config-reload-cycle,
-                                                          # undo-cycle, external-change-cycle; a
+                                                          # theme-cycle, undo-cycle, external-change-cycle; a
                                                           # name before '/' runs its sub-cycles) after a prime step, 20
                                                           # warm-up cycles and 4 windows of N/4 (N = 200, a multiple of
                                                           # 4): one table a scenario in the log, LEAK -> exit 6, a cycle
