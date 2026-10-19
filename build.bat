@@ -67,6 +67,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem --- the source check (tools\check_source.c): compiled here, run by verify.bat and the CI workflow ---
+cl /nologo /W4 /WX /O2 tools\check_source.c /Fobuild\check_source.obj /Fdbuild\check_source_cl.pdb /Febuild\check_source.exe /link /INCREMENTAL:NO >nul
+if errorlevel 1 (
+    echo ERROR: tools\check_source.c did not compile
+    exit /b 1
+)
+
 rem --- C (unity build) + the one C++ file (DirectWrite: dwrite.h is C++ only) ---
 set COMMON=/nologo /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0
 set CFLAGS=%COMMON% /std:c11 /Ibuild\gen

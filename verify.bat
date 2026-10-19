@@ -1,8 +1,9 @@
 @echo off
 rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), checks build.bat clean on a
-rem                     scratch tree (clean-check), runs --smoke on the debug and the bench build, --test on the
-rem                     bench build, and checks the release exe's imports and --version
+rem                     scratch tree (clean-check), runs the source check (tools\check_source.c: every source file's
+rem                     header against docs\ARCHITECTURE.md's module map, the include rules), --smoke on the debug and
+rem                     the bench build, --test on the bench build, and checks the release exe's imports and --version
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
 rem                     bench build, the soak (--soak 1000000) on both and the leak check (--leak-check all) on the
 rem                     debug build (once per phase, before its last commit)
@@ -19,6 +20,8 @@ if /i "%~1"=="phase" set PHASE=1
 if not exist build mkdir build
 if not exist build\verify mkdir build\verify
 del /q build\verify\*.log 2>nul
+rem build.bat compiles the source check on every build: none of an earlier run may stand in for it.
+if exist build\check_source.exe del /q build\check_source.exe
 
 call :build debug ronin_debug
 set DEBUG_OK=!BUILD_OK!
@@ -26,6 +29,7 @@ call :build release ronin
 call :build bench ronin_bench
 set BENCH_OK=!BUILD_OK!
 call :clean_check
+call :source_check
 
 if "!DEBUG_OK!"=="1" (
     call :run smoke build\ronin_debug.exe --smoke
@@ -114,6 +118,22 @@ if not "!CODE!"=="0" (
 )
 findstr /r /x /c:"ronin [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\verify\version.log >nul
 if errorlevel 1 call :fail "version (printed something else)"
+exit /b 0
+
+rem --- source-check: tools\check_source.c (built by build.bat) on the repository; its output, kept as
+rem build\verify\source-check.log, is shown when it fails ------------------------------------------------------------
+:source_check
+echo verify: source-check
+if not exist build\check_source.exe (
+    call :fail "source-check skipped (no build\check_source.exe)"
+    exit /b 0
+)
+build\check_source.exe . > build\verify\source-check.log 2>&1
+set CODE=!errorlevel!
+if not "!CODE!"=="0" (
+    type build\verify\source-check.log
+    call :fail "source-check (exit !CODE!)"
+)
 exit /b 0
 
 rem --- clean-check: build.bat clean on a scratch tree, run from another directory that looks like a repository:

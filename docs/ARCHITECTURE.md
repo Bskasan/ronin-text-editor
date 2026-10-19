@@ -11,7 +11,10 @@ not a finished product.
 ## Module map
 
 The sources are in folders by layer (Phase 23): the folder a file is in says what it may include. Every source file
-starts with the standard header, whose `ronin:` line is the file's description below, word for word.
+starts with the standard header (CONTRIBUTING.md), whose `ronin:` line is the file's description below, word for
+word. `verify.bat`'s source check (tools/check_source.c) compares the two and fails a file without a row, a row
+without a file, a missing or changed header, a Windows SDK header outside `src/platform/`, and an include from
+`src/editor/`, `src/project/` or `src/app/` in `src/base/` or `src/text/`.
 
 ### `src/`
 
@@ -111,6 +114,7 @@ Build-time programs, not part of the exe; compiled by build.bat on every build.
 |---|---|---|
 | `make_icon.c` | build tool: draws ronin's icon into build/gen/ronin.ico | run by build.bat on every build |
 | `make_themes.c` | build tool: embeds themes/*.conf into build/gen/themes.h | Phase 21, run by build.bat on every build: comment and blank lines dropped, name order, ronin required, at most 8 KB in all |
+| `check_source.c` | build check: headers, module map and includes of every source file | Phase 23, run by verify.bat and the CI workflow (`check_source <root>`): every source file's header against this map, the two include rules; one `path:line: message` per problem |
 
 ### Other files
 

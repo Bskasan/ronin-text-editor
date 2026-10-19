@@ -1,5 +1,5 @@
-# ronin's continuous build (Phase 22): the three configurations, the tests of the debug and the bench build, the
-# release exe's imports and --version. It needs no secret. The smoke test (real frames on a GPU, the D3D11 debug
+# ronin's continuous build (Phase 22): the three configurations, the source check (Phase 23), the tests of the debug
+# and the bench build, the release exe's imports and --version. It needs no secret. The smoke test (real frames on a GPU, the D3D11 debug
 # layer) and `verify.bat phase` stay local steps: see CONTRIBUTING.md. The bench build's smoke runs here only to
 # find out whether WARP renders on the runner's desktop; it never fails the job.
 name: build
@@ -28,6 +28,12 @@ jobs:
           call .\build.bat || exit /b 1
           call .\build.bat release || exit /b 1
           call .\build.bat bench || exit /b 1
+
+      # Every source file's header against docs/ARCHITECTURE.md's module map, and the include rules (Phase 23;
+      # build.bat compiled the check).
+      - name: Source headers, module map and includes
+        shell: cmd
+        run: build\check_source.exe .
 
       - name: Toolset and executable sizes
         shell: pwsh
