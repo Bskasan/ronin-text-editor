@@ -429,7 +429,7 @@ static void files_update_watches(App *app) {
             next[k].watch = app->watches[i].watch; // kept
             app->watches[i].watch = 0;
         }
-        if (!next[k].watch) next[k].watch = os_watch_dir(dirs[k]);
+        if (!next[k].watch) next[k].watch = os_watch_dir(dirs[k], 0);
     }
     files_unwatch_all(app); // the ones no longer displayed (kept ones were taken out)
     arena_reset(&app->watch_arena);

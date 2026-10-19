@@ -4948,7 +4948,7 @@ static b32 test_hot_reload(Test *t) {
                   config_wait_ms(&src, now) == CONFIG_WAIT_INFINITE, "reload: first load");
     TEST_CHECK(t, config_poll(&src, c, &t->arena, 0, now) == CONFIG_POLL_UNCHANGED, "reload: an unchanged file is not read again");
 
-    OsWatch w = os_watch_dir(dir);
+    OsWatch w = os_watch_dir(dir, 0);
     TEST_CHECK(t, w, "reload: cannot watch %S", dir);
     while (os_dev_watch_wait(w, 50)) {} // nothing pending
     // Written in place.
@@ -8973,6 +8973,81 @@ static b32 test_theme_masked(Test *t) {
     TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("Reloaded ronin.conf")), "themes: app: ronin with 30: '%S'", test_echo(app));
     if (!test_app_destroy(t, app, "themes masked")) return 0;
     LOG("test: ok: themes masked (the note in the echo area and once in *Messages* per load, an error first, one key, none, none under ronin)");
+    return 1;
+}
+
+// The real watches' notifications for a while, fed to the app, then its settle delay passed: what a change in the
+// config folder or a themes\ folder does. The number of notifications.
+static i32 test_theme_pump(Test *t, App *app) {
+    Event events[16];
+    i32 got = 0;
+    OsEvent pause;
+    os_event_create(&pause);
+    for (i32 i = 0; i < 100 && got < 16; i++) {
+        i32 n = os_dev_poll_watches(events + got, 16 - got);
+        got += n;
+        if (got && !n && i > 5) break; // they came, and a little after them nothing more
+        os_event_wait(pause, 10);
+    }
+    os_event_destroy(pause);
+    app_dev_feed_events(app, events, got, &t->arena);
+    app->config_source.settle_at_us = 0; // the settle delay has passed
+    Event wake = { .kind = EVENT_WAKEUP };
+    app_dev_feed_events(app, &wake, 1, &t->arena);
+    return got;
+}
+
+// Hot reload of themes through the real watches (build\tmp\p21themes\watch): a theme asked for but missing, its
+// themes\ folder created after the start, the file added, written while chosen, another theme written (no reload),
+// the file removed; every watch released.
+static b32 test_theme_reload(Test *t) {
+    i32 watches_before = os_dev_watch_count();
+    String8 dir = test_theme_dir(t, NULL);
+    dir = str8_fmt(&t->arena, "%S\\watch", dir);
+    os_make_dir(dir);
+    String8 folder = str8_fmt(&t->arena, "%S\\themes", dir), w1 = str8_fmt(&t->arena, "%S\\w1.conf", folder);
+    String8 w2 = str8_fmt(&t->arena, "%S\\w2.conf", folder), conf = str8_fmt(&t->arena, "%S\\ronin.conf", dir);
+    os_file_delete(w1);
+    os_file_delete(w2);
+    os_dev_remove_dir(folder);
+    OsFileInfo info;
+    TEST_CHECK(t, os_file_info(folder, &info) == OS_FILE_NOT_FOUND, "theme reload: %S is still there", folder);
+    os_write_file(conf, STR8_LIT("[settings]\ntheme = w1\n"));
+    App *app = test_manual_app(t, str8(NULL, 0), 0, 0, conf);
+    TEST_CHECK(t, app && app->config_watch && !app->theme_watches[0] && str8_equal(app->config->theme_name, STR8_LIT("ronin")) &&
+                  app->config->diags.errors == 1, "theme reload: at the start: watch %d, themes watch %d, theme '%S'",
+               app ? app->config_watch : 0, app ? app->theme_watches[0] : 0, app ? app->config->theme_name : STR8_LIT(""));
+
+    os_make_dir(folder);
+    i32 made = test_theme_pump(t, app);
+    TEST_CHECK(t, made > 0 && app->theme_watches[0], "theme reload: themes\\ created after the start: %d notification(s), watched %d",
+               made, app->theme_watches[0]);
+    os_write_file(w1, STR8_LIT("[colors]\nbackground = #212121\n"));
+    i32 added = test_theme_pump(t, app);
+    TEST_CHECK(t, added > 0 && app->config->theme.background == 0x212121 && str8_equal(app->config->theme_name, STR8_LIT("w1")),
+               "theme reload: the file added: %d notification(s), background %06x, theme '%S'", added, app->config->theme.background,
+               app->config->theme_name);
+    os_write_file(w1, STR8_LIT("[colors]\nbackground = #222222\ntext = #232323\n"));
+    i32 written = test_theme_pump(t, app);
+    TEST_CHECK(t, written > 0 && app->config->theme.background == 0x222222 && app->config->theme.text == 0x232323 &&
+                  str8_equal(test_echo(app), STR8_LIT("Reloaded ronin.conf")),
+               "theme reload: the chosen theme written: background %06x, echo '%S'", app->config->theme.background, test_echo(app));
+    Config *kept = app->config;
+    app_dev_feed(app, "C-g", &t->arena); // the echo area cleared
+    os_write_file(w2, STR8_LIT("[colors]\nbackground = #242424\n"));
+    i32 other = test_theme_pump(t, app);
+    TEST_CHECK(t, other > 0 && app->config == kept && app->config->theme.background == 0x222222 && !str8_equal(test_echo(app), STR8_LIT("Reloaded ronin.conf")),
+               "theme reload: another theme written: reloaded %d, echo '%S'", app->config != kept, test_echo(app));
+    os_file_delete(w1);
+    i32 removed = test_theme_pump(t, app);
+    TEST_CHECK(t, removed > 0 && app->config->theme.background == 0x072626 && test_echo_has(app, "ronin.conf:2: theme: no theme 'w1' (using ronin)"),
+               "theme reload: the file removed: background %06x, echo '%S'", app->config->theme.background, test_echo(app));
+    if (!test_app_destroy(t, app, "theme reload")) return 0;
+    os_file_delete(w2);
+    os_dev_remove_dir(folder);
+    TEST_CHECK(t, os_dev_watch_count() == watches_before, "theme reload: watches left open (%d, before %d)", os_dev_watch_count(), watches_before);
+    LOG("test: ok: theme reload (real watches: themes\\ created after the start, the theme asked for added, written while chosen, another "
+        "theme written without a reload, removed; every watch released)");
     return 1;
 }
 
@@ -14814,6 +14889,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_themes(&t);
     arena_reset(&t.arena);
     test_theme_masked(&t);
+    arena_reset(&t.arena);
+    test_theme_reload(&t);
     arena_reset(&t.arena);
     test_theme_fuzz(&t, seed);
     arena_reset(&t.arena);

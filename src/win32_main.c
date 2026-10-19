@@ -815,14 +815,15 @@ u32 os_clipboard_seq(void) {
 // ---------------------------------------------------------------------------
 // Directory watches
 
-OsWatch os_watch_dir(String8 dir) {
+OsWatch os_watch_dir(String8 dir, b32 subdirs) {
     Platform *p = g_platform;
     i32 slot = 0;
     while (slot < WIN32_MAX_WATCHES && p->watches[slot]) slot++;
     if (slot == WIN32_MAX_WATCHES) return 0;
     u64 mark = arena_pos(&p->scratch);
-    HANDLE h = FindFirstChangeNotificationW(win32_path16(dir), FALSE,
-                                            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
+    DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
+    if (subdirs) filter |= FILE_NOTIFY_CHANGE_DIR_NAME;
+    HANDLE h = FindFirstChangeNotificationW(win32_path16(dir), FALSE, filter);
     arena_pop_to(&p->scratch, mark);
     if (h == INVALID_HANDLE_VALUE) return 0;
     WIN32_DEV_HANDLES(1);

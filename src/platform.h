@@ -121,7 +121,9 @@ void os_dev_clipboard_external(String8 text); // the fake: as if another program
 typedef u32 OsWatch; // 0 = none
 struct Event;
 
-OsWatch os_watch_dir(String8 dir); // 0 on failure (no such directory, too many watches)
+// subdirs: also the names of its subdirectories (a folder created or removed in it; Phase 21: themes\ next to
+// ronin.conf).
+OsWatch os_watch_dir(String8 dir, b32 subdirs); // 0 on failure (no such directory, too many watches)
 // A whole tree (names of files and directories only), one-shot: it delivers one EVENT_DIR_CHANGED,
 // then nothing until os_watch_rearm, however many changes follow (a build creating hundreds of files
 // is one wake-up).

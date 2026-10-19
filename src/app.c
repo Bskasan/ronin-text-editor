@@ -59,8 +59,9 @@ struct App {
     i32 config_slot;
     String8 config_path;         // the user's ronin.conf; empty = built-in defaults only
     ConfigSource config_source;  // when to read it again
-    OsWatch config_watch;        // its directory
+    OsWatch config_watch;        // its directory (and the names of its subfolders: a themes\ created later)
     String8 exe_dir;             // ronin.exe's folder (its themes\ holds theme files too; Phase 21)
+    OsWatch theme_watches[2];    // themes\ next to ronin.conf and next to ronin.exe (ThemeDirs' order), when they exist
     i32 forced_render_mode;      // dev --render-mode, -1 = from the config
     i32 text_scale;              // text-scale-increase / decrease steps, session only
     i32 wheel_scale_accum;       // Ctrl + wheel units not yet turned into text scale steps
@@ -924,11 +925,41 @@ static ConfigPoll app_poll_config(App *app, b32 force, b32 startup) {
     return result;
 }
 
+// Watches the themes\ folders that exist (Phase 21): a theme file written, added or removed reloads when it is the
+// theme asked for (config_poll compares). A folder that went is no longer watched; one that came (the config
+// directory's watch sees folder names) is watched from then on.
+static void app_watch_themes(App *app) {
+    ThemeDirs *d = &app->config_source.themes;
+    for (i32 k = 0; k < 2; k++) {
+        String8 dir = k == 0 ? d->config_dir : d->exe_dir;
+        u64 mark = arena_pos(&app->files_arena);
+        String8 folder = dir.len ? theme_folder(&app->files_arena, dir) : str8(NULL, 0);
+        OsFileInfo info;
+        b32 there = folder.len && os_file_info(folder, &info) == OS_FILE_OK && info.is_dir;
+        if (app->theme_watches[k] && !there) {
+            os_unwatch(app->theme_watches[k]);
+            app->theme_watches[k] = 0;
+        } else if (!app->theme_watches[k] && there) {
+            app->theme_watches[k] = os_watch_dir(folder, 0);
+            LOG("config: watching %S: %s", folder, app->theme_watches[k] ? "yes" : "no");
+        }
+        arena_pop_to(&app->files_arena, mark);
+    }
+}
+
+static void app_unwatch_themes(App *app) {
+    for (i32 k = 0; k < 2; k++) {
+        os_unwatch(app->theme_watches[k]);
+        app->theme_watches[k] = 0;
+    }
+}
+
 // Watches the config file's directory (when it exists), so edits apply live.
 static void app_watch_config(App *app) {
+    app_watch_themes(app);
     if (app->config_watch || !app->config_path.len) return;
     String8 dir = app_config_dir(app);
-    app->config_watch = os_watch_dir(dir);
+    app->config_watch = os_watch_dir(dir, 1);
     LOG("config: watching %S: %s", dir, app->config_watch ? "yes" : "no (no such directory)");
 }
 
@@ -1278,6 +1309,7 @@ i32 app_shutdown(App *app) {
     kill_destroy(&app->kills);
     for (i32 i = 0; i < 2; i++) os_release(app->config_arenas[i].base);
     os_unwatch(app->config_watch);
+    app_unwatch_themes(app);
     return leaks;
 }
 
@@ -2165,8 +2197,12 @@ static b32 app_update(App *app, FrameInput *in) {
             else app_wheel(app, e->x, e->y, e->wheel, e->mods);
             break;
         case EVENT_DIR_CHANGED:
-            if (e->watch == app->config_watch) config_notify(&app->config_source, os_time_us());
-            else if (finder_watch_event(app, e->watch)) {} // a project's tree: its index is stale
+            if (e->watch == app->config_watch) {
+                config_notify(&app->config_source, os_time_us());
+                app_watch_themes(app); // a themes\ folder made or removed
+            } else if (e->watch && (e->watch == app->theme_watches[0] || e->watch == app->theme_watches[1])) {
+                config_notify(&app->config_source, os_time_us()); // read if it is the theme asked for
+            } else if (finder_watch_event(app, e->watch)) {} // a project's tree: its index is stale
             else if (app->focused) files_notify(app, e->watch); // without focus, the activation check covers it
             break;
         default:
@@ -2391,6 +2427,7 @@ void app_dev_smoke_cursors_end(App *app) {
 
 void app_dev_use_config(App *app, String8 path) {
     os_unwatch(app->config_watch);
+    app_unwatch_themes(app);
     app->config_watch = 0;
     app->config_path = path;
     app->config_source = (ConfigSource){ .path = path };
