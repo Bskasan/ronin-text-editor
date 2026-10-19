@@ -14734,6 +14734,482 @@ static b32 test_git_changes_errors(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// The README check (Phase 22): README.md's key tables, settings, config blocks, prose keys and links against the
+// code, and CONTRIBUTING.md's prose keys and links. A key table is a table headed exactly "| keys | command | what it
+// does |", in the global keymap unless the line before it is "<!-- keymap: NAME -->" ([keys NAME]); a settings table
+// is headed "| setting | default | what it does |". Messages name the file and the line.
+
+#define README_FAILURES_KEPT 64
+
+typedef struct ReadmeCheck {
+    Test *t;
+    App *app;
+    Config *base;    // the built-in configuration: settings and config blocks are parsed over a copy of it
+    Config *scratch;
+    String8 root;    // the repository
+    String8 file;    // "README.md": the name in the messages
+    String8 *lines;  // without their line ends
+    i64 line_count;
+    String8 failures[README_FAILURES_KEPT];
+    i32 failure_count; // all of them, the first README_FAILURES_KEPT kept
+    i32 keys, tables, settings, blocks, prose, links, external;
+} ReadmeCheck;
+
+static void readme_fail_text(ReadmeCheck *c, String8 text) {
+    if (c->failure_count < README_FAILURES_KEPT) c->failures[c->failure_count] = text;
+    c->failure_count++;
+}
+
+static void readme_fail(ReadmeCheck *c, i64 line, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    String8 what = str8_fmtv(&c->t->arena, fmt, args);
+    va_end(args);
+    readme_fail_text(c, str8_fmt(&c->t->arena, "%S:%D: %S", c->file, line, what));
+}
+
+static String8 readme_trim(String8 s) {
+    while (s.len && (s.data[0] == ' ' || s.data[0] == '\t')) s.data++, s.len--;
+    while (s.len && (s.data[s.len - 1] == ' ' || s.data[s.len - 1] == '\t')) s.len--;
+    return s;
+}
+
+// The text's lines, LF or CRLF.
+static String8 *readme_split(Arena *arena, String8 text, i64 *count) {
+    i64 n = 1;
+    for (i64 i = 0; i < text.len; i++) n += text.data[i] == '\n';
+    String8 *lines = PUSH_ARRAY(arena, String8, n);
+    i64 k = 0, start = 0;
+    for (i64 i = 0; i <= text.len; i++) {
+        if (i < text.len && text.data[i] != '\n') continue;
+        String8 line = str8(text.data + start, i - start);
+        if (line.len && line.data[line.len - 1] == '\r') line.len--;
+        lines[k++] = line;
+        start = i + 1;
+    }
+    *count = k;
+    return lines;
+}
+
+// The `code spans` of a piece of text.
+static i32 readme_spans(String8 s, String8 *out, i32 cap) {
+    i32 n = 0;
+    for (i64 i = 0; i < s.len; i++) {
+        if (s.data[i] != '`') continue;
+        i64 j = i + 1;
+        while (j < s.len && s.data[j] != '`') j++;
+        if (j >= s.len) break;
+        if (n < cap) out[n++] = str8(s.data + i + 1, j - i - 1);
+        i = j;
+    }
+    return n;
+}
+
+// A table row's cells, without the outer pipes.
+static i32 readme_cells(String8 line, String8 *out, i32 cap) {
+    line = readme_trim(line);
+    if (line.len && line.data[0] == '|') line.data++, line.len--;
+    if (line.len && line.data[line.len - 1] == '|') line.len--;
+    i32 n = 0;
+    i64 start = 0;
+    for (i64 i = 0; i <= line.len && n < cap; i++) {
+        if (i < line.len && line.data[i] != '|') continue;
+        out[n++] = readme_trim(str8(line.data + start, i - start));
+        start = i + 1;
+    }
+    return n;
+}
+
+static b32 readme_is_fence(String8 line) { return str8_starts_with(readme_trim(line), STR8_LIT("```")); }
+
+// The level of a heading line ("## Themes" is 2, with its text), or 0.
+static i32 readme_heading(String8 line, String8 *text) {
+    i32 level = 0;
+    while (level < line.len && line.data[level] == '#') level++;
+    if (level == 0 || level > 6 || level >= line.len || line.data[level] != ' ') return 0;
+    *text = readme_trim(str8(line.data + level + 1, line.len - level - 1));
+    return level;
+}
+
+// GitHub's anchor for a heading: lowercase, punctuation dropped (but '-' and '_'), spaces to '-'.
+static String8 readme_slug(Arena *arena, String8 heading) {
+    u8 *out = PUSH_ARRAY(arena, u8, heading.len + 1);
+    i64 n = 0;
+    for (i64 i = 0; i < heading.len; i++) {
+        u8 b = heading.data[i];
+        if (b >= 'A' && b <= 'Z') out[n++] = (u8)(b - 'A' + 'a');
+        else if ((b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '_' || b >= 0x80) out[n++] = b;
+        else if (b == ' ') out[n++] = '-';
+    }
+    return str8(out, n);
+}
+
+static b32 readme_has_anchor(Arena *arena, String8 *lines, i64 count, String8 anchor) {
+    b32 code = 0;
+    for (i64 i = 0; i < count; i++) {
+        if (readme_is_fence(lines[i])) code = !code;
+        String8 text;
+        if (!code && readme_heading(lines[i], &text) && str8_equal(readme_slug(arena, text), anchor)) return 1;
+    }
+    return 0;
+}
+
+// [keys NAME] of a key table: the Config's keymap, and the buffer keymap describe-key reaches it through (or -1:
+// describe-key cannot run there, the map is looked up as key_lookup's stack orders it, the map then the global one).
+static Keymap *readme_keymap(Config *cfg, String8 name, i32 *buffer_keymap) {
+    *buffer_keymap = -1;
+    if (!name.len) { *buffer_keymap = BUFFER_KEYMAP_NONE; return &cfg->global; }
+    if (str8_equal(name, STR8_LIT("search-results"))) { *buffer_keymap = BUFFER_KEYMAP_SEARCH_RESULTS; return &cfg->search_results; }
+    if (str8_equal(name, STR8_LIT("compilation"))) { *buffer_keymap = BUFFER_KEYMAP_COMPILATION; return &cfg->compilation; }
+    if (str8_equal(name, STR8_LIT("minibuffer"))) return &cfg->minibuffer;
+    if (str8_equal(name, STR8_LIT("isearch"))) return &cfg->isearch;
+    if (str8_equal(name, STR8_LIT("command-list"))) return &cfg->command_list;
+    if (str8_equal(name, STR8_LIT("git-changes"))) return &cfg->git_changes;
+    return NULL;
+}
+
+// One key of a key table: written as describe-key prints it, and running `command` in that keymap.
+static void readme_key(ReadmeCheck *c, i64 line, String8 keymap_name, String8 key, String8 command) {
+    c->keys++;
+    KeySeq seq;
+    const char *error = NULL;
+    if (!key_seq_parse(key, &seq, &error)) {
+        readme_fail(c, line, "`%S` is no key sequence (%s)", key, error);
+        return;
+    }
+    u8 printed[KEY_SEQ_TEXT_CAP];
+    String8 canonical = str8(printed, key_seq_print(&seq, printed, sizeof(printed)));
+    if (!str8_equal(canonical, key)) {
+        readme_fail(c, line, "`%S` is written `%S` (as describe-key prints it)", key, canonical);
+        return;
+    }
+    Config *cfg = c->app->config;
+    i32 buffer_keymap;
+    Keymap *map = readme_keymap(cfg, keymap_name, &buffer_keymap);
+    if (buffer_keymap < 0) {
+        const Command *cmd = keymap_get(map, &seq);
+        if (!cmd) cmd = keymap_get(&cfg->global, &seq);
+        if (!cmd || !str8_equal(str8_cstr(cmd->name), command))
+            readme_fail(c, line, "`%S` in [keys %S] runs %s, the table says %S", key, keymap_name, cmd ? cmd->name : "nothing", command);
+        return;
+    }
+    // describe-key itself, through the keys, in *scratch* with the buffer keymap of the table.
+    Buffer *buf = app_selected_view(c->app)->buffer;
+    buf->keymap = buffer_keymap;
+    Event events[16];
+    String8 keys = str8_fmt(&c->t->arena, "C-h k %S", key);
+    i32 n = app_dev_key_events(c->app, keys, events, ARRAY_COUNT(events));
+    app_dev_feed_events(c->app, events, n, &c->t->arena);
+    String8 echo = str8_copy(&c->t->arena, str8(c->app->echo.text, c->app->echo.len));
+    String8 want = str8_fmt(&c->t->arena, "%S runs the command %S", key, command);
+    if (!str8_equal(echo, want)) {
+        readme_fail(c, line, "`%S`: describe-key says \"%S\", the table says %S", key, echo, command);
+        c->app->keys.describe = 0; // a prefix left waiting
+        c->app->keys.pending.len = 0;
+    }
+    buf->keymap = BUFFER_KEYMAP_NONE;
+}
+
+static void readme_key_table(ReadmeCheck *c, i64 header, String8 keymap_name, i64 *end) {
+    c->tables++;
+    i32 dummy;
+    if (!readme_keymap(c->app->config, keymap_name, &dummy)) {
+        readme_fail(c, header, "no [keys %S] section", keymap_name); // the line above the header names it
+        *end = header + 2;
+        return;
+    }
+    i64 i = header + 2; // after the separator row
+    for (; i < c->line_count && readme_trim(c->lines[i]).len && c->lines[i].data[0] == '|'; i++) {
+        String8 cells[8], keys[16], commands[16];
+        i32 cell_count = readme_cells(c->lines[i], cells, ARRAY_COUNT(cells));
+        i32 nk = cell_count > 0 ? readme_spans(cells[0], keys, ARRAY_COUNT(keys)) : 0;
+        i32 nc = cell_count > 1 ? readme_spans(cells[1], commands, ARRAY_COUNT(commands)) : 0;
+        if (!nk || !nc || (nc != 1 && nc != nk)) {
+            readme_fail(c, i + 1, "a key table row needs its keys and commands in `code`, as many commands as keys or one (%d, %d)", nk, nc);
+            continue;
+        }
+        for (i32 k = 0; k < nk; k++) readme_key(c, i + 1, keymap_name, keys[k], commands[nc == 1 ? 0 : k]);
+    }
+    *end = i;
+}
+
+// Parses `text` over the built-in configuration; every diagnostic is a failure (they already name the file and the
+// line: the text is laid out on the lines it has in the file). theme_name: a theme file's text.
+static void readme_parse(ReadmeCheck *c, String8 text, String8 theme_name) {
+    *c->scratch = *c->base;
+    c->scratch->diags = (ConfigDiags){ 0 };
+    if (theme_name.len) config_parse_theme(c->scratch, &c->t->arena, text, c->file, theme_name);
+    else config_parse(c->scratch, &c->t->arena, text, c->file);
+    for (ConfigDiag *d = c->scratch->diags.first; d; d = d->next) readme_fail_text(c, str8_copy(&c->t->arena, d->text));
+}
+
+// `text` preceded by newlines so its first line is line `line` of the file.
+static String8 readme_at_line(Arena *arena, i64 line, String8 text) {
+    i64 pad = line > 1 ? line - 1 : 0;
+    u8 *out = PUSH_ARRAY(arena, u8, pad + text.len);
+    memset(out, '\n', (size_t)pad);
+    memcpy(out + pad, text.data, (size_t)text.len);
+    return str8(out, pad + text.len);
+}
+
+static void readme_setting(ReadmeCheck *c, i64 line, String8 name, String8 value) {
+    c->settings++;
+    String8 text = str8_fmt(&c->t->arena, "[settings]\n%S = %S\n", name, value);
+    readme_parse(c, readme_at_line(&c->t->arena, line - 1, text), str8(NULL, 0));
+}
+
+// A name of the Configuration section with an '_' in it: a setting or a color key.
+static void readme_config_name(ReadmeCheck *c, i64 line, String8 name) {
+    b32 identifier = name.len > 0, underscore = 0;
+    for (i64 i = 0; i < name.len; i++) {
+        u8 b = name.data[i];
+        underscore |= b == '_';
+        if (!((b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_')) identifier = 0;
+    }
+    if (!identifier || !underscore) return;
+    c->prose++;
+    *c->scratch = *c->base;
+    c->scratch->diags = (ConfigDiags){ 0 };
+    config_parse(c->scratch, &c->t->arena, str8_fmt(&c->t->arena, "[settings]\n%S = 1\n", name), c->file);
+    for (ConfigDiag *d = c->scratch->diags.first; d; d = d->next) {
+        String8 unknown = STR8_LIT("unknown setting");
+        b32 is_unknown = 0;
+        for (i64 k = 0; k + unknown.len <= d->text.len; k++)
+            if (mem_equal(d->text.data + k, unknown.data, unknown.len)) is_unknown = 1;
+        if (!is_unknown) return; // a setting (its value aside)
+    }
+    if (!c->scratch->diags.first) return;
+    *c->scratch = *c->base;
+    c->scratch->diags = (ConfigDiags){ 0 };
+    config_parse(c->scratch, &c->t->arena, str8_fmt(&c->t->arena, "[colors]\n%S = #000000\n", name), c->file);
+    if (c->scratch->diags.first) readme_fail(c, line, "`%S` is no setting and no color", name);
+}
+
+// Prose: `M-x name` names a command; a C- or M- key sequence is bound in some keymap.
+static void readme_prose_span(ReadmeCheck *c, i64 line, String8 span) {
+    if (str8_starts_with(span, STR8_LIT("M-x "))) {
+        c->prose++;
+        String8 name = str8(span.data + 4, span.len - 4);
+        if (!command_find(name)) readme_fail(c, line, "`%S`: no command %S", span, name);
+        return;
+    }
+    if (!str8_starts_with(span, STR8_LIT("C-")) && !str8_starts_with(span, STR8_LIT("M-"))) return;
+    KeySeq seq;
+    const char *error = NULL;
+    if (!key_seq_parse(span, &seq, &error)) return; // notation such as `C-`
+    c->prose++;
+    Config *cfg = c->app->config;
+    Keymap *maps[] = { &cfg->global, &cfg->minibuffer, &cfg->isearch, &cfg->search_results, &cfg->compilation, &cfg->command_list,
+                       &cfg->git_changes };
+    for (i32 k = 0; k < ARRAY_COUNT(maps); k++) if (keymap_get(maps[k], &seq)) return;
+    readme_fail(c, line, "`%S` is bound in no keymap", span);
+}
+
+static void readme_link(ReadmeCheck *c, i64 line, String8 target) {
+    c->links++;
+    if (str8_starts_with(target, STR8_LIT("http://")) || str8_starts_with(target, STR8_LIT("https://"))) {
+        c->external++;
+        LOG("test: readme: %S:%D: external link %S", c->file, line, target);
+        return;
+    }
+    String8 path = target, anchor = str8(NULL, 0);
+    for (i64 i = 0; i < target.len; i++) {
+        if (target.data[i] != '#') continue;
+        path = str8(target.data, i);
+        anchor = str8(target.data + i + 1, target.len - i - 1);
+        break;
+    }
+    String8 *lines = c->lines;
+    i64 count = c->line_count;
+    if (path.len) {
+        String8 full = str8_fmt(&c->t->arena, "%S\\%S", c->root, path);
+        for (i64 i = 0; i < full.len; i++) if (full.data[i] == '/') full.data[i] = '\\';
+        if (full.data[full.len - 1] == '\\') full.len--;
+        OsFileInfo info;
+        if (os_file_info(full, &info) != OS_FILE_OK) {
+            readme_fail(c, line, "link %S: no such file", target);
+            return;
+        }
+        if (!anchor.len) return;
+        String8 text;
+        if (os_read_small_file(&c->t->arena, full, MB(16), &text) != OS_FILE_OK) {
+            readme_fail(c, line, "link %S: cannot read it", target);
+            return;
+        }
+        lines = readme_split(&c->t->arena, text, &count);
+    }
+    if (!readme_has_anchor(&c->t->arena, lines, count, anchor)) readme_fail(c, line, "link %S: no heading #%S", target, anchor);
+}
+
+static void readme_links(ReadmeCheck *c, i64 line, String8 s) {
+    for (i64 i = 0; i + 1 < s.len; i++) {
+        if (s.data[i] != ']' || s.data[i + 1] != '(') continue;
+        i64 j = i + 2;
+        while (j < s.len && s.data[j] != ')') j++;
+        if (j >= s.len) break;
+        readme_link(c, line, str8(s.data + i + 2, j - i - 2));
+        i = j;
+    }
+}
+
+// Checks one file's text; the failures stay in c. need_tables: README (no key table at all is a failure).
+static void readme_check(ReadmeCheck *c, String8 file, String8 text, b32 need_tables) {
+    c->file = file;
+    c->lines = readme_split(&c->t->arena, text, &c->line_count);
+    String8 section = str8(NULL, 0); // the current ## heading
+    i32 tables0 = c->tables;
+    for (i64 i = 0; i < c->line_count; i++) {
+        String8 line = c->lines[i], heading;
+        if (readme_heading(line, &heading) == 2) section = heading;
+        b32 config_section = str8_equal(section, STR8_LIT("Configuration"));
+        b32 exempt = str8_equal(section, STR8_LIT("Known limits")) || str8_equal(section, STR8_LIT("Roadmap"));
+        if (readme_is_fence(line)) { // a code block: config blocks of Configuration and Themes are parsed
+            String8 lang = readme_trim(str8(readme_trim(line).data + 3, readme_trim(line).len - 3));
+            i64 start = i + 1, stop = start;
+            while (stop < c->line_count && !readme_is_fence(c->lines[stop])) stop++;
+            if (str8_equal(lang, STR8_LIT("ini")) && (config_section || str8_equal(section, STR8_LIT("Themes"))) && stop > start) {
+                c->blocks++;
+                String8 body = str8(c->lines[start].data, c->lines[stop - 1].data + c->lines[stop - 1].len - c->lines[start].data);
+                String8 theme_name = str8(NULL, 0);
+                if (str8_equal(readme_trim(c->lines[start]), STR8_LIT("[theme]"))) {
+                    theme_name = STR8_LIT("?");
+                    for (i64 k = start; k < stop; k++) {
+                        String8 l = readme_trim(c->lines[k]);
+                        if (!str8_starts_with(l, STR8_LIT("name"))) continue;
+                        for (i64 e = 0; e < l.len; e++)
+                            if (l.data[e] == '=') { theme_name = readme_trim(str8(l.data + e + 1, l.len - e - 1)); break; }
+                    }
+                }
+                readme_parse(c, readme_at_line(&c->t->arena, start + 1, body), theme_name);
+            }
+            i = stop;
+            continue;
+        }
+        String8 trimmed = readme_trim(line);
+        if (str8_equal(trimmed, STR8_LIT("| keys | command | what it does |"))) {
+            String8 keymap_name = str8(NULL, 0);
+            String8 before = i ? readme_trim(c->lines[i - 1]) : str8(NULL, 0);
+            String8 open = STR8_LIT("<!-- keymap: "), close = STR8_LIT(" -->");
+            if (str8_starts_with(before, open) && before.len > open.len + close.len)
+                keymap_name = str8(before.data + open.len, before.len - open.len - close.len);
+            i64 end;
+            readme_key_table(c, i, keymap_name, &end);
+            for (i64 k = i; k < end; k++) readme_links(c, k + 1, c->lines[k]);
+            i = end - 1;
+            continue;
+        }
+        if (str8_equal(trimmed, STR8_LIT("| setting | default | what it does |"))) {
+            i64 k = i + 2;
+            for (; k < c->line_count && readme_trim(c->lines[k]).len && c->lines[k].data[0] == '|'; k++) {
+                String8 cells[8], name[4], value[4], spans[16];
+                i32 cell_count = readme_cells(c->lines[k], cells, ARRAY_COUNT(cells));
+                if (cell_count < 2 || readme_spans(cells[0], name, 4) != 1 || readme_spans(cells[1], value, 4) != 1) {
+                    readme_fail(c, k + 1, "a settings row needs its name and its default in `code`");
+                    continue;
+                }
+                readme_setting(c, k + 1, name[0], value[0]);
+                i32 n = readme_spans(c->lines[k], spans, ARRAY_COUNT(spans));
+                for (i32 s = 1; s < n; s++) readme_config_name(c, k + 1, spans[s]); // the name itself was parsed above
+                readme_links(c, k + 1, c->lines[k]);
+            }
+            i = k - 1;
+            continue;
+        }
+        String8 spans[64];
+        i32 n = readme_spans(line, spans, ARRAY_COUNT(spans));
+        for (i32 s = 0; s < n; s++) {
+            if (config_section) readme_config_name(c, i + 1, spans[s]);
+            if (!exempt && trimmed.len && trimmed.data[0] != '|') readme_prose_span(c, i + 1, spans[s]);
+        }
+        readme_links(c, i + 1, line);
+    }
+    if (need_tables && c->tables == tables0) readme_fail_text(c, str8_fmt(&c->t->arena, "%S: no key table (\"| keys | command | what it "
+                                                                                       "does |\") found", file));
+}
+
+// A broken fragment must give exactly one failure, starting with `prefix` and holding `part`.
+static b32 readme_expect(ReadmeCheck *c, const char *fragment, const char *prefix, const char *part) {
+    c->failure_count = 0;
+    readme_check(c, STR8_LIT("frag.md"), str8_cstr(fragment), 0);
+    String8 got = c->failure_count ? c->failures[0] : STR8_LIT("(none)");
+    String8 p = str8_cstr(prefix), q = str8_cstr(part);
+    b32 has = 0;
+    for (i64 k = 0; k + q.len <= got.len; k++) if (mem_equal(got.data + k, q.data, q.len)) has = 1;
+    if (c->failure_count == 1 && str8_starts_with(got, p) && has) return 1;
+    LOG("test: FAIL: readme: the fragment %s gave %d failure(s), the first '%S'; want '%s ... %s'", fragment, c->failure_count, got,
+        prefix, part);
+    return 0;
+}
+
+static b32 test_readme(Test *t) {
+    u64 t0 = os_time_us();
+    ReadmeCheck *c = PUSH_STRUCT(&t->arena, ReadmeCheck);
+    c->t = t;
+    c->root = str8_fmt(&t->arena, "%S\\..", os_exe_dir(&t->arena));
+    c->app = test_app_create(t);
+    TEST_CHECK(t, c->app, "readme: no app");
+    c->base = PUSH_STRUCT(&t->arena, Config);
+    c->scratch = PUSH_STRUCT(&t->arena, Config);
+    config_defaults(c->base, &t->arena);
+    TEST_CHECK(t, c->base->diags.errors == 0 && c->base->diags.warnings == 0, "readme: the built-in configuration has diagnostics");
+
+    // The checker itself: each broken fragment caught, at its line.
+    struct { const char *fragment, *prefix, *part; } broken[] = {
+        { "| keys | command | what it does |\n|---|---|---|\n| `C-x C-f` | `find-files` | x |\n", "frag.md:3: ",
+          "describe-key says \"C-x C-f runs the command find-file\"" },
+        { "| keys | command | what it does |\n|---|---|---|\n| `C-X` | `undo` | x |\n", "frag.md:3: ", "is written `C-S-x`" },
+        { "| keys | command | what it does |\n|---|---|---|\n| `C-c q` | `undo` | x |\n", "frag.md:3: ", "\"C-c q is undefined\"" },
+        { "<!-- keymap: git-changes -->\n| keys | command | what it does |\n|---|---|---|\n| `g` | `recompile` | x |\n", "frag.md:4: ",
+          "runs git-changes-refresh, the table says recompile" },
+        { "| keys | command | what it does |\n|---|---|---|\n| `C-x C-f` | x |\n", "frag.md:3: ", "needs its keys and commands" },
+        { "| setting | default | what it does |\n|---|---|---|\n| `font_sise` | `12` | x |\n", "frag.md:3: ", "unknown setting 'font_sise'" },
+        { "| setting | default | what it does |\n|---|---|---|\n| `tab_width` | `99` | x |\n", "frag.md:3: ", "tab_width" },
+        { "## Configuration\n\n```ini\n[settings]\nfont = Consolas\n[colors]\ntext = #12345\n```\n", "frag.md:7: ", "text" },
+        { "## Configuration\n\nSet `undo_limt_mb` to keep more.\n", "frag.md:3: ", "`undo_limt_mb` is no setting and no color" },
+        { "## Themes\n\n```ini\n[theme]\nname = x\n[keys]\nC-a undo\n```\n", "frag.md:6: ", "" },
+        { "Run `M-x no-such-command` now.\n", "frag.md:1: ", "no command no-such-command" },
+        { "Press `C-c q` then.\n", "frag.md:1: ", "`C-c q` is bound in no keymap" },
+        { "See [this](no_such_file.md).\n", "frag.md:1: ", "link no_such_file.md: no such file" },
+        { "# Title\n\nSee [this](#nowhere).\n", "frag.md:3: ", "link #nowhere: no heading #nowhere" },
+        { "See [the limits](README.md#no-such-heading).\n", "frag.md:1: ", "no heading #no-such-heading" },
+    };
+    i32 caught = 0;
+    for (i32 k = 0; k < ARRAY_COUNT(broken); k++) caught += readme_expect(c, broken[k].fragment, broken[k].prefix, broken[k].part);
+    c->failure_count = 0;
+    readme_check(c, STR8_LIT("frag.md"), STR8_LIT("No table here.\n"), 1);
+    b32 no_table = c->failure_count == 1 && str8_starts_with(c->failures[0], STR8_LIT("frag.md: no key table"));
+    TEST_CHECK(t, caught == ARRAY_COUNT(broken) && no_table, "readme: the checker missed %d of %d broken fragments (no table: %d)",
+               (i32)ARRAY_COUNT(broken) - caught, (i32)ARRAY_COUNT(broken), no_table);
+    c->keys = c->tables = c->settings = c->blocks = c->prose = c->links = c->external = 0;
+    c->failure_count = 0;
+
+    // The files themselves.
+    const char *files[] = { "README.md", "CONTRIBUTING.md" };
+    i32 readme_keys = 0, readme_tables = 0;
+    for (i32 f = 0; f < ARRAY_COUNT(files); f++) {
+        String8 name = str8_cstr(files[f]), text;
+        String8 path = str8_fmt(&t->arena, "%S\\%S", c->root, name);
+        OsFileStatus status = os_read_small_file(&t->arena, path, MB(1), &text);
+        if (status != OS_FILE_OK) {
+            readme_fail_text(c, str8_fmt(&t->arena, "%S: cannot read %S", name, path));
+            continue;
+        }
+        readme_check(c, name, text, f == 0);
+        if (f == 0) readme_keys = c->keys, readme_tables = c->tables;
+    }
+    for (i32 k = 0; k < c->failure_count && k < README_FAILURES_KEPT; k++) LOG("test: FAIL: %S", c->failures[k]);
+    if (c->failure_count > README_FAILURES_KEPT) LOG("test: FAIL: readme: %d more", c->failure_count - README_FAILURES_KEPT);
+    t->failures += c->failure_count;
+    if (!test_app_destroy(t, c->app, "readme")) return 0;
+    if (c->failure_count) return 0;
+    LOG("test: ok: readme (README.md: %d keys in %d key tables, through describe-key or their keymap; %d settings; %d config blocks; "
+        "README.md and CONTRIBUTING.md: %d prose keys, commands and names, %d links of which %d external (listed above); the checker "
+        "caught %d broken fragments; %U ms)",
+        readme_keys, readme_tables, c->settings, c->blocks, c->prose, c->links, c->external, caught + 1, (os_time_us() - t0) / 1000);
+    return 1;
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -14994,6 +15470,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_set_theme(&t);
     arena_reset(&t.arena);
     test_theme_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_readme(&t);
     arena_reset(&t.arena);
     test_manual_disk_search(&t);
     arena_reset(&t.arena);
