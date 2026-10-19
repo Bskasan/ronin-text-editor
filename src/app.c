@@ -963,15 +963,10 @@ static void app_watch_config(App *app) {
     LOG("config: watching %S: %s", dir, app->config_watch ? "yes" : "no (no such directory)");
 }
 
-// Reports a load: every diagnostic goes to *Messages*; the echo area shows the first error and
-// how many more, a failed read, or "Reloaded". Nothing while a retry is pending.
-static void app_report_config(App *app, ConfigPoll result, b32 reload) {
-    String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("ronin.conf");
-    if (result == CONFIG_POLL_FAILED) {
-        echo_message(&app->echo, "Cannot read %S: %s", name, buffer_status_text(app->config_source.status));
-        return;
-    }
-    if (result != CONFIG_POLL_LOADED) return;
+// A load's diagnostics into *Messages*, and the masked-theme note (Phase 21): a theme other than ronin under a
+// [colors] section that sets keys (a ronin.conf written by C-c , before Phase 21 sets them all) is not an error, but
+// said once per load. The note's text, for the echo area, and its length (0: none).
+static i64 app_log_config(App *app, String8 name, u8 *note, i64 cap) {
     Config *c = app->config;
     i32 stored = 0;
     for (ConfigDiag *d = c->diags.first; d; d = d->next, stored++) echo_log(&app->echo, d->text);
@@ -980,15 +975,25 @@ static void app_report_config(App *app, ConfigPoll result, b32 reload) {
         i64 n = fmt_buf(text, sizeof(text), "%S: %d more not listed", name, c->diags.errors + c->diags.warnings - stored);
         echo_log(&app->echo, str8(text, n));
     }
-    // A theme other than ronin under a [colors] section that sets keys (a ronin.conf written by C-c , before Phase 21
-    // sets them all): not an error, but said once per load, in the echo area unless an error is shown there.
-    u8 masked[160];
-    i64 masked_len = 0;
-    if (c->theme_overrides) {
-        masked_len = fmt_buf(masked, sizeof(masked), "%S: %d [colors] key%s override%s theme %S", name, c->theme_overrides,
-                             c->theme_overrides == 1 ? "" : "s", c->theme_overrides == 1 ? "s" : "", c->theme_name);
-        echo_log(&app->echo, str8(masked, masked_len));
+    if (!c->theme_overrides) return 0;
+    i64 n = fmt_buf(note, cap, "%S: %d [colors] key%s override%s theme %S", name, c->theme_overrides,
+                    c->theme_overrides == 1 ? "" : "s", c->theme_overrides == 1 ? "s" : "", c->theme_name);
+    echo_log(&app->echo, str8(note, n));
+    return n;
+}
+
+// Reports a load: every diagnostic goes to *Messages*; the echo area shows the first error and
+// how many more, a failed read, the masked-theme note, or "Reloaded". Nothing while a retry is pending.
+static void app_report_config(App *app, ConfigPoll result, b32 reload) {
+    String8 name = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("ronin.conf");
+    if (result == CONFIG_POLL_FAILED) {
+        echo_message(&app->echo, "Cannot read %S: %s", name, buffer_status_text(app->config_source.status));
+        return;
     }
+    if (result != CONFIG_POLL_LOADED) return;
+    Config *c = app->config;
+    u8 masked[160];
+    i64 masked_len = app_log_config(app, name, masked, sizeof(masked));
     for (ConfigDiag *d = c->diags.first; c->diags.errors && d; d = d->next) {
         if (d->warning) continue;
         u8 text[ECHO_CAP];
@@ -1606,7 +1611,71 @@ static void cmd_set_language(CommandContext *ctx) {
     minibuffer_read(ctx, &req);
 }
 
+// set-theme (Phase 21): every theme there is, the one in effect marked; the choice applies for the session (no file
+// is written) until ronin.conf's own theme setting changes; choosing ronin.conf's theme ends it.
+static i64 app_theme_candidates(Minibuffer *mb, void *data, String8 input) {
+    App *app = (App *)data;
+    (void)input;
+    if (mb->cand_count) return 0;
+    u64 mark = arena_pos(&app->files_arena);
+    String8 *names = PUSH_ARRAY(&app->files_arena, String8, THEME_LIST_CAP);
+    ThemeWhere *where = PUSH_ARRAY(&app->files_arena, ThemeWhere, THEME_LIST_CAP);
+    b32 *replaces = PUSH_ARRAY(&app->files_arena, b32, THEME_LIST_CAP);
+    i32 n = theme_list(&app->files_arena, &app->config_source.themes, names, where, replaces, THEME_LIST_CAP);
+    for (i32 i = 0; i < n; i++) {
+        const char *from = where[i] == THEME_BUILTIN ? "built-in" : where[i] == THEME_CONFIG_DIR ? "themes\\ next to ronin.conf"
+                                                                                                : "themes\\ next to ronin.exe";
+        String8 note = str8_fmt(&app->files_arena, "%s%s%s", from, replaces[i] ? ", replaces the built-in one" : "",
+                                str8_equal(names[i], app->config->theme_name) ? ", current" : "");
+        minibuffer_add_candidate(mb, names[i], note, 0);
+    }
+    arena_pop_to(&app->files_arena, mark);
+    return 0;
+}
+
+static void app_set_theme_done(CommandContext *ctx, MiniResult *r) {
+    App *app = ctx->app;
+    ConfigSource *src = &app->config_source;
+    String8 file_theme = str8(app->config->settings.theme, app->config->settings.theme_len);
+    u8 name[THEME_NAME_CAP];
+    i32 len = (i32)MIN(r->text.len, (i64)THEME_NAME_CAP);
+    for (i32 i = 0; i < len; i++) name[i] = r->text.data[i] >= 'A' && r->text.data[i] <= 'Z' ? r->text.data[i] + 32 : r->text.data[i];
+    if (theme_name_equal(str8(name, len), file_theme)) {
+        src->override_len = src->override_file_len = 0; // back to what ronin.conf says
+    } else {
+        memcpy(src->override, name, (size_t)len);
+        src->override_len = len;
+        memcpy(src->override_file, file_theme.data, (size_t)file_theme.len);
+        src->override_file_len = (i32)file_theme.len;
+    }
+    ConfigPoll result = app_poll_config(app, 1, 0);
+    if (result != CONFIG_POLL_LOADED) {
+        app_report_config(app, result, 1); // ronin.conf could not be read: the colors stay
+        return;
+    }
+    app_apply_config(app, app->renderer, 0);
+    Config *c = app->config;
+    String8 conf = app->config_path.len ? config_file_name(app->config_path) : STR8_LIT("ronin.conf");
+    u8 note[160];
+    i64 note_len = app_log_config(app, conf, note, sizeof(note));
+    u8 text[ECHO_CAP];
+    i64 n = fmt_buf(text, sizeof(text), "Theme %S", c->theme_name);
+    if (src->override_len) n += fmt_buf(text + n, sizeof(text) - n, " (%S says %S)", conf, file_theme);
+    if (note_len) n += fmt_buf(text + n, sizeof(text) - n, "; %S: %d [colors] key%s override%s it", conf, c->theme_overrides,
+                               c->theme_overrides == 1 ? "" : "s", c->theme_overrides == 1 ? "s" : "");
+    if (c->diags.errors) n += fmt_buf(text + n, sizeof(text) - n, "; %d error%s, see *Messages*", c->diags.errors, c->diags.errors == 1 ? "" : "s");
+    echo_set(ctx->echo, str8(text, n));
+    echo_log(ctx->echo, str8(text, n));
+}
+
+static void cmd_set_theme(CommandContext *ctx) {
+    MiniRequest req = { .kind = MINI_CHOICE, .prompt = STR8_LIT("Theme: "), .history = MINI_HISTORY_TEXT, .data = ctx->app,
+                        .candidates = app_theme_candidates, .require_match = 1, .done = app_set_theme_done };
+    minibuffer_read(ctx, &req);
+}
+
 const Command CMD_SET_LANGUAGE               = { "set-language", "Set the buffer's language for highlighting", cmd_set_language, COMMAND_ONCE };
+const Command CMD_SET_THEME                  = { "set-theme", "Switch the colors to another theme for this session", cmd_set_theme, COMMAND_ONCE };
 const Command CMD_NEXT_BUFFER                = { "next-buffer", "Switch to the next buffer in the buffer list", cmd_next_buffer, COMMAND_ONCE };
 const Command CMD_PREVIOUS_BUFFER            = { "previous-buffer", "Switch to the previous buffer in the buffer list", cmd_previous_buffer, COMMAND_ONCE };
 const Command CMD_OPEN_CONFIG                = { "open-config", "Open the configuration file, creating it if missing", cmd_open_config, COMMAND_ONCE };

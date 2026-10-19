@@ -9051,6 +9051,87 @@ static b32 test_theme_reload(Test *t) {
     return 1;
 }
 
+// set-theme through the headless app (build\tmp\p21themes\set): the candidates (every built-in theme and the files,
+// each marked), a file theme chosen for the session, the override across a reload, ended by ronin.conf naming another
+// theme, choosing ronin.conf's theme, the masked note, C-g, the minibuffer's refusal, from the command list.
+static b32 test_set_theme(Test *t) {
+    String8 dir = test_theme_dir(t, "set"), conf = str8_fmt(&t->arena, "%S\\ronin.conf", dir);
+    test_theme_file(t, dir, "mine", "[theme]\nname = mine\n[colors]\nbackground = #313131\n");
+    test_theme_file(t, dir, "other", "[colors]\nbackground = #323232\n");
+    test_theme_file(t, dir, "ronin", "[colors]\nbackground = #333333\n"); // replaces the built-in ronin
+    os_write_file(conf, STR8_LIT("[keys]\nC-c T set-theme\n"));
+    App *app = test_manual_app(t, str8(NULL, 0), 0, 0, conf);
+    TEST_CHECK(t, app && app->config->theme.background == 0x333333, "set-theme: the file replacing ronin at the start");
+
+    // The candidates: the built-in themes and the three files, in name order, each with where it comes from.
+    app_dev_feed(app, "M-x s e t - t h e m e RET", &t->arena);
+    Minibuffer *mb = &app->mini;
+    String8 want = str8(NULL, 0), got = str8(NULL, 0);
+    String8 names[THEME_LIST_CAP];
+    i32 n = 0;
+    for (i32 i = 0; i < theme_builtin_count(); i++) names[n++] = theme_builtin_name(i);
+    const char *files[] = { "mine", "other" };
+    for (i32 f = 0; f < 2; f++) {
+        i32 at = n; // insertion in name order
+        while (at > 0) {
+            String8 a = names[at - 1], b = str8_cstr(files[f]);
+            i64 k = 0;
+            while (k < a.len && k < b.len && a.data[k] == b.data[k]) k++;
+            if (k < b.len && (k == a.len || a.data[k] < b.data[k])) break; // a < b
+            names[at] = names[at - 1];
+            at--;
+        }
+        names[at] = str8_cstr(files[f]);
+        n++;
+    }
+    for (i32 i = 0; i < n; i++) {
+        b32 file = str8_equal(names[i], STR8_LIT("mine")) || str8_equal(names[i], STR8_LIT("other"));
+        b32 ronin = str8_equal(names[i], STR8_LIT("ronin"));
+        want = str8_fmt(&t->arena, "%S%S (%s%s%s)\n", want, names[i], file || ronin ? "themes\\ next to ronin.conf" : "built-in",
+                        ronin ? ", replaces the built-in one" : "", ronin ? ", current" : "");
+    }
+    for (i64 i = 0; i < mb->cand_count; i++) got = str8_fmt(&t->arena, "%S%S (%S)\n", got, mb->cands[i].text, mb->cands[i].annotation);
+    TEST_CHECK(t, mb->active && str8_equal(got, want), "set-theme: the candidates:\n%S want\n%S", got, want);
+
+    // A theme for the session: the echo says that ronin.conf says otherwise; nothing written.
+    app_dev_feed(app, "m i n e RET", &t->arena);
+    TEST_CHECK(t, !mb->active && app->config->theme.background == 0x313131 && str8_equal(app->config->theme_name, STR8_LIT("mine")) &&
+                  str8_equal(test_echo(app), STR8_LIT("Theme mine (ronin.conf says ronin)")) && test_file_is(t, conf, "[keys]\nC-c T set-theme\n"),
+               "set-theme: mine: echo '%S', background %06x", test_echo(app), app->config->theme.background);
+    // It holds across a reload that leaves the theme setting, and ends when ronin.conf names another theme.
+    test_manual_reload(t, app, conf, STR8_LIT("[keys]\nC-c T set-theme\n[settings]\ntab_width = 8\n"));
+    b32 held = app->config->theme.background == 0x313131 && app->config->settings.tab_width == 8;
+    test_manual_reload(t, app, conf, STR8_LIT("[keys]\nC-c T set-theme\n[settings]\ntheme = other\n"));
+    b32 ended = app->config->theme.background == 0x323232 && app->config_source.override_len == 0;
+    TEST_CHECK(t, held && ended, "set-theme: the session's theme across a reload %d, ended by ronin.conf's theme %d", held, ended);
+    // Choosing ronin.conf's own theme ends the session's.
+    app_dev_feed(app, "M-x s e t - t h e m e RET m i n e RET", &t->arena);
+    b32 chosen = app->config_source.override_len == 4;
+    app_dev_feed(app, "M-x s e t - t h e m e RET o t h e r RET", &t->arena);
+    TEST_CHECK(t, chosen && app->config_source.override_len == 0 && str8_equal(test_echo(app), STR8_LIT("Theme other")) &&
+                  app->config->theme.background == 0x323232, "set-theme: back to ronin.conf's theme: echo '%S'", test_echo(app));
+    // The masked note with it.
+    test_manual_reload(t, app, conf, STR8_LIT("[keys]\nC-c T set-theme\n[colors]\ncursor = #010101\ntext = #020202\n"));
+    app_dev_feed(app, "M-x s e t - t h e m e RET m i n e RET", &t->arena);
+    TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("Theme mine (ronin.conf says ronin); ronin.conf: 2 [colors] keys override it")) &&
+                  app->config->theme.text == 0x020202 && test_messages_count(t, app, STR8_LIT("ronin.conf: 2 [colors] keys override theme mine")) == 1,
+               "set-theme: the masked note: '%S'", test_echo(app));
+    // C-g leaves the theme; in the minibuffer it is refused; the command list runs it.
+    app_dev_feed(app, "M-x s e t - t h e m e RET o t C-g", &t->arena);
+    b32 quit = !mb->active && str8_equal(app->config->theme_name, STR8_LIT("mine"));
+    app_dev_feed(app, "C-x C-f C-c T", &t->arena);
+    b32 refused = test_echo_has(app, "Command attempted to use minibuffer while in minibuffer") && str8_equal(app->config->theme_name, STR8_LIT("mine"));
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    app_dev_feed(app, "C-S-p s e t - t h e m e RET o t h e r RET", &t->arena);
+    b32 listed = !mb->active && !app->modal.active && str8_equal(app->config->theme_name, STR8_LIT("other"));
+    TEST_CHECK(t, quit && refused && listed, "set-theme: C-g %d, refused in the minibuffer %d, from the command list %d ('%S')", quit, refused,
+               listed, test_echo(app));
+    if (!test_app_destroy(t, app, "set-theme")) return 0;
+    LOG("test: ok: set-theme (the candidates and where each comes from, a theme for the session, across a reload, ended by ronin.conf, "
+        "ronin.conf's own theme, the masked note, C-g, refused in the minibuffer, from the command list; no file written)");
+    return 1;
+}
+
 // The resolution against a reference (the seeded group "themes"): random keys with random colors in a theme file and
 // in ronin.conf's [colors], resolved by config_load, against: ronin.conf's key, else the theme's, else ronin's, else
 // the key it derives from (restated here, not taken from config.c).
@@ -14891,6 +14972,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_theme_masked(&t);
     arena_reset(&t.arena);
     test_theme_reload(&t);
+    arena_reset(&t.arena);
+    test_set_theme(&t);
     arena_reset(&t.arena);
     test_theme_fuzz(&t, seed);
     arena_reset(&t.arena);

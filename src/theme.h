@@ -54,4 +54,10 @@ OsFileStatus theme_read(Arena *arena, ThemeDirs *dirs, String8 name, ThemeLocati
 // The same lookup without reading: where the theme is and its file's size and write time.
 void theme_locate(Arena *arena, ThemeDirs *dirs, String8 name, ThemeLocation *loc);
 
+#define THEME_LIST_CAP 256
+// Every theme there is (set-theme's candidates): the built-in ones and the <name>.conf files of both themes\
+// folders, lowercase, each once, in name order; where[i] is where the name is found (a file before the built-in
+// theme it replaces). `replaces[i]`: a file whose name is also a built-in theme's. Returns the count.
+i32 theme_list(Arena *arena, ThemeDirs *dirs, String8 *names, ThemeWhere *where, b32 *replaces, i32 cap);
+
 #endif // THEME_H
