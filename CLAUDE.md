@@ -8,8 +8,8 @@ Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no 
 tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
 decisions and the "Later" list. Implement only the phase you are asked for. For strangers (Phase 22): README.md,
 CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
-windows-latest: the three builds, --test on debug and bench, the imports, --version; the bench smoke informational
-only, the smoke gate and `verify.bat phase` stay local).
+windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the imports, --version; the
+bench smoke informational only, the smoke gate and `verify.bat phase` stay local).
 
 **Priorities, in order:** (1) input latency and speed, (2) small and simple, (3) features.
 
@@ -21,10 +21,21 @@ only, the smoke gate and `verify.bat phase` stay local).
   nothing but DirectWrite calls behind the extern "C" API in src/platform/font_backend.h.
 - No third-party code or libraries. System DLLs only.
 - One build.bat, unity build: src/ronin.c includes the other .c files (win32_dwrite.cpp is
-  the only second translation unit). No CMake, no .sln. tools/ holds build-time generators
+  the only second translation unit). No CMake, no .sln. tools/ holds build-time programs
   (tools/make_icon.c draws the icon into build\gen\ronin.ico, tools/make_themes.c embeds themes\*.conf into
-  build\gen\themes.h, on every build): compiled and run by
-  build.bat, never part of the exe, their output never committed; the same C rules apply to them.
+  build\gen\themes.h, on every build; tools/check_source.c is the source check that verify.bat and CI run): compiled
+  by build.bat on every build, never part of the exe, their output never committed; the same C rules apply to them.
+- Source layout (Phase 23): src/ is in folders by layer, the module map in docs/ARCHITECTURE.md lists every file:
+  src/ronin.c (the unity root), base/, platform/ (the os_* and r_* interfaces and everything that touches Win32, D3D
+  or DirectWrite, check_macros.c and the shader), text/, editor/, project/, app/, dev/. Only src/platform/ may include
+  Windows SDK headers (outside it only <stdint.h> <stddef.h> <stdarg.h> <string.h> <emmintrin.h> <intrin.h>); nothing
+  in src/base/ or src/text/ includes from src/editor/, src/project/ or src/app/. A new file goes in the folder of its
+  layer and gets a module-map row.
+- File headers (Phase 23): every .c, .h, .cpp and .hlsl under src/ and every file under tools/ starts with ronin's
+  header (the block in CONTRIBUTING.md: copyright, MIT notice, the repository's URL), its line `ronin: <what this
+  file does>` at most 72 characters and word for word the file's module-map description. The file's own top comment
+  follows it, without repeating the file name. verify.bat's source check (tools/check_source.c) enforces the header,
+  the map and both include rules, each problem as `path:line: message`.
 - No ronin identifier may be a name a system header defines as a macro (winuser.h's MOD_ALT,
   rpcndr.h's small, minwindef.h's near / far). Every build first compiles src/platform/check_macros.c with
   /Zs (every system header, then ronin.c, syntax only) and fails on a collision. Fix by renaming,
@@ -65,7 +76,8 @@ only, the smoke gate and `verify.bat phase` stay local).
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
   configurations (each with the macro check), checks `build.bat clean` on a scratch tree
-  (clean-check), runs `--smoke` on the debug and the bench build and
+  (clean-check), runs the source check (`build\check_source.exe`: headers, module map, includes; Phase 23),
+  `--smoke` on the debug and the bench build and
   `--test` on the bench build (the optimized build runs the fuzz tests quickly; it includes the README check: README.md's
   key tables, settings, config blocks, prose keys and links against the code, Phase 22), checks the release
   exe's imports (`--check-imports`) and its `--version`, checks every exit code and prints one last
@@ -114,8 +126,9 @@ the explicit `.\`):
     cmd //c ".\build.bat clean"      # removes build\ and dist\ entirely, nothing else; refuses (exit 10) outside
                                      # the repository root or when either is a junction, a link or a file
 
-    cmd //c ".\verify.bat"           # the gate: three builds, clean-check, smoke (debug, bench), test (bench),
-                                     # imports, --version; one PASS / FAIL line
+    cmd //c ".\verify.bat"           # the gate: three builds, clean-check, the source check, smoke (debug, bench),
+                                     # test (bench), imports, --version; one PASS / FAIL line
+    build\check_source.exe .         # the source check alone (built by every build.bat): headers, module map, includes
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (once per phase)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
@@ -127,8 +140,9 @@ the debug-layer check; the smoke acceptance criterion is the debug build.
 build.bat finds MSVC through vswhere + vcvars64 when cl is not on PATH, compiles
 src/platform/shaders/*.hlsl with fxc into build\gen\*.h, runs the macro-collision check
 (src/platform/check_macros.c, /Zs, ~0.3 s), compiles and runs tools/make_icon.c (build\gen\ronin.ico) and
-compiles res/ronin.rc (the icon and the version resource, ~0.26 s with the icon), compiles
-win32_dwrite.cpp, then the unity build, and prints the exe size.
+compiles res/ronin.rc (the icon and the version resource, ~0.26 s with the icon), compiles and runs
+tools/make_themes.c (build\gen\themes.h), compiles tools/check_source.c (build\check_source.exe, run by verify.bat
+and CI, never by build.bat), compiles win32_dwrite.cpp, then the unity build, and prints the exe size.
 
 Command line, every build: `ronin [[+LINE[:COLUMN]] file ...]` (1-based, as in Emacs): every file
 is opened, each at the +LINE[:COLUMN] before it (one with no file after it: the file before it, or
@@ -602,6 +616,7 @@ back by itself, and `build.bat clean` removes both. In build\:
 | `ronin.map` | build.bat release (the linker's /MAP; read by --map-report) |
 | `make_icon.exe`, `make_icon.obj` | build.bat (tools\make_icon.c) |
 | `make_themes.exe`, `make_themes.obj` | build.bat (tools\make_themes.c) |
+| `check_source.exe`, `check_source.obj` | build.bat (tools\check_source.c; run by verify.bat and CI) |
 | `gen\themes.h` | build.bat (make_themes, from themes\*.conf: the built-in themes) |
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\platform\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |

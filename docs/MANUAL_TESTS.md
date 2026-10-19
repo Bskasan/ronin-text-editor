@@ -566,9 +566,22 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | X3 | Every relative link and #anchor of README and CONTRIBUTING resolves; `M-x` names and prose keys exist | AUTOMATED-NEW | "test: ok: readme" (34 links, 22 prose keys, commands and names); the checker's 16 broken fragments, each caught at its line, in every run. |
 | X4 | oxide's diff_added is its palette's "added" green | HUMAN | A comparison with oxide's source, which no test can fetch; done once in Phase 22. To repeat it: open https://github.com/oxidescheme/nvim/blob/838760c820821cce6a79706430883439c80dad4c/lua/oxide/colors.lua, line 26 (`green = "#5bb661", ... added items`), against `diff_added` in themes\oxide.conf. That the file still parses clean is AUTOMATED: "test: ok: themes" and smoke stage 14. |
 | X5 | README reads well on GitHub, also at phone width, and every image loads | HUMAN | GitHub's rendering after the push; HUMAN step 49. |
-| X6 | The workflow's first run: the builds and the tests pass on windows-latest; the informational smoke says whether WARP renders there | HUMAN | the user pushes; HUMAN step 50. The steps were tried locally in Windows PowerShell (the imports, --version, `--test` on bench, the smoke on bench: each exit 0); the YAML itself runs only on GitHub. |
+| X6 | The workflow's first run: the builds and the tests pass on windows-latest; the informational smoke says whether WARP renders there | HUMAN | the user pushes; HUMAN step 50. The steps were tried locally in Windows PowerShell (the imports, --version, `--test` on bench, the smoke on bench: each exit 0); the YAML itself runs only on GitHub. Phase 23: the user pushes after Phase 24 and reports the run then; it includes the source check's step. |
 | X7 | New issue offers the two templates and no blank issue; a pull request opens with the checklist | HUMAN | GitHub's UI; HUMAN step 51. |
 | X8 | The external links of README and CONTRIBUTING lead where they say | HUMAN | the test logs them ("test: readme: README.md:N: external link ..."); HUMAN step 52. |
+
+## Y. Source layout and file headers (Phase 23)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| Y1 | Every source file under src/ and tools/ starts with ronin's header | AUTOMATED-NEW | verify.bat's source-check ("check_source: PASS: 76 files with ronin's header and their module map row, ..."); the proof: src/text/search.h without its header made verify.bat fail with only "source-check (exit 1)" and "src/text/search.h:1: does not start with ronin's header (CONTRIBUTING.md, "New files")" (Measurements (Phase 23)). |
+| Y2 | Each header's description is its module-map row's, word for word | AUTOMATED-NEW | source-check; the proof: "carets" for "cursors" in src/editor/view.c's line 2 gave "src/editor/view.c:2: description '...' differs from docs/ARCHITECTURE.md:68's '...'". |
+| Y3 | The module map lists every source file once, and no file that does not exist | AUTOMATED-NEW | source-check (a file without a row, a row listed twice, a row without a file); the proof: a row for src/text/lex_go.c gave "docs/ARCHITECTURE.md:58: 'src/text/lex_go.c' in the module map: no such file"; tools/check_source.c before its row was added: "tools/check_source.c: not in docs/ARCHITECTURE.md's module map (a row under ### `tools/`)". |
+| Y4 | No file outside src/platform/ includes a Windows SDK header | AUTOMATED-NEW | source-check; the proof: `#include <windows.h>` in src/text/search.c gave "src/text/search.c:13: #include <windows.h>: only src/platform/ may include system headers other than ..." (the three builds failed too: windows.h came before win32_main.c's UNICODE and COBJMACROS). |
+| Y5 | Nothing in src/base/ or src/text/ includes from src/editor/, src/project/ or src/app/ | AUTOMATED-NEW | source-check; the proof: `#include "../editor/view.h"` in src/text/buffer.c gave "src/text/buffer.c:13: #include "../editor/view.h": src/text/ may not include from src/editor/" (the build passed: the include guard made it a no-op). |
+| Y6 | ronin behaves exactly as before the move | AUTOMATED | `verify.bat phase` (the smoke on debug and bench, `--test` on both, the seed sweep, both soaks, the leak check); the release exe byte for byte against Phase 22's, the dev builds with ASSERT's path and line made constant (Measurements (Phase 23)). |
+| Y7 | The benches that read src\app\app.c and `--map-report` still work | AUTOMATED | `ronin_bench.exe --bench-cursors` and `--bench-search` exit 0 with their src\app\app.c rows; `ronin_debug.exe --map-report build\ronin.map`: every module row equal to Phase 22's. |
+| Y8 | A fresh clone of the pushed repository builds and verifies | HUMAN | Only a clone of what is on GitHub proves the pushed tree; HUMAN step 53. Dev helper: the same with a local clone, run in this phase (Measurements (Phase 23), "The fresh clone"). |
 
 ## HUMAN steps
 
@@ -726,13 +739,17 @@ Phase 22, the repository on GitHub (after you push):
     title, the sentence, the link line and the hero picture come first; every image loads (the hero, the command list,
     the four themes, the finder, isearch, *compilation*, the git changes view, the cursors); the tables are readable
     (on a phone they scroll sideways); the links of the top line jump to their sections.
-50. **X6**: The Actions tab: the first run of "build" on your push. The build, test, imports and version steps are green.
+50. **X6**: The Actions tab: the first run of "build" on your push. The build, source check, test, imports and version steps
+    are green.
     Open the step "Smoke (bench build; informational: ...)" and report its last lines (the session, "--smoke exited N",
     the d3d11 lines): they go into Measurements (Phase 22). If a test step failed, the artifact "ronin-logs" holds its log.
 51. **X7**: Issues, New issue: "Bug report" and "Feature request" are offered and no blank issue. Start a pull request
     from any branch (and close it): its text is the checklist.
 52. **X8**: Follow the external links (the list is in the report of Phase 22, and in build\ronin.log after `--test` as
     "test: readme: ... external link ..."): Releases (empty until the first release), the four theme repositories.
+53. **Y8**: After the push, in a new folder: `git clone https://github.com/Bskasan/ronin-text-editor`, then in it
+    `cmd //c ".\verify.bat"` (from Git Bash): the last line is `verify: PASS`, and build\verify\source-check.log ends
+    in "check_source: PASS: ...".
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

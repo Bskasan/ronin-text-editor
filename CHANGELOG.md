@@ -89,6 +89,17 @@ The repository for other people (Phase 22):
   configurations and runs the tests on every push.
 - The oxide theme's added lines in the git changes view now use oxide's own "added" green (#5bb661) instead of ronin's.
 
+The sources in order (Phase 23), nothing changed for users (the release exe is the same, byte for byte, apart from
+its link time):
+
+- `src/` is in folders by layer: `base/`, `platform/` (the only one with Windows headers), `text/`, `editor/`,
+  `project/`, `app/` and `dev/`.
+- Every source file starts with a header: the copyright, the MIT notice, and one line saying what the file does, the
+  same line as in the module map of docs/ARCHITECTURE.md.
+- `verify.bat` and the CI build check both on every run, and that no file outside `src/platform/` includes a Windows
+  header and nothing in `src/base/` or `src/text/` includes the layers above them. CONTRIBUTING.md explains it under
+  "New files".
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).

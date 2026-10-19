@@ -337,7 +337,8 @@ menus, toolbars and scroll bars.
 Bug reports and pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first. A feature starts as an
 issue, before any code, because the priority order (latency and speed, then small and simple, then features)
 decides what gets in. How ronin is designed, every decision and every measurement are in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The sources are in folders by layer, each file opening with a line that
+says what it does; the [module map](docs/ARCHITECTURE.md#module-map) lists them all.
 
 ## License and credits
 

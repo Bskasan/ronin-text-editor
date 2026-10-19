@@ -15,12 +15,14 @@ You need Windows 10 or later (x64) and Visual Studio 2022 or later, or the Build
 | `build.bat bench` | `build\ronin_bench.exe`: optimized, with the dev flags |
 | `build.bat clean` | removes `build\` and `dist\`, everything generated, and nothing else |
 
-- Run `verify.bat` before every commit. It builds all three, runs the smoke test (real frames, pixel checks) and the
-  tests, checks the release exe's imports, and prints one last line: only `verify: PASS` counts.
+- Run `verify.bat` before every commit. It builds all three, runs the source check (see [New files](#new-files)), the
+  smoke test (real frames, pixel checks) and the tests, checks the release exe's imports, and prints one last line:
+  only `verify: PASS` counts.
 - Run `verify.bat phase` before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
   a sweep of 256 fuzz seeds, a million-event soak and the leak check.
-- Both run on your machine only. The CI workflow builds the three configurations and runs the tests, the import check
-  and `--version`; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a local `verify.bat` is required.
+- Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
+  the import check and `--version`; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a local
+  `verify.bat` is required.
 
 From Git Bash, call them as `cmd //c ".\verify.bat"`. The dev flags are listed in [CLAUDE.md](CLAUDE.md), the design
 in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -39,6 +41,33 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - One logical change per commit, each message `<type>(<scope>): <summary>` with type one of feat, fix, perf,
   refactor, test, docs, build, chore. Example: `fix(isearch): wrap past the last match`.
 - A screenshot (`--screenshot`) for a visual change.
+- A new source file follows [New files](#new-files).
+
+## New files
+
+`src/` is in folders by layer, and the folder a file is in says what it may include: `base/`, `platform/` (the only
+place for Windows headers: everything that touches Win32, Direct3D or DirectWrite), `text/`, `editor/`, `project/`,
+`app/` and `dev/`; `src/ronin.c` includes every file in order. Nothing in `src/base/` or `src/text/` includes from
+`src/editor/`, `src/project/` or `src/app/`. The [module map](docs/ARCHITECTURE.md#module-map) lists every file.
+
+Every `.c`, `.h`, `.cpp` and `.hlsl` file under `src/`, and every file under `tools/`, starts with this header, the
+second line saying in at most 72 characters what the file does:
+
+```c
+/* ======================================================================
+   ronin: <one line saying what this file does>
+
+   Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
+   LICENSE in the repository root. This software is provided "as is",
+   without warranty of any kind, express or implied.
+   https://github.com/Bskasan/ronin-text-editor
+   ====================================================================== */
+```
+
+That line is also the file's description in the module map, word for word, in a row under its folder's heading.
+`verify.bat` runs the source check (`build\check_source.exe .`, built by `build.bat`): it names each file without the
+header or a row, each description that differs from the map, each row without a file, and each include that breaks
+the two rules, as `path:line: message`.
 
 ## Proposing a feature
 

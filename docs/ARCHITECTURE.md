@@ -20,7 +20,7 @@ without a file, a missing or changed header, a Windows SDK header outside `src/p
 
 | file | description | details |
 |---|---|---|
-| `ronin.c` | the unity build: every header, then every .c file, in order | the unity translation unit; includes every other file of src/ except win32_dwrite.cpp, by its folder, in order |
+| `ronin.c` | the unity build: every header, then every .c file, in order | the unity translation unit; includes every .c and .h of src/ but win32_dwrite.cpp (the second translation unit) and check_macros.c (which includes ronin.c), each by its folder, in order |
 
 ### `src/base/`
 
@@ -2250,6 +2250,104 @@ undo logs at 5,308 KB after the first block, 6,056 KB at most in the first half 
 settled in all, informational: 13,392 -> 14,572 and 13,680 -> 15,048 KB), 3 directory watches throughout, the only WATCH
 row the working set; the leak check 28 scenarios, 0 LEAK (147 s; WATCH git-cycle/browse working set, STEP
 config-reload-cycle/color private commit); the exit check PASS. No run reached the guard.
+
+## Measurements (Phase 23)
+
+Same machine. The Measurements of earlier phases keep the paths their commands ran with (src\app.c is now
+src\app\app.c, and so on: the module map has every file).
+
+### The executables before and after
+
+Before: the three builds at 0916877 (Phase 22's last commit), kept in build\proof\p23\before; after: the code's last
+commit, a5fb7b6 (the commits after it change only documents). Compared byte for byte by a PowerShell script that names
+each differing byte by the PE field holding it.
+
+| exe | before | after | what differs |
+|---|---|---|---|
+| ronin.exe (release) | 471,040 | 471,040 | the COFF TimeDateStamp and the POGO debug entry's TimeDateStamp (2 bytes each), nothing else: with those zeroed both SHA-256 are 39e0fb4cf40aed0d... |
+| ronin_bench.exe | 1,676,288 | 1,676,800 | +512: ASSERT's `__FILE__` (full paths, /FC: src\app.c is now src\app\app.c) and `__LINE__` (8 header lines and a blank more), and the two dev edits the move forced |
+| ronin_debug.exe | 2,974,208 | 2,974,720 | +512, the same |
+
+Two links of the same commit differ exactly there: release linked twice at 0916877 differs in the same two timestamps
+(the noise floor; build.bat has no /Brepro, decided before this phase). build\gen\quad_vs.h, quad_ps.h and ronin.res are
+identical before and after (fxc without /Zi embeds no source path). `--check-imports`: KERNEL32 79, USER32 50, GDI32 6
+functions, 3 DLLs, unchanged.
+
+The dev builds, proved the same in scratch clones of equal path length (build\proof\p23b and p23a, deleted
+afterwards): p23b is 0916877 with the two dev edits (win32_main.c's benches open src\app\app.c, test.c's map report
+reads src\'s folders), p23a is a5fb7b6; in both, base.h's ASSERT passes `"", 0` instead of `__FILE__, __LINE__` (the
+same one-line edit). Then:
+
+| exe (both clones) | bytes | what differs |
+|---|---|---|
+| ronin.exe | 471,040 | the COFF and POGO TimeDateStamps only (SHA-256 with them zeroed: 39e0fb4cf40aed0d..., as above) |
+| ronin_bench.exe | 1,676,288 | the COFF TimeDateStamp, the three debug entries' TimeDateStamps (CodeView, VC feature, POGO), the CodeView GUID (16 bytes), one byte of the PDB path (p23b / p23a); nothing else (25cd5dedb13bc785... both) |
+| ronin_debug.exe | 2,973,184 | the same fields; nothing else (1ff116de32aaaba9... both) |
+
+So the move and the headers changed nothing but the paths and line numbers ASSERT embeds; the dev code's two edits
+are the only code change.
+
+### The checks
+
+`check_source: PASS: 76 files with ronin's header and their module map row, 114 includes, 76 map rows`, 38-39 ms (107 ms
+the first, cold run; measured while `verify.bat phase` ran). check_source.exe is 121,856 bytes (static CRT startup, no
+CRT calls), compiled in every build.
+
+On a scratch clone (build\proof\p23x, deleted afterwards), each break alone, the full `verify.bat`:
+
+| break | verify.bat's last line | the source check's message |
+|---|---|---|
+| src/text/search.h without its header (lines 1-9 deleted) | `verify: FAIL: source-check (exit 1)` | `src/text/search.h:1: does not start with ronin's header (CONTRIBUTING.md, "New files")` |
+| src/editor/view.c's description "carets" for "cursors" | `verify: FAIL: source-check (exit 1)` | `src/editor/view.c:2: description 'views: carets, scrolling, the command driver, motion, buffer list' differs from docs/ARCHITECTURE.md:68's 'views: cursors, scrolling, the command driver, motion, buffer list'` |
+| `#include <windows.h>` in src/text/search.c | `verify: FAIL: build debug (exit 1), build release (exit 1), build bench (exit 1), source-check (exit 1), ...` (windows.h came before win32_main.c's UNICODE and COBJMACROS: C4013 IUnknown_Release, C4133) | `src/text/search.c:13: #include <windows.h>: only src/platform/ may include system headers other than <stdint.h>, <stddef.h>, <stdarg.h>, <string.h>, <emmintrin.h> and <intrin.h>` |
+| `#include "../editor/view.h"` in src/text/buffer.c | `verify: FAIL: source-check (exit 1)` (the build passed: the include guard) | `src/text/buffer.c:13: #include "../editor/view.h": src/text/ may not include from src/editor/` |
+| a module map row for src/text/lex_go.c | `verify: FAIL: source-check (exit 1)` | `docs/ARCHITECTURE.md:58: 'src/text/lex_go.c' in the module map: no such file` |
+
+Each made exactly one problem ("check_source: FAIL: 1 problem"). Before its own row was added, the check's first run
+reported `tools/check_source.c: not in docs/ARCHITECTURE.md's module map (a row under ### `tools/`)`.
+
+### The headers
+
+75 files got the header in one commit (0513627), check_source.c came with its own: 76. Each file's old first line
+repeated its file name ("// base.c — see base.h."): all 75 lost that prefix ("// see base.h."), none was left with only
+the description, so no line was deleted (the user's rule, Decisions, Phase 23, 4). Nothing else in the comments changed.
+
+### The benches that read src\app\app.c, the map report
+
+`ronin_bench.exe --bench-cursors` exit 0 (105 s) with its "(c) src/app/app.c, spread over the file" rows; `--bench-search`
+exit 0 (12 s) with "isearch keystrokes on src/app/app.c". `ronin_debug.exe --map-report build\ronin.map` after the move:
+every module row (app.c 54,560 bytes ... lex_jai.c 0), the largest data symbols and "10488 bytes in ronin.obj symbols
+not found in src" equal to the run on Phase 22's map; only the map's path in the first line differs.
+
+### The fresh clone
+
+`git clone` of the repository into build\tmp\fresh at a5fb7b6, then there, with nothing else:
+
+| step | result |
+|---|---|
+| git clone (120 files) | 0.8 s |
+| build.bat | 4.0 s, build\ronin_debug.exe 2,975,232 bytes |
+| build.bat release | 4.8 s, build\ronin.exe 471,040 bytes |
+| build.bat bench | 7.7 s, build\ronin_bench.exe 1,677,312 bytes |
+| verify.bat | first run 54 s, FAIL: test-bench (exit 9); again 52 s, PASS (source check PASS, 76 files; imports KERNEL32 79, USER32 50, GDI32 6; "ronin 0.1.0") |
+
+The dev exes are 512 bytes larger than in the repository's own build folder: the clone's path (build\tmp\fresh\...) is
+longer, and ASSERT's `__FILE__` holds full paths. The first verify's failure was the Phase 21 set-theme test ("the
+session's theme across a reload 1, ended by ronin.conf's theme 0", then "the tests left 2 handle(s) open"), which
+passed in the two runs of `--test` after it and in every other run of the phase: it writes two ronin.conf texts of the
+same length back to back (`tab_width = 8`, then `theme = other`), and config_poll skips a reload when the size and the
+write time are unchanged (config.c), so two writes in one timestamp tick lose the second reload. Not this phase's
+(the test and config.c are unchanged); an open question in the report.
+
+### verify.bat phase
+
+Twice with the code of a5fb7b6 and these documents. The first, 562 s: FAIL, only `test-debug` (exit 9), the set-theme
+race above ("the session's theme across a reload 1, ended by ronin.conf's theme 0" and its 2 handles); every other step
+PASS. The second, 749 s: PASS, every step. The source check PASS (76 files). `--test` PASS on debug (46.7 s) and bench
+(37.1 s), the README check in both; the seed sweep 256 seeds PASS (298 s); the bench soak PASS in 38.4 s and the debug
+soak PASS in 43.8 s, our arenas without the undo logs 5,308 KB after the first block, 6,904 KB at most in the first half,
+6,308 KB after the last; the leak check 28 scenarios, 0 LEAK (261 s; STEP config-reload-cycle/color and
+external-change-cycle private commit); the exit check PASS in the smoke (debug, bench) and the leak check.
 
 ## Roadmap
 
