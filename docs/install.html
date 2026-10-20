@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html" aria-current="page">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="install">Install</h1>
+<h2 id="download">Download</h2>
+<ol>
+<li>Download the latest <code>ronin-&lt;version&gt;-windows-x64.zip</code> from
+   <a href="https://github.com/Bskasan/ronin-text-editor/releases">Releases</a>.</li>
+<li>Unzip it anywhere and run <code>ronin.exe</code>. Windows 10 or later, x64; there is no installer and no runtime to install.</li>
+</ol>
+<p>The zip holds <code>ronin.exe</code>, <code>README.md</code>, <code>LICENSE</code> and <code>THIRD_PARTY.md</code>.</p>
+<h2 id="the-first-start">The first start</h2>
+<p>The exe is not signed, so the first start may show &quot;Windows protected your PC&quot; (SmartScreen): choose <strong>More info</strong>,
+then <strong>Run anyway</strong>.</p>
+<h2 id="the-command-line">The command line</h2>
+<pre><code>ronin file.c                 open a file (as many as you like; the first is shown)
+ronin +120:8 file.c          open it at line 120, column 8 (1-based, as in Emacs)
+ronin C:\code\project        open a directory as the project
+ronin --version              print the version and exit
+</code></pre>
+<p>Every file is opened, each at the <code>+LINE:COLUMN</code> before it; the first is shown, and with <code>startup_windows = 2</code> the
+second window shows the second. A file that does not exist is created when you save it. A directory instead of a file
+is opened as the project: nothing is visited for it, <code>*scratch*</code> and <code>C-x C-f</code> start there, and <code>C-x p f</code> lists it.</p>
+<h2 id="portable-mode">Portable mode</h2>
+<p>ronin reads <code>ronin.conf</code> next to <code>ronin.exe</code> if that file exists (a portable install), otherwise
+<code>%APPDATA%\ronin\ronin.conf</code>. With a <code>ronin.conf</code> beside the exe, the configuration and the theme files of
+<code>themes\</code> beside it travel with the folder. See <a href="configuration.html">Configuration</a>.</p>
+<h2 id="samples">Samples</h2>
+<p><code>samples\</code> in the repository has one small file per language to try the highlighting and the indentation on.</p>
+<h2 id="building-it-yourself">Building it yourself</h2>
+<p>You need Visual Studio 2022 or later, or the Build Tools for Visual Studio, with the &quot;Desktop development with C++&quot;
+workload; <code>build.bat release</code> makes <code>build\ronin.exe</code>. <a href="contributing.html#building">Contributing</a> has the details.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="index.html">&larr; Overview</a><a rel="next" href="first-steps.html">First steps &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

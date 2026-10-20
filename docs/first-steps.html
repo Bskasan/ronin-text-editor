@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>First steps &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html" aria-current="page">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="first-steps">First steps</h1>
+<h2 id="key-notation">Key notation</h2>
+<p>Keys are written as in Emacs: <code>C-</code> is Ctrl, <code>M-</code> is Alt, <code>S-</code> is Shift; <code>RET</code> is Enter, <code>SPC</code> the space bar, <code>DEL</code>
+Backspace; <code>C-x C-s</code> means Ctrl+X, then Ctrl+S. A key matches by the character it types in your keyboard layout: <code>C-/</code>
+is Ctrl with whichever key types <code>/</code>. Unlike Emacs, <code>ESC</code> cancels (as <code>C-g</code> does).</p>
+<h2 id="the-first-keys">The first keys</h2>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-f</code> <code>C-b</code> <code>C-n</code> <code>C-p</code></td><td><code>forward-char</code> <code>backward-char</code> <code>next-line</code> <code>previous-line</code></td><td>move by a character or a line (or the arrows)</td></tr>
+<tr><td><code>C-x C-f</code></td><td><code>find-file</code></td><td>open a file, with completion</td></tr>
+<tr><td><code>C-x C-s</code></td><td><code>save-buffer</code></td><td>save</td></tr>
+<tr><td><code>C-x C-c</code></td><td><code>save-buffers-kill-terminal</code></td><td>quit, asking about unsaved files</td></tr>
+<tr><td><code>C-g</code></td><td><code>keyboard-quit</code></td><td>cancel whatever is going on</td></tr>
+<tr><td><code>C-/</code> <code>C-?</code></td><td><code>undo</code> <code>undo-redo</code></td><td>undo, and go forward again</td></tr>
+<tr><td><code>C-SPC</code></td><td><code>set-mark-command</code></td><td>start a region (or hold Shift while moving)</td></tr>
+<tr><td><code>C-w</code> <code>M-w</code> <code>C-y</code></td><td><code>kill-region</code> <code>kill-ring-save</code> <code>yank</code></td><td>cut, copy, paste</td></tr>
+<tr><td><code>C-s</code> <code>C-r</code></td><td><code>isearch-forward</code> <code>isearch-backward</code></td><td>search as you type</td></tr>
+<tr><td><code>M-%</code></td><td><code>query-replace</code></td><td>replace, asking at each match</td></tr>
+<tr><td><code>C-x b</code></td><td><code>switch-to-buffer</code></td><td>another open file</td></tr>
+<tr><td><code>C-x 3</code> <code>C-x o</code> <code>C-x 1</code></td><td><code>split-window-right</code> <code>other-window</code> <code>delete-other-windows</code></td><td>windows side by side</td></tr>
+<tr><td><code>M-x</code></td><td><code>execute-extended-command</code></td><td>run any command by name</td></tr>
+<tr><td><code>C-S-p</code></td><td><code>show-command-list</code></td><td>every command, what it does and its keys; type to filter, <code>RET</code> runs</td></tr>
+<tr><td><code>C-h k</code></td><td><code>describe-key</code></td><td>what a key does</td></tr>
+<tr><td><code>C-c ,</code></td><td><code>open-config</code></td><td>open the configuration file</td></tr>
+</tbody>
+</table>
+<h2 id="the-command-list">The command list</h2>
+<p><code>C-S-p</code> lists every command with a one-line description and its keys in the current window. Typing filters it (fuzzy,
+on the name, the description or both); the arrows, <code>C-n</code> / <code>C-p</code> and <code>C-v</code> / <code>M-v</code> move; <code>RET</code> or a double click runs
+the selected command as <code>M-x</code> would; <code>C-g</code>, <code>ESC</code> or a click outside close it.</p>
+<p><img src="images/command-list.png" alt="The command list filtered with &quot;file&quot;, over src/editor/modal.c" width="1280" height="800" loading="lazy"></p>
+<h2 id="m-x">M-x</h2>
+<p><code>M-x</code> reads a command's name in the minibuffer, with completion: a candidate matches when every space-separated word of
+the input occurs in it, ignoring case. <code>TAB</code> completes, <code>RET</code> runs the selected candidate, <code>C-g</code> gives up. Every command
+has a name, so a command without a key is one <code>M-x</code> away.</p>
+<h2 id="help">Help</h2>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-h k</code></td><td><code>describe-key</code></td><td>what a key does</td></tr>
+<tr><td><code>C-h e</code></td><td><code>view-echo-area-messages</code></td><td>every message so far, in <code>*Messages*</code></td></tr>
+<tr><td><code>C-c ,</code></td><td><code>open-config</code></td><td>open the configuration file, creating it the first time</td></tr>
+</tbody>
+</table>
+<p>Next: <a href="editing.html">Editing</a>, or every key on the <a href="keys.html">keys page</a>.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="install.html">&larr; Install</a><a rel="next" href="editing.html">Editing &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

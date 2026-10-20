@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Builds &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html" aria-current="page">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="builds">Builds</h1>
+<h2 id="running-a-build">Running a build</h2>
+<p><code>C-x p c</code> asks for a build command (the one last used in the project, else the <code>[build]</code> command of <code>.ronin-project</code>,
+ready to edit) and runs it in the project's root through cmd.exe; its output fills <code>*compilation*</code> in another window
+while you keep typing. <code>M-x compile</code> does the same in the current buffer's directory, <code>M-x recompile</code> runs the last
+command again without asking, and <code>M-x kill-compilation</code> stops it with every process it started.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-x p c</code></td><td><code>project-compile</code></td><td>build the project</td></tr>
+<tr><td><code>M-g n</code> <code>M-g p</code></td><td><code>next-error</code> <code>previous-error</code></td><td>the next / previous error, from any window</td></tr>
+</tbody>
+</table>
+<p>Before a build starts, the file buffers with unsaved changes are asked about one by one, all saved or left as they are
+(<code>compilation_save_buffers</code>), and files the build rewrote are reloaded. One build runs at a time.</p>
+<h2 id="errors">Errors</h2>
+<p>Errors and warnings of MSVC, csc, MSBuild, GCC, Clang, tsc and Jai are recognized and colored, and <code>M-g n</code> walks
+them. The windows showing <code>*compilation*</code> follow its output until the first error appears
+(<code>compilation_scroll_output</code>); <code>compilation_max_output_mb</code> caps the output kept, and <code>compilation_relative_paths</code> shows
+a location under the project root with its path relative to the root.</p>
+<p>In <code>*compilation*</code>:</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>RET</code></td><td><code>compile-goto-error</code></td><td>visit the error on this line</td></tr>
+<tr><td><code>n</code> <code>p</code></td><td><code>next-error-no-select</code> <code>previous-error-no-select</code></td><td>show the next / previous error in another window</td></tr>
+<tr><td><code>g</code></td><td><code>recompile</code></td><td>run the command again</td></tr>
+<tr><td><code>C-c C-k</code></td><td><code>kill-compilation</code></td><td>stop it, with every process it started</td></tr>
+<tr><td><code>q</code></td><td><code>quit-window</code></td><td>close the window</td></tr>
+</tbody>
+</table>
+<p><img src="images/compilation.png" alt="*compilation* with Jai errors, warnings and notes" width="1280" height="800" loading="lazy"></p>
+<h2 id="the-build-block">The build block</h2>
+<pre class="ini"><code><span class="s">[build]</span>
+<span class="k">command   </span>= .\build.bat release
+<span class="k">directory </span>= src
+</code></pre>
+<p>That is a <code>.ronin-project</code> at the project's root; <code>directory</code> is relative to the root and optional. Write
+<code>.\build.bat</code> rather than <code>build.bat</code>: cmd does not look in the current directory when
+<code>NoDefaultCurrentDirectoryInExePath</code> is set. Nothing runs before you press <code>RET</code>.</p>
+<p>To build with one key, bind <code>recompile</code> in <code>ronin.conf</code>, for example <code>&lt;f5&gt; recompile</code> under <code>[keys]</code>.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="projects.html">&larr; Projects and search</a><a rel="next" href="git.html">git &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

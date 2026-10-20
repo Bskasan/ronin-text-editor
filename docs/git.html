@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html" aria-current="page">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="git">git</h1>
+<p><code>C-x g</code> shows the uncommitted changes of the project's git work tree in a box over the windows: every file git status
+lists, with its two-letter status, and the selected file's diff against HEAD. It only reads: nothing is staged,
+committed or reverted. git runs in the background, so typing never waits for it; the box opens once git has answered,
+and without git or outside a work tree a message says so and nothing opens.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-x g</code></td><td><code>show-git-changes</code></td><td>the changed files and their diffs</td></tr>
+</tbody>
+</table>
+<p>While the box is open:</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>TAB</code></td><td><code>modal-other-pane</code></td><td>from the files to the diff and back</td></tr>
+<tr><td><code>C-n</code> <code>C-p</code></td><td><code>modal-next</code> <code>modal-previous</code></td><td>the next / previous row</td></tr>
+<tr><td><code>RET</code></td><td><code>modal-accept</code></td><td>visit the selected file at its first change</td></tr>
+<tr><td><code>g</code></td><td><code>git-changes-refresh</code></td><td>run git status again</td></tr>
+<tr><td><code>C-g</code></td><td><code>keyboard-quit</code></td><td>close the box</td></tr>
+</tbody>
+</table>
+<p><img src="images/git-changes.png" alt="The git changes view on a test repository: a.c's diff with a removed and an added line" width="1280" height="800" loading="lazy"></p>
+<h2 id="settings">Settings</h2>
+<p>ronin runs <code>git.exe</code> from PATH, or the program <code>git_path</code> names. A diff is cut after <code>git_diff_max_lines</code> lines and the
+file list after <code>git_status_max_files</code> files, each with a last line saying so; a git that prints nothing for
+<code>git_timeout_ms</code> is stopped. The view needs git 2.15 or later and does not scroll diffs sideways.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="build.html">&larr; Builds</a><a rel="next" href="terminals.html">Terminals &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

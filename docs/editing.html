@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Editing &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html" aria-current="page">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="editing">Editing</h1>
+<h2 id="moving">Moving</h2>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-f</code> <code>C-b</code></td><td><code>forward-char</code> <code>backward-char</code></td><td>a character forward or back (or the arrows)</td></tr>
+<tr><td><code>C-n</code> <code>C-p</code></td><td><code>next-line</code> <code>previous-line</code></td><td>a line down or up</td></tr>
+<tr><td><code>C-a</code> <code>C-e</code></td><td><code>move-beginning-of-line</code> <code>move-end-of-line</code></td><td>the beginning or the end of the line</td></tr>
+<tr><td><code>M-f</code> <code>M-b</code></td><td><code>forward-word</code> <code>backward-word</code></td><td>a word forward or back (or Ctrl with the arrows)</td></tr>
+<tr><td><code>M-}</code> <code>M-{</code></td><td><code>forward-paragraph</code> <code>backward-paragraph</code></td><td>a paragraph forward or back</td></tr>
+<tr><td><code>M-&lt;</code> <code>M-&gt;</code></td><td><code>beginning-of-buffer</code> <code>end-of-buffer</code></td><td>the beginning or the end of the buffer</td></tr>
+<tr><td><code>C-v</code> <code>M-v</code></td><td><code>scroll-up-command</code> <code>scroll-down-command</code></td><td>a screen forward or back (or Page Down and Page Up)</td></tr>
+<tr><td><code>C-l</code></td><td><code>recenter-top-bottom</code></td><td>point's line to the middle, the top, then the bottom</td></tr>
+<tr><td><code>M-g g</code></td><td><code>goto-line</code></td><td>a line by its number, and a column after a colon</td></tr>
+</tbody>
+</table>
+<h2 id="point-and-mark">Point and mark</h2>
+<p>The cursor is point. <code>C-SPC</code> sets the mark there, and the text between point and the mark is the region. While the
+mark is active the region is highlighted and the region commands act on it (<code>transient_mark_mode</code>); Shift with a
+motion key selects too. Typing inserts at point even with an active region unless <code>delete_selection_mode</code> is true;
+<code>DEL</code> and <code>C-d</code> delete an active region either way.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-SPC</code></td><td><code>set-mark-command</code></td><td>set the mark at point and activate it</td></tr>
+<tr><td><code>C-x C-x</code></td><td><code>exchange-point-and-mark</code></td><td>exchange point and the mark</td></tr>
+<tr><td><code>C-x h</code></td><td><code>mark-whole-buffer</code></td><td>mark the whole buffer as the region</td></tr>
+</tbody>
+</table>
+<h2 id="killing-and-yanking">Killing and yanking</h2>
+<p>Killing is cutting and yanking is pasting. The kills are kept for yanking (<code>kill_ring_max</code> of them), and every kill
+also goes to the Windows clipboard; <code>C-y</code> takes the clipboard when another program changed it since.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-w</code> <code>M-w</code></td><td><code>kill-region</code> <code>kill-ring-save</code></td><td>cut or copy the region</td></tr>
+<tr><td><code>C-k</code></td><td><code>kill-line</code></td><td>kill to the end of the line</td></tr>
+<tr><td><code>M-d</code> <code>M-DEL</code></td><td><code>kill-word</code> <code>backward-kill-word</code></td><td>kill a word forward or back</td></tr>
+<tr><td><code>C-S-DEL</code></td><td><code>kill-whole-line</code></td><td>kill the whole line, its newline included</td></tr>
+<tr><td><code>C-y</code></td><td><code>yank</code></td><td>paste the last kill</td></tr>
+<tr><td><code>M-y</code></td><td><code>yank-pop</code></td><td>right after a yank, replace it with an older kill</td></tr>
+</tbody>
+</table>
+<h2 id="undo">Undo</h2>
+<p><code>C-/</code> undoes, and repeated it goes further back; after any other command it first undoes the undos, as in Emacs. <code>C-?</code>
+(undo-redo) goes forward again. The history kept per buffer is <code>undo_limit_mb</code> megabytes: the oldest changes are
+dropped first, and the last command can always be undone.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-/</code> <code>C-x u</code></td><td><code>undo</code></td><td>undo</td></tr>
+<tr><td><code>C-?</code></td><td><code>undo-redo</code></td><td>go forward again</td></tr>
+</tbody>
+</table>
+<h2 id="searching">Searching</h2>
+<p>isearch highlights every match on screen, follows smart case (a capital letter makes it exact) and wraps around.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-s</code> <code>C-r</code></td><td><code>isearch-forward</code> <code>isearch-backward</code></td><td>search forward / backward as you type</td></tr>
+</tbody>
+</table>
+<p>While isearch runs:</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-s</code> <code>C-r</code></td><td><code>isearch-repeat-forward</code> <code>isearch-repeat-backward</code></td><td>the next / previous match</td></tr>
+<tr><td><code>C-w</code></td><td><code>isearch-yank-word</code></td><td>add the next word at point to the search</td></tr>
+<tr><td><code>C-y</code></td><td><code>isearch-yank-kill</code></td><td>add the last kill to the search</td></tr>
+<tr><td><code>M-p</code> <code>M-n</code></td><td><code>isearch-ring-retreat</code> <code>isearch-ring-advance</code></td><td>the previous / next search string of the history</td></tr>
+<tr><td><code>M-c</code></td><td><code>isearch-toggle-case-fold</code></td><td>switch between exact case and either case</td></tr>
+<tr><td><code>RET</code></td><td><code>isearch-exit</code></td><td>stay at the match (the mark is left where the search started)</td></tr>
+<tr><td><code>C-g</code></td><td><code>isearch-abort</code></td><td>go back to where the search started</td></tr>
+</tbody>
+</table>
+<p><img src="images/isearch.png" alt="isearch with the current match and the other matches" width="1280" height="800" loading="lazy"></p>
+<h2 id="replacing">Replacing</h2>
+<p><code>M-%</code> replaces from point (or in the region), asking at each match: <code>y</code> or <code>SPC</code> replace, <code>n</code> or <code>DEL</code> skip, <code>!</code>
+replaces all the rest, <code>.</code> replaces this one and stops, <code>q</code> or <code>RET</code> stop, <code>C-g</code> stops too. <code>M-x replace-string</code>
+replaces without asking. A lowercase replacement of a lowercase search string follows the case of each match (Foo
+becomes Bar, FOO becomes BAR). One undo takes back a whole session.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>M-%</code></td><td><code>query-replace</code></td><td>replace from point, asking at each match</td></tr>
+</tbody>
+</table>
+<h2 id="indentation">Indentation</h2>
+<p><code>RET</code> indents the new line, <code>TAB</code> reindents the line (or the region), and a closing <code>)</code>, <code>]</code> or <code>}</code> typed first on a
+line reindents it. <code>indent_width</code> sets the columns per level and <code>indent_with_tabs</code> tabs or spaces; with
+<code>detect_indentation</code> a loaded file decides tabs or spaces for its buffer from its first indented lines.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>TAB</code></td><td><code>indent-for-tab-command</code></td><td>reindent the line, or the region</td></tr>
+<tr><td><code>&lt;backtab&gt;</code></td><td><code>unindent</code></td><td>remove one level of indentation from the line or region</td></tr>
+<tr><td><code>M-i</code></td><td><code>tab-to-tab-stop</code></td><td>insert whitespace up to the next tab stop</td></tr>
+<tr><td><code>C-q</code></td><td><code>quoted-insert</code></td><td>insert the next character typed literally</td></tr>
+</tbody>
+</table>
+<h2 id="other-editing-commands">Other editing commands</h2>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>M-;</code></td><td><code>comment-line</code></td><td>comment or uncomment the line, or the region's lines</td></tr>
+<tr><td><code>C-o</code></td><td><code>open-line</code></td><td>insert a newline after point without moving point</td></tr>
+<tr><td><code>M-^</code></td><td><code>delete-indentation</code></td><td>join this line to the previous one</td></tr>
+<tr><td><code>M-SPC</code></td><td><code>just-one-space</code></td><td>replace the spaces and tabs around point with one space</td></tr>
+<tr><td><code>C-t</code></td><td><code>transpose-chars</code></td><td>transpose the two characters around point</td></tr>
+<tr><td><code>M-u</code> <code>M-l</code> <code>M-c</code></td><td><code>upcase-word</code> <code>downcase-word</code> <code>capitalize-word</code></td><td>the next word in uppercase, lowercase or capitalized</td></tr>
+</tbody>
+</table>
+<h2 id="multiple-cursors">Multiple cursors</h2>
+<p>The commands of Emacs' multiple-cursors package, without its <code>mc/</code> prefix. Typing, motions, kills, yanks and
+indentation then act at every cursor, in one undo step; <code>C-g</code> first deactivates their regions, then leaves one cursor.
+Ctrl+Shift+click adds a cursor or removes the one there. A command that would add more than <code>max_cursors</code> cursors
+stops there and says so.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-&gt;</code> <code>C-&lt;</code></td><td><code>mark-next-like-this</code> <code>mark-previous-like-this</code></td><td>a cursor at the next / previous occurrence of the region, or on the next / previous line</td></tr>
+<tr><td><code>C-c C-&lt;</code></td><td><code>mark-all-like-this</code></td><td>a cursor at every occurrence of the region</td></tr>
+<tr><td><code>C-S-c C-S-c</code></td><td><code>edit-lines</code></td><td>a cursor on every line of the region</td></tr>
+</tbody>
+</table>
+<p><code>M-x skip-to-next-like-this</code>, <code>M-x unmark-next-like-this</code>, <code>M-x edit-ends-of-lines</code> and
+<code>M-x edit-beginnings-of-lines</code> have no keys.</p>
+<p><img src="images/cursors.png" alt="mark-all-like-this on &quot;job&quot; in src/editor/cursors.c: 111 cursors with their regions" width="1280" height="800" loading="lazy"></p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="first-steps.html">&larr; First steps</a><a rel="next" href="windows-and-buffers.html">Windows and buffers &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

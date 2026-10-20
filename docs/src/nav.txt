@@ -1,0 +1,23 @@
+# The documentation site's pages, in order (Phase 24): "[Group]" starts a group of the navigation, "<page> <label>"
+# is docs/src/<page>.md, made into docs/<page>.html by tools/make_docs.c (build.bat docs).
+[Start]
+index                Overview
+install              Install
+first-steps          First steps
+[Use]
+editing              Editing
+windows-and-buffers  Windows and buffers
+projects             Projects and search
+build                Builds
+git                  git
+terminals            Terminals
+[Configure]
+configuration        Configuration
+settings             Settings
+keys                 Keys and commands
+themes               Themes
+[About]
+limits               Known limits
+roadmap              Roadmap
+changelog            Changelog
+contributing         Contributing

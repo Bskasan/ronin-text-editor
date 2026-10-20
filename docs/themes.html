@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Themes &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html" aria-current="page">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="themes">Themes</h1>
+<table>
+<thead>
+<tr><th>moonfly</th><th>oxide</th></tr>
+</thead>
+<tbody>
+<tr><td><img src="images/themes/moonfly.png" alt="ronin with the moonfly theme: ring.c and shapes.ts side by side, a region" width="1280" height="800" loading="lazy"></td><td><img src="images/themes/oxide.png" alt="ronin with the oxide theme" width="1280" height="800" loading="lazy"></td></tr>
+<tr><td><strong>vague</strong></td><td><strong>mellifluous</strong></td></tr>
+<tr><td><img src="images/themes/vague.png" alt="ronin with the vague theme" width="1280" height="800" loading="lazy"></td><td><img src="images/themes/mellifluous.png" alt="ronin with the mellifluous theme" width="1280" height="800" loading="lazy"></td></tr>
+</tbody>
+</table>
+<h2 id="picking-a-theme">Picking a theme</h2>
+<p>Five themes are built in: <code>ronin</code> (the default, Jonathan Blow's colors, on the <a href="index.html">overview</a>), and <code>moonfly</code>,
+<code>oxide</code>, <code>vague</code> and <code>mellifluous</code>, ported from Neovim color schemes. Pick one with <code>theme = vague</code> in <code>[settings]</code>, or
+try them with <code>M-x set-theme</code>, which switches for the session only and completes over every theme there is.</p>
+<h2 id="your-own-theme">Your own theme</h2>
+<p>A theme of your own is a file <code>themes\&lt;name&gt;.conf</code> next to <code>ronin.conf</code> (<code>%APPDATA%\ronin\themes\</code> in a normal install)
+with a <code>[theme]</code> block and the colors it sets; a file with a built-in theme's name replaces it. Theme files are watched
+like <code>ronin.conf</code>.</p>
+<pre class="ini"><code><span class="s">[theme]</span>
+<span class="k">name    </span>= dusk
+<span class="k">source  </span>= where it comes from
+<span class="k">license </span>= its license
+<span class="k">author  </span>= who made it
+
+<span class="s">[colors]</span>
+<span class="k">background </span>= #1b1d22
+<span class="k">text       </span>= #c8c8c8
+<span class="k">keyword    </span>= #8fb4d8
+<span class="k">comment    </span>= #6b7280
+</code></pre>
+<p>Every color is optional: one the theme leaves out keeps ronin's or follows the color it derives from (<code>function</code>
+follows <code>keyword</code>, <code>constant</code> follows <code>number</code>, the selected mode line is <code>text</code> on <code>background</code>, and so on; the file
+<code>C-c ,</code> writes lists every key). A line in <code>ronin.conf</code>'s <code>[colors]</code> pins one color over any theme; a <code>ronin.conf</code>
+written before themes existed lists them all, so remove that section to let themes show (ronin says how many keys it
+overrides).</p>
+<p>Themes are colors only, and the built-in ones are dark: ClearType is blended for light text on a dark background.</p>
+<h2 id="credits">Credits</h2>
+<p>The four ported themes take only their color values and names from
+<a href="https://github.com/bluz71/vim-moonfly-colors">bluz71/vim-moonfly-colors</a>,
+<a href="https://github.com/oxidescheme/nvim">oxidescheme/nvim</a>, <a href="https://github.com/vague-theme/vague.nvim">vague-theme/vague.nvim</a>
+and <a href="https://github.com/ramojus/mellifluous.nvim">ramojus/mellifluous.nvim</a>, each under the MIT license: see
+<a href="https://github.com/Bskasan/ronin-text-editor/blob/main/THIRD_PARTY.md">THIRD_PARTY.md</a>. The naysayer-theme for Emacs
+and the Witness color scheme served as references for ronin's own colors.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="keys.html">&larr; Keys and commands</a><a rel="next" href="limits.html">Known limits &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

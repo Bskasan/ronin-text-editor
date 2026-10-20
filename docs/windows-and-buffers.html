@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows and buffers &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html" aria-current="page">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="windows-and-buffers">Windows and buffers</h1>
+<h2 id="windows">Windows</h2>
+<p>The frame holds up to 8 windows, side by side or one above the other, each showing a buffer with its own point and
+scroll position; two windows can show the same buffer. A click selects a window; drag the line between two windows, or
+a mode line, to resize.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-x 2</code> <code>C-x 3</code></td><td><code>split-window-below</code> <code>split-window-right</code></td><td>split the selected window below / right</td></tr>
+<tr><td><code>C-x o</code></td><td><code>other-window</code></td><td>select the next window</td></tr>
+<tr><td><code>C-x 0</code> <code>C-x 1</code></td><td><code>delete-window</code> <code>delete-other-windows</code></td><td>delete the selected window / every other one</td></tr>
+<tr><td><code>C-x +</code></td><td><code>balance-windows</code></td><td>make the windows equal</td></tr>
+<tr><td><code>C-x ^</code> <code>C-x }</code> <code>C-x {</code></td><td><code>enlarge-window</code> <code>enlarge-window-horizontally</code> <code>shrink-window-horizontally</code></td><td>change the selected window's size</td></tr>
+<tr><td><code>C-M-v</code> <code>C-M-S-v</code></td><td><code>scroll-other-window</code> <code>scroll-other-window-down</code></td><td>scroll the next window forward / back</td></tr>
+<tr><td><code>C-x 4 f</code> <code>C-x 4 b</code></td><td><code>find-file-other-window</code> <code>switch-to-buffer-other-window</code></td><td>a file / a buffer in another window</td></tr>
+<tr><td><code>C-x 4 0</code></td><td><code>kill-buffer-and-window</code></td><td>kill the buffer and delete its window</td></tr>
+</tbody>
+</table>
+<p>A command that shows a buffer in another window (<code>C-x 4 b</code>, <code>C-x 4 f</code>, <code>C-h e</code>) splits a single window side by side
+when the frame is at least <code>split_width_threshold</code> columns wide, otherwise one above the other. <code>startup_windows</code>
+set to 2 starts with two windows side by side.</p>
+<h2 id="buffers-and-files">Buffers and files</h2>
+<p>Every open file is a buffer; <code>*scratch*</code> has no file, and <code>*Messages*</code> (<code>C-h e</code>) keeps what the echo area said.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-x C-f</code></td><td><code>find-file</code></td><td>open a file, with completion</td></tr>
+<tr><td><code>C-x C-s</code> <code>C-x s</code></td><td><code>save-buffer</code> <code>save-some-buffers</code></td><td>save the buffer / the modified buffers, asking about each</td></tr>
+<tr><td><code>C-x C-w</code></td><td><code>write-file</code></td><td>write the buffer to another file and visit that</td></tr>
+<tr><td><code>C-x b</code></td><td><code>switch-to-buffer</code></td><td>switch the selected window to another buffer</td></tr>
+<tr><td><code>C-x k</code></td><td><code>kill-buffer</code></td><td>kill a buffer, asking to save it if modified</td></tr>
+<tr><td><code>C-x &lt;left&gt;</code> <code>C-x &lt;right&gt;</code></td><td><code>previous-buffer</code> <code>next-buffer</code></td><td>the previous / next buffer of the buffer list</td></tr>
+<tr><td><code>C-x C-c</code></td><td><code>save-buffers-kill-terminal</code></td><td>quit, asking about unsaved files</td></tr>
+</tbody>
+</table>
+<p>Files are UTF-8 or UTF-16 with a byte order mark; LF, CRLF and mixed line endings are kept byte for byte, and a save
+goes through a temporary file.</p>
+<h2 id="files-changed-on-disk">Files changed on disk</h2>
+<p>With <code>auto_revert</code> (the default), a buffer without unsaved changes whose file changed on disk is reloaded, when ronin is
+activated and at once for the buffers on screen. A buffer with unsaved changes is never touched, only flagged in the
+mode line. <code>M-x revert-buffer</code> reloads a buffer from its file by hand.</p>
+<h2 id="crash-recovery">Crash recovery</h2>
+<p>When ronin itself crashes, it first writes its unsaved buffers to <code>%LOCALAPPDATA%\ronin\recovery</code>; the next start says
+so, and <code>M-x recover-file</code> recovers a file from its copy. It is a best effort: nothing is written when the process is
+ended from outside or the power fails.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="editing.html">&larr; Editing</a><a rel="next" href="projects.html">Projects and search &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

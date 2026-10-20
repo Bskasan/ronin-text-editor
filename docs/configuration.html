@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html" aria-current="page">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="configuration">Configuration</h1>
+<h2 id="where-it-is">Where it is</h2>
+<p>ronin reads <code>ronin.conf</code> next to <code>ronin.exe</code> if that file exists (a portable install), otherwise
+<code>%APPDATA%\ronin\ronin.conf</code>. <code>C-c ,</code> opens it, creating it the first time with every setting, color and binding
+explained in comments: that text is the built-in configuration, the same one the <a href="settings.html">settings</a> and
+<a href="keys.html">keys</a> pages are made from.</p>
+<h2 id="applied-as-soon-as-it-is-saved">Applied as soon as it is saved</h2>
+<p>ronin applies the file as soon as it is saved, from ronin or any other program; <code>C-c r</code> reloads it by hand. A file
+needs only what it changes. A bad line is reported in the echo area and in <code>*Messages*</code> with its line number, and the
+rest still applies.</p>
+<pre class="ini"><code><span class="s">[settings]</span>
+<span class="k">font      </span>= Cascadia Mono
+<span class="k">font_size </span>= 13
+<span class="k">theme     </span>= moonfly
+
+<span class="s">[keys]</span>
+&lt;f5&gt;        recompile
+C-c g       goto-line
+</code></pre>
+<h2 id="the-sections">The sections</h2>
+<p>The file has three kinds of sections: <code>[settings]</code>, <code>[colors]</code> and <code>[keys]</code>. Lines starting with <code>#</code> are comments
+(only at the start of a line).</p>
+<p>The settings most often changed:</p>
+<table>
+<thead>
+<tr><th>setting</th><th>default</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>font</code></td><td><code>Consolas</code></td><td>a monospace font (Consolas when it is missing)</td></tr>
+<tr><td><code>font_size</code></td><td><code>12</code></td><td>points, 4 to 96; <code>C-x C-+</code> and <code>C-x C--</code> change it for the session</td></tr>
+<tr><td><code>theme</code></td><td><code>ronin</code></td><td>the color theme (see <a href="themes.html">Themes</a>)</td></tr>
+<tr><td><code>tab_width</code></td><td><code>4</code></td><td>columns per tab stop</td></tr>
+<tr><td><code>indent_width</code></td><td><code>4</code></td><td>columns per indentation level</td></tr>
+<tr><td><code>indent_with_tabs</code></td><td><code>false</code></td><td>indent with tabs instead of spaces (a file's own style is detected when it loads)</td></tr>
+<tr><td><code>render_mode</code></td><td><code>symmetric</code></td><td>ClearType: <code>symmetric</code>, <code>natural</code> or <code>classic</code> (crisper, narrower)</td></tr>
+<tr><td><code>delete_selection_mode</code></td><td><code>false</code></td><td>typing replaces an active region</td></tr>
+<tr><td><code>startup_windows</code></td><td><code>1</code></td><td>2 starts with two windows side by side</td></tr>
+<tr><td><code>early_window</code></td><td><code>false</code></td><td>show the window in its background color before the graphics device is ready</td></tr>
+<tr><td><code>ai_provider</code></td><td><code>claude</code></td><td>the AI tool <code>C-c a</code> runs: <code>claude</code>, <code>openai</code> (codex) or <code>custom</code> (<code>ai_command</code>)</td></tr>
+<tr><td><code>terminal</code></td><td><code>auto</code></td><td>the terminal <code>C-c t</code> opens: <code>wt</code> (Windows Terminal), <code>cmd</code> or <code>auto</code></td></tr>
+</tbody>
+</table>
+<p>Every setting, with its default and what it does, is on the <a href="settings.html">settings page</a>. <code>[colors]</code> pins single
+colors over the theme: see <a href="themes.html#your-own-theme">Themes</a>.</p>
+<h2 id="rebinding-keys">Rebinding keys</h2>
+<p>In <code>[keys]</code> a line is a key sequence and a command, the command last, so keys such as <code>=</code> need no quoting. The command
+<code>none</code> removes a binding. Later lines win: binding a sequence removes the bindings it conflicts with (binding <code>C-x</code>
+would remove every <code>C-x</code> binding), with a warning. Plain characters can be bound too; they then stop inserting
+themselves. Because <code>#</code> starts a comment, a lone <code>#</code> key cannot be bound.</p>
+<p><code>[keys minibuffer]</code>, <code>[keys isearch]</code>, <code>[keys search-results]</code>, <code>[keys compilation]</code>, <code>[keys command-list]</code> and
+<code>[keys git-changes]</code> hold the keys that come first in those places; every other key falls through to <code>[keys]</code>. The
+<a href="keys.html">keys page</a> lists every section with its default bindings.</p>
+<p>When several keyboard layouts are installed, Windows' Left Alt+Shift hotkey can switch the layout while you type a Meta
+key with Shift (<code>M-&lt;</code>, <code>M-%</code>); turn that hotkey off in the Windows settings if it gets in the way.</p>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="terminals.html">&larr; Terminals</a><a rel="next" href="settings.html">Settings &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

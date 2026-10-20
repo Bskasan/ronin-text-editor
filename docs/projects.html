@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects and search &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html" aria-current="page">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="projects-and-search">Projects and search</h1>
+<h2 id="projects">Projects</h2>
+<p>A project is the nearest directory above a file that holds <code>.git</code>, <code>.hg</code>, <code>.svn</code> or <code>.ronin-project</code> (the
+<code>project_markers</code> setting), or a directory given on the command line (<code>ronin C:\code\project</code>). It is scanned on a
+background thread; <code>.gitignore</code> files (a subset of the syntax), <code>project_ignore</code> and <code>.ronin-project</code> decide what is
+listed, and it is scanned again when files come or go (<code>M-x project-refresh</code> forces it). A scan stops after
+<code>project_max_files</code> files and says so.</p>
+<p>A <code>.ronin-project</code> file at the project's root can list <code>[ignore]</code> and <code>[allow]</code> patterns, one per line, and the
+<code>[build]</code> block of <a href="build.html#the-build-block">Builds</a>.</p>
+<h2 id="finding-a-file">Finding a file</h2>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-x p f</code></td><td><code>project-find-file</code></td><td>find a file of the project by fuzzy matching its path</td></tr>
+</tbody>
+</table>
+<p>The characters typed must appear in order in the file's path (a <code>/</code> matches the separator, a space separates words that
+must all match); matches in the file name and at word starts come first. <code>M-x project-find-file-other-window</code> opens the
+file in another window.</p>
+<p><img src="images/finder.png" alt="The project finder with the query &quot;win&quot;" width="1280" height="800" loading="lazy"></p>
+<h2 id="searching-the-project">Searching the project</h2>
+<p><code>C-x p g</code> searches every file of the project for a literal text (smart case, as <code>C-s</code>), on background threads, and
+lists the matches in <code>*search*</code> while it runs; buffers with unsaved changes are searched as they are in ronin.
+<code>search_workers</code> sets the threads and <code>search_max_results</code> the matches it lists before it stops.</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>C-x p g</code></td><td><code>project-search</code></td><td>search every file of the project for a literal text</td></tr>
+<tr><td><code>M-s o</code></td><td><code>occur</code></td><td>the lines of this buffer that contain a text, in <code>*occur*</code></td></tr>
+<tr><td><code>M-g n</code> <code>M-g p</code></td><td><code>next-error</code> <code>previous-error</code></td><td>the next / previous match (or build error) from any window</td></tr>
+</tbody>
+</table>
+<p>In <code>*search*</code> and <code>*occur*</code>:</p>
+<table>
+<thead>
+<tr><th>keys</th><th>command</th><th>what it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>RET</code></td><td><code>compile-goto-error</code></td><td>visit the match in another window</td></tr>
+<tr><td><code>n</code> <code>p</code></td><td><code>next-error-no-select</code> <code>previous-error-no-select</code></td><td>show the next / previous match in another window</td></tr>
+<tr><td><code>g</code></td><td><code>recompile</code></td><td>search again</td></tr>
+<tr><td><code>q</code></td><td><code>quit-window</code></td><td>close the results window</td></tr>
+</tbody>
+</table>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="windows-and-buffers.html">&larr; Windows and buffers</a><a rel="next" href="build.html">Builds &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

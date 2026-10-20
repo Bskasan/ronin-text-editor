@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html" aria-current="page">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="changelog">Changelog</h1>
+<h2 id="unreleased">Unreleased</h2>
+<p>A memory and resource leak audit (Phase 16): <code>--leak-check</code> repeats 22 operations hundreds of times and
+checks memory, handles, threads, the glyph atlas and Direct3D objects for growth; the soak checks the same
+over a million random events; every dev exit checks that nothing of ronin's is left. What it found, fixed:</p>
+<ul>
+<li>A finished project scan, search or build now shows its results while ronin is idle. When the workers'
+  wake was what ended the main loop's wait, the wait had already reset it and the results stayed queued
+  (with their finished threads unjoined) until a wake came while a frame was due.</li>
+<li>Worker threads are reused instead of ending after each task: with a hardware Direct3D device the GPU
+  driver kept ~215 bytes of memory for every thread that ended, and ronin started one for every scan,
+  search worker and build.</li>
+<li>The build commands remembered per directory no longer grow their memory with every build (a long session
+  would have run out of the 64 MB reserved for them).</li>
+<li>Project searches and occur no longer leave their header's text behind.</li>
+<li>Saving a buffer under a new name (and names made unique, &quot;name&lt;dir&gt;&quot;) no longer keeps the old path and
+  name in the buffer's memory (its 1 MB would have run out after a few thousand renames).</li>
+<li>The font's atlas and glyph table are released at exit.</li>
+</ul>
+<p>A cleanup before the first public release (Phase 17):</p>
+<ul>
+<li>A large project search no longer keeps its working memory for its pending results (several MB after tens of
+  thousands of matches) until *search* is killed: it goes back when the window is minimized. Each results
+  buffer (*search*, *occur*, *compilation*) keeps 768 KB for them once it has run, so repeated searches leave
+  the same memory behind.</li>
+<li>Building: <code>build.bat clean</code> removes <code>build\</code> and <code>dist\</code>, everything generated, and nothing else.</li>
+</ul>
+<p>The command list (Phase 18), the first box drawn over the windows:</p>
+<ul>
+<li>C-S-p lists every command with a one-line description and its key bindings in the current window. Typing
+  filters it (fuzzy, on the name, the description or both), the arrows, C-n / C-p and C-v / M-v move, RET or a
+  double click runs the selected command as M-x would, C-g, ESC or a click outside close it. Its keys are in the
+  new <code>[keys command-list]</code> section, its colors are <code>modal_background</code>, <code>modal_border</code>, <code>modal_selection</code>,
+  <code>modal_description</code> and <code>modal_key</code>.</li>
+<li>C-S-p is no longer a shift-selecting C-p (S-&lt;up&gt; still is).</li>
+<li>Every command has a description (M-x and describe-key do not show it yet).</li>
+<li>The tests no longer leave a junction loop in <code>build\tmp</code>.</li>
+</ul>
+<p>The git changes view (Phase 19), the second box:</p>
+<ul>
+<li>C-x g shows the uncommitted changes of the project's git work tree: the changed files on the left with git's
+  two-letter status, the selected file's diff against HEAD on the right, colored. Its diff is fetched once per
+  file while the box is open; TAB moves to the diff and scrolls it, RET visits the file at its first change, g
+  runs git status again, C-g, ESC or a click outside close it and stop a git that still runs. Read only.</li>
+<li>git runs in the background (<code>git.exe</code> on PATH, or the new <code>git_path</code> setting); the box opens once git has
+  answered, so without git or outside a work tree a message says so and nothing opens. A refusal of git's shows
+  git's own words.</li>
+<li>New settings <code>git_diff_max_lines</code> (20,000), <code>git_status_max_files</code> (5,000) and <code>git_timeout_ms</code> (30,000), new
+  colors <code>diff_added</code>, <code>diff_removed</code>, <code>diff_hunk</code>, <code>diff_header</code> and <code>git_status</code>, the new section
+  <code>[keys git-changes]</code>.</li>
+</ul>
+<p>Terminals (Phase 20):</p>
+<ul>
+<li>C-c t (open-terminal) opens a terminal in the current file's directory; C-c a (open-ai-terminal) one in the
+  project's root running an AI assistant's command line tool: <code>claude</code> by default, <code>codex</code> with
+  <code>ai_provider = openai</code>, or <code>ai_command</code> (<code>ai_provider = custom</code>, or set for any provider). Windows Terminal when
+  <code>wt.exe</code> is on PATH, else the classic console; the new setting <code>terminal</code> (auto, wt, cmd) chooses. ronin starts
+  the terminal and lets it go; it stays open after ronin ends.</li>
+<li>The git changes view: a warning git printed while it was writing a diff (such as &quot;LF will be replaced by CRLF&quot;)
+  no longer ends that file's hunk one line early, and no longer shows up in a renamed file's old name.</li>
+</ul>
+<p>Themes (Phase 21):</p>
+<ul>
+<li>Five built-in themes: ronin (the default, unchanged), and moonfly, oxide, vague and mellifluous, ported from
+  their Neovim color schemes (MIT; credited in README.md and THIRD_PARTY.md). The new setting <code>theme</code> chooses one;
+  M-x set-theme switches for the session, with completion over every theme. A theme is a file in the config format
+  (a [theme] block and [colors]); <code>themes\&lt;name&gt;.conf</code> next to ronin.conf (or ronin.exe) adds one or replaces a
+  built-in one, and theme files are watched and applied as soon as they are saved.</li>
+<li>ronin.conf's [colors] still pins single colors, over any theme; the built-in configuration (what C-c , writes
+  into a new ronin.conf) no longer lists the color values, only the keys. A ronin.conf written before lists them
+  all and pins every color: with a theme other than ronin, each load says &quot;ronin.conf: N [colors] keys override
+  theme X&quot;. Remove that section to use themes.</li>
+<li>Two new color keys, <code>mode_line_background</code> and <code>mode_line_text</code>, for the selected mode line (inverse video as
+  before), and seven colors that had another color's value now follow it unless set: constant (number), function
+  and completion_match (keyword), directive and compilation_info (type), prompt (string), completion_selection
+  (selection). ronin's colors are unchanged; a ronin.conf that sets number but not constant now moves both.</li>
+<li><code>dist.bat</code> puts THIRD_PARTY.md into the zip.</li>
+</ul>
+<p>The repository for other people (Phase 22):</p>
+<ul>
+<li>README.md rewritten for someone who has never seen ronin: what it is, why, how to install it, the keys of the first
+  five minutes, configuration, themes, one short section per feature with its keys, known limits, the roadmap. A test
+  checks it against the code on every build: each key in its tables runs the command it names (through describe-key),
+  each setting exists with a valid default, its configuration examples load cleanly, and its links resolve.</li>
+<li>CONTRIBUTING.md: how to build and verify, what a pull request must meet, how to propose a feature and report a bug.
+  Issue templates for bugs and features, a pull request checklist, and a GitHub Actions build that compiles the three
+  configurations and runs the tests on every push.</li>
+<li>The oxide theme's added lines in the git changes view now use oxide's own &quot;added&quot; green (#5bb661) instead of ronin's.</li>
+</ul>
+<p>The sources in order (Phase 23), nothing changed for users (the release exe is the same, byte for byte, apart from
+its link time):</p>
+<ul>
+<li><code>src/</code> is in folders by layer: <code>base/</code>, <code>platform/</code> (the only one with Windows headers), <code>text/</code>, <code>editor/</code>,
+  <code>project/</code>, <code>app/</code> and <code>dev/</code>.</li>
+<li>Every source file starts with a header: the copyright, the MIT notice, and one line saying what the file does, the
+  same line as in the module map of docs/ARCHITECTURE.md.</li>
+<li><code>verify.bat</code> and the CI build check both on every run, and that no file outside <code>src/platform/</code> includes a Windows
+  header and nothing in <code>src/base/</code> or <code>src/text/</code> includes the layers above them. CONTRIBUTING.md explains it under
+  &quot;New files&quot;.</li>
+</ul>
+<h2 id="010-2026-10-14">0.1.0 (2026-10-14)</h2>
+<p>The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).
+Until Phase 15 the project was called teal.</p>
+<ul>
+<li><strong>Window and rendering</strong> (1, 2): a Win32 window drawn with Direct3D 11 only when something changed (0% CPU
+  idle); text rasterized with DirectWrite into a glyph atlas, ClearType, theme colors bit-exact on screen.</li>
+<li><strong>Text buffer</strong> (3): a gap buffer with a line index; UTF-8 and UTF-16 with a BOM; LF, CRLF and mixed line
+  endings kept byte for byte; safe saves through a temporary file.</li>
+<li><strong>Views and commands</strong> (4, 5): point, scrolling, the mode line; a keymap with prefix keys and Emacs' default
+  bindings; one text config file for settings, colors and keys, reloaded when saved.</li>
+<li><strong>Editing</strong> (6): mark and region, shift-select, the kill ring linked to the clipboard, undo as in Emacs
+  plus undo-redo, automatic indentation, comment-line and the other editing commands.</li>
+<li><strong>Minibuffer and files</strong> (7): M-x, find-file, switch-to-buffer, write-file, goto-line, kill-buffer with
+  completion and history; files changed on disk; the questions on quitting and signing out.</li>
+<li><strong>Highlighting</strong> (8): hand-written lexers for Jai, C, C++, C#, JavaScript and TypeScript, incremental;
+  indentation and show-paren on tokens.</li>
+<li><strong>Search</strong> (9): isearch with the other matches highlighted, query-replace and replace-string.</li>
+<li><strong>Windows</strong> (10): splitting, resizing with keys and the mouse, other-window commands.</li>
+<li><strong>Projects</strong> (11): project roots, a background scan honoring .gitignore and .ronin-project, fuzzy file open.</li>
+<li><strong>Project-wide search</strong> (12): literal search over a project's files on worker threads, *search* and occur.</li>
+<li><strong>Builds</strong> (13): a build command run in the project, *compilation* with the errors of MSVC, GCC / Clang,
+  tsc and Jai recognized, next-error.</li>
+<li><strong>Multiple cursors</strong> (14): the commands of Emacs' multiple-cursors package; typing at 10,000 cursors in
+  ~2 ms per key.</li>
+<li><strong>Last pass</strong> (15): renamed to ronin; the release exe links no C runtime and imports only kernel32, user32
+  and gdi32 (482,304 -&gt; 397,312 bytes, icon and version included); idle memory 76-77 -&gt; 57-59 MB; case labels
+  at 10,000 cursors 0.93 s -&gt; 28 ms; moving on a 5 MB line with show-paren 6.5 -&gt; 0.5-0.7 ms a key; crash recovery files and
+  M-x recover-file; <code>early_window</code>; <code>--version</code>, a version resource and an icon drawn at build time; a seed
+  sweep and a million-event soak test in the phase gate; two cursor-ordering bugs the soak found, fixed.</li>
+</ul>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="roadmap.html">&larr; Roadmap</a><a rel="next" href="contributing.html">Contributing &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>

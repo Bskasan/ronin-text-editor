@@ -1,0 +1,328 @@
+/* ronin's documentation site (Phase 24): one style sheet for every page tools/make_docs.c writes. The colors are
+   ronin's own theme (themes/ronin.conf): background, text, keyword, string, number, comment, type, selection and
+   cursor, and the boxes' modal colors. No web font, no script, nothing loaded from elsewhere. Mobile first: one column
+   with the navigation on top; from 60em the navigation is a sticky column on the left. */
+
+:root {
+    --bg: #072626;        /* background */
+    --text: #d3b58d;      /* text */
+    --heading: #ffffff;   /* keyword */
+    --link: #0fdfaf;      /* string */
+    --muted: #a8977a;     /* modal_description */
+    --code-bg: #0c3434;   /* modal_background */
+    --border: #2e8b8b;    /* modal_border */
+    --key: #7ad0c6;       /* number, modal_key */
+    --comment: #3fdf1f;   /* comment */
+    --type: #8cde94;      /* type */
+    --sel: #0000ff;       /* selection */
+    --focus: #90ee90;     /* cursor */
+    --sans: system-ui, "Segoe UI", -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, "Liberation Mono", monospace;
+    color-scheme: dark;
+}
+
+html {
+    background: var(--bg);
+    color: var(--text);
+    font: 100%/1.6 var(--sans);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+}
+
+::selection {
+    background: var(--sel);
+    color: #ffffff;
+}
+
+a {
+    color: var(--link);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+
+a:hover {
+    color: var(--heading);
+}
+
+:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+.skip {
+    position: absolute;
+    left: -10000px;
+}
+
+.skip:focus {
+    left: 16px;
+    top: 8px;
+    background: var(--text);
+    color: var(--bg);
+    padding: 4px 8px;
+    z-index: 1;
+}
+
+/* --- the layout: one column, the navigation on top ----------------------------------------------------------- */
+
+.page {
+    padding: 0 16px;
+}
+
+nav.site {
+    border-bottom: 1px solid var(--border);
+    padding: 12px 0 8px;
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--heading);
+    font-weight: 600;
+    font-size: 1.25rem;
+    text-decoration: none;
+}
+
+nav.site .group {
+    margin: 10px 0 2px;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+nav.site ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+nav.site li,
+nav.site li + li {
+    margin: 0;
+}
+
+nav.site li a {
+    display: inline-block;
+    padding: 2px 4px;
+    margin: 0 -4px;
+    text-decoration: none;
+}
+
+/* the current page in inverse video, as the selected mode line */
+nav.site a[aria-current="page"] {
+    background: var(--text);
+    color: var(--bg);
+}
+
+nav.site .repo {
+    margin: 10px 0 0;
+    font-size: 0.9rem;
+}
+
+main {
+    min-width: 0;
+    padding: 8px 0 32px;
+    overflow-wrap: anywhere;
+}
+
+/* --- the text ------------------------------------------------------------------------------------------------ */
+
+h1, h2, h3, h4 {
+    color: var(--heading);
+    line-height: 1.25;
+    margin: 1.6em 0 0.6em;
+}
+
+h1 {
+    font-size: 2rem;
+    margin-top: 0.6em;
+}
+
+h2 {
+    font-size: 1.4rem;
+    padding-bottom: 0.2em;
+    border-bottom: 1px solid var(--border);
+}
+
+h3 {
+    font-size: 1.15rem;
+}
+
+h4 {
+    font-size: 1rem;
+}
+
+p, ul, ol, table, pre, blockquote {
+    margin: 0 0 1em;
+}
+
+ul, ol {
+    padding-left: 1.5em;
+}
+
+li + li {
+    margin-top: 0.25em;
+}
+
+strong {
+    color: var(--heading);
+}
+
+code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    overflow-wrap: normal; /* a key or a name breaks only at its spaces */
+}
+
+pre {
+    background: var(--code-bg);
+    border-left: 3px solid var(--border);
+    padding: 12px 14px;
+    overflow-x: auto;
+    line-height: 1.45;
+}
+
+pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.875rem;
+    overflow-wrap: normal;
+    white-space: pre;
+}
+
+/* ini blocks, colored as ronin colors a configuration file's parts */
+pre.ini .c { color: var(--comment); }
+pre.ini .s { color: var(--heading); }
+pre.ini .k { color: var(--type); }
+
+blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 12px;
+    color: var(--muted);
+}
+
+img {
+    max-width: 100%;
+    height: auto;
+    vertical-align: middle;
+}
+
+main p > img {
+    border: 1px solid var(--border);
+}
+
+/* a wide table scrolls by itself; the page never does */
+table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+
+th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+th {
+    color: var(--heading);
+    white-space: nowrap;
+}
+
+td {
+    overflow-wrap: normal;
+}
+
+/* a key or a name in the text stays on one line; in a table only where there is room for it (narrow screens keep all
+   three columns of a key table in view) */
+p code, li code {
+    white-space: nowrap;
+}
+
+@media (min-width: 40em) {
+    td code {
+        white-space: nowrap;
+    }
+}
+
+/* keys in the first column, as the command list shows them; a key never breaks */
+td:first-child code {
+    color: var(--key);
+    white-space: nowrap;
+}
+
+td img {
+    border: 1px solid var(--border);
+}
+
+nav.pager {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 2.5em;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+nav.pager a[rel="next"] {
+    margin-left: auto;
+    text-align: right;
+}
+
+footer {
+    margin-top: 24px;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+/* --- wide screens: the navigation as a sticky column on the left ------------------------------------------- */
+
+@media (min-width: 60em) {
+    .page {
+        display: grid;
+        grid-template-columns: 14rem minmax(0, 46rem);
+        gap: 3rem;
+        max-width: 66rem;
+        margin: 0 auto;
+        padding: 0 24px;
+    }
+
+    nav.site {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        max-height: 100vh;
+        overflow-y: auto;
+        box-sizing: border-box;
+        border-bottom: none;
+        border-right: 1px solid var(--border);
+        padding: 24px 16px 24px 0;
+    }
+
+    nav.site ul {
+        display: block;
+    }
+
+    nav.site li + li {
+        margin-top: 2px;
+    }
+
+    main {
+        padding-top: 24px;
+    }
+}

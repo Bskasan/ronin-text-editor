@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings &middot; ronin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" type="image/png" href="images/logo.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the text</a>
+<div class="page">
+<nav class="site" aria-label="Documentation">
+<a class="brand" href="index.html"><img src="images/logo.png" width="32" height="32" alt="">ronin</a>
+<p class="group">Start</p>
+<ul>
+<li><a href="index.html">Overview</a></li>
+<li><a href="install.html">Install</a></li>
+<li><a href="first-steps.html">First steps</a></li>
+</ul>
+<p class="group">Use</p>
+<ul>
+<li><a href="editing.html">Editing</a></li>
+<li><a href="windows-and-buffers.html">Windows and buffers</a></li>
+<li><a href="projects.html">Projects and search</a></li>
+<li><a href="build.html">Builds</a></li>
+<li><a href="git.html">git</a></li>
+<li><a href="terminals.html">Terminals</a></li>
+</ul>
+<p class="group">Configure</p>
+<ul>
+<li><a href="configuration.html">Configuration</a></li>
+<li><a href="settings.html" aria-current="page">Settings</a></li>
+<li><a href="keys.html">Keys and commands</a></li>
+<li><a href="themes.html">Themes</a></li>
+</ul>
+<p class="group">About</p>
+<ul>
+<li><a href="limits.html">Known limits</a></li>
+<li><a href="roadmap.html">Roadmap</a></li>
+<li><a href="changelog.html">Changelog</a></li>
+<li><a href="contributing.html">Contributing</a></li>
+</ul>
+<p class="repo"><a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></p>
+</nav>
+<main id="main">
+<h1 id="settings">Settings</h1>
+<p>Every setting of <code>[settings]</code>, with its default and what it does. This page is generated from ronin's built-in
+configuration (the text <code>C-c ,</code> writes into a new <code>ronin.conf</code>), so it says what the program does. <code>git_path</code> and
+<code>ai_command</code> are shown only in examples: they are empty unless set. Where the file is and how it is applied:
+<a href="configuration.html">Configuration</a>.</p>
+<h2 id="font">font</h2>
+<p>Font family: a monospace font installed on the system. If it is missing, Consolas is used.</p>
+<pre class="ini"><code><span class="k">font </span>= Consolas
+</code></pre>
+<h2 id="font_size">font_size</h2>
+<p>Font size in points, 4 to 96; decimals are allowed (10.5). The monitor's scale applies on top.
+C-x C-+ and C-x C-- change it for the session only, C-x C-0 goes back to this value.</p>
+<pre class="ini"><code><span class="k">font_size </span>= 12
+</code></pre>
+<h2 id="line_height">line_height</h2>
+<p>Line height in percent of the font's natural line height, 80 to 300.</p>
+<pre class="ini"><code><span class="k">line_height </span>= 100
+</code></pre>
+<h2 id="render_mode">render_mode</h2>
+<p>Glyph rendering (ClearType): symmetric, natural or classic (GDI-like, crisper, narrower).</p>
+<pre class="ini"><code><span class="k">render_mode </span>= symmetric
+</code></pre>
+<h2 id="tab_width">tab_width</h2>
+<p>Columns per tab stop, 1 to 16.</p>
+<pre class="ini"><code><span class="k">tab_width </span>= 4
+</code></pre>
+<h2 id="indent_width">indent_width</h2>
+<p>Indentation: columns per level (1 to 16); with tabs or spaces; and whether a loaded file decides
+tabs or spaces for its buffer from its first indented lines. RET indents the new line, TAB
+reindents the line (or the region), a closing ) ] } typed first on a line reindents it. The rule:
+the previous non-blank line's indentation, plus its brackets opened minus closed, minus the
+closing brackets that start the line.</p>
+<pre class="ini"><code><span class="k">indent_width </span>= 4
+<span class="k">indent_with_tabs </span>= false
+<span class="k">detect_indentation </span>= true
+</code></pre>
+<h2 id="underscore_is_word">underscore_is_word</h2>
+<p>true: '_' is part of a word for M-f / M-b. false: it separates words (Emacs' C mode).</p>
+<pre class="ini"><code><span class="k">underscore_is_word </span>= false
+</code></pre>
+<h2 id="fsync_on_save">fsync_on_save</h2>
+<p>true: saving returns only once the file is on the disk (FlushFileBuffers). false: faster,
+but a power failure right after saving can lose the file.</p>
+<pre class="ini"><code><span class="k">fsync_on_save </span>= true
+</code></pre>
+<h2 id="undo_limit_mb">undo_limit_mb</h2>
+<p>Undo history kept per buffer, in megabytes (1 to 2048). The oldest changes are dropped first;
+the last command can always be undone.</p>
+<pre class="ini"><code><span class="k">undo_limit_mb </span>= 64
+</code></pre>
+<h2 id="transient_mark_mode">transient_mark_mode</h2>
+<p>true: the region (between point and mark) is highlighted while the mark is active, and region
+commands act on it only then (Emacs' transient-mark-mode). Shift with a motion key selects.</p>
+<pre class="ini"><code><span class="k">transient_mark_mode </span>= true
+</code></pre>
+<h2 id="delete_selection_mode">delete_selection_mode</h2>
+<p>true: typing (or yanking) with an active region replaces it. false (Emacs' default): typing
+inserts at point; DEL and C-d still delete an active region.</p>
+<pre class="ini"><code><span class="k">delete_selection_mode </span>= false
+</code></pre>
+<h2 id="kill_ring_max">kill_ring_max</h2>
+<p>Kills (C-w, C-k, M-d, ...) kept for yanking (C-y, then M-y for older ones), 1 to 1000. Every
+kill also goes to the Windows clipboard, and C-y takes the clipboard when another program
+changed it since.</p>
+<pre class="ini"><code><span class="k">kill_ring_max </span>= 60
+</code></pre>
+<h2 id="completion_lines">completion_lines</h2>
+<p>Rows of the candidate list above the minibuffer (M-x, C-x C-f, C-x b ...), 1 to 40.</p>
+<pre class="ini"><code><span class="k">completion_lines </span>= 8
+</code></pre>
+<h2 id="auto_revert">auto_revert</h2>
+<p>true: a buffer without unsaved changes whose file changed on disk is reloaded (when ronin is
+activated, and at once for the buffers on screen). A buffer with unsaved changes is never
+touched, only flagged in the mode line. false: unchanged buffers are flagged too.</p>
+<pre class="ini"><code><span class="k">auto_revert </span>= true
+</code></pre>
+<h2 id="show_paren_mode">show_paren_mode</h2>
+<p>true: the bracket at point (or the closing one just before point) and its match get the
+paren_match background. Brackets in comments and strings have no match.</p>
+<pre class="ini"><code><span class="k">show_paren_mode </span>= true
+</code></pre>
+<h2 id="split_width_threshold">split_width_threshold</h2>
+<p>Windows (C-x 2, C-x 3, C-x o, ...). A command that shows a buffer in another window (C-x 4 b,
+C-x 4 f, C-h e) splits a single window side by side when the frame is at least this many columns
+wide, otherwise one above the other.</p>
+<pre class="ini"><code><span class="k">split_width_threshold </span>= 160
+</code></pre>
+<h2 id="startup_windows">startup_windows</h2>
+<p>Windows at startup: 1, or 2 (side by side; the second shows the second file on the command line).</p>
+<pre class="ini"><code><span class="k">startup_windows </span>= 1
+</code></pre>
+<h2 id="early_window">early_window</h2>
+<p>true: at startup the window is shown at once, in the background color, and the first frame replaces
+it when the graphics device is ready (~150 ms later). false: it appears with the first frame.
+Read once, at startup.</p>
+<pre class="ini"><code><span class="k">early_window </span>= false
+</code></pre>
+<h2 id="project_markers">project_markers</h2>
+<p>Projects: C-x p f finds a file in the current project by fuzzy matching its path. The root is the
+nearest directory above the buffer's file that holds one of these markers (files or directories,
+blank-separated). Without one, only a directory given on the command line (ronin &lt;directory&gt;) is a
+project, for the files inside it and for *scratch*. A .ronin-project file at the root can list
+[ignore] and [allow] patterns, one per line.</p>
+<pre class="ini"><code><span class="k">project_markers </span>= .git .hg .svn .ronin-project
+</code></pre>
+<h2 id="project_ignore">project_ignore</h2>
+<p>Never listed in a project, in .gitignore syntax, blank-separated (the project's .gitignore files
+apply too). Only names that cannot be source directories: a name pattern matches at any depth, so
+build/, out/, bin/ or obj/ here would also hide a real source directory of that name. Put those in
+the project's .gitignore or .ronin-project instead.</p>
+<pre class="ini"><code><span class="k">project_ignore </span>= .git/ .hg/ .svn/ .vs/ node_modules/ __pycache__/ *.exe *.dll *.lib *.obj *.o *.a *.so *.pdb *.ilk *.exp *.pch *.ipch *.class *.jar *.zip *.7z *.gz *.png *.jpg *.gif *.bmp *.ico *.pdf *.ttf *.woff *.mp3 *.mp4 *.wav
+</code></pre>
+<h2 id="project_max_files">project_max_files</h2>
+<p>A project scan stops after this many files and says so (1000 to 10000000).</p>
+<pre class="ini"><code><span class="k">project_max_files </span>= 1000000
+</code></pre>
+<h2 id="search_workers">search_workers</h2>
+<p>Project-wide search (C-x p g): the threads that read the files (1 to 16; 0 = from the number of
+processors), and the matches it lists before it stops and says so (1 to 1000000).</p>
+<pre class="ini"><code><span class="k">search_workers </span>= 0
+<span class="k">search_max_results </span>= 10000
+</code></pre>
+<h2 id="compilation_save_buffers">compilation_save_buffers</h2>
+<p>Builds (C-x p c, M-x compile): before a build starts, the file buffers with unsaved changes are
+asked about one by one (ask), all saved (all) or left as they are (none).</p>
+<pre class="ini"><code><span class="k">compilation_save_buffers </span>= ask
+</code></pre>
+<h2 id="compilation_scroll_output">compilation_scroll_output</h2>
+<p>The windows showing *compilation* follow its output until the first error appears (first-error),
+always (true) or not at all (false).</p>
+<pre class="ini"><code><span class="k">compilation_scroll_output </span>= first-error
+</code></pre>
+<h2 id="compilation_max_output_mb">compilation_max_output_mb</h2>
+<p>The output kept in *compilation*, in MB (1 to 1024); past it one line says [output truncated]
+and the rest is read and dropped.</p>
+<pre class="ini"><code><span class="k">compilation_max_output_mb </span>= 16
+</code></pre>
+<h2 id="compilation_relative_paths">compilation_relative_paths</h2>
+<p>A location printed with an absolute path under the project root is shown with the path relative
+to the root (the location itself keeps the full path); false shows the line as printed.</p>
+<pre class="ini"><code><span class="k">compilation_relative_paths </span>= true
+</code></pre>
+<h2 id="max_cursors">max_cursors</h2>
+<p>Multiple cursors (C-&gt;, C-&lt;, C-c C-&lt;, C-S-c C-S-c, Ctrl+Shift+click): a command that would add more
+than this many stops there and says so (1 to 100000).</p>
+<pre class="ini"><code><span class="k">max_cursors </span>= 10000
+</code></pre>
+<h2 id="git_diff_max_lines">git_diff_max_lines</h2>
+<p>The git changes view (C-x g) runs git.exe from PATH, or the program set here, e.g.
+<code>git_path = C:\Program Files\Git\cmd\git.exe</code>
+A diff is cut after git_diff_max_lines lines (100 to 1000000) and the file list after
+git_status_max_files files (10 to 100000), each with a last line saying so; a git that prints
+nothing for git_timeout_ms (1000 to 600000) is stopped.</p>
+<pre class="ini"><code><span class="k">git_diff_max_lines </span>= 20000
+<span class="k">git_status_max_files </span>= 5000
+<span class="k">git_timeout_ms </span>= 30000
+</code></pre>
+<h2 id="ai_provider">ai_provider</h2>
+<p>C-c t opens a terminal in the file's directory; C-c a one in the project's root running an AI
+assistant's command line tool: claude, openai (codex) or custom (ai_command). ai_command, when set,
+is run instead for any provider, e.g.
+<code>ai_command = claude --continue</code>
+terminal: wt (Windows Terminal), cmd (the classic console) or auto (wt.exe when it is on PATH).</p>
+<pre class="ini"><code><span class="k">ai_provider </span>= claude
+<span class="k">terminal </span>= auto
+</code></pre>
+<h2 id="theme">theme</h2>
+<p>The color theme: ronin (these colors), moonfly, oxide, vague or mellifluous, built in; or a theme file
+themes\&lt;name&gt;.conf in this file's folder (or in ronin.exe's), which replaces a built-in theme of the same
+name. A theme file holds a [theme] block (name, source, commit, license, author) and a [colors] section
+with the keys below; a key it leaves out keeps ronin's color or follows the key it derives from. Theme
+files are watched: a change applies at once. M-x set-theme switches for the session only.</p>
+<pre class="ini"><code><span class="k">theme </span>= ronin
+</code></pre>
+<nav class="pager" aria-label="Previous and next page">
+<a rel="prev" href="configuration.html">&larr; Configuration</a><a rel="next" href="keys.html">Keys and commands &rarr;</a>
+</nav>
+<footer>ronin is free software under the MIT license. <a href="https://github.com/Bskasan/ronin-text-editor">Source on GitHub</a></footer>
+</main>
+</div>
+</body>
+</html>
