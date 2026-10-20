@@ -583,6 +583,26 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | Y7 | The benches that read src\app\app.c and `--map-report` still work | AUTOMATED | `ronin_bench.exe --bench-cursors` and `--bench-search` exit 0 with their src\app\app.c rows; `ronin_debug.exe --map-report build\ronin.map`: every module row equal to Phase 22's. |
 | Y8 | A fresh clone of the pushed repository builds and verifies | HUMAN | Only a clone of what is on GitHub proves the pushed tree; HUMAN step 53. Dev helper: the same with a local clone, run in this phase (Measurements (Phase 23), "The fresh clone"). |
 
+## Z. The documentation site and README as a product page (Phase 24)
+
+The steps start at Z2: Z1 is the idle step in section K, an id of the original list.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| Z2 | Every Markdown construct of the site's subset becomes the HTML it should; `<`, `&`, `"` and `>` are escaped in prose, code and attributes; anything outside the subset is refused at its line | AUTOMATED-NEW | `--test` "test: ok: markdown" (`test_markdown`: 20 goldens, among them a table with inline code and nested lists; 16 refusals with their lines; a page converted twice, byte for byte the same). |
+| Z3 | The keys and settings pages list every command (with its description and default keys) and every setting (with its default and comment) as the exe has them | AUTOMATED-NEW | `--test` "test: ok: dump-docs" (`test_dump_docs`: a row for each of the 141 commands, twice the same, written as built; the dump itself fails on a setting missing from [settings] or there twice). |
+| Z4 | Every key, command, setting and link of every page is right: links between pages reach existing pages and headings, images exist | AUTOMATED-NEW | `--test`'s README check over docs/src ("the site's 17 pages ..."); the proofs: a broken cross-page anchor and a key table naming the wrong command each made verify fail with exactly their line (Measurements (Phase 24), "The checks"). |
+| Z5 | The committed site is what its sources make; a page edited without `build.bat docs`, or a page no source makes, cannot be committed | AUTOMATED-NEW | verify.bat's and the CI workflow's docs-check; the proof: docs/src/git.md edited and an extra docs\old-page.html failed verify with only the docs-check, naming both. |
+| Z6 | `build.bat docs` makes the same files every time | AUTOMATED-NEW | Measurements (Phase 24): twice, 20 files identical by SHA-256; the docs-check compares a fresh generation on every verify. |
+| Z7 | The site reads well at desktop and phone width, without JavaScript | HUMAN | Judging layout is a person's; HUMAN step 55 on the published site. Dev helper: every page was looked at here in headless Edge at 1280 px and in a 400 px iframe (Measurements (Phase 24)). |
+| Z8 | GitHub Pages publishes the site from main's docs/ | HUMAN | Only the repository's settings can turn Pages on; HUMAN step 54. |
+| Z9 | Every page's images load on the published site | HUMAN | The published site; HUMAN step 56. Locally every image path is checked by the README check and its size read by make_docs. |
+| Z10 | README fits one screen above the showcase on GitHub, with the logo, the badges, the hero and the links | HUMAN | GitHub's own rendering; HUMAN step 57. |
+| Z11 | The badges show the license, the CI build, the latest release and Windows x64 | HUMAN | They are images from img.shields.io, drawn from GitHub's state; HUMAN step 58 (after the first CI run and after the first release). |
+| Z12 | The set-theme reload no longer fails now and then | AUTOMATED-NEW | `--test` (test_set_theme unchanged) in every verify; 30 runs of the theme tests: 11 of 30 passed before the fix, 30 of 30 after (Measurements (Phase 24)). |
+| Z13 | verify.bat and verify.bat phase run at below-normal priority with (logical processors - 2) workers | AUTOMATED-NEW | Measurements (Phase 24): a child of the restarted verify reports BelowNormal; the sweep's log "over 14 worker processes"; VERIFY_WORKERS refused outside 1 to 64. |
+| Z14 | The CI run after the push is green, the docs-check step included | HUMAN | Only GitHub's runner proves it; HUMAN step 59. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -750,6 +770,28 @@ Phase 22, the repository on GitHub (after you push):
 53. **Y8**: After the push, in a new folder: `git clone https://github.com/Bskasan/ronin-text-editor`, then in it
     `cmd //c ".\verify.bat"` (from Git Bash): the last line is `verify: PASS`, and build\verify\source-check.log ends
     in "check_source: PASS: ...".
+
+Phase 24, the documentation site (after you push):
+
+54. **Z8**: On GitHub, the repository's Settings, Pages, "Build and deployment": Source "Deploy from a branch", Branch
+    `main`, folder `/docs`, Save. The Actions tab shows a "pages build and deployment" run; when it is green,
+    https://bskasan.github.io/ronin-text-editor/ shows the overview page with the hero picture.
+55. **Z7**: Open the site on a desktop browser and on a phone (or the browser's phone width, about 400 px): on the desktop
+    the navigation is a column on the left that stays while the page scrolls; on the phone it is on top in wrapped rows;
+    the page never scrolls sideways (a wide table or code block scrolls by itself); the current page is in inverse video.
+    Visit every page through the navigation, and through each page's previous / next links at its end.
+56. **Z9**: On the published site, every image loads: the logo (every page), the hero (overview), the command list
+    (first steps), isearch and the cursors (editing), the finder (projects and search), *compilation* (builds), the git
+    changes view (git), the four themes (themes).
+57. **Z10**: Open README.md on GitHub (the repository's front page) at a desktop size: the logo, the name, the line, the
+    badges, the hero picture, the three sentences and the Download / Documentation links come before the three pictures,
+    about one screen; the Documentation link opens the site, Download the Releases page.
+58. **Z11**: The badges: license MIT; build "passing" after the CI run of your push (the badge follows the latest run of
+    main); the latest release says "no releases" until the first release and its version after it (check again then);
+    platform Windows 10+ x64. Each badge but the platform one is a link (LICENSE, the workflow, the latest release).
+59. **Z14**: The Actions tab: the "build" run of your push is green, the step "Documentation site up to date
+    (docs-check)" included (it prints "docs-check: PASS: ..."). Report the informational smoke step's last lines as for
+    step 50: they go into Measurements (Phase 24).
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

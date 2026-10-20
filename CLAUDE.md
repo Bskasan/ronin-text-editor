@@ -25,8 +25,11 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
 - One build.bat, unity build: src/ronin.c includes the other .c files (win32_dwrite.cpp is
   the only second translation unit). No CMake, no .sln. tools/ holds build-time programs
   (tools/make_icon.c draws the icon into build\gen\ronin.ico, tools/make_themes.c embeds themes\*.conf into
-  build\gen\themes.h, on every build; tools/check_source.c is the source check that verify.bat and CI run): compiled
-  by build.bat on every build, never part of the exe, their output never committed; the same C rules apply to them.
+  build\gen\themes.h, on every build; tools/check_source.c is the source check that verify.bat and CI run;
+  tools/make_docs.c makes the documentation site, with src/dev/markdown.c, Phase 24): compiled by build.bat on every
+  build, never part of the exe, their output never committed except the documentation site (`build.bat docs`: docs/*.html,
+  docs/src/gen/*.md and docs/images/logo.png, committed because GitHub Pages serves files; verify's docs-check keeps
+  them equal to their sources); the same C rules apply to them.
 - Source layout (Phase 23): src/ is in folders by layer, the module map in docs/ARCHITECTURE.md lists every file:
   src/ronin.c (the unity root), base/, platform/ (the os_* and r_* interfaces and everything that touches Win32, D3D
   or DirectWrite, check_macros.c and the shader), text/, editor/, project/, app/, dev/. Only src/platform/ may include
@@ -132,6 +135,9 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
     cmd //c ".\build.bat bench"      # build\ronin_bench.exe  (/O2, RONIN_DEV=1, no CRT, no D3D debug layer)
     cmd //c ".\build.bat clean"      # removes build\ and dist\ entirely, nothing else; refuses (exit 10) outside
                                      # the repository root or when either is a junction, a link or a file
+    cmd //c ".\build.bat docs"       # the debug build, then the documentation site (Phase 24): --dump-docs into
+                                     # docs\src\gen, make_icon --png docs\images\logo.png, make_docs docs\src -> docs\*.html
+                                     # (commit what it changes; verify's docs-check fails on a stale site)
 
     cmd //c ".\verify.bat"           # the gate: three builds, clean-check, the source check, smoke (debug, bench),
                                      # test (bench), imports, --version; one PASS / FAIL line
@@ -622,7 +628,10 @@ When touching rasterization, check that the three render modes still produce dif
 ## Generated files
 
 Everything generated lives under build\ (and dist\ at the root); none of it is tracked, all of it comes
-back by itself, and `build.bat clean` removes both. In build\:
+back by itself, and `build.bat clean` removes both. One exception, tracked on purpose (Phase 24): the documentation
+site that `build.bat docs` writes into docs\ (docs\*.html, docs\src\gen\keys.md and settings.md, docs\images\logo.png),
+because GitHub Pages serves those files; verify's docs-check keeps them equal to what their sources make, and
+`build.bat clean` leaves them. In build\:
 
 | path | made by |
 |---|---|
@@ -631,11 +640,12 @@ back by itself, and `build.bat clean` removes both. In build\:
 | `make_icon.exe`, `make_icon.obj` | build.bat (tools\make_icon.c) |
 | `make_themes.exe`, `make_themes.obj` | build.bat (tools\make_themes.c) |
 | `check_source.exe`, `check_source.obj` | build.bat (tools\check_source.c; run by verify.bat and CI) |
+| `make_docs.exe`, `make_docs.obj` | build.bat (tools\make_docs.c with src\dev\markdown.c; run by build.bat docs, verify.bat and CI) |
 | `gen\themes.h` | build.bat (make_themes, from themes\*.conf: the built-in themes) |
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\platform\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
-| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench) and verify's clean-check (tmp\clean_check, removed after it) |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme) and verify's and CI's docs-check (tmp\docs_check) |
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |

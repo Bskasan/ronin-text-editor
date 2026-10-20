@@ -100,6 +100,22 @@ its link time):
   header and nothing in `src/base/` or `src/text/` includes the layers above them. CONTRIBUTING.md explains it under
   "New files".
 
+A documentation site, and README as the front page (Phase 24):
+
+- The documentation site, https://bskasan.github.io/ronin-text-editor/, published by GitHub Pages from `docs/`: an
+  overview, install, first steps, editing, windows and buffers, projects and search, builds, git, terminals,
+  configuration, themes, known limits, the roadmap, this changelog and the contributing guide. Its keys page (every
+  command, its description and default keys) and settings page (every setting, its default and what it does) are
+  generated from ronin itself. Plain HTML and CSS in ronin's colors, no JavaScript, readable on a phone.
+- README.md is now a short front page: the logo, badges, the hero picture, why, the download and documentation links,
+  three pictures, the first keys, install, contributing, license and credits. The rest moved to the site.
+- Fixed: rewriting ronin.conf or a theme file twice within a few milliseconds with texts of the same length could leave
+  the second version unloaded until the next change (the size and the write time looked unchanged). Now equal ones are
+  confirmed by comparing the file's contents.
+- Building: `build.bat docs` makes the site (`tools/make_docs.c`, and `make_icon --png` for the logo); `verify.bat` and
+  the CI workflow check that the committed site is what its sources make. `verify.bat` runs everything it starts at
+  below-normal priority, and the seed sweep uses all logical processors but two (`VERIFY_WORKERS=N` chooses).
+
 ## 0.1.0 (2026-10-14)
 
 The first release: everything built in phases 1 to 15 (docs/ARCHITECTURE.md has the details of each).
