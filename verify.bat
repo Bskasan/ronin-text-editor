@@ -2,8 +2,9 @@
 rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), checks build.bat clean on a
 rem                     scratch tree (clean-check), runs the source check (tools\check_source.c: every source file's
-rem                     header against docs\ARCHITECTURE.md's module map, the include rules), --smoke on the debug and
-rem                     the bench build, --test on the bench build, and checks the release exe's imports and --version
+rem                     header against docs\ARCHITECTURE.md's module map, the include rules), the docs-check (the
+rem                     documentation site in docs\ is what its sources make), --smoke on the debug and the bench
+rem                     build, --test on the bench build, and checks the release exe's imports and --version
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
 rem                     bench build, the soak (--soak 1000000) on both and the leak check (--leak-check all) on the
 rem                     debug build (once per phase, before its last commit)
@@ -53,6 +54,7 @@ call :clean_check
 call :source_check
 
 if "!DEBUG_OK!"=="1" (
+    call :docs_check
     call :run smoke build\ronin_debug.exe --smoke
     rem The release exe imports exactly the DLLs of res\imports.txt, and no CRT DLL.
     if exist build\ronin.exe (
@@ -154,6 +156,40 @@ set CODE=!errorlevel!
 if not "!CODE!"=="0" (
     type build\verify\source-check.log
     call :fail "source-check (exit !CODE!)"
+)
+exit /b 0
+
+rem --- docs-check (Phase 24): the documentation site generated again into build\tmp\docs_check (the fragments from the
+rem debug exe, the logo, every page) and compared with the committed docs\ by make_docs --compare; a stale page, a
+rem missing or an extra one fails. Its output: build\verify\docs-check.log, shown when it fails ----------------------
+:docs_check
+echo verify: docs-check
+set "DC=build\tmp\docs_check"
+set "DCLOG=build\verify\docs-check.log"
+if exist "%DC%" rd /s /q "%DC%"
+mkdir "%DC%"
+start "" /belownormal /wait build\ronin_debug.exe --dump-docs %DC%\gen
+set CODE=!errorlevel!
+if exist build\ronin.log copy /y build\ronin.log "build\verify\dump-docs.log" >nul
+if not "!CODE!"=="0" (
+    call :fail "docs-check: --dump-docs (exit !CODE!)"
+    exit /b 0
+)
+build\make_icon.exe --png %DC%\logo.png > "%DCLOG%" 2>&1
+if errorlevel 1 (
+    call :fail "docs-check: make_icon --png"
+    exit /b 0
+)
+build\make_docs.exe docs %DC%\gen %DC% >> "%DCLOG%" 2>&1
+if errorlevel 1 (
+    type "%DCLOG%"
+    call :fail "docs-check: make_docs"
+    exit /b 0
+)
+build\make_docs.exe --compare docs %DC% >> "%DCLOG%" 2>&1
+if errorlevel 1 (
+    type "%DCLOG%"
+    call :fail "docs-check: the committed site differs from its sources (run build.bat docs)"
 )
 exit /b 0
 

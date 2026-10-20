@@ -68,8 +68,8 @@ program, then features. Every change is judged by that order, so read this page 
 <li>Run <code>verify.bat phase</code> before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
   a sweep of 256 fuzz seeds, a million-event soak and the leak check.</li>
 <li>Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
-  the import check and <code>--version</code>; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a local
-  <code>verify.bat</code> is required.</li>
+  the docs-check, the import check and <code>--version</code>; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a
+  local <code>verify.bat</code> is required.</li>
 </ul>
 <p>From Git Bash, call them as <code>cmd //c &quot;.\verify.bat&quot;</code>. The dev flags are listed in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/CLAUDE.md">CLAUDE.md</a>, the design
 in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITECTURE.md">docs/ARCHITECTURE.md</a>.</p>

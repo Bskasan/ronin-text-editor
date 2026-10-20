@@ -1,5 +1,5 @@
 # ronin's continuous build (Phase 22): the three configurations, the source check (Phase 23), the tests of the debug
-# and the bench build, the release exe's imports and --version. It needs no secret. The smoke test (real frames on a GPU, the D3D11 debug
+# and the bench build, the documentation site's docs-check (Phase 24), the release exe's imports and --version. It needs no secret. The smoke test (real frames on a GPU, the D3D11 debug
 # layer) and `verify.bat phase` stay local steps: see CONTRIBUTING.md. The bench build's smoke runs here only to
 # find out whether WARP renders on the runner's desktop; it never fails the job.
 name: build
@@ -75,6 +75,26 @@ jobs:
             Select-String -Path build\ci\test-bench.log -Pattern "^test: (FAIL|inconclusive|skip)|^test: (PASS|FAIL), " | ForEach-Object { $_.Line }
           }
           if ($p.ExitCode -ne 0) { Write-Error "ronin_bench.exe --test exited $($p.ExitCode)"; exit 1 }
+
+      # The documentation site (Phase 24) generated again from its sources and the debug exe's --dump-docs, compared with
+      # the committed docs\ (verify.bat's docs-check): a stale, missing or extra page fails. No GPU needed.
+      - name: Documentation site up to date (docs-check)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          if (Test-Path build\tmp\docs_check) { Remove-Item -Recurse -Force build\tmp\docs_check }
+          New-Item -ItemType Directory -Force build\tmp\docs_check | Out-Null
+          $p = Start-Process -FilePath build\ronin_debug.exe -ArgumentList "--dump-docs", "build\tmp\docs_check\gen" -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          if (Test-Path build\ronin.log) { Copy-Item build\ronin.log build\ci\dump-docs.log }
+          if ($p.ExitCode -ne 0) { Write-Error "ronin_debug.exe --dump-docs exited $($p.ExitCode)"; exit 1 }
+          & build\make_icon.exe --png build\tmp\docs_check\logo.png
+          if ($LASTEXITCODE -ne 0) { Write-Error "make_icon --png exited $LASTEXITCODE"; exit 1 }
+          & build\make_docs.exe docs build\tmp\docs_check\gen build\tmp\docs_check *>&1 | Tee-Object -FilePath build\ci\docs-check.log
+          if ($LASTEXITCODE -ne 0) { Write-Error "make_docs exited $LASTEXITCODE"; exit 1 }
+          & build\make_docs.exe --compare docs build\tmp\docs_check *>&1 | Tee-Object -FilePath build\ci\docs-check.log -Append
+          if ($LASTEXITCODE -ne 0) { Write-Error "the committed site differs from its sources: run build.bat docs"; exit 1 }
 
       - name: Release imports (res\imports.txt)
         shell: pwsh

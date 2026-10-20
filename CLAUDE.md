@@ -8,8 +8,10 @@ Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no 
 tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
 decisions and the "Later" list. A change implements only its own phase. For strangers (Phase 22): README.md,
 CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
-windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the imports, --version; the
-bench smoke informational only, the smoke gate and `verify.bat phase` stay local).
+windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the docs-check (Phase 24), the
+imports, --version; the bench smoke informational only, the smoke gate and `verify.bat phase` stay local). The
+documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs/*.html by `build.bat docs`
+(tools/make_docs.c), published by GitHub Pages from docs/.
 
 **Priorities, in order:** (1) input latency and speed, (2) small and simple, (3) features.
 
@@ -76,10 +78,12 @@ bench smoke informational only, the smoke gate and `verify.bat phase` stay local
   abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
   configurations (each with the macro check), checks `build.bat clean` on a scratch tree
-  (clean-check), runs the source check (`build\check_source.exe`: headers, module map, includes; Phase 23),
-  `--smoke` on the debug and the bench build and
+  (clean-check), runs the source check (`build\check_source.exe`: headers, module map, includes; Phase 23), the
+  docs-check (the site generated again into build\tmp\docs_check and compared with the committed docs\ by
+  `make_docs --compare`; Phase 24), `--smoke` on the debug and the bench build and
   `--test` on the bench build (the optimized build runs the fuzz tests quickly; it includes the README check: README.md's
-  key tables, settings, config blocks, prose keys and links against the code, Phase 22), checks the release
+  key tables, settings, config blocks, prose keys and links against the code, Phase 22, and the same over the site's
+  pages of docs/src with their cross-page links and images, Phase 24), checks the release
   exe's imports (`--check-imports`) and its `--version`, checks every exit code and prints one last
   line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts: never run the steps
   by hand and judge them by eye. `verify.bat phase` also runs the full `--test` on the debug build,

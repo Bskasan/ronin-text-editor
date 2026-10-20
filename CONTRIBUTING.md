@@ -21,8 +21,8 @@ You need Windows 10 or later (x64) and Visual Studio 2022 or later, or the Build
 - Run `verify.bat phase` before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
   a sweep of 256 fuzz seeds, a million-event soak and the leak check.
 - Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
-  the import check and `--version`; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a local
-  `verify.bat` is required.
+  the docs-check, the import check and `--version`; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a
+  local `verify.bat` is required.
 
 From Git Bash, call them as `cmd //c ".\verify.bat"`. The dev flags are listed in [CLAUDE.md](CLAUDE.md), the design
 in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
