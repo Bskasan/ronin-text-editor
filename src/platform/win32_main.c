@@ -133,6 +133,7 @@ typedef struct Platform {
     u64 dev_writes_refused;
     u64 soak_events;            // --soak N
     String8 map_report;         // --map-report MAP
+    String8 dump_docs;          // --dump-docs DIR
     String8 check_exe, check_list; // --check-imports EXE LIST
     i32 title_sets; // os_set_window_title calls (the smoke expects exactly one)
     String8 exe_dir;
@@ -6920,6 +6921,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             if (p->fuzz_workers >= 1 && p->fuzz_workers <= FUZZ_WORKERS_MAX) continue;
         }
         if (str8_equal(a, STR8_LIT("--map-report")) && has_value) { p->map_report = args[++i]; continue; }
+        if (str8_equal(a, STR8_LIT("--dump-docs")) && has_value) { p->dump_docs = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--check-imports")) && i + 2 < arg_count) {
             p->check_exe = args[++i];
             p->check_list = args[++i];
@@ -7037,7 +7039,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return EXIT_USAGE;
     }
-    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->leak_check ? "leak-check" : p->map_report.len ? "map-report" : p->check_exe.len ? "check-imports" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
+    LOG("ronin dev build, mode: %s", p->test ? "test" : p->fuzz_count ? "fuzz-seeds" : p->soak_events ? "soak" : p->leak_check ? "leak-check" : p->map_report.len ? "map-report" : p->dump_docs.len ? "dump-docs" : p->check_exe.len ? "check-imports" : p->smoke ? "smoke" : p->bench_text ? "bench-text"
                                    : p->bench_buffer ? "bench-buffer" : p->bench_view ? "bench-view" : p->bench_edit ? "bench-edit"
                                    : p->bench_complete ? "bench-complete" : p->bench_syntax ? "bench-syntax" : p->bench_longline ? "bench-longline" : p->bench_search ? "bench-search"
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
@@ -7059,6 +7061,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         i32 failed = test_map_report(p->map_report, str8_fmt(&p->perm, "%S\\..\\src", exe_dir));
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failed ? EXIT_TEST : EXIT_OK;
+    }
+    if (p->dump_docs.len) { // the docs site's keys and settings fragments (Phase 24)
+        i32 code = dump_docs(p->dump_docs);
+        if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
+        return code == 7 ? EXIT_OUTPUT_FILE : code ? EXIT_TEST : EXIT_OK;
     }
     if (p->soak_events) { // headless: random key and mouse events through the app
         i32 leaks = 0;

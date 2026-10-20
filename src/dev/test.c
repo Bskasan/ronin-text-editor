@@ -14916,6 +14916,30 @@ static b32 test_markdown(Test *t) {
     return 1;
 }
 
+// --dump-docs (Phase 24, src/dev/dump_docs.c): the same text twice, every command in keys.md, the files written as
+// the text (the completeness of [settings] is the dump's own check).
+static b32 test_dump_docs(Test *t) {
+    String8 keys[2], settings[2];
+    for (i32 k = 0; k < 2; k++) {
+        TEST_CHECK(t, dump_docs_text(&t->arena, &keys[k], &settings[k]), "dump-docs: the fragments (the log says why)");
+    }
+    TEST_CHECK(t, str8_equal(keys[0], keys[1]) && str8_equal(settings[0], settings[1]), "dump-docs: two runs differ");
+    for (i32 c = 0; c < command_count(); c++) {
+        String8 row = str8_fmt(&t->arena, "| `%s` | %s |", command_at(c)->name, command_at(c)->description);
+        TEST_CHECK(t, test_has(keys[0], row), "dump-docs: keys.md has no row for %s", command_at(c)->name);
+    }
+    String8 dir = str8_fmt(&t->arena, "%S\\p24dump", t->tmp_dir);
+    TEST_CHECK(t, dump_docs(dir) == 0, "dump-docs: writing %S", dir);
+    String8 got;
+    TEST_CHECK(t, os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\keys.md", dir), MB(1), &got) == OS_FILE_OK && str8_equal(got, keys[0]),
+               "dump-docs: keys.md as written");
+    TEST_CHECK(t, os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\settings.md", dir), MB(1), &got) == OS_FILE_OK && str8_equal(got, settings[0]),
+               "dump-docs: settings.md as written");
+    LOG("test: ok: dump-docs (keys.md %D bytes, settings.md %D bytes, twice the same; %d commands in keys.md; written as built)", keys[0].len,
+        settings[0].len, command_count());
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // The README check (Phase 22): README.md's key tables, settings, config blocks, prose keys and links against the
 // code, and CONTRIBUTING.md's prose keys and links. A key table is a table headed exactly "| keys | command | what it
@@ -15647,6 +15671,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_theme_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_markdown(&t);
+    arena_reset(&t.arena);
+    test_dump_docs(&t);
     arena_reset(&t.arena);
     test_readme(&t);
     arena_reset(&t.arena);

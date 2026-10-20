@@ -91,6 +91,7 @@
 #include "editor/command.c"
 #pragma optimize("", on)
 #include "dev/markdown.c" // RONIN_DEV only: the docs site's converter (tools/make_docs.c's too)
+#include "dev/dump_docs.c" // RONIN_DEV only: --dump-docs
 #include "dev/test.c" // RONIN_DEV only
 #include "dev/leak.c" // RONIN_DEV only: --leak-check
 

@@ -313,6 +313,11 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # at --cycles 200 or more (fewer can flag the results
                                                           # arena's bounded growth)
     build/ronin_debug.exe --map-report build\ronin.map    # the release exe's bytes by module (its linker map; src\ and its folders scanned)
+    build/ronin_debug.exe --dump-docs DIR                 # the docs site's generated fragments (Phase 24): DIR\keys.md (every
+                                                          # command with its description and default keys, per keymap
+                                                          # section) and DIR\settings.md (every setting, its default and
+                                                          # its comment), from the built-in configuration only; exit 0, 7
+                                                          # (not written) or 9 (a setting missing from [settings])
     build/ronin_debug.exe --check-imports build\ronin.exe res\imports.txt   # its DLLs must equal the list, no CRT DLL
     build/ronin_bench.exe --memory-report                 # shown without activation; private bytes by owner (our
                                                           # arenas, heaps, stacks, the driver, image pages, views)

@@ -505,6 +505,7 @@ i32  test_run(u64 seed, String8 tmp_dir); // --test: headless buffer and file te
 i32  test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir); // --fuzz-seeds: the seeded groups over seeds
 i32  test_soak(u64 events, u64 seed, String8 tmp_dir, i32 *leaks); // --soak N: random events through the headless app; failures (leaks: LEAK verdicts)
 i32  test_map_report(String8 map_path, String8 src_dir); // --map-report: the release exe's bytes by module (the log)
+i32  dump_docs(String8 dir); // --dump-docs: the docs site's keys.md and settings.md fragments (0, 7 not written, 9)
 // --leak-check (leak.c, Phase 16): the platform drives the shown window through these.
 typedef struct LeakHost {
     void *ctx;
