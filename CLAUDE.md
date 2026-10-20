@@ -85,7 +85,10 @@ bench smoke informational only, the smoke gate and `verify.bat phase` stay local
   by hand and judge them by eye. `verify.bat phase` also runs the full `--test` on the debug build,
   the seed sweep (`--fuzz-seeds 1 256`, bench), the soak (`--soak 1000000`, bench and debug) and the leak
   check (`--leak-check all`, debug; ~2 minutes): once per phase, before its final commit. Each run's log
-  is kept as build\verify\<step>.log. Take a screenshot after a visual change and look at it.
+  is kept as build\verify\<step>.log. Both run every process they start at below-normal priority (Phase 24;
+  verify.bat starts itself again that way, so every child inherits it), and the seed sweep uses (logical processors
+  − 2) workers, at least 1, or `VERIFY_WORKERS=N` (1 to 64). The hand-run measurements (`--bench-latency`,
+  `--startup-ms`) keep normal priority. Take a screenshot after a visual change and look at it.
 - Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
   run by a script or a tool: only by hand, by the person at the machine, one run at a time (keys typed
   in another window meanwhile would go astray). Everything else that is run must keep not taking the focus.
@@ -279,9 +282,11 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
                                                           # the fake git (build\tmp\p19bench) copied into the open git
                                                           # changes view, 5 rounds: frames, the longest slice and frame
                                                           # build (exit 9 when a slice passes 2.5 ms)
-    build/ronin_bench.exe --fuzz-seeds FIRST COUNT        # every seeded --test group for seeds FIRST.. (worker
-                                                          # processes, at most 8, below normal priority; their logs
-                                                          # in build\fuzz\worker<k>.log); exit 9 names the seed
+    build/ronin_bench.exe --fuzz-seeds FIRST COUNT [--workers N]  # every seeded --test group for seeds FIRST..
+                                                          # (N worker processes, by default the logical processors
+                                                          # less two, at least 1, at most 64; below normal priority;
+                                                          # their logs in build\fuzz\worker<k>.log); exit 9 names
+                                                          # the seed
     build/ronin_bench.exe --soak N [--seed S]             # N random events through the headless app (keys of every
                                                           # keymap, typed code, mouse, focus, resizes) over the files of
                                                           # build\tmp\soak, the only place it may write (emptied at its

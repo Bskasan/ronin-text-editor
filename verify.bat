@@ -10,6 +10,15 @@ rem                     debug build (once per phase, before its last commit)
 rem From Git Bash: cmd //c ".\verify.bat" [phase]
 rem Every exit code is checked; the last line is "verify: PASS" or "verify: FAIL: <what failed>".
 rem build\ronin.log of each run is kept as build\verify\<step>.log.
+rem Every process it starts runs at below-normal priority (Phase 24), so the machine stays usable meanwhile: it starts
+rem itself again once that way (every child inherits the class), and each exe step is started with /belownormal too.
+rem The seed sweep uses (logical processors - 2) workers, at least 1; VERIFY_WORKERS=N (1 to 64) sets another count.
+setlocal
+if defined RONIN_VERIFY_LOW goto verify_low
+set RONIN_VERIFY_LOW=1
+start "" /belownormal /b /wait cmd /d /c call "%~f0" %*
+exit /b %errorlevel%
+:verify_low
 setlocal EnableDelayedExpansion
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
@@ -17,6 +26,18 @@ cd /d "%ROOT%"
 set FAILED=
 set PHASE=0
 if /i "%~1"=="phase" set PHASE=1
+set /a WORKERS=NUMBER_OF_PROCESSORS-2
+if !WORKERS! lss 1 set WORKERS=1
+if defined VERIFY_WORKERS (
+    set WORKERS=0
+    set /a WORKERS=VERIFY_WORKERS 2>nul
+    if !WORKERS! lss 1 set WORKERS=0
+    if !WORKERS! gtr 64 set WORKERS=0
+    if "!WORKERS!"=="0" (
+        echo verify: FAIL: VERIFY_WORKERS must be a number from 1 to 64, not "%VERIFY_WORKERS%"
+        exit /b 1
+    )
+)
 if not exist build mkdir build
 if not exist build\verify mkdir build\verify
 del /q build\verify\*.log 2>nul
@@ -57,7 +78,7 @@ if "%PHASE%"=="1" (
         call :fail "test on debug skipped (no exe)"
     )
     if "!BENCH_OK!"=="1" (
-        call :run fuzz-seeds build\ronin_bench.exe --fuzz-seeds 1 256
+        call :run fuzz-seeds build\ronin_bench.exe --fuzz-seeds 1 256 --workers !WORKERS!
         call :run soak-bench build\ronin_bench.exe --soak 1000000
     ) else (
         call :fail "seed sweep and soak skipped (no exe)"
@@ -96,12 +117,12 @@ if not exist "build\%2.exe" (
 set BUILD_OK=1
 exit /b 0
 
-rem --- run <step> <exe> <flags...>: waits for the exe (a GUI program) and checks its exit code -------
+rem --- run <step> <exe> <flags...>: waits for the exe (a GUI program, below normal priority) and checks its exit code -
 :run
 set STEP=%1
 shift
 echo verify: %STEP%
-start "" /wait %1 %2 %3 %4 %5
+start "" /belownormal /wait %1 %2 %3 %4 %5 %6 %7
 set CODE=!errorlevel!
 if exist build\ronin.log copy /y build\ronin.log "build\verify\%STEP%.log" >nul
 if not "!CODE!"=="0" call :fail "%STEP% (exit !CODE!)"

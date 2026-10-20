@@ -127,7 +127,8 @@ typedef struct Platform {
 
     u64 seed;
     u64 fuzz_first, fuzz_count; // --fuzz-seeds FIRST COUNT
-    i32 fuzz_worker, fuzz_workers; // --fuzz-worker K W FIRST COUNT: worker K + 1 of W (0: not a worker)
+    i32 fuzz_worker, fuzz_workers; // --fuzz-worker K W FIRST COUNT: worker K + 1 of W (0: not a worker); with
+                                   // --fuzz-seeds, --workers N (0: the default)
     String8 dev_write_root;     // the soak: writes outside this directory are refused (os_dev_write_root)
     u64 dev_writes_refused;
     u64 soak_events;            // --soak N
@@ -6701,17 +6702,19 @@ static b32 win32_release_flag(Platform *p, String8 a) {
 }
 
 #if RONIN_DEV
-// --fuzz-seeds FIRST COUNT: the seeds spread over worker processes (one per two logical processors, at most 8,
-// below normal priority), worker k taking FIRST + k, FIRST + k + workers, ...; each logs to
-// build\fuzz\worker<k>.log and keeps its files in build\tmp\fuzz<k>. Exit 9 when any worker failed.
+// --fuzz-seeds FIRST COUNT [--workers N]: the seeds spread over worker processes (N, by default the logical
+// processors less two, at least 1, at most FUZZ_WORKERS_MAX; below normal priority), worker k taking FIRST + k,
+// FIRST + k + workers, ...; each logs to build\fuzz\worker<k>.log and keeps its files in build\tmp\fuzz<k>. Exit 9
+// when any worker failed.
+#define FUZZ_WORKERS_MAX 64
 static i32 win32_dev_fuzz_seeds(Platform *p) {
-    i32 workers = CLAMP((i32)(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) / 2), 1, 8);
+    i32 workers = p->fuzz_workers ? p->fuzz_workers : CLAMP((i32)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) - 2, 1, FUZZ_WORKERS_MAX);
     if ((u64)workers > p->fuzz_count) workers = (i32)p->fuzz_count;
     CreateDirectoryW((WCHAR *)str16_from_str8(&p->perm, str8_fmt(&p->perm, "%S\\fuzz", p->exe_dir)).data, NULL);
     WCHAR exe[MAX_PATH];
     DWORD exe_len = GetModuleFileNameW(NULL, exe, MAX_PATH);
     String8 exe8 = str8_from_str16(&p->perm, (u16 *)exe, exe_len);
-    HANDLE procs[8] = { 0 };
+    HANDLE procs[FUZZ_WORKERS_MAX] = { 0 };
     u64 t0 = os_time_us();
     LOG("fuzz-seeds: seeds %U to %U over %d worker processes", p->fuzz_first, p->fuzz_first + p->fuzz_count - 1, workers);
     for (i32 k = 0; k < workers; k++) {
@@ -6912,6 +6915,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
             p->fuzz_count = win32_parse_u64(args[++i]);
             if (p->fuzz_count) continue;
         }
+        if (str8_equal(a, STR8_LIT("--workers")) && has_value) { // with --fuzz-seeds only (checked after the loop)
+            p->fuzz_workers = win32_parse_i32(args[++i]);
+            if (p->fuzz_workers >= 1 && p->fuzz_workers <= FUZZ_WORKERS_MAX) continue;
+        }
         if (str8_equal(a, STR8_LIT("--map-report")) && has_value) { p->map_report = args[++i]; continue; }
         if (str8_equal(a, STR8_LIT("--check-imports")) && i + 2 < arg_count) {
             p->check_exe = args[++i];
@@ -6987,6 +6994,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
 #endif
         bad_arg = a;
     }
+#if RONIN_DEV
+    if (!bad_arg.len && p->fuzz_workers && !p->fuzz_worker && !p->fuzz_count) bad_arg = STR8_LIT("--workers"); // without --fuzz-seeds
+#endif
     win32_files_done(p, goto_line, goto_col);
     if (p->version && !bad_arg.len) return win32_print_version(); // before any window or thread
     String8 recovery_dir = { 0 };
