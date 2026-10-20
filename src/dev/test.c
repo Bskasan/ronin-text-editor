@@ -14960,6 +14960,16 @@ typedef struct ReadmeCheck {
     String8 failures[README_FAILURES_KEPT];
     i32 failure_count; // all of them, the first README_FAILURES_KEPT kept
     i32 keys, tables, settings, blocks, prose, links, external;
+    // The documentation site (Phase 24): a page of docs/src is checked with its --dump-docs fragments in place, each
+    // line named by the file and the line it came from; its links go to the site's pages and images.
+    b32 site;
+    String8 site_dir;          // docs\ (images, src\nav.txt, src\<page>.md, src\gen\)
+    MdNav *nav;
+    b32 site_ini;              // the page's ini blocks are ronin.conf text (configuration, themes, settings)
+    b32 site_exempt;           // the page's prose keys are not checked (limits, roadmap)
+    String8 *line_files;       // per line of `lines`: its file and its line there (NULL: `file`, the index)
+    i64 *line_nos;
+    i32 pages, fragments, images;
 } ReadmeCheck;
 
 static void readme_fail_text(ReadmeCheck *c, String8 text) {
@@ -14967,12 +14977,18 @@ static void readme_fail_text(ReadmeCheck *c, String8 text) {
     c->failure_count++;
 }
 
+// Line `line` (1-based, of `lines`) as "file:line" of the file it came from.
+static String8 readme_where(ReadmeCheck *c, i64 line) {
+    if (c->line_files && line >= 1 && line <= c->line_count) return str8_fmt(&c->t->arena, "%S:%D", c->line_files[line - 1], c->line_nos[line - 1]);
+    return str8_fmt(&c->t->arena, "%S:%D", c->file, line);
+}
+
 static void readme_fail(ReadmeCheck *c, i64 line, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     String8 what = str8_fmtv(&c->t->arena, fmt, args);
     va_end(args);
-    readme_fail_text(c, str8_fmt(&c->t->arena, "%S:%D: %S", c->file, line, what));
+    readme_fail_text(c, str8_fmt(&c->t->arena, "%S: %S", readme_where(c, line), what));
 }
 
 static String8 readme_trim(String8 s) {
@@ -14998,31 +15014,45 @@ static String8 *readme_split(Arena *arena, String8 text, i64 *count) {
     return lines;
 }
 
-// The `code spans` of a piece of text.
+// The `code spans` of a piece of text: a run of backticks up to the next run as long (`` C-x ` `` holds one), one
+// space inside each end dropped when both are there (as the site's converter does).
 static i32 readme_spans(String8 s, String8 *out, i32 cap) {
     i32 n = 0;
-    for (i64 i = 0; i < s.len; i++) {
-        if (s.data[i] != '`') continue;
-        i64 j = i + 1;
-        while (j < s.len && s.data[j] != '`') j++;
-        if (j >= s.len) break;
-        if (n < cap) out[n++] = str8(s.data + i + 1, j - i - 1);
-        i = j;
+    for (i64 i = 0; i < s.len;) {
+        if (s.data[i] != '`') {
+            i++;
+            continue;
+        }
+        i64 run = md_skip_code(md_str(s.data, s.len), i) - i, open = 0;
+        while (i + open < s.len && s.data[i + open] == '`') open++;
+        if (run == open) break; // not closed
+        String8 code = str8(s.data + i + open, run - 2 * open);
+        if (code.len >= 2 && code.data[0] == ' ' && code.data[code.len - 1] == ' ' && readme_trim(code).len) code = str8(code.data + 1, code.len - 2);
+        if (n < cap) out[n++] = code;
+        i += run;
     }
     return n;
 }
 
-// A table row's cells, without the outer pipes.
+// A table row's cells, without the outer pipes (a '|' inside a code span is the span's).
 static i32 readme_cells(String8 line, String8 *out, i32 cap) {
     line = readme_trim(line);
     if (line.len && line.data[0] == '|') line.data++, line.len--;
     if (line.len && line.data[line.len - 1] == '|') line.len--;
     i32 n = 0;
     i64 start = 0;
-    for (i64 i = 0; i <= line.len && n < cap; i++) {
-        if (i < line.len && line.data[i] != '|') continue;
+    for (i64 i = 0; i <= line.len && n < cap;) {
+        if (i < line.len && line.data[i] == '`') {
+            i = md_skip_code(md_str(line.data, line.len), i);
+            continue;
+        }
+        if (i < line.len && line.data[i] != '|') {
+            i++;
+            continue;
+        }
         out[n++] = readme_trim(str8(line.data + start, i - start));
         start = i + 1;
+        i++;
     }
     return n;
 }
@@ -15052,6 +15082,63 @@ static b32 readme_has_anchor(Arena *arena, String8 *lines, i64 count, String8 an
         if (!code && readme_heading(lines[i], &text) && str8_equal(readme_slug(arena, text), anchor)) return 1;
     }
     return 0;
+}
+
+// The body of "<!-- KIND: NAME -->" (KIND "generated" or "include"), else empty.
+static String8 readme_directive(String8 line, const char *kind) {
+    line = readme_trim(line);
+    String8 close = STR8_LIT(" -->"), head = str8_cstr(kind);
+    if (!str8_starts_with(line, STR8_LIT("<!-- ")) || line.len < 5 + head.len + 1 + close.len) return str8(NULL, 0);
+    String8 rest = str8(line.data + 5, line.len - 5);
+    if (!str8_starts_with(rest, head) || rest.data[head.len] != ':') return str8(NULL, 0);
+    if (!str8_equal(str8(line.data + line.len - close.len, close.len), close)) return str8(NULL, 0);
+    return readme_trim(str8(rest.data + head.len + 1, rest.len - head.len - 1 - close.len));
+}
+
+// A page of the site as the converter sees it (Phase 24): docs\src\<page>.md with each "<!-- generated: NAME -->"
+// line replaced by docs\src\gen\NAME.md, and with `includes` each "<!-- include: PATH -->" by that repository file.
+// Its lines, each with the file and the line it came from; NULL when the page cannot be read. A missing fragment is a
+// failure at the directive's line.
+static String8 *readme_site_page(ReadmeCheck *c, String8 page, b32 includes, i64 *count, String8 **files, i64 **nos) {
+    Arena *a = &c->t->arena;
+    String8 name = str8_fmt(a, "docs/src/%S.md", page), text;
+    if (os_read_small_file(a, str8_fmt(a, "%S\\src\\%S.md", c->site_dir, page), MB(1), &text) != OS_FILE_OK) return NULL;
+    i64 n;
+    String8 *lines = readme_split(a, text, &n);
+    if (n && !lines[n - 1].len) n--; // the last newline
+    String8 **sub = PUSH_ARRAY(a, String8 *, n), *sub_name = PUSH_ARRAY(a, String8, n);
+    i64 *sub_count = PUSH_ARRAY(a, i64, n), total = 0;
+    for (i64 i = 0; i < n; i++) {
+        String8 gen = readme_directive(lines[i], "generated"), inc = includes ? readme_directive(lines[i], "include") : str8(NULL, 0);
+        String8 sub_text;
+        if (gen.len || inc.len) {
+            String8 path = gen.len ? str8_fmt(a, "%S\\src\\gen\\%S.md", c->site_dir, gen) : str8_fmt(a, "%S\\src\\%S", c->site_dir, inc);
+            for (i64 k = 0; k < path.len; k++) if (path.data[k] == '/') path.data[k] = '\\';
+            if (os_read_small_file(a, path, MB(1), &sub_text) == OS_FILE_OK) {
+                sub[i] = readme_split(a, sub_text, &sub_count[i]);
+                if (sub_count[i] && !sub[i][sub_count[i] - 1].len) sub_count[i]--;
+                sub_name[i] = gen.len ? str8_fmt(a, "docs/src/gen/%S.md", gen) : inc;
+                while (str8_starts_with(sub_name[i], STR8_LIT("../"))) sub_name[i] = str8(sub_name[i].data + 3, sub_name[i].len - 3);
+                total += sub_count[i];
+                continue;
+            }
+            if (gen.len) readme_fail_text(c, str8_fmt(a, "%S:%D: no generated fragment %S (build.bat docs makes it)", name, i + 1, path));
+        }
+        total++;
+    }
+    String8 *out = PUSH_ARRAY(a, String8, total + 1), *out_files = PUSH_ARRAY(a, String8, total + 1);
+    i64 *out_nos = PUSH_ARRAY(a, i64, total + 1), k = 0;
+    for (i64 i = 0; i < n; i++) {
+        if (sub[i]) {
+            for (i64 j = 0; j < sub_count[i]; j++, k++) out[k] = sub[i][j], out_files[k] = sub_name[i], out_nos[k] = j + 1;
+        } else {
+            out[k] = lines[i], out_files[k] = name, out_nos[k] = i + 1, k++;
+        }
+    }
+    *count = k;
+    *files = out_files;
+    *nos = out_nos;
+    return out;
 }
 
 // [keys NAME] of a key table: the Config's keymap, and the buffer keymap describe-key reaches it through (or -1:
@@ -15221,7 +15308,36 @@ static void readme_link(ReadmeCheck *c, i64 line, String8 target) {
     }
     String8 *lines = c->lines;
     i64 count = c->line_count;
-    if (path.len) {
+    if (c->site && path.len) { // a page of the site (its fragments and includes in place) or one of its images
+        String8 html = STR8_LIT(".html");
+        if (path.len > html.len && str8_equal(str8(path.data + path.len - html.len, html.len), html)) {
+            String8 page = str8(path.data, path.len - html.len);
+            b32 listed = 0;
+            for (i32 i = 0; i < c->nav->count; i++) listed |= md_equal(c->nav->items[i].page, md_str(page.data, page.len));
+            if (!listed) {
+                readme_fail(c, line, "link %S: no page %S in docs/src/nav.txt", target, page);
+                return;
+            }
+            if (!anchor.len) return;
+            String8 *files;
+            i64 *nos;
+            lines = readme_site_page(c, page, 1, &count, &files, &nos);
+            if (!lines) {
+                readme_fail(c, line, "link %S: cannot read docs/src/%S.md", target, page);
+                return;
+            }
+        } else if (str8_starts_with(path, STR8_LIT("images/")) && !anchor.len) {
+            c->images++;
+            String8 full = str8_fmt(&c->t->arena, "%S\\%S", c->site_dir, path);
+            for (i64 i = 0; i < full.len; i++) if (full.data[i] == '/') full.data[i] = '\\';
+            OsFileInfo info;
+            if (os_file_info(full, &info) != OS_FILE_OK) readme_fail(c, line, "image %S: no such file under docs/", target);
+            return;
+        } else {
+            readme_fail(c, line, "link %S: not a page or an image of the site (link to GitHub for other files)", target);
+            return;
+        }
+    } else if (path.len) {
         String8 full = str8_fmt(&c->t->arena, "%S\\%S", c->root, path);
         for (i64 i = 0; i < full.len; i++) if (full.data[i] == '/') full.data[i] = '\\';
         if (full.data[full.len - 1] == '\\') full.len--;
@@ -15241,6 +15357,7 @@ static void readme_link(ReadmeCheck *c, i64 line, String8 target) {
     if (!readme_has_anchor(&c->t->arena, lines, count, anchor)) readme_fail(c, line, "link %S: no heading #%S", target, anchor);
 }
 
+// The links of a line: [text](target) and ![alt](target), and README's HTML: href="target" and src="target".
 static void readme_links(ReadmeCheck *c, i64 line, String8 s) {
     for (i64 i = 0; i + 1 < s.len; i++) {
         if (s.data[i] != ']' || s.data[i + 1] != '(') continue;
@@ -15250,24 +15367,46 @@ static void readme_links(ReadmeCheck *c, i64 line, String8 s) {
         readme_link(c, line, str8(s.data + i + 2, j - i - 2));
         i = j;
     }
+    String8 attrs[] = { STR8_LIT(" href=\""), STR8_LIT(" src=\"") };
+    for (i32 a = 0; a < ARRAY_COUNT(attrs); a++) {
+        for (i64 i = 0; i + attrs[a].len < s.len; i++) {
+            if (!str8_equal(str8(s.data + i, attrs[a].len), attrs[a])) continue;
+            i64 start = i + attrs[a].len, j = start;
+            while (j < s.len && s.data[j] != '"') j++;
+            if (j >= s.len) break;
+            readme_link(c, line, str8(s.data + start, j - start));
+            i = j;
+        }
+    }
 }
 
-// Checks one file's text; the failures stay in c. need_tables: README (no key table at all is a failure).
-static void readme_check(ReadmeCheck *c, String8 file, String8 text, b32 need_tables) {
-    c->file = file;
-    c->lines = readme_split(&c->t->arena, text, &c->line_count);
+// Checks the lines in c (c->file names them, or c->line_files line by line); the failures stay in c. need_tables:
+// README (no key table at all is a failure). In README and CONTRIBUTING the ## section decides what is checked; on a
+// page of the site (c->site) the page does: ini blocks on configuration, themes and settings, '_' names everywhere,
+// prose keys everywhere but limits and roadmap; and its headings must be unique (they are its anchors).
+static void readme_check_lines(ReadmeCheck *c, b32 need_tables) {
     String8 section = str8(NULL, 0); // the current ## heading
     i32 tables0 = c->tables;
+    u64 *slugs = PUSH_ARRAY(&c->t->arena, u64, c->line_count + 1);
+    i64 slug_count = 0;
     for (i64 i = 0; i < c->line_count; i++) {
         String8 line = c->lines[i], heading;
-        if (readme_heading(line, &heading) == 2) section = heading;
-        b32 config_section = str8_equal(section, STR8_LIT("Configuration"));
-        b32 exempt = str8_equal(section, STR8_LIT("Known limits")) || str8_equal(section, STR8_LIT("Roadmap"));
+        i32 level = readme_heading(line, &heading);
+        if (level == 2) section = heading;
+        if (level && c->site) {
+            String8 slug = readme_slug(&c->t->arena, heading);
+            u64 h = md_hash(slug.data, slug.len);
+            for (i64 k = 0; k < slug_count; k++) if (slugs[k] == h) readme_fail(c, i + 1, "a second heading #%S on the page", slug);
+            slugs[slug_count++] = h;
+        }
+        b32 config_section = c->site || str8_equal(section, STR8_LIT("Configuration"));
+        b32 exempt = c->site ? c->site_exempt : str8_equal(section, STR8_LIT("Known limits")) || str8_equal(section, STR8_LIT("Roadmap"));
+        b32 ini_here = c->site ? c->site_ini : str8_equal(section, STR8_LIT("Configuration")) || str8_equal(section, STR8_LIT("Themes"));
         if (readme_is_fence(line)) { // a code block: config blocks of Configuration and Themes are parsed
             String8 lang = readme_trim(str8(readme_trim(line).data + 3, readme_trim(line).len - 3));
             i64 start = i + 1, stop = start;
             while (stop < c->line_count && !readme_is_fence(c->lines[stop])) stop++;
-            if (str8_equal(lang, STR8_LIT("ini")) && (config_section || str8_equal(section, STR8_LIT("Themes"))) && stop > start) {
+            if (str8_equal(lang, STR8_LIT("ini")) && ini_here && stop > start) {
                 c->blocks++;
                 String8 body = str8(c->lines[start].data, c->lines[stop - 1].data + c->lines[stop - 1].len - c->lines[start].data);
                 String8 theme_name = str8(NULL, 0);
@@ -15280,12 +15419,34 @@ static void readme_check(ReadmeCheck *c, String8 file, String8 text, b32 need_ta
                             if (l.data[e] == '=') { theme_name = readme_trim(str8(l.data + e + 1, l.len - e - 1)); break; }
                     }
                 }
-                readme_parse(c, readme_at_line(&c->t->arena, start + 1, body), theme_name);
+                // A fragment's block is named by its own file and line; one without a section (the settings page's)
+                // is [settings] text.
+                String8 file = c->file;
+                i64 at = start + 1;
+                if (c->line_files) c->file = c->line_files[start], at = c->line_nos[start];
+                if (!c->lines[start].len || c->lines[start].data[0] != '[') body = str8_fmt(&c->t->arena, "[settings]\n%S", body), at--;
+                readme_parse(c, readme_at_line(&c->t->arena, at, body), theme_name);
+                c->file = file;
             }
             i = stop;
             continue;
         }
         String8 trimmed = readme_trim(line);
+        if (str8_equal(trimmed, STR8_LIT("| command | what it does |"))) { // commands without keys: each one exists
+            i64 k = i + 2;
+            for (; k < c->line_count && readme_trim(c->lines[k]).len && c->lines[k].data[0] == '|'; k++) {
+                String8 cells[4], name[2];
+                i32 cell_count = readme_cells(c->lines[k], cells, ARRAY_COUNT(cells));
+                if (cell_count < 1 || readme_spans(cells[0], name, 2) != 1) {
+                    readme_fail(c, k + 1, "a command row needs its command in `code`");
+                    continue;
+                }
+                c->prose++;
+                if (!command_find(name[0])) readme_fail(c, k + 1, "`%S`: no command %S", name[0], name[0]);
+            }
+            i = k - 1;
+            continue;
+        }
         if (str8_equal(trimmed, STR8_LIT("| keys | command | what it does |"))) {
             String8 keymap_name = str8(NULL, 0);
             String8 before = i ? readme_trim(c->lines[i - 1]) : str8(NULL, 0);
@@ -15324,7 +15485,16 @@ static void readme_check(ReadmeCheck *c, String8 file, String8 text, b32 need_ta
         readme_links(c, i + 1, line);
     }
     if (need_tables && c->tables == tables0) readme_fail_text(c, str8_fmt(&c->t->arena, "%S: no key table (\"| keys | command | what it "
-                                                                                       "does |\") found", file));
+                                                                                       "does |\") found", c->file));
+}
+
+// Checks one file's text (README.md, CONTRIBUTING.md, or a fragment of the checker's own test).
+static void readme_check(ReadmeCheck *c, String8 file, String8 text, b32 need_tables) {
+    c->file = file;
+    c->lines = readme_split(&c->t->arena, text, &c->line_count);
+    c->line_files = NULL;
+    c->line_nos = NULL;
+    readme_check_lines(c, need_tables);
 }
 
 // A broken fragment must give exactly one failure, starting with `prefix` and holding `part`.
@@ -15380,7 +15550,48 @@ static b32 test_readme(Test *t) {
     b32 no_table = c->failure_count == 1 && str8_starts_with(c->failures[0], STR8_LIT("frag.md: no key table"));
     TEST_CHECK(t, caught == ARRAY_COUNT(broken) && no_table, "readme: the checker missed %d of %d broken fragments (no table: %d)",
                (i32)ARRAY_COUNT(broken) - caught, (i32)ARRAY_COUNT(broken), no_table);
-    c->keys = c->tables = c->settings = c->blocks = c->prose = c->links = c->external = 0;
+
+    // The site's rules (Phase 24), on a small site of its own: two pages, a fragment, an image.
+    String8 fake = str8_fmt(&t->arena, "%S\\p24readme", t->tmp_dir);
+    const char *fake_dirs[] = { "", "\\docs", "\\docs\\src", "\\docs\\src\\gen", "\\docs\\images" };
+    for (i32 k = 0; k < ARRAY_COUNT(fake_dirs); k++) os_make_dir(str8_fmt(&t->arena, "%S%s", fake, fake_dirs[k]));
+    const char *fake_files[][2] = {
+        { "\\docs\\src\\nav.txt", "[A]\nindex Overview\nkeys Keys\n" }, { "\\docs\\src\\index.md", "# Overview\n\n## Here\n" },
+        { "\\docs\\src\\keys.md", "# Keys\n\n<!-- generated: keys -->\n" }, { "\\docs\\src\\gen\\keys.md", "## Frag head\n" },
+        { "\\docs\\images\\x.png", "png" },
+    };
+    for (i32 k = 0; k < ARRAY_COUNT(fake_files); k++)
+        TEST_CHECK(t, os_write_file(str8_fmt(&t->arena, "%S%s", fake, fake_files[k][0]), str8_cstr(fake_files[k][1])), "readme: the fake site");
+    MdNav *fake_nav = PUSH_STRUCT(&t->arena, MdNav);
+    MdError nav_err = { 0 };
+    TEST_CHECK(t, md_nav_parse(md_cstr("[A]\nindex Overview\nkeys Keys\n"), md_cstr("nav.txt"), fake_nav, &nav_err), "readme: the fake nav");
+    c->site = 1;
+    c->site_dir = str8_fmt(&t->arena, "%S\\docs", fake);
+    c->nav = fake_nav;
+    struct { const char *fragment, *prefix, *part; } site_broken[] = {
+        { "See [the keys](nowhere.html).\n", "frag.md:1: ", "no page nowhere in docs/src/nav.txt" },
+        { "See [the keys](keys.html#no-such-heading).\n", "frag.md:1: ", "no heading #no-such-heading" },
+        { "![a picture](images/none.png)\n", "frag.md:1: ", "image images/none.png: no such file" },
+        { "See [README](../README.md).\n", "frag.md:1: ", "not a page or an image of the site" },
+        { "| keys | command | what it does |\n|---|---|---|\n| `C-x C-f` | `find-files` | x |\n", "frag.md:3: ",
+          "describe-key says \"C-x C-f runs the command find-file\"" },
+        { "| command | what it does |\n|---|---|\n| `no-such-command` | x |\n", "frag.md:3: ", "no command no-such-command" },
+        { "## Twice\n\ntext\n\n## Twice\n", "frag.md:5: ", "a second heading #twice" },
+        { "Set `undo_limt_mb` to keep more.\n", "frag.md:1: ", "`undo_limt_mb` is no setting and no color" },
+    };
+    i32 site_caught = 0;
+    for (i32 k = 0; k < ARRAY_COUNT(site_broken); k++) site_caught += readme_expect(c, site_broken[k].fragment, site_broken[k].prefix, site_broken[k].part);
+    c->failure_count = 0;
+    readme_check(c, STR8_LIT("frag.md"), STR8_LIT("[a](keys.html#frag-head), [b](index.html#here), [c](keys.html) and ![d](images/x.png).\n"), 0);
+    b32 site_good = c->failure_count == 0;
+    c->site = 0;
+    b32 html_caught = readme_expect(c, "<p align=\"center\"><img src=\"docs/images/nope.png\" width=\"96\"></p>\n", "frag.md:1: ",
+                                    "link docs/images/nope.png: no such file");
+    TEST_CHECK(t, site_caught == ARRAY_COUNT(site_broken) && site_good && html_caught,
+               "readme: the site's rules missed %d of %d broken fragments (a good one passed: %d; README's HTML: %d)",
+               (i32)ARRAY_COUNT(site_broken) - site_caught, (i32)ARRAY_COUNT(site_broken), site_good, html_caught);
+    caught += site_caught + html_caught;
+    c->keys = c->tables = c->settings = c->blocks = c->prose = c->links = c->external = c->images = 0;
     c->failure_count = 0;
 
     // The files themselves.
@@ -15397,15 +15608,64 @@ static b32 test_readme(Test *t) {
         readme_check(c, name, text, f == 0);
         if (f == 0) readme_keys = c->keys, readme_tables = c->tables;
     }
+
+    // The site's pages (Phase 24): every page of docs/src/nav.txt with its fragments in place, and every .md of
+    // docs/src in nav.txt.
+    c->site_dir = str8_fmt(&t->arena, "%S\\docs", c->root);
+    c->nav = PUSH_STRUCT(&t->arena, MdNav);
+    String8 nav_text;
+    MdError err = { 0 };
+    if (os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\src\\nav.txt", c->site_dir), MB(1), &nav_text) != OS_FILE_OK) {
+        readme_fail_text(c, STR8_LIT("docs/src/nav.txt: cannot read it"));
+    } else if (!md_nav_parse(md_str(nav_text.data, nav_text.len), md_cstr("docs/src/nav.txt"), c->nav, &err)) {
+        readme_fail_text(c, str8_fmt(&t->arena, "docs/src/nav.txt:%D: %S", err.line, str8(err.text, err.text_len)));
+    } else {
+        OsDirEntry *entries;
+        i64 entry_count;
+        if (os_list_dir(&t->arena, str8_fmt(&t->arena, "%S\\src", c->site_dir), &entries, &entry_count) == OS_FILE_OK) {
+            for (i64 e = 0; e < entry_count; e++) {
+                String8 f = entries[e].name, md = STR8_LIT(".md");
+                if (entries[e].is_dir || f.len <= md.len || !str8_equal(str8(f.data + f.len - md.len, md.len), md)) continue;
+                b32 listed = 0;
+                for (i32 i = 0; i < c->nav->count; i++) listed |= md_equal(c->nav->items[i].page, md_str(f.data, f.len - md.len));
+                if (!listed) readme_fail_text(c, str8_fmt(&t->arena, "docs/src/%S: not in docs/src/nav.txt", f));
+            }
+        }
+        c->site = 1;
+        for (i32 i = 0; i < c->nav->count; i++) {
+            String8 page = str8((u8 *)c->nav->items[i].page.data, c->nav->items[i].page.len);
+            String8 *line_files;
+            i64 *nos;
+            String8 *lines = readme_site_page(c, page, 0, &c->line_count, &line_files, &nos);
+            if (!lines) {
+                readme_fail_text(c, str8_fmt(&t->arena, "docs/src/%S.md: in nav.txt, but it cannot be read", page));
+                continue;
+            }
+            c->file = str8_fmt(&t->arena, "docs/src/%S.md", page);
+            c->lines = lines;
+            c->line_files = line_files;
+            c->line_nos = nos;
+            c->site_ini = str8_equal(page, STR8_LIT("configuration")) || str8_equal(page, STR8_LIT("themes")) || str8_equal(page, STR8_LIT("settings"));
+            c->site_exempt = str8_equal(page, STR8_LIT("limits")) || str8_equal(page, STR8_LIT("roadmap"));
+            for (i64 k = 0; k < c->line_count; k++) {
+                b32 first = k == 0 || !str8_equal(line_files[k], line_files[k - 1]);
+                if (first && str8_starts_with(line_files[k], STR8_LIT("docs/src/gen/"))) c->fragments++;
+            }
+            readme_check_lines(c, 0);
+            c->pages++;
+        }
+        c->site = 0;
+    }
     for (i32 k = 0; k < c->failure_count && k < README_FAILURES_KEPT; k++) LOG("test: FAIL: %S", c->failures[k]);
     if (c->failure_count > README_FAILURES_KEPT) LOG("test: FAIL: readme: %d more", c->failure_count - README_FAILURES_KEPT);
     t->failures += c->failure_count;
     if (!test_app_destroy(t, c->app, "readme")) return 0;
     if (c->failure_count) return 0;
-    LOG("test: ok: readme (README.md: %d keys in %d key tables, through describe-key or their keymap; %d settings; %d config blocks; "
-        "README.md and CONTRIBUTING.md: %d prose keys, commands and names, %d links of which %d external (listed above); the checker "
-        "caught %d broken fragments; %U ms)",
-        readme_keys, readme_tables, c->settings, c->blocks, c->prose, c->links, c->external, caught + 1, (os_time_us() - t0) / 1000);
+    LOG("test: ok: readme (README.md: %d keys in %d key tables, through describe-key or their keymap; README.md, CONTRIBUTING.md and "
+        "the site's %d pages (%d generated fragments): %d keys in %d key tables, %d settings, %d config blocks, %d prose keys, commands and "
+        "names, %d links of which %d external (listed above), %d images; the checker caught %d broken fragments; %U ms)",
+        readme_keys, readme_tables, c->pages, c->fragments, c->keys, c->tables, c->settings, c->blocks, c->prose, c->links, c->external,
+        c->images, caught + 1, (os_time_us() - t0) / 1000);
     return 1;
 }
 

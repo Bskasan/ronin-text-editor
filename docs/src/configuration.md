@@ -52,8 +52,8 @@ colors over the theme: see [Themes](themes.html#your-own-theme).
 ## Rebinding keys
 
 In `[keys]` a line is a key sequence and a command, the command last, so keys such as `=` need no quoting. The command
-`none` removes a binding. Later lines win: binding a sequence removes the bindings it conflicts with (binding `C-x`
-would remove every `C-x` binding), with a warning. Plain characters can be bound too; they then stop inserting
+`none` removes a binding. Later lines win: binding a sequence removes the bindings it conflicts with (binding the prefix
+C-x itself would remove every binding that starts with it), with a warning. Plain characters can be bound too; they then stop inserting
 themselves. Because `#` starts a comment, a lone `#` key cannot be bound.
 
 `[keys minibuffer]`, `[keys isearch]`, `[keys search-results]`, `[keys compilation]`, `[keys command-list]` and

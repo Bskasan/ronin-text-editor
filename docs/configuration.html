@@ -90,8 +90,8 @@ C-c g       goto-line
 colors over the theme: see <a href="themes.html#your-own-theme">Themes</a>.</p>
 <h2 id="rebinding-keys">Rebinding keys</h2>
 <p>In <code>[keys]</code> a line is a key sequence and a command, the command last, so keys such as <code>=</code> need no quoting. The command
-<code>none</code> removes a binding. Later lines win: binding a sequence removes the bindings it conflicts with (binding <code>C-x</code>
-would remove every <code>C-x</code> binding), with a warning. Plain characters can be bound too; they then stop inserting
+<code>none</code> removes a binding. Later lines win: binding a sequence removes the bindings it conflicts with (binding the prefix
+C-x itself would remove every binding that starts with it), with a warning. Plain characters can be bound too; they then stop inserting
 themselves. Because <code>#</code> starts a comment, a lone <code>#</code> key cannot be bound.</p>
 <p><code>[keys minibuffer]</code>, <code>[keys isearch]</code>, <code>[keys search-results]</code>, <code>[keys compilation]</code>, <code>[keys command-list]</code> and
 <code>[keys git-changes]</code> hold the keys that come first in those places; every other key falls through to <code>[keys]</code>. The
