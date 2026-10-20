@@ -14744,6 +14744,179 @@ static b32 test_git_changes_errors(Test *t) {
 }
 
 // ---------------------------------------------------------------------------
+// The docs site's converter (Phase 24, src/dev/markdown.c): every construct against its HTML, escaping, refusals with
+// their lines, includes and their links, slugs, the navigation, and a page converted twice.
+
+typedef struct TestMdHost {
+    const char *name, *text, *dir; // the one fragment or include resolve knows
+} TestMdHost;
+
+static b32 test_md_resolve(void *user, b32 generated, MdStr name, MdStr *text, MdStr *link_dir) {
+    TestMdHost *h = (TestMdHost *)user;
+    (void)generated;
+    if (!h || !h->name || !md_equal(name, md_cstr(h->name))) return 0;
+    *text = md_cstr(h->text);
+    *link_dir = md_cstr(h->dir ? h->dir : "");
+    return 1;
+}
+
+static b32 test_md_image_size(void *user, MdStr src, i32 *width, i32 *height) {
+    (void)user;
+    if (!md_equal(src, md_cstr("images/x.png"))) return 0;
+    *width = 10;
+    *height = 20;
+    return 1;
+}
+
+// The body `src` converts to (empty and `err` set when refused).
+static String8 test_md_body(Test *t, const char *src, TestMdHost *fragments, MdError *err) {
+    MdHost host = { fragments, test_md_resolve, test_md_image_size };
+    MdPageState page;
+    md_page_init(&page);
+    memset(err, 0, sizeof(*err));
+    MdOut out = { PUSH_ARRAY(&t->arena, u8, KB(64)), 0, KB(64), 0 };
+    MdCtx c = { &host, &out, err, &page, md_cstr("t.md"), 0, 0, 0, { 0 } };
+    md_blocks(&c, md_cstr(src), 1);
+    return c.failed ? str8(NULL, 0) : str8(out.data, out.len);
+}
+
+static b32 test_md_has(String8 hay, const char *needle) {
+    String8 n = str8_cstr(needle);
+    for (i64 i = 0; i + n.len <= hay.len; i++) if (str8_equal(str8(hay.data + i, n.len), n)) return 1;
+    return 0;
+}
+
+static b32 test_markdown(Test *t) {
+    static const struct { const char *src, *want; } goldens[] = {
+        { "# T\n", "<h1 id=\"t\">T</h1>\n" },
+        { "## Two words `code`\n", "<h2 id=\"two-words-code\">Two words <code>code</code></h2>\n" },
+        { "a\nb\n\nc\n", "<p>a\nb</p>\n<p>c</p>\n" },
+        { "**bold** and `a < b && c > \"d\"`\n", "<p><strong>bold</strong> and <code>a &lt; b &amp;&amp; c &gt; &quot;d&quot;</code></p>\n" },
+        { "x < y & \"z\" > w\n", "<p>x &lt; y &amp; &quot;z&quot; &gt; w</p>\n" },
+        { "[the `keys` page](keys.html#global) <here>\n", "<p><a href=\"keys.html#global\">the <code>keys</code> page</a> &lt;here&gt;</p>\n" },
+        { "![a \"b\"](images/x.png)\n", "<p><img src=\"images/x.png\" alt=\"a &quot;b&quot;\" width=\"10\" height=\"20\" loading=\"lazy\"></p>\n" },
+        { "![c](images/y.png)\n", "<p><img src=\"images/y.png\" alt=\"c\" loading=\"lazy\"></p>\n" },
+        { "```c\nif (a < b) {}\n```\n", "<pre><code>if (a &lt; b) {}\n</code></pre>\n" },
+        { "```ini\n# c\n[keys]\nfont = A & B\nC-f  forward-char\n```\n",
+          "<pre class=\"ini\"><code><span class=\"c\"># c</span>\n<span class=\"s\">[keys]</span>\n<span class=\"k\">font </span>= A &amp; B\n"
+          "C-f  forward-char\n</code></pre>\n" },
+        { "| keys | what |\n|---|---|\n| `C-x |` | **x** < y |\n",
+          "<table>\n<thead>\n<tr><th>keys</th><th>what</th></tr>\n</thead>\n<tbody>\n<tr><td><code>C-x |</code></td><td><strong>x</strong> &lt; y</td></tr>\n"
+          "</tbody>\n</table>\n" },
+        { "- a\n  more\n- b\n  1. c\n  2. d\n- e\n",
+          "<ul>\n<li>a\n  more</li>\n<li>b\n<ol>\n<li>c</li>\n<li>d</li>\n</ol>\n</li>\n<li>e</li>\n</ul>\n" },
+        { "1. one\n2. two\n\n- x\n", "<ol>\n<li>one</li>\n<li>two</li>\n</ol>\n<ul>\n<li>x</li>\n</ul>\n" },
+        { "> a **b**\n> c\n>\n> d\n", "<blockquote>\n<p>a <strong>b</strong>\nc</p>\n<p>d</p>\n</blockquote>\n" },
+        { "<!-- keymap: isearch -->\n| a |\n|---|\n| b |\n", "<table>\n<thead>\n<tr><th>a</th></tr>\n</thead>\n<tbody>\n<tr><td>b</td></tr>\n</tbody>\n</table>\n" },
+        { "#include <x>\n", "<p>#include &lt;x&gt;</p>\n" },
+        { "*scratch* and C:\\x\\y_z\n", "<p>*scratch* and C:\\x\\y_z</p>\n" },
+        { "`` a ` b `` and ` `\n", "<p><code>a ` b</code> and <code> </code></p>\n" },
+        { "text [not a link] and [x] (y)\n", "<p>text [not a link] and [x] (y)</p>\n" },
+        { "[![badge](images/x.png)](https://a.b/c?d=1&e=2)\n",
+          "<p><a href=\"https://a.b/c?d=1&amp;e=2\"><img src=\"images/x.png\" alt=\"badge\" width=\"10\" height=\"20\" loading=\"lazy\"></a></p>\n" },
+    };
+    MdError err;
+    for (i32 i = 0; i < ARRAY_COUNT(goldens); i++) {
+        String8 got = test_md_body(t, goldens[i].src, NULL, &err);
+        TEST_CHECK(t, str8_equal(got, str8_cstr(goldens[i].want)), "markdown: golden %d: %S\nwant\n%s(error: line %D %S)", i, got, goldens[i].want,
+                   err.line, str8(err.text, err.text_len));
+    }
+    // A fragment converts as part of the page; an included repository file's relative links go to GitHub.
+    TestMdHost frag = { "keys", "## Frag\n[x](a.html)\n", NULL };
+    String8 got = test_md_body(t, "<!-- generated: keys -->\n", &frag, &err);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("<h2 id=\"frag\">Frag</h2>\n<p><a href=\"a.html\">x</a></p>\n")), "markdown: a fragment: %S", got);
+    TestMdHost inc = { "../../X.md", "See [b](docs/B.md#h), [c](#new) and [d](https://e.org).\n", "" };
+    got = test_md_body(t, "<!-- include: ../../X.md -->\n", &inc, &err);
+    TEST_CHECK(t, str8_equal(got, STR8_LIT("<p>See <a href=\"https://github.com/Bskasan/ronin-text-editor/blob/main/docs/B.md#h\">b</a>, "
+                                           "<a href=\"#new\">c</a> and <a href=\"https://e.org\">d</a>.</p>\n")), "markdown: an include: %S", got);
+    // Refused, each at its line (an included file's own line and name).
+    static const struct { const char *src; i64 line; const char *part; } refused[] = {
+        { "a\n\n<div>x</div>\n", 3, "raw HTML" },
+        { "a `b\n", 1, "unclosed code span" },
+        { "x\ny `z\n", 2, "unclosed code span" },
+        { "x\n| a |\nb\n", 2, "without a |---| row" },
+        { "| a |\n|:-|\n", 2, "alignment" },
+        { "## A\ntext\n## a\n", 3, "already (#a)" },
+        { "## main\n", 1, "already (#main)" },
+        { "##### deep\n", 1, "deeper than ####" },
+        { "a\n---\n", 2, "rules and setext" },
+        { "```\ncode\n", 1, "unclosed ``` fence" },
+        { "| a | b |\n|---|---|\n| c |\n", 3, "not the header's" },
+        { "**open\n", 1, "unclosed **" },
+        { "- a\n\tb\n", 2, "a tab" },
+        { "# A\n# B\n", 2, "a second # title" },
+        { "<!-- generated: none -->\n", 1, "no generated fragment none" },
+        { "<!-- a comment\n", 1, "raw HTML" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(refused); i++) {
+        got = test_md_body(t, refused[i].src, NULL, &err);
+        String8 text = str8(err.text, err.text_len);
+        TEST_CHECK(t, !got.len && err.line == refused[i].line && test_md_has(text, refused[i].part), "markdown: refused %d: line %D '%S' (want %D, '%s')", i,
+                   err.line, text, refused[i].line, refused[i].part);
+    }
+    TestMdHost bad = { "../../Y.md", "ok\n`bad\n", "" };
+    got = test_md_body(t, "intro\n\n<!-- include: ../../Y.md -->\n", &bad, &err);
+    TEST_CHECK(t, !got.len && err.line == 2 && md_equal(err.file, md_cstr("../../Y.md")), "markdown: an error in an include: %S:%D", str8((u8 *)err.file.data, err.file.len),
+               err.line);
+    // GitHub's anchors (the README check's too).
+    static const struct { const char *heading, *slug; } slugs[] = {
+        { "Global (`[keys]`)", "global-keys" }, { "What a pull request must meet", "what-a-pull-request-must-meet" },
+        { "C-x p f", "c-x-p-f" }, { "a_b.c -- d", "a_bc----d" }, { "\xc3\x9c" "ber \xc3\xa9t\xc3\xa9", "\xc3\x9c" "ber-\xc3\xa9t\xc3\xa9" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(slugs); i++) {
+        u8 out[MD_SLUG_CAP];
+        String8 s = str8(out, md_slug(md_cstr(slugs[i].heading), out, MD_SLUG_CAP));
+        TEST_CHECK(t, str8_equal(s, str8_cstr(slugs[i].slug)), "markdown: slug of '%s': %S", slugs[i].heading, s);
+    }
+    // The navigation, and refusals of nav.txt.
+    MdNav *nav = PUSH_STRUCT(&t->arena, MdNav);
+    const char *nav_text = "# pages\n[Start]\nindex  Overview\ninstall Install\n\n[Use]\nediting Editing & more\n";
+    TEST_CHECK(t, md_nav_parse(md_cstr(nav_text), md_cstr("nav.txt"), nav, &err) && nav->count == 3 && md_equal(nav->items[2].group, md_cstr("Use")) &&
+                  md_equal(nav->items[0].label, md_cstr("Overview")), "markdown: nav.txt (%D items)", (i64)nav->count);
+    static const struct { const char *text; i64 line; } bad_nav[] = {
+        { "index Overview\n", 1 }, { "[A]\nIndex X\n", 2 }, { "[A]\na X\na Y\n", 3 }, { "[A]\nlonely\n", 2 }, { "# nothing\n", 1 },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(bad_nav); i++) {
+        MdNav *n2 = PUSH_STRUCT(&t->arena, MdNav);
+        memset(&err, 0, sizeof(err));
+        TEST_CHECK(t, !md_nav_parse(md_cstr(bad_nav[i].text), md_cstr("nav.txt"), n2, &err) && err.line == bad_nav[i].line, "markdown: bad nav.txt %d: line %D",
+                   i, err.line);
+    }
+    // A page: its template, the navigation marking it, previous and next; twice, byte for byte the same.
+    String8 pages[2];
+    for (i32 k = 0; k < 2; k++) {
+        MdHost host = { NULL, test_md_resolve, test_md_image_size };
+        MdOut scratch = { PUSH_ARRAY(&t->arena, u8, KB(64)), 0, KB(64), 0 };
+        MdOut out = { PUSH_ARRAY(&t->arena, u8, KB(64)), 0, KB(64), 0 };
+        memset(&err, 0, sizeof(err));
+        TEST_CHECK(t, md_page(nav, 1, md_cstr("# Install `ronin`\n\nText & more.\n"), md_cstr("install.md"), &host, &scratch, &out, &err),
+                   "markdown: the page: %S", str8(err.text, err.text_len));
+        pages[k] = str8(out.data, out.len);
+    }
+    String8 p = pages[0];
+    TEST_CHECK(t, str8_equal(pages[0], pages[1]), "markdown: the same page twice differs");
+    TEST_CHECK(t, str8_starts_with(p, STR8_LIT("<!doctype html>\n<html lang=\"en\">\n")) && test_md_has(p, "<title>Install ronin &middot; ronin</title>") &&
+                  test_md_has(p, "<li><a href=\"install.html\" aria-current=\"page\">Install</a></li>") && test_md_has(p, "<li><a href=\"index.html\">Overview</a></li>") &&
+                  test_md_has(p, "<p class=\"group\">Use</p>\n<ul>\n<li><a href=\"editing.html\">Editing &amp; more</a></li>") &&
+                  test_md_has(p, "<a rel=\"prev\" href=\"index.html\">&larr; Overview</a><a rel=\"next\" href=\"editing.html\">Editing &amp; more &rarr;</a>") &&
+                  test_md_has(p, "<main id=\"main\">\n<h1 id=\"install-ronin\">Install <code>ronin</code></h1>\n<p>Text &amp; more.</p>\n") &&
+                  !test_md_has(p, "<script") && p.len > 16 && str8_equal(str8(p.data + p.len - 16, 16), STR8_LIT("</body>\n</html>\n")),
+               "markdown: the page:\n%S", p);
+    MdOut tiny_scratch = { PUSH_ARRAY(&t->arena, u8, 64), 0, 64, 0 }, tiny = { PUSH_ARRAY(&t->arena, u8, 64), 0, 64, 0 };
+    memset(&err, 0, sizeof(err));
+    TEST_CHECK(t, !md_page(nav, 0, md_cstr("# A\n"), md_cstr("a.md"), NULL, &tiny_scratch, &tiny, &err) && test_md_has(str8(err.text, err.text_len), "larger"),
+               "markdown: a page too large for its buffer");
+    memset(&err, 0, sizeof(err));
+    MdOut s2 = { PUSH_ARRAY(&t->arena, u8, KB(4)), 0, KB(4), 0 }, o2 = { PUSH_ARRAY(&t->arena, u8, KB(8)), 0, KB(8), 0 };
+    TEST_CHECK(t, !md_page(nav, 0, md_cstr("no title\n"), md_cstr("a.md"), NULL, &s2, &o2, &err) && test_md_has(str8(err.text, err.text_len), "one # title"),
+               "markdown: a page without its title");
+    LOG("test: ok: markdown (%d goldens, a fragment, an include's links, %d refusals with their lines, an error inside an include, %d slugs, "
+        "nav.txt and %d refusals, a page twice the same, too large, without a title)", ARRAY_COUNT(goldens), ARRAY_COUNT(refused), ARRAY_COUNT(slugs),
+        ARRAY_COUNT(bad_nav));
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // The README check (Phase 22): README.md's key tables, settings, config blocks, prose keys and links against the
 // code, and CONTRIBUTING.md's prose keys and links. A key table is a table headed exactly "| keys | command | what it
 // does |", in the global keymap unless the line before it is "<!-- keymap: NAME -->" ([keys NAME]); a settings table
@@ -14841,17 +15014,10 @@ static i32 readme_heading(String8 line, String8 *text) {
     return level;
 }
 
-// GitHub's anchor for a heading: lowercase, punctuation dropped (but '-' and '_'), spaces to '-'.
+// GitHub's anchor for a heading: md_slug, the one the docs site's converter gives its headings (Phase 24).
 static String8 readme_slug(Arena *arena, String8 heading) {
     u8 *out = PUSH_ARRAY(arena, u8, heading.len + 1);
-    i64 n = 0;
-    for (i64 i = 0; i < heading.len; i++) {
-        u8 b = heading.data[i];
-        if (b >= 'A' && b <= 'Z') out[n++] = (u8)(b - 'A' + 'a');
-        else if ((b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '_' || b >= 0x80) out[n++] = b;
-        else if (b == ' ') out[n++] = '-';
-    }
-    return str8(out, n);
+    return str8(out, md_slug(md_str(heading.data, heading.len), out, heading.len + 1));
 }
 
 static b32 readme_has_anchor(Arena *arena, String8 *lines, i64 count, String8 anchor) {
@@ -15479,6 +15645,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_set_theme(&t);
     arena_reset(&t.arena);
     test_theme_fuzz(&t, seed);
+    arena_reset(&t.arena);
+    test_markdown(&t);
     arena_reset(&t.arena);
     test_readme(&t);
     arena_reset(&t.arena);
