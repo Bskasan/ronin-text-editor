@@ -46,7 +46,8 @@
 <main id="main">
 <h1 id="contributing-to-ronin">Contributing to ronin</h1>
 <p>Thank you for looking. ronin has three goals, in this order: input latency and speed, a small and simple
-program, then features. Every change is judged by that order, so read this page before you write code.</p>
+program, then features. Every change is judged by that order, so read this page before you write code. How to use
+ronin is on the <a href="https://bskasan.github.io/ronin-text-editor/">documentation site</a>; this page is about changing it.</p>
 <h2 id="building">Building</h2>
 <p>You need Windows 10 or later (x64) and Visual Studio 2022 or later, or the Build Tools for Visual Studio, with the
 &quot;Desktop development with C++&quot; workload (the MSVC x64 tools and the Windows SDK). <code>build.bat</code> finds them itself.</p>
@@ -59,12 +60,13 @@ program, then features. Every change is judged by that order, so read this page 
 <tr><td><code>build.bat release</code></td><td><code>build\ronin.exe</code>: optimized, no C runtime, no dev code</td></tr>
 <tr><td><code>build.bat bench</code></td><td><code>build\ronin_bench.exe</code>: optimized, with the dev flags</td></tr>
 <tr><td><code>build.bat clean</code></td><td>removes <code>build\</code> and <code>dist\</code>, everything generated, and nothing else</td></tr>
+<tr><td><code>build.bat docs</code></td><td>the debug build, then the documentation site: <code>docs\*.html</code> from <code>docs\src</code> (committed, as GitHub Pages serves it)</td></tr>
 </tbody>
 </table>
 <ul>
 <li>Run <code>verify.bat</code> before every commit. It builds all three, runs the source check (see <a href="#new-files">New files</a>), the
-  smoke test (real frames, pixel checks) and the tests, checks the release exe's imports, and prints one last line:
-  only <code>verify: PASS</code> counts.</li>
+  docs-check (the site in <code>docs\</code> is what its sources make), the smoke test (real frames, pixel checks) and the tests,
+  checks the release exe's imports, and prints one last line: only <code>verify: PASS</code> counts.</li>
 <li>Run <code>verify.bat phase</code> before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
   a sweep of 256 fuzz seeds, a million-event soak and the leak check.</li>
 <li>Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
@@ -82,8 +84,12 @@ in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITEC
 <li>Every feature is a named command with a one-line description, so it can be bound to a key and found with M-x and
   <code>C-S-p</code>.</li>
 <li>Tests for the change, and you have seen them fail without it: say how in the pull request.</li>
-<li>README.md, <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/MANUAL_TESTS.md">docs/MANUAL_TESTS.md</a> and docs/ARCHITECTURE.md updated where they describe what
-  you changed. <code>--test</code> checks README's keys, settings and links against the code.</li>
+<li>README.md, the site's pages (<code>docs/src</code>, then <code>build.bat docs</code>), <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/MANUAL_TESTS.md">docs/MANUAL_TESTS.md</a> and
+  docs/ARCHITECTURE.md updated where they describe what you changed. <code>--test</code> checks the keys, settings and links of
+  README and of every page of the site against the code. The site's
+  <a href="https://bskasan.github.io/ronin-text-editor/keys.html">keys</a> and
+  <a href="https://bskasan.github.io/ronin-text-editor/settings.html">settings</a> pages are generated from the exe: a new command
+  or setting appears there by itself.</li>
 <li>One logical change per commit, each message <code>&lt;type&gt;(&lt;scope&gt;): &lt;summary&gt;</code> with type one of feat, fix, perf,
   refactor, test, docs, build, chore. Example: <code>fix(isearch): wrap past the last match</code>.</li>
 <li>A screenshot (<code>--screenshot</code>) for a visual change.</li>

@@ -1,7 +1,8 @@
 # Contributing to ronin
 
 Thank you for looking. ronin has three goals, in this order: input latency and speed, a small and simple
-program, then features. Every change is judged by that order, so read this page before you write code.
+program, then features. Every change is judged by that order, so read this page before you write code. How to use
+ronin is on the [documentation site](https://bskasan.github.io/ronin-text-editor/); this page is about changing it.
 
 ## Building
 
@@ -14,10 +15,11 @@ You need Windows 10 or later (x64) and Visual Studio 2022 or later, or the Build
 | `build.bat release` | `build\ronin.exe`: optimized, no C runtime, no dev code |
 | `build.bat bench` | `build\ronin_bench.exe`: optimized, with the dev flags |
 | `build.bat clean` | removes `build\` and `dist\`, everything generated, and nothing else |
+| `build.bat docs` | the debug build, then the documentation site: `docs\*.html` from `docs\src` (committed, as GitHub Pages serves it) |
 
 - Run `verify.bat` before every commit. It builds all three, runs the source check (see [New files](#new-files)), the
-  smoke test (real frames, pixel checks) and the tests, checks the release exe's imports, and prints one last line:
-  only `verify: PASS` counts.
+  docs-check (the site in `docs\` is what its sources make), the smoke test (real frames, pixel checks) and the tests,
+  checks the release exe's imports, and prints one last line: only `verify: PASS` counts.
 - Run `verify.bat phase` before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
   a sweep of 256 fuzz seeds, a million-event soak and the leak check.
 - Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
@@ -36,8 +38,12 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Every feature is a named command with a one-line description, so it can be bound to a key and found with M-x and
   `C-S-p`.
 - Tests for the change, and you have seen them fail without it: say how in the pull request.
-- README.md, [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md) and docs/ARCHITECTURE.md updated where they describe what
-  you changed. `--test` checks README's keys, settings and links against the code.
+- README.md, the site's pages (`docs/src`, then `build.bat docs`), [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md) and
+  docs/ARCHITECTURE.md updated where they describe what you changed. `--test` checks the keys, settings and links of
+  README and of every page of the site against the code. The site's
+  [keys](https://bskasan.github.io/ronin-text-editor/keys.html) and
+  [settings](https://bskasan.github.io/ronin-text-editor/settings.html) pages are generated from the exe: a new command
+  or setting appears there by itself.
 - One logical change per commit, each message `<type>(<scope>): <summary>` with type one of feat, fix, perf,
   refactor, test, docs, build, chore. Example: `fix(isearch): wrap past the last match`.
 - A screenshot (`--screenshot`) for a visual change.
