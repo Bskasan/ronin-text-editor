@@ -2494,6 +2494,7 @@ check.
 - [x] 21. Themes: built-in themes, theme files, set-theme
 - [x] 22. README, contribution guide and repository files
 - [x] 23. Source layout and file headers
+- [x] 24. Documentation site and the README as a product page
 
 ## Decisions
 
