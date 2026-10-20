@@ -2386,7 +2386,7 @@ The release exe stays 470,016 bytes for the rest of the phase: everything else a
 | run | before (normal priority) | after (below normal, 14 workers) |
 |---|---|---|
 | verify.bat, the machine otherwise idle | 48.0 s | 46.9 s; 51.8 s at the end of the phase, with the docs-check and the larger README check |
-| verify.bat phase | 749 s (Phase 23, 8 workers) | see "verify.bat phase" below |
+| verify.bat phase | 749 s (Phase 23, 8 workers) | 461 s (14 workers): the seed sweep 180 s instead of 298 s, the leak check 146 s instead of 261 s |
 
 On an idle machine the priority changes nothing measurable; it matters only when something else wants the CPU. A
 probe of the restart: a child of the restarted script reports `BelowNormal` (PowerShell's PriorityClass), and the exit
@@ -2454,6 +2454,17 @@ The proofs, each on the real tree, verify.bat in full, then undone:
 
 The CI step runs the same commands as verify's docs-check; run locally as the workflow writes them (PowerShell):
 "docs-check: PASS: the site in docs is what its sources make".
+
+### verify.bat phase
+
+Once, with the code and documents of 8199455, at below-normal priority: 461 s, PASS, every step, no measurement in
+it flaky at that priority. The source check PASS (79 files); the docs-check PASS; the smoke PASS on debug (87 frames) and
+bench (90 frames); `--test` PASS on debug (37.6 s) and bench (30.4 s), the markdown, dump-docs and README checks in both;
+the seed sweep "seeds 1 to 256 over 14 worker processes", PASS in 180 s; the bench soak PASS in 21.1 s and the debug soak
+PASS in 24.4 s (1,000,000 events, seed 0x7ea1), our arenas without the undo logs 5,308 KB after the first block, 6,892 KB
+at most in the first half, 6,296 KB after the last; the leak check 28 scenarios, 0 LEAK (146 s; STEP
+config-reload-cycle/color private commit, as in Phase 23); the exit check PASS in the smoke (debug, bench) and the leak
+check.
 
 ## Roadmap
 
