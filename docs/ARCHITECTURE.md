@@ -112,7 +112,8 @@ Build-time programs, not part of the exe; compiled by build.bat on every build.
 
 | file | description | details |
 |---|---|---|
-| `make_icon.c` | build tool: draws ronin's icon into build/gen/ronin.ico | run by build.bat on every build |
+| `make_icon.c` | build tool: draws ronin's icon into build/gen/ronin.ico | run by build.bat on every build; `make_icon --png <out.png>` (Phase 24): the icon at 128 px, the documentation site's and README's logo (build.bat docs, docs/images/logo.png) |
+| `make_docs.c` | build tool: converts docs/src/*.md into the documentation site | Phase 24, run by build.bat docs and verify's docs-check: `make_docs <docs dir> <fragments dir> <out dir>` writes every page of docs/src/nav.txt (the conversion is src/dev/markdown.c, included; fragments from `--dump-docs`, image sizes from their PNG headers; a .md of docs/src not in nav.txt refused); `make_docs --compare <docs dir> <scratch dir>`: the committed site against a fresh one, one line per difference |
 | `make_themes.c` | build tool: embeds themes/*.conf into build/gen/themes.h | Phase 21, run by build.bat on every build: comment and blank lines dropped, name order, ronin required, at most 8 KB in all |
 | `check_source.c` | build check: headers, module map and includes of every source file | Phase 23, run by verify.bat and the CI workflow (`check_source <root>`): every source file's header against this map, the two include rules; one `path:line: message` per problem |
 

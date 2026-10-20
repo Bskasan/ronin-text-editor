@@ -1,15 +1,18 @@
 @echo off
 rem ronin build.  "build.bat" -> build\ronin_debug.exe   "build.bat release" -> build\ronin.exe
 rem "build.bat clean" removes build\ and dist\ (everything generated) and nothing else.
-rem From Git Bash: cmd //c ".\build.bat" [release]
+rem "build.bat docs" -> the debug build, then the documentation site in docs\ (generated, committed).
+rem From Git Bash: cmd //c ".\build.bat" [release|bench|docs|clean]
 setlocal
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 if /i "%~1"=="clean" goto clean
 
 set MODE=debug
+set DOCS=0
 if /i "%~1"=="release" set MODE=release
 if /i "%~1"=="bench" set MODE=bench
+if /i "%~1"=="docs" set DOCS=1
 
 rem --- toolchain -------------------------------------------------------------
 where cl >nul 2>nul
@@ -74,6 +77,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem --- the documentation site's generator (tools\make_docs.c, with src\dev\markdown.c): run by build.bat docs and verify ---
+cl /nologo /W4 /WX /O2 /std:c11 tools\make_docs.c /Fobuild\make_docs.obj /Fdbuild\make_docs_cl.pdb /Febuild\make_docs.exe /link /INCREMENTAL:NO >nul
+if errorlevel 1 (
+    echo ERROR: tools\make_docs.c did not compile
+    exit /b 1
+)
+
 rem --- C (unity build) + the one C++ file (DirectWrite: dwrite.h is C++ only) ---
 set COMMON=/nologo /utf-8 /W4 /WX /FC /external:anglebrackets /external:W0
 set CFLAGS=%COMMON% /std:c11 /Ibuild\gen
@@ -108,6 +118,29 @@ cl %CFLAGS% %OPT% %DEFS% src\ronin.c build\%NAME%_dwrite.obj build\gen\ronin.res
 if errorlevel 1 exit /b 1
 
 for %%F in ("build\%NAME%.exe") do echo build\%NAME%.exe: %%~zF bytes
+if "%DOCS%"=="1" goto docs
+exit /b 0
+
+rem --- docs: the documentation site (Phase 24), after the debug build: the fragments from the exe, the logo, then
+rem every page of docs\src\nav.txt into docs\*.html. The output is committed (GitHub Pages serves docs\ as files);
+rem verify.bat's docs-check fails when it differs from what its sources make.
+:docs
+start "" /wait build\ronin_debug.exe --dump-docs docs\src\gen
+if errorlevel 1 (
+    echo ERROR: ronin_debug.exe --dump-docs failed: see build\ronin.log
+    exit /b 1
+)
+build\make_icon.exe --png docs\images\logo.png
+if errorlevel 1 (
+    echo ERROR: make_icon could not write docs\images\logo.png
+    exit /b 1
+)
+build\make_docs.exe docs docs\src\gen docs
+if errorlevel 1 (
+    echo ERROR: make_docs: the site was not generated
+    exit /b 1
+)
+echo docs: the site generated in docs\
 exit /b 0
 
 :no_msvc

@@ -8,7 +8,8 @@
    ====================================================================== */
 
 // draws ronin's icon and writes it as an .ico (build-time tool, not part of the editor; build.bat
-// compiles and runs it on every build: make_icon <out.ico>).
+// compiles and runs it on every build: make_icon <out.ico>). make_icon --png <out.png> writes it at 128 px as a PNG
+// instead: the documentation site's and README's logo (build.bat docs, docs/images/logo.png; Phase 24).
 //
 // The design: a lowercase "r" (a stem and a shoulder) in the theme's text color and a block cursor after it in the
 // cursor color, on a rounded square of the background color. Each size is drawn on its own pixel grid with 8 x 8
@@ -227,13 +228,24 @@ static size_t png(int size, u8 *out) {
 
 static u8 ico[1 << 20];
 
+static int write_file(const char *path, const u8 *data, size_t len) {
+    HANDLE f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 1;
+    DWORD written = 0;
+    BOOL ok = WriteFile(f, data, (DWORD)len, &written, NULL) && written == len;
+    CloseHandle(f);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2) return 2;
+    int as_png = argc == 3 && argv[1][0] == '-' && argv[1][1] == '-' && argv[1][2] == 'p' && argv[1][3] == 'n' && argv[1][4] == 'g' && !argv[1][5];
+    if (argc != 2 && !as_png) return 2;
     for (u32 n = 0; n < 256; n++) {
         u32 c = n;
         for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
         crc_table[n] = c;
     }
+    if (as_png) return write_file(argv[2], ico, png(128, ico));
     static const int sizes[] = { 16, 20, 24, 32, 40, 48, 64, 256 };
     enum { COUNT = sizeof(sizes) / sizeof(sizes[0]) };
     // ICONDIR, then one ICONDIRENTRY per image, then the images.
@@ -259,10 +271,5 @@ int main(int argc, char **argv) {
         for (int k = 0; k < 4; k++) e[12 + k] = (u8)(at >> (8 * k));
         at += len;
     }
-    HANDLE f = CreateFileA(argv[1], GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) return 1;
-    DWORD written = 0;
-    BOOL ok = WriteFile(f, ico, (DWORD)at, &written, NULL) && written == at;
-    CloseHandle(f);
-    return ok ? 0 : 1;
+    return write_file(argv[1], ico, at);
 }

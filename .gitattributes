@@ -1,2 +1,6 @@
 * text=auto
 *.bat text eol=crlf
+# The documentation site's generated files are LF everywhere, as make_docs writes them (verify's docs-check
+# compares them byte for byte).
+docs/*.html text eol=lf
+docs/src/gen/*.md text eol=lf
