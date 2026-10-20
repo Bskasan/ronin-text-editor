@@ -544,6 +544,13 @@ void config_defaults(Config *c, Arena *arena) {
     config_parse_theme(c, arena, theme_builtin(STR8_LIT("ronin")), STR8_LIT("<built-in theme ronin>"), STR8_LIT("ronin"));
 }
 
+// FNV-1a over a file's bytes: tells a rewrite from the version last loaded when its size and write time are equal.
+static u64 config_hash(String8 text) {
+    u64 h = 0xcbf29ce484222325ull;
+    for (i64 i = 0; i < text.len; i++) h = (h ^ text.data[i]) * 0x100000001b3ull;
+    return h;
+}
+
 // The chosen theme under the user file's colors (Phase 21): the colors the user file set (user_colors) are kept, the
 // theme is parsed over the rest, and what derives is derived again. ronin is the base already: only a file that
 // replaces it is applied for it. A theme that cannot be found or read leaves ronin, with an error on the theme
@@ -571,6 +578,7 @@ static void config_resolve_theme(Config *c, Arena *arena, u64 user_colors, Theme
         return;
     }
     c->theme_name = str8_copy(arena, name);
+    if (tl->loc.where != THEME_BUILTIN) tl->hash = config_hash(text);
     if (tl->loc.where == THEME_BUILTIN && theme_name_equal(name, ronin)) return; // the base already
     Theme kept = c->theme;
     String8 label = tl->loc.where == THEME_BUILTIN ? str8_fmt(arena, "<built-in theme %S>", name) : str8_fmt(arena, "themes\\%S.conf", name);
@@ -584,7 +592,8 @@ static void config_resolve_theme(Config *c, Arena *arena, u64 user_colors, Theme
     if (!theme_name_equal(name, ronin)) c->theme_overrides = bits_count(user_colors);
 }
 
-OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info, ThemeLoad *theme) {
+// config_load, also giving the hash of the user file's bytes (0 when it was not read).
+static OsFileStatus config_load_hashed(Config *c, Arena *arena, String8 path, OsFileInfo *info, ThemeLoad *theme, u64 *hash) {
     config_defaults(c, arena);
     // Dev: the built-in config parses cleanly, so every command it names exists.
 #if RONIN_DEV
@@ -594,16 +603,23 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
     memset(info, 0, sizeof(*info));
     OsFileStatus status = OS_FILE_NOT_FOUND;
     u64 user_colors = 0;
+    *hash = 0;
     if (path.len) {
         String8 text;
         status = config_read_file(arena, path, &text, info);
         if (status == OS_FILE_OK) {
+            *hash = config_hash(text);
             config_parse(c, arena, text, config_file_name(path));
             user_colors = c->colors_last;
         }
     }
     config_resolve_theme(c, arena, user_colors, theme);
     return status;
+}
+
+OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info, ThemeLoad *theme) {
+    u64 hash;
+    return config_load_hashed(c, arena, path, info, theme, &hash);
 }
 
 // ---------------------------------------------------------------------------
@@ -618,14 +634,27 @@ b32 config_pending(ConfigSource *src) {
     return src->settling || src->attempts > 0;
 }
 
+// The file still holds the bytes loaded last (their hash): read only when its size and write time are unchanged, which
+// does not prove it is (Phase 24). A file that cannot be read now counts as changed: loading it reports or retries.
+static b32 config_same_bytes(Arena *arena, String8 path, u64 hash) {
+    u64 mark = arena_pos(arena);
+    String8 text;
+    OsFileInfo info;
+    b32 same = config_read_file(arena, path, &text, &info) == OS_FILE_OK && config_hash(text) == hash;
+    arena_pop_to(arena, mark);
+    return same;
+}
+
 // The theme loaded last is no longer what its name finds (Phase 21): its file changed, appeared or went.
 static b32 config_theme_changed(ConfigSource *src, Arena *arena) {
     if (!src->theme_len) return 0; // nothing loaded yet
     ThemeLocation loc;
     u64 mark = arena_pos(arena);
     theme_locate(arena, &src->themes, str8(src->theme, src->theme_len), &loc);
+    b32 changed = loc.where != src->theme_where || loc.info.size != src->theme_size || loc.info.write_time != src->theme_write_time;
+    if (!changed && loc.path.len) changed = !config_same_bytes(arena, loc.path, src->theme_hash);
     arena_pop_to(arena, mark);
-    return loc.where != src->theme_where || loc.info.size != src->theme_size || loc.info.write_time != src->theme_write_time;
+    return changed;
 }
 
 ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, u64 now_us) {
@@ -639,15 +668,17 @@ ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, 
     } else if (!force) {
         OsFileInfo now = { 0 };
         b32 present = src->path.len && os_file_info(src->path, &now) == OS_FILE_OK;
-        b32 same = present ? src->loaded_file && now.size == src->size && now.write_time == src->write_time
-                           : 1; // missing for now (saved through a rename), or never there
-        if (!present && src->loaded_file) return CONFIG_POLL_UNCHANGED;
+        if (!present && src->loaded_file) return CONFIG_POLL_UNCHANGED; // missing for now (saved through a rename)
+        b32 same = present ? src->loaded_file && now.size == src->size && now.write_time == src->write_time &&
+                                 config_same_bytes(arena, src->path, src->hash)
+                           : 1; // never there
         if (same && !config_theme_changed(src, arena)) return CONFIG_POLL_UNCHANGED;
     }
     OsFileInfo info;
     ThemeLoad theme = { .dirs = src->themes, .override = str8(src->override, src->override_len),
                         .override_file = str8(src->override_file, src->override_file_len) };
-    src->status = config_load(out, arena, src->path, &info, &theme);
+    u64 hash;
+    src->status = config_load_hashed(out, arena, src->path, &info, &theme, &hash);
     // A theme file being written (a sharing violation) is retried as ronin.conf is.
     b32 busy = src->status == OS_FILE_SHARING_VIOLATION || theme.status == OS_FILE_SHARING_VIOLATION;
     if (busy && ++src->attempts < CONFIG_RETRY_ATTEMPTS) {
@@ -659,12 +690,14 @@ ConfigPoll config_poll(ConfigSource *src, Config *out, Arena *arena, b32 force, 
     src->loaded_file = src->status == OS_FILE_OK;
     src->size = info.size;
     src->write_time = info.write_time;
+    src->hash = hash;
     if (theme.override_dropped) src->override_len = src->override_file_len = 0;
     src->theme_len = (i32)MIN(theme.name.len, (i64)THEME_NAME_CAP);
     memcpy(src->theme, theme.name.data, (size_t)src->theme_len);
     src->theme_where = theme.loc.where;
     src->theme_size = theme.loc.info.size;
     src->theme_write_time = theme.loc.info.write_time;
+    src->theme_hash = theme.hash;
     return CONFIG_POLL_LOADED;
 }
 

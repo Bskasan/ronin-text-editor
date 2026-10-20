@@ -48,6 +48,7 @@ typedef struct ThemeLoad {
     String8 name;          // out: the theme asked for (loaded, or not found: then ronin)
     ThemeLocation loc;     // out: where that name was found
     OsFileStatus status;   // out: reading it (OS_FILE_OK for a built-in one)
+    u64 hash;              // out: a hash of the theme file's bytes as read (0 for a built-in theme)
 } ThemeLoad;
 
 i32     theme_builtin_count(void);

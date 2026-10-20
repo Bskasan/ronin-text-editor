@@ -145,7 +145,9 @@ String8 config_file_name(String8 path); // the last path component
 
 // ---------------------------------------------------------------------------
 // Reloading. Driven by directory change notifications, never by a timer: on a notification the
-// file is read again only if its size or write time differ from the version last loaded. A file
+// file is loaded again only if it differs from the version last loaded. A different size or write
+// time proves a change; equal ones do not prove the opposite (two writes of the same size within
+// one file-time tick look alike), so then its bytes are read and compared by a hash. A file
 // that is missing for a moment (editors that save through a temporary file and a rename) counts
 // as unchanged. A sharing violation (another program still writing) is retried every
 // CONFIG_RETRY_MS, at most CONFIG_RETRY_ATTEMPTS reads in all; the caller waits with that timeout
@@ -167,9 +169,10 @@ typedef enum ConfigPoll {
 
 typedef struct ConfigSource {
     String8 path;        // the user's ronin.conf; empty = built-in defaults only
-    b32 loaded_file;     // the version last loaded came from the file; its size and write time:
+    b32 loaded_file;     // the version last loaded came from the file; its size, write time and a hash of its bytes:
     i64 size;
     u64 write_time;
+    u64 hash;
     i32 attempts;        // failed reads in a row; > 0 = a retry is pending
     u64 retry_at_us;
     b32 settling;        // a change notification arrived; read at settle_at_us
@@ -187,6 +190,7 @@ typedef struct ConfigSource {
     ThemeWhere theme_where;
     i64 theme_size;
     u64 theme_write_time;
+    u64 theme_hash;
 } ConfigSource;
 
 // force: read now (startup, reload-config). Otherwise only a changed file is read, once a settle
