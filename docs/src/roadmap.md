@@ -1,5 +1,9 @@
 # Roadmap
 
+Planned work is tracked as issues on GitHub, grouped by milestone: 1.0.1 (bug fixes), 1.1.0 (small features), 1.2.0
+(navigation and formatting) and 1.3.0 (the embedded terminal); see the
+[milestones](https://github.com/Bskasan/ronin-text-editor/milestones).
+
 What may come after 1.0, in about this order and without dates:
 
 - Terminals: a terminal inside ronin, beside the code, for a shell or an AI tool (today they open in their own window).
