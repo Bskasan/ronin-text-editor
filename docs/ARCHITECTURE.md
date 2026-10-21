@@ -4034,6 +4034,42 @@ faithful to them, the current match is not set apart.
    `VERIFY_WORKERS=N` (1 to 64, through the new `--workers N` of `--fuzz-seeds`, whose own default is the same now). The
    hand-run measurements (`--bench-latency`, `--startup-ms`) keep normal priority.
 
+### Decisions, Phase 25 (release 1.0.0)
+
+1. Version 1.0.0. src/app/version.h is the version's only home: `--version`, the version resource (the Details tab)
+   and the zip's name follow from it. CHANGELOG.md's "Unreleased" becomes "1.0.0 — <date>", written for a user, not as
+   a phase log: a short intro, then Added / Changed / Fixed / Known limits; the 0.1.0 entry stays below it as history.
+   The site's changelog page is made again from it.
+2. The zip. dist.bat makes dist\ronin-<version>-windows-x64.zip holding a ronin-<version> folder with ronin.exe,
+   README.md, LICENSE, THIRD_PARTY.md, CHANGELOG.md and samples\ (the six files), nothing else; it checks the zip's
+   listing, prints the zip's size and SHA-256 and writes the hash to dist\SHA256SUMS.txt. The zip must come out of a
+   fresh clone (build.bat release, then dist.bat) with the same file list and the same exe size.
+3. The tag. After the phase's last commit, an annotated tag v1.0.0 on it, message "ronin 1.0.0", made locally; the
+   owner pushes it (`git push origin v1.0.0`).
+4. Release notes. docs/releases/1.0.0.md, also the text of the GitHub release: what ronin is in two sentences, the
+   download and the SmartScreen note, at most ten highlights, the short list of known limits, the SHA-256, and links to
+   the site, its keys page and the changelog. No phase numbers and no measurement tables; the numbers that matter
+   (latency, size, startup, idle) in one sentence.
+5. The final checklist. Every HUMAN step of docs/MANUAL_TESTS.md is collected into docs/releases/checklist-1.0.0.md as a
+   table with an empty status column for the owner. Steps the owner confirmed in the phase's conversation are marked;
+   the rest stay open. The tag waits for the blocking ones: SmartScreen on the zip's exe, a start from a clean folder
+   with no configuration, the configuration created by `C-c ,` on that first run, switching themes, and `C-x g` on a real
+   repository.
+6. Final measurements. A "Release 1.0.0" table in Measurements (Phase 25), each row against the Phase 15 baseline (or
+   the phase that first measured it). The roadmap marks phase 25 done, and "Later" becomes "After 1.0", ordered, the
+   embedded terminal first.
+7. Nothing else changes in code. A bug found by a final check is fixed in its own fix commit with a test, and the checks
+   run again.
+8. The manifest has no `assemblyIdentity` (its `version` attribute was a second version to keep in step). ronin has no
+   side-by-side dependency and the linker's own default manifest has none; the release exe kept its size.
+9. dist\SHA256SUMS.txt is in sha256sum's format, one line `<hash>  <zip name>`, so `sha256sum -c` and a comparison with
+   PowerShell's `Get-FileHash` both work; the size is in dist's last line and in the release notes. The hash comes from
+   `certutil -hashfile` (System32).
+10. Reproducible means the same file list, the same exe size and the other files identical by SHA-256: the zip is not
+    byte-reproducible (the exe's link time, the files' times in the zip). So the SHA-256 in the notes is that of the zip
+    made in this phase, and that exact file is what the release carries; byte-for-byte reproduction is on the After 1.0
+    list.
+
 ## Later
 
 - Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
