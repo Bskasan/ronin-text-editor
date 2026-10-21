@@ -5,8 +5,9 @@ ideas from Focus and 4coder. Emacs look and model (no tabs, scrollbars, menus or
 side-by-side windows, inverse-video mode line, minibuffer, block cursor, point/mark, kill
 ring, isearch, M-x), pure Emacs default keys rebindable from a hot-reloaded text config.
 Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no LSP, no
-tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
-decisions and the "After 1.0" list. A change implements only its own phase. For strangers (Phase 22): README.md,
+tree-sitter). Built in 25 phases up to 1.0.0; since then through GitHub issues and pull requests
+(see Workflow below). docs/ARCHITECTURE.md has the roadmap of the phases, the module map, the decisions and the
+"After 1.0" list. A change implements only its own issue. For strangers (Phase 22): README.md,
 CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
 windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the docs-check (Phase 24), the
 imports, --version; the bench smoke informational only, the smoke gate and `verify.bat phase` stay local). The
@@ -77,8 +78,8 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
 - State lives in a few explicit structs (App, Platform, Renderer), not scattered globals.
 - Naming: types PascalCase; functions and variables snake_case with a module prefix
   (arena_push, r_push_rect, os_write_file); macros and enum constants UPPER_SNAKE.
-- Scope discipline: build only what the current phase asks for. No speculative
-  abstractions. Park ideas in the "After 1.0" list in docs/ARCHITECTURE.md.
+- Scope discipline: build only what the current issue asks for. No speculative
+  abstractions. Park ideas in the "After 1.0" list in docs/ARCHITECTURE.md, or as an issue labeled backlog.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
   configurations (each with the macro check), checks `build.bat clean` on a scratch tree
   (clean-check), runs the source check (`build\check_source.exe`: headers, module map, includes; Phase 23), the
@@ -91,7 +92,8 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
   line, `verify: PASS` or `verify: FAIL: <what failed>`. Only that line counts: never run the steps
   by hand and judge them by eye. `verify.bat phase` also runs the full `--test` on the debug build,
   the seed sweep (`--fuzz-seeds 1 256`, bench), the soak (`--soak 1000000`, bench and debug) and the leak
-  check (`--leak-check all`, debug; ~2 minutes): once per phase, before its final commit. Each run's log
+  check (`--leak-check all`, debug; ~2 minutes): before the pull request of anything larger than a small fix,
+  announced to the maintainer before it runs. Each run's log
   is kept as build\verify\<step>.log. Both run every process they start at below-normal priority (Phase 24;
   verify.bat starts itself again that way, so every child inherits it), and the seed sweep uses (logical processors
   − 2) workers, at least 1, or `VERIFY_WORKERS=N` (1 to 64). The hand-run measurements (`--bench-latency`,
@@ -102,29 +104,62 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
 - Code, comments, docs, commit messages, issues and pull requests in English.
 - A change of more than a few lines starts with a written plan that is reviewed before implementation;
   a revised plan is shown in full with the changes marked.
-- Every phase appends its own manual test steps to docs/MANUAL_TESTS.md, each with one status:
-  AUTOMATED (an existing test, named), AUTOMATED-NEW (a test added for it in that phase: the input
+- Every issue that changes behavior appends its manual test steps to docs/MANUAL_TESTS.md, in a section of
+  its own lettered on from AA ("AB. Line numbers (#4)"), each with one status:
+  AUTOMATED (an existing test, named), AUTOMATED-NEW (a test added for it in that issue: the input
   harness, --keys, the headless app, a smoke probe, a bench check or a dev helper), FIXED (the
   failing test and the fix commit), or HUMAN (why only a person can judge it, the shortest exact
   instructions, and a dev helper for most of it where possible). Check each step against its own
   wording, not against what the code does; a difference is a finding.
-- Every phase keeps README.md current: what the phase adds (features, keys, configuration,
+- Every pull request keeps README.md and the site's pages current: what it adds (features, keys, configuration,
   limits, status, numbers), each claim checked against the code, the tests and the measurements.
 
-## Commit policy (every phase)
+## Workflow (after 1.0)
+
+Phases 1-25 built ronin up to 1.0.0 (tag v1.0.0); their history stays in docs/ARCHITECTURE.md as it is. Since then
+every piece of work is a GitHub issue, worked on its own branch and merged through a pull request (docs/ARCHITECTURE.md,
+"Decisions, development workflow").
+
+- Versions follow Semantic Versioning (semver.org): PATCH (1.0.1) for bug fixes only, MINOR (1.1.0) for
+  backward-compatible features, MAJOR only for a change that breaks an existing ronin.conf, theme file or key.
+  src/app/version.h changes only in a release pull request. CHANGELOG.md keeps an "Unreleased" section at its top
+  that every pull request updates (Added / Changed / Fixed, in a user's words).
+- main is always releasable; nothing is committed to it directly. Every change starts as an issue (labels feature,
+  bug, performance, docs, chore, backlog; a milestone per version: the next PATCH for bug fixes, a MINOR for
+  features). Its branch is `<type>/<issue>-<short-slug>`, type one of feat, fix, perf, docs, chore, test
+  (`feat/4-line-numbers`, `fix/1-git-visit-first-change`), created from an up-to-date main: `git switch main`,
+  `git pull --ff-only`, `git switch -c <branch>`.
+- On the branch every rule of this file holds: the plan shown and approved before implementation, `verify.bat` PASS
+  before every commit, one logical change per commit, docs/MANUAL_TESTS.md, README.md and the site's pages updated
+  where they describe what changed. Commit messages end with the issue: `feat(view): line numbers (#4)`.
+  `verify.bat phase` runs before the pull request for anything larger than a small fix; say so before running it.
+- Pushing the branch (`git push -u origin <branch>`) and opening its pull request with `gh pr create` are allowed.
+  The title is in the commit format; the body is the issue's summary, .github/PULL_REQUEST_TEMPLATE.md's checklist
+  filled in, and `Closes #N`. Merging into main, tagging and publishing releases stay with the maintainer. main takes
+  "Rebase and merge" only (each commit kept; squash and merge commits are off), after the CI check `build and test`.
+- docs/ARCHITECTURE.md: new sections are titled by issue, "Decisions, #4 Line numbers" and "Measurements, #4 Line
+  numbers"; the Phase 1-25 sections stay as they are.
+- A release is its own pull request (branch `chore/<issue>-release-<version>`): src/app/version.h, CHANGELOG.md's
+  "Unreleased" becoming "<version> — <date>", the release notes in docs/releases/<version>.md, the checklist in
+  docs/releases/checklist-<version>.md, `build.bat docs`, dist.bat. After the merge the maintainer tags v<version> on
+  main and publishes the release with the zip.
+
+## Commit policy (every branch)
 
 - Commit as you go: one logical change per commit, each one with `verify.bat` printing
-  `verify: PASS` right before it. No single giant commit at the end of a phase.
+  `verify: PASS` right before it. No single giant commit at the end of a branch.
 - Categorized messages: `<type>(<scope>): <summary>`, type one of feat, fix, perf, refactor,
-  test, docs, build, chore. Example: `feat(buffer): gap buffer with incremental line index`.
-- Never amend or rewrite existing commits. Only the maintainer pushes to the repository.
+  test, docs, build, chore. Example: `feat(buffer): gap buffer with incremental line index`. After 1.0 the message
+  ends with its issue: `feat(view): line numbers (#4)`.
+- Never amend or rewrite existing commits. Only the maintainer pushes to main and pushes tags; a branch is pushed for
+  its pull request (Workflow).
 - No attribution trailers (Co-Authored-By or similar) in commit messages or pull request descriptions.
 - Never commit build outputs or scratch files. A pending change that looks unintended stays out
   of the commit until it is understood.
 - Never make an empty commit.
-- A phase ends with a clean working tree. Its last commit is `docs: mark phase N done`, and the
-  phase's roadmap checkbox in docs/ARCHITECTURE.md changes in that commit only, together with
-  nothing else.
+- A branch ends with a clean working tree before its pull request is opened. (Phases 1-25 ended with
+  `docs: mark phase N done`, the roadmap checkbox alone in that commit; issues end with their pull request's
+  `Closes #N`.)
 
 ## Build / run / verify
 
@@ -143,7 +178,7 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # test (bench), imports, --version; one PASS / FAIL line
     build\check_source.exe .         # the source check alone (built by every build.bat): headers, module map, includes
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
-                                     # (once per phase)
+                                     # (before a pull request, see Workflow)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
                                      # README.md, LICENSE, THIRD_PARTY.md, CHANGELOG.md, samples\; the listing
                                      # checked: 11 files) and dist\SHA256SUMS.txt (its SHA-256, sha256sum's format);
