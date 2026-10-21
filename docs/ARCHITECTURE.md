@@ -2620,6 +2620,9 @@ scenarios, 0 LEAK, no WATCH or STEP (157 s); the exit check PASS in the smoke (d
 - [x] 24. Documentation site and the README as a product page
 - [x] 25. Release 1.0.0
 
+After 1.0.0 there are no phases: the work is GitHub issues, grouped by the milestones (1.0.1 for bug fixes, then
+1.1.0, 1.2.0, 1.3.0) and the label backlog (Decisions, development workflow).
+
 ## Decisions
 
 - Swap chain B8G8R8A8_UNORM, not sRGB: theme colors reach the screen bit-exact.
@@ -4194,10 +4197,49 @@ faithful to them, the current match is not set apart.
     made in this phase, and that exact file is what the release carries; byte-for-byte reproduction is on the After 1.0
     list.
 
+### Decisions, development workflow
+
+After 1.0.0 the work moved from phases committed to main to GitHub issues, branches and pull requests (#18). CLAUDE.md
+("Workflow (after 1.0)"), CONTRIBUTING.md ("How a change gets in", "Versions and releases") and
+.github/PULL_REQUEST_TEMPLATE.md carry the same rules.
+
+1. Versions follow Semantic Versioning: PATCH (1.0.1) for bug fixes only, MINOR (1.1.0) for backward-compatible
+   features, MAJOR only for a change that breaks an existing ronin.conf, theme file or key. A user can then tell from
+   the number alone whether an update can change what they rely on. src/app/version.h, still the version's only home
+   (Decisions, Phase 25, 1), changes only in a release pull request, so main's version is always the last release's.
+   CHANGELOG.md keeps an "Unreleased" section at its top that every pull request updates, so a release's notes are
+   written as the work lands, not reconstructed from the log.
+2. main is always releasable and takes no direct commits. Every change starts as an issue; its branch is
+   `<type>/<issue>-<short-slug>` (the commit types: feat, fix, perf, docs, chore, test), created from an up-to-date
+   main. The issue holds the problem and the plan, the branch name ties the work back to it.
+3. On the branch everything stays as in the phases: the plan approved before implementation, `verify.bat` PASS before
+   every commit, one logical change per commit, the message format, docs/MANUAL_TESTS.md, README.md and the site
+   updated where they describe what changed, `verify.bat phase` before the pull request for anything larger than a
+   small fix. Commit messages end with the issue: `feat(view): line numbers (#4)`.
+4. Pushing a feature branch and opening its pull request with gh is allowed; its body is the issue's summary, the
+   template's checklist filled in and `Closes #N`. Merging into main, tagging and publishing releases stay with the
+   maintainer. The repository allows only "Rebase and merge" (squash and merge commits are off): each logical commit
+   reaches main as it was verified, and history stays linear. main is protected: a pull request is required (no
+   approvals, as there is one maintainer), the CI check `build and test` must pass, linear history, no force push or
+   deletion, and the rule applies to administrators too. "Require branches to be up to date" is off: GitHub would
+   update a branch with a merge commit, which fights rebase merging, and the pull request's CI already builds the
+   branch merged with main.
+5. New sections of this file are titled by issue, "Decisions, #4 Line numbers" and "Measurements, #4 Line numbers";
+   the Phase 1-25 sections stay as they are. docs/MANUAL_TESTS.md gets a section per issue that changes behavior,
+   lettered on from AA ("AB. Line numbers (#4)").
+6. A release is its own pull request: src/app/version.h, CHANGELOG.md's "Unreleased" becoming "<version> — <date>", the
+   release notes in docs/releases/<version>.md, the checklist in docs/releases/checklist-<version>.md, `build.bat docs`
+   and dist.bat. After the merge the maintainer tags v<version> on main and publishes the release with the zip.
+7. Labels: feature, bug, performance, docs, chore, backlog (GitHub's enhancement and documentation renamed to feature
+   and docs, its other defaults kept); the feature request template labels `feature`. Milestones: 1.0.1 (bug fixes),
+   1.1.0 (small features), 1.2.0 (navigation and formatting), 1.3.0 (the embedded terminal); backlog issues have none.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the
-inside (tests, tools, the build). Until Phase 25 this list was "Later", and earlier sections still call it that.
+inside (tests, tools, the build). Until Phase 25 this list was "Later", and earlier sections still call it that. Items
+taken up are GitHub issues now: line numbers (#4), auto-save (#11), the embedded terminal (#12, #13),
+regular-expression search (#14), line wrapping (#15), project-wide replace (#16).
 
 ### Features
 
