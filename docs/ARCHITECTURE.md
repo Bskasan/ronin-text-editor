@@ -2492,7 +2492,7 @@ run each unless said.
 | 100 MB grep, 8 workers, a common word | `--bench-grep` (3,001 files) | first result 2.2 ms, all 28 ms (Phase 12) | first result 3.1 ms, all 28.8 ms (3,485 MB/s) |
 | the build of ronin | `build.bat`, `build.bat release` | 2.8 s, 3.5 s (Phase 17) | 4.6 s, 5.4 s (more code, and the tools make_themes, check_source and make_docs on every build) |
 | verify.bat | the whole gate | 40.1 s (Phase 17) | 57 s (the source check, the docs-check and the larger tests since) |
-| verify.bat phase | the phase gate | 387 s (Phase 17) | see "verify.bat phase" below |
+| verify.bat phase | the phase gate | 387 s (Phase 17) | 506 s (14 workers; since Phase 17 the git, terminal, theme and docs tests and six more leak scenarios) |
 
 `--bench-project` had 3 frames over its 2,100 us mark (the longest 2,110 us) where Phase 11 had none: within 10 us of it,
 not a failure of the bench (exit 0). `--bench-cursors`' RET on the 100 MB bench text at 10,000 cursors (5.2 s a key) is
@@ -2582,7 +2582,12 @@ hand: the manifest's version is gone, and CLAUDE.md and the HUMAN steps name the
 
 ### verify.bat phase
 
-Once, at the end of the phase, when the owner says so.
+Once, with the code and documents of c2b5a58, at below-normal priority: 506 s, PASS, every step. The source check PASS
+(79 files); the docs-check PASS; the smoke PASS on debug (87 frames) and bench (86 frames); `--test` PASS on debug
+(40.5 s) and bench (32.8 s); the seed sweep "seeds 1 to 256 over 14 worker processes", PASS in 193 s; the bench soak
+PASS in 27.7 s and the debug soak PASS in 31.3 s (1,000,000 events, seed 0x7ea1), our arenas without the undo logs
+7,058 KB after the first block, 7,496 KB at most in the first half, 6,447 KB after the last; the leak check 28
+scenarios, 0 LEAK, no WATCH or STEP (157 s); the exit check PASS in the smoke (debug, bench) and the leak check.
 
 ## Roadmap
 
