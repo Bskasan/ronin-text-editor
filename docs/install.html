@@ -51,7 +51,9 @@
    <a href="https://github.com/Bskasan/ronin-text-editor/releases">Releases</a>.</li>
 <li>Unzip it anywhere and run <code>ronin.exe</code>. Windows 10 or later, x64; there is no installer and no runtime to install.</li>
 </ol>
-<p>The zip holds <code>ronin.exe</code>, <code>README.md</code>, <code>LICENSE</code> and <code>THIRD_PARTY.md</code>.</p>
+<p>The zip holds <code>ronin.exe</code>, <code>README.md</code>, <code>CHANGELOG.md</code>, <code>LICENSE</code>, <code>THIRD_PARTY.md</code> and <code>samples\</code>. <code>SHA256SUMS.txt</code>
+beside it on the Releases page has the zip's SHA-256; compare it with PowerShell's
+<code>Get-FileHash ronin-&lt;version&gt;-windows-x64.zip</code>.</p>
 <h2 id="the-first-start">The first start</h2>
 <p>The exe is not signed, so the first start may show &quot;Windows protected your PC&quot; (SmartScreen): choose <strong>More info</strong>,
 then <strong>Run anyway</strong>.</p>
@@ -69,7 +71,7 @@ is opened as the project: nothing is visited for it, <code>*scratch*</code> and 
 <code>%APPDATA%\ronin\ronin.conf</code>. With a <code>ronin.conf</code> beside the exe, the configuration and the theme files of
 <code>themes\</code> beside it travel with the folder. See <a href="configuration.html">Configuration</a>.</p>
 <h2 id="samples">Samples</h2>
-<p><code>samples\</code> in the repository has one small file per language to try the highlighting and the indentation on.</p>
+<p><code>samples\</code>, in the zip and in the repository, has one small file per language to try the highlighting and the indentation on.</p>
 <h2 id="building-it-yourself">Building it yourself</h2>
 <p>You need Visual Studio 2022 or later, or the Build Tools for Visual Studio, with the &quot;Desktop development with C++&quot;
 workload; <code>build.bat release</code> makes <code>build\ronin.exe</code>. <a href="contributing.html#building">Contributing</a> has the details.</p>

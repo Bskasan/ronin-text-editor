@@ -6,7 +6,9 @@
    [Releases](https://github.com/Bskasan/ronin-text-editor/releases).
 2. Unzip it anywhere and run `ronin.exe`. Windows 10 or later, x64; there is no installer and no runtime to install.
 
-The zip holds `ronin.exe`, `README.md`, `LICENSE` and `THIRD_PARTY.md`.
+The zip holds `ronin.exe`, `README.md`, `CHANGELOG.md`, `LICENSE`, `THIRD_PARTY.md` and `samples\`. `SHA256SUMS.txt`
+beside it on the Releases page has the zip's SHA-256; compare it with PowerShell's
+`Get-FileHash ronin-<version>-windows-x64.zip`.
 
 ## The first start
 
@@ -34,7 +36,7 @@ ronin reads `ronin.conf` next to `ronin.exe` if that file exists (a portable ins
 
 ## Samples
 
-`samples\` in the repository has one small file per language to try the highlighting and the indentation on.
+`samples\`, in the zip and in the repository, has one small file per language to try the highlighting and the indentation on.
 
 ## Building it yourself
 

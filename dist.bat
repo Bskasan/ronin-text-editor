@@ -1,8 +1,10 @@
 @echo off
 rem ronin dist: runs verify.bat (which builds the release exe), then packs dist\ronin-<version>-windows-x64.zip with
-rem ronin.exe, README.md, LICENSE and THIRD_PARTY.md (the ported themes' licenses) in a ronin-<version> folder. The version comes from src\app\version.h.
+rem ronin.exe, README.md, LICENSE, THIRD_PARTY.md (the ported themes' licenses), CHANGELOG.md and samples\ in a
+rem ronin-<version> folder, checks the zip's listing (exactly those 11 files) and writes its SHA-256 to
+rem dist\SHA256SUMS.txt (sha256sum's format). The version comes from src\app\version.h.
 rem From Git Bash: cmd //c ".\dist.bat"
-rem The last line is "dist: PASS: <zip> (<bytes> bytes)" or "dist: FAIL: <what failed>".
+rem The last line is "dist: PASS: <zip> (<bytes> bytes, SHA-256 <hash>)" or "dist: FAIL: <what failed>".
 setlocal
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
@@ -23,22 +25,61 @@ cd /d "%ROOT%"
 
 set "NAME=ronin-%VERSION%"
 set "ZIP=dist\%NAME%-windows-x64.zip"
+set "SUMS=dist\SHA256SUMS.txt"
 if exist build\dist rmdir /s /q build\dist
-mkdir "build\dist\%NAME%"
+mkdir "build\dist\%NAME%\samples"
 copy /y build\ronin.exe "build\dist\%NAME%\" >nul || goto copy_failed
 copy /y README.md "build\dist\%NAME%\" >nul || goto copy_failed
 copy /y LICENSE "build\dist\%NAME%\" >nul || goto copy_failed
 copy /y THIRD_PARTY.md "build\dist\%NAME%\" >nul || goto copy_failed
+copy /y CHANGELOG.md "build\dist\%NAME%\" >nul || goto copy_failed
+copy /y samples\*.* "build\dist\%NAME%\samples\" >nul || goto copy_failed
 if not exist dist mkdir dist
 if exist "%ZIP%" del /q "%ZIP%"
+if exist "%SUMS%" del /q "%SUMS%"
 rem Windows' own bsdtar (Windows 10 1803 and later) writes zip files with -a; another tar on PATH may not.
 "%SystemRoot%\System32\tar.exe" -a -c -f "%ZIP%" -C build\dist "%NAME%"
 if errorlevel 1 (
     echo dist: FAIL: tar
     exit /b 1
 )
-for %%F in ("%ZIP%") do echo dist: PASS: %ZIP% (%%~zF bytes)
+
+rem The zip's listing: the five files and the six samples, nothing else (folders are listed with a trailing '/').
+"%SystemRoot%\System32\tar.exe" -t -f "%ZIP%" > build\dist\contents.txt
+if errorlevel 1 (
+    echo dist: FAIL: tar could not list the zip
+    exit /b 1
+)
+set "FILES=0"
+for /f "usebackq delims=" %%L in (`findstr /v /r /c:"/$" build\dist\contents.txt`) do set /a FILES+=1
+if not "%FILES%"=="11" (
+    echo dist: FAIL: the zip holds %FILES% files, not 11 ^(build\dist\contents.txt^)
+    exit /b 1
+)
+for %%F in (ronin.exe README.md LICENSE THIRD_PARTY.md CHANGELOG.md) do (
+    findstr /x /c:"%NAME%/%%F" build\dist\contents.txt >nul || goto listing_failed
+)
+
+rem The SHA-256: certutil's second line (older Windows put spaces between the bytes), 64 hex digits.
+set "HASH="
+for /f "skip=1 delims=" %%H in ('%SystemRoot%\System32\certutil.exe -hashfile "%ZIP%" SHA256') do if not defined HASH set "HASH=%%H"
+if not defined HASH goto hash_failed
+set "HASH=%HASH: =%"
+if "%HASH:~63,1%"=="" goto hash_failed
+if not "%HASH:~64%"=="" goto hash_failed
+echo %HASH%| findstr /r /x /i "[0-9a-f]*" >nul || goto hash_failed
+rem One line in sha256sum's format, without a line end (sha256sum -c would take a CR for part of the name).
+<nul set /p "=%HASH%  %NAME%-windows-x64.zip" > "%SUMS%"
+for %%F in ("%ZIP%") do echo dist: PASS: %ZIP% (%%~zF bytes, SHA-256 %HASH%)
 exit /b 0
+
+:listing_failed
+echo dist: FAIL: the zip lacks one of the five files (build\dist\contents.txt)
+exit /b 1
+
+:hash_failed
+echo dist: FAIL: no SHA-256 from certutil
+exit /b 1
 
 :copy_failed
 echo dist: FAIL: copying the files
