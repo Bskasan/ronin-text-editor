@@ -1,120 +1,73 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 — 2026-10-21
 
-A memory and resource leak audit (Phase 16): `--leak-check` repeats 22 operations hundreds of times and
-checks memory, handles, threads, the glyph atlas and Direct3D objects for growth; the soak checks the same
-over a million random events; every dev exit checks that nothing of ronin's is left. What it found, fixed:
+ronin 1.0.0 is the first release for everyone: a small, fast, Emacs-style code editor for Windows 10 and 11 (x64), one
+executable of under half a megabyte with no installer and nothing else to install. Since 0.1.0 it has a command list, a
+git changes view, terminal shortcuts, five themes and a documentation site, and it has been through a long hunt for leaks
+and slow paths. Files, keys and settings from 0.1.0 keep working; one thing to know about an old ronin.conf is under
+Changed.
 
-- A finished project scan, search or build now shows its results while ronin is idle. When the workers'
-  wake was what ended the main loop's wait, the wait had already reset it and the results stayed queued
-  (with their finished threads unjoined) until a wake came while a frame was due.
-- Worker threads are reused instead of ending after each task: with a hardware Direct3D device the GPU
-  driver kept ~215 bytes of memory for every thread that ended, and ronin started one for every scan,
-  search worker and build.
-- The build commands remembered per directory no longer grow their memory with every build (a long session
-  would have run out of the 64 MB reserved for them).
-- Project searches and occur no longer leave their header's text behind.
-- Saving a buffer under a new name (and names made unique, "name<dir>") no longer keeps the old path and
-  name in the buffer's memory (its 1 MB would have run out after a few thousand renames).
-- The font's atlas and glyph table are released at exit.
+### Added
 
-A cleanup before the first public release (Phase 17):
-
-- A large project search no longer keeps its working memory for its pending results (several MB after tens of
-  thousands of matches) until *search* is killed: it goes back when the window is minimized. Each results
-  buffer (*search*, *occur*, *compilation*) keeps 768 KB for them once it has run, so repeated searches leave
-  the same memory behind.
-- Building: `build.bat clean` removes `build\` and `dist\`, everything generated, and nothing else.
-
-The command list (Phase 18), the first box drawn over the windows:
-
-- C-S-p lists every command with a one-line description and its key bindings in the current window. Typing
-  filters it (fuzzy, on the name, the description or both), the arrows, C-n / C-p and C-v / M-v move, RET or a
-  double click runs the selected command as M-x would, C-g, ESC or a click outside close it. Its keys are in the
-  new `[keys command-list]` section, its colors are `modal_background`, `modal_border`, `modal_selection`,
+- **The command list** (`C-S-p`): every command with a one-line description and its keys. Type to filter (fuzzy, on the
+  name and the description), `RET` or a double click runs the selected command, `C-g`, `ESC` or a click outside close
+  it. Its keys are in `[keys command-list]`, its colors `modal_background`, `modal_border`, `modal_selection`,
   `modal_description` and `modal_key`.
-- C-S-p is no longer a shift-selecting C-p (S-<up> still is).
-- Every command has a description (M-x and describe-key do not show it yet).
-- The tests no longer leave a junction loop in `build\tmp`.
+- **The git changes view** (`C-x g`): the project's uncommitted changes, git's two-letter status on the left and the
+  selected file's diff against HEAD on the right, colored. `TAB` moves into the diff, `RET` visits the file at its first
+  change, `g` asks git again, `C-g` closes it and stops a git that still runs. It only reads, and needs git 2.15 or
+  later (`git.exe` on PATH, or the `git_path` setting). New settings `git_diff_max_lines`, `git_status_max_files` and
+  `git_timeout_ms`, new colors `diff_added`, `diff_removed`, `diff_hunk`, `diff_header` and `git_status`, and the
+  section `[keys git-changes]`.
+- **Terminals**: `C-c t` opens a terminal in the current file's directory, `C-c a` one in the project's root running
+  an AI assistant's command line tool: `claude`, `codex` with `ai_provider = openai`, or any command with `ai_command`.
+  Windows Terminal when it is installed, the classic console otherwise (the `terminal` setting chooses). The terminals
+  stay open when ronin ends.
+- **Themes**: ronin (the default, unchanged), moonfly, oxide, vague and mellifluous are built in. `theme = <name>` in
+  ronin.conf chooses one and `M-x set-theme` switches for the session. A theme is a short text file:
+  `themes\<name>.conf` beside ronin.conf or ronin.exe adds one or replaces a built-in one, and is applied as soon as it
+  is saved. New colors `mode_line_background` and `mode_line_text` for the selected mode line.
+- **Documentation**: https://bskasan.github.io/ronin-text-editor/ covers installing, the first steps, every feature,
+  the configuration, every key and setting (generated from ronin itself), themes and the known limits.
+- **The zip** also holds this changelog and `samples\`, one small file per language to try the highlighting and the
+  indentation on.
 
-The git changes view (Phase 19), the second box:
+### Changed
 
-- C-x g shows the uncommitted changes of the project's git work tree: the changed files on the left with git's
-  two-letter status, the selected file's diff against HEAD on the right, colored. Its diff is fetched once per
-  file while the box is open; TAB moves to the diff and scrolls it, RET visits the file at its first change, g
-  runs git status again, C-g, ESC or a click outside close it and stop a git that still runs. Read only.
-- git runs in the background (`git.exe` on PATH, or the new `git_path` setting); the box opens once git has
-  answered, so without git or outside a work tree a message says so and nothing opens. A refusal of git's shows
-  git's own words.
-- New settings `git_diff_max_lines` (20,000), `git_status_max_files` (5,000) and `git_timeout_ms` (30,000), new
-  colors `diff_added`, `diff_removed`, `diff_hunk`, `diff_header` and `git_status`, the new section
-  `[keys git-changes]`.
+- **Colors and themes.** The colors come from the theme; `[colors]` in ronin.conf still sets single colors, on top of
+  it. A ronin.conf made with `C-c ,` by 0.1.0 lists every color and so hides any other theme, and ronin says so
+  ("ronin.conf: N [colors] keys override theme X"): delete the lines under `[colors]` (keep the header) to use themes.
+- Seven colors now follow another one unless you set them: constant (number), function and completion_match (keyword),
+  directive and compilation_info (type), prompt (string), completion_selection (selection). The default look is the
+  same; a ronin.conf that sets `number` but not `constant` now changes both.
+- `C-S-p` opens the command list instead of selecting up a line (`S-<up>` still does).
+- Memory: the worker threads of scans, searches and builds are reused instead of started anew, and a large project
+  search gives its working memory back when ronin is minimized; a long session no longer grows.
 
-Terminals (Phase 20):
+### Fixed
 
-- C-c t (open-terminal) opens a terminal in the current file's directory; C-c a (open-ai-terminal) one in the
-  project's root running an AI assistant's command line tool: `claude` by default, `codex` with
-  `ai_provider = openai`, or `ai_command` (`ai_provider = custom`, or set for any provider). Windows Terminal when
-  `wt.exe` is on PATH, else the classic console; the new setting `terminal` (auto, wt, cmd) chooses. ronin starts
-  the terminal and lets it go; it stays open after ronin ends.
-- The git changes view: a warning git printed while it was writing a diff (such as "LF will be replaced by CRLF")
-  no longer ends that file's hunk one line early, and no longer shows up in a renamed file's old name.
+- A finished project scan, search or build could stay unshown while ronin was idle, until the next key.
+- Memory that grew over a long session: the build commands remembered per directory, saving under new names, the
+  headers of project searches and occur, and the graphics driver's share for every finished worker thread.
+- The git changes view: a warning git prints while writing a diff (such as "LF will be replaced by CRLF") no longer
+  cuts a hunk one line short or shows up in a renamed file's old name.
+- Saving ronin.conf or a theme file twice within a few milliseconds, with texts of the same length, could leave the
+  second version unapplied until the next change.
 
-Themes (Phase 21):
+### Known limits
 
-- Five built-in themes: ronin (the default, unchanged), and moonfly, oxide, vague and mellifluous, ported from
-  their Neovim color schemes (MIT; credited in README.md and THIRD_PARTY.md). The new setting `theme` chooses one;
-  M-x set-theme switches for the session, with completion over every theme. A theme is a file in the config format
-  (a [theme] block and [colors]); `themes\<name>.conf` next to ronin.conf (or ronin.exe) adds one or replaces a
-  built-in one, and theme files are watched and applied as soon as they are saved.
-- ronin.conf's [colors] still pins single colors, over any theme; the built-in configuration (what C-c , writes
-  into a new ronin.conf) no longer lists the color values, only the keys. A ronin.conf written before lists them
-  all and pins every color: with a theme other than ronin, each load says "ronin.conf: N [colors] keys override
-  theme X". Remove that section to use themes.
-- Two new color keys, `mode_line_background` and `mode_line_text`, for the selected mode line (inverse video as
-  before), and seven colors that had another color's value now follow it unless set: constant (number), function
-  and completion_match (keyword), directive and compilation_info (type), prompt (string), completion_selection
-  (selection). ronin's colors are unchanged; a ronin.conf that sets number but not constant now moves both.
-- `dist.bat` puts THIRD_PARTY.md into the zip.
+- Monospace text on a cell grid: no proportional fonts, bold or italic; wide East Asian characters and emoji show as a
+  box, and there is no fallback font.
+- No line wrapping and no line numbers.
+- Search is for literal text: no regular expressions, no whole-word search, no project-wide replace.
+- No prefix arguments, mark ring, rectangles or auto-save, and `ESC` is not Meta.
+- UTF-8 and UTF-16 with a byte order mark; other encodings are kept as raw bytes. Files over 1 GB are refused.
+- The git changes view only reads. One build at a time, at most 8 windows.
+- The built-in themes are dark.
+- The exe is not signed, so SmartScreen asks on its first start.
 
-The repository for other people (Phase 22):
-
-- README.md rewritten for someone who has never seen ronin: what it is, why, how to install it, the keys of the first
-  five minutes, configuration, themes, one short section per feature with its keys, known limits, the roadmap. A test
-  checks it against the code on every build: each key in its tables runs the command it names (through describe-key),
-  each setting exists with a valid default, its configuration examples load cleanly, and its links resolve.
-- CONTRIBUTING.md: how to build and verify, what a pull request must meet, how to propose a feature and report a bug.
-  Issue templates for bugs and features, a pull request checklist, and a GitHub Actions build that compiles the three
-  configurations and runs the tests on every push.
-- The oxide theme's added lines in the git changes view now use oxide's own "added" green (#5bb661) instead of ronin's.
-
-The sources in order (Phase 23), nothing changed for users (the release exe is the same, byte for byte, apart from
-its link time):
-
-- `src/` is in folders by layer: `base/`, `platform/` (the only one with Windows headers), `text/`, `editor/`,
-  `project/`, `app/` and `dev/`.
-- Every source file starts with a header: the copyright, the MIT notice, and one line saying what the file does, the
-  same line as in the module map of docs/ARCHITECTURE.md.
-- `verify.bat` and the CI build check both on every run, and that no file outside `src/platform/` includes a Windows
-  header and nothing in `src/base/` or `src/text/` includes the layers above them. CONTRIBUTING.md explains it under
-  "New files".
-
-A documentation site, and README as the front page (Phase 24):
-
-- The documentation site, https://bskasan.github.io/ronin-text-editor/, published by GitHub Pages from `docs/`: an
-  overview, install, first steps, editing, windows and buffers, projects and search, builds, git, terminals,
-  configuration, themes, known limits, the roadmap, this changelog and the contributing guide. Its keys page (every
-  command, its description and default keys) and settings page (every setting, its default and what it does) are
-  generated from ronin itself. Plain HTML and CSS in ronin's colors, no JavaScript, readable on a phone.
-- README.md is now a short front page: the logo, badges, the hero picture, why, the download and documentation links,
-  three pictures, the first keys, install, contributing, license and credits. The rest moved to the site.
-- Fixed: rewriting ronin.conf or a theme file twice within a few milliseconds with texts of the same length could leave
-  the second version unloaded until the next change (the size and the write time looked unchanged). Now equal ones are
-  confirmed by comparing the file's contents.
-- Building: `build.bat docs` makes the site (`tools/make_docs.c`, and `make_icon --png` for the logo); `verify.bat` and
-  the CI workflow check that the committed site is what its sources make. `verify.bat` runs everything it starts at
-  below-normal priority, and the seed sweep uses all logical processors but two (`VERIFY_WORKERS=N` chooses).
+The whole list is on the [Known limits](https://bskasan.github.io/ronin-text-editor/limits.html) page.
 
 ## 0.1.0 (2026-10-14)
 
