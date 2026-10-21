@@ -67,14 +67,38 @@ ronin is on the <a href="https://bskasan.github.io/ronin-text-editor/">documenta
 <li>Run <code>verify.bat</code> before every commit. It builds all three, runs the source check (see <a href="#new-files">New files</a>), the
   docs-check (the site in <code>docs\</code> is what its sources make), the smoke test (real frames, pixel checks) and the tests,
   checks the release exe's imports, and prints one last line: only <code>verify: PASS</code> counts.</li>
-<li>Run <code>verify.bat phase</code> before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
-  a sweep of 256 fuzz seeds, a million-event soak and the leak check.</li>
+<li>Run <code>verify.bat phase</code> before you open a pull request for anything larger than a small fix (about 9 minutes): it
+  adds the full tests on the debug build, a sweep of 256 fuzz seeds, a million-event soak and the leak check.</li>
 <li>Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
   the docs-check, the import check and <code>--version</code>; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a
   local <code>verify.bat</code> is required.</li>
 </ul>
 <p>From Git Bash, call them as <code>cmd //c &quot;.\verify.bat&quot;</code>. The dev flags are listed in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/CLAUDE.md">CLAUDE.md</a>, the design
 in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITECTURE.md">docs/ARCHITECTURE.md</a>.</p>
+<h2 id="how-a-change-gets-in">How a change gets in</h2>
+<p>Every change, from a typo to a feature, starts as an issue and reaches <code>main</code> through a pull request; nobody commits
+to <code>main</code> directly, the maintainer included.</p>
+<ol>
+<li><strong>An issue.</strong> Look for one first, else open one with the bug report or the feature request template. For a feature,
+   say what the command is called, which keys it would take, and what it costs in latency and size: the priority order
+   decides what gets in, and a feature that slows typing down will not. Start work once the maintainer has labeled it
+   (feature, bug, performance, docs, chore, backlog) and, for planned work, given it a milestone.</li>
+<li><strong>A branch</strong> from an up-to-date <code>main</code>, named <code>&lt;type&gt;/&lt;issue&gt;-&lt;short-slug&gt;</code> with a commit type: <code>feat/4-line-numbers</code>,
+   <code>fix/1-git-visit-first-change</code>, <code>docs/…</code>, <code>perf/…</code>, <code>test/…</code>, <code>chore/…</code>. From outside the project, make it in your
+   fork.</li>
+<li><strong>A plan</strong> in the issue for anything more than a few lines, agreed before the code.</li>
+<li><strong>Commits</strong>, one logical change each, <code>verify.bat</code> printing <code>verify: PASS</code> before each.</li>
+<li><strong>A pull request</strong> to <code>main</code>: the issue's summary, the template's checklist filled in, and <code>Closes #&lt;issue&gt;</code>. Run
+   <code>verify.bat phase</code> first unless it is a small fix. The CI check <code>build and test</code> must pass.</li>
+<li><strong>Review and merge</strong> by the maintainer with &quot;Rebase and merge&quot;: your commits land on <code>main</code> one by one, so each one
+   must build and pass on its own. If <code>main</code> moves on, rebase your branch on it rather than merging <code>main</code> in.</li>
+</ol>
+<h2 id="versions-and-releases">Versions and releases</h2>
+<p>ronin follows <a href="https://semver.org/">Semantic Versioning</a>: a PATCH release (1.0.1) has bug fixes only, a MINOR one
+(1.1.0) features that keep every existing configuration and key working, and a MAJOR one is kept for a change that
+breaks an existing ronin.conf, theme file or key. Every pull request adds its user-visible change to the &quot;Unreleased&quot;
+section of <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/CHANGELOG.md">CHANGELOG.md</a>. A release is a pull request of its own (the version in <code>src/app/version.h</code>,
+the changelog's section dated, the release notes in <code>docs/releases/</code>); the maintainer tags and publishes it.</p>
 <h2 id="what-a-pull-request-must-meet">What a pull request must meet</h2>
 <ul>
 <li>C11 for MSVC, <code>/W4 /WX</code> clean. C++ only in <code>src/platform/win32_dwrite.cpp</code>, and only C-style there.</li>
@@ -90,8 +114,9 @@ in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITEC
   <a href="https://bskasan.github.io/ronin-text-editor/keys.html">keys</a> and
   <a href="https://bskasan.github.io/ronin-text-editor/settings.html">settings</a> pages are generated from the exe: a new command
   or setting appears there by itself.</li>
-<li>One logical change per commit, each message <code>&lt;type&gt;(&lt;scope&gt;): &lt;summary&gt;</code> with type one of feat, fix, perf,
-  refactor, test, docs, build, chore. Example: <code>fix(isearch): wrap past the last match</code>.</li>
+<li>CHANGELOG.md's &quot;Unreleased&quot; section updated for a change a user sees.</li>
+<li>One logical change per commit, each message <code>&lt;type&gt;(&lt;scope&gt;): &lt;summary&gt; (#&lt;issue&gt;)</code> with type one of feat, fix,
+  perf, refactor, test, docs, build, chore. Example: <code>fix(isearch): wrap past the last match (#21)</code>.</li>
 <li>A screenshot (<code>--screenshot</code>) for a visual change.</li>
 <li>A new source file follows <a href="#new-files">New files</a>.</li>
 </ul>
@@ -115,10 +140,6 @@ second line saying in at most 72 characters what the file does:</p>
 <code>verify.bat</code> runs the source check (<code>build\check_source.exe .</code>, built by <code>build.bat</code>): it names each file without the
 header or a row, each description that differs from the map, each row without a file, and each include that breaks
 the two rules, as <code>path:line: message</code>.</p>
-<h2 id="proposing-a-feature">Proposing a feature</h2>
-<p>Open an issue with the feature request template before you write code. Say what the command is called, which keys it
-would take, and what it costs in latency and size: the priority order decides what gets in, and a feature that slows
-typing down will not.</p>
 <h2 id="reporting-a-bug">Reporting a bug</h2>
 <p>Use the bug report template and include the output of <code>ronin --version</code>. The release build writes no log, so attach
 instead: the exact keys you pressed, the file (or a small one that shows the bug), the lines of your <code>ronin.conf</code>

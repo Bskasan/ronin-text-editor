@@ -2,7 +2,7 @@
 name: Feature request
 about: Propose a command, before any code is written
 title: "[feature] "
-labels: enhancement
+labels: feature
 ---
 
 <!-- ronin's priorities, in order: input latency and speed, a small and simple program, then features. Please read

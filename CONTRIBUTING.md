@@ -20,14 +20,41 @@ You need Windows 10 or later (x64) and Visual Studio 2022 or later, or the Build
 - Run `verify.bat` before every commit. It builds all three, runs the source check (see [New files](#new-files)), the
   docs-check (the site in `docs\` is what its sources make), the smoke test (real frames, pixel checks) and the tests,
   checks the release exe's imports, and prints one last line: only `verify: PASS` counts.
-- Run `verify.bat phase` before you open a pull request (about 9 minutes): it adds the full tests on the debug build,
-  a sweep of 256 fuzz seeds, a million-event soak and the leak check.
+- Run `verify.bat phase` before you open a pull request for anything larger than a small fix (about 9 minutes): it
+  adds the full tests on the debug build, a sweep of 256 fuzz seeds, a million-event soak and the leak check.
 - Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
   the docs-check, the import check and `--version`; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a
   local `verify.bat` is required.
 
 From Git Bash, call them as `cmd //c ".\verify.bat"`. The dev flags are listed in [CLAUDE.md](CLAUDE.md), the design
 in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## How a change gets in
+
+Every change, from a typo to a feature, starts as an issue and reaches `main` through a pull request; nobody commits
+to `main` directly, the maintainer included.
+
+1. **An issue.** Look for one first, else open one with the bug report or the feature request template. For a feature,
+   say what the command is called, which keys it would take, and what it costs in latency and size: the priority order
+   decides what gets in, and a feature that slows typing down will not. Start work once the maintainer has labeled it
+   (feature, bug, performance, docs, chore, backlog) and, for planned work, given it a milestone.
+2. **A branch** from an up-to-date `main`, named `<type>/<issue>-<short-slug>` with a commit type: `feat/4-line-numbers`,
+   `fix/1-git-visit-first-change`, `docs/…`, `perf/…`, `test/…`, `chore/…`. From outside the project, make it in your
+   fork.
+3. **A plan** in the issue for anything more than a few lines, agreed before the code.
+4. **Commits**, one logical change each, `verify.bat` printing `verify: PASS` before each.
+5. **A pull request** to `main`: the issue's summary, the template's checklist filled in, and `Closes #<issue>`. Run
+   `verify.bat phase` first unless it is a small fix. The CI check `build and test` must pass.
+6. **Review and merge** by the maintainer with "Rebase and merge": your commits land on `main` one by one, so each one
+   must build and pass on its own. If `main` moves on, rebase your branch on it rather than merging `main` in.
+
+## Versions and releases
+
+ronin follows [Semantic Versioning](https://semver.org/): a PATCH release (1.0.1) has bug fixes only, a MINOR one
+(1.1.0) features that keep every existing configuration and key working, and a MAJOR one is kept for a change that
+breaks an existing ronin.conf, theme file or key. Every pull request adds its user-visible change to the "Unreleased"
+section of [CHANGELOG.md](CHANGELOG.md). A release is a pull request of its own (the version in `src/app/version.h`,
+the changelog's section dated, the release notes in `docs/releases/`); the maintainer tags and publishes it.
 
 ## What a pull request must meet
 
@@ -44,8 +71,9 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   [keys](https://bskasan.github.io/ronin-text-editor/keys.html) and
   [settings](https://bskasan.github.io/ronin-text-editor/settings.html) pages are generated from the exe: a new command
   or setting appears there by itself.
-- One logical change per commit, each message `<type>(<scope>): <summary>` with type one of feat, fix, perf,
-  refactor, test, docs, build, chore. Example: `fix(isearch): wrap past the last match`.
+- CHANGELOG.md's "Unreleased" section updated for a change a user sees.
+- One logical change per commit, each message `<type>(<scope>): <summary> (#<issue>)` with type one of feat, fix,
+  perf, refactor, test, docs, build, chore. Example: `fix(isearch): wrap past the last match (#21)`.
 - A screenshot (`--screenshot`) for a visual change.
 - A new source file follows [New files](#new-files).
 
@@ -74,12 +102,6 @@ That line is also the file's description in the module map, word for word, in a 
 `verify.bat` runs the source check (`build\check_source.exe .`, built by `build.bat`): it names each file without the
 header or a row, each description that differs from the map, each row without a file, and each include that breaks
 the two rules, as `path:line: message`.
-
-## Proposing a feature
-
-Open an issue with the feature request template before you write code. Say what the command is called, which keys it
-would take, and what it costs in latency and size: the priority order decides what gets in, and a feature that slows
-typing down will not.
 
 ## Reporting a bug
 
