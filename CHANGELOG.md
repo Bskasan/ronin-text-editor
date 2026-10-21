@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**Changed**
+
+- Contributing: every change now starts as a GitHub issue and reaches main through a pull request; CONTRIBUTING.md
+  describes the branches, the flow and the versions.
+
 ## 1.0.0 — 2026-10-21
 
 ronin 1.0.0 is the first release for everyone: a small, fast, Emacs-style code editor for Windows 10 and 11 (x64), one
