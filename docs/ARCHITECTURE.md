@@ -2618,6 +2618,7 @@ scenarios, 0 LEAK, no WATCH or STEP (157 s); the exit check PASS in the smoke (d
 - [x] 22. README, contribution guide and repository files
 - [x] 23. Source layout and file headers
 - [x] 24. Documentation site and the README as a product page
+- [x] 25. Release 1.0.0
 
 ## Decisions
 
