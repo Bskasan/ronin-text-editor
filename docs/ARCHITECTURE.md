@@ -4070,111 +4070,132 @@ faithful to them, the current match is not set apart.
     made in this phase, and that exact file is what the release carries; byte-for-byte reproduction is on the After 1.0
     list.
 
-## Later
+## After 1.0
 
-- Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
-- Window configurations (winner-mode undo of window changes, C-x r w / C-x r j).
-- Copying the window's remembered positions into the new window on a split (Emacs does).
-- Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
-- ESC as the Meta prefix, as in Emacs (ESC is keyboard-quit for now).
-- *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
-- Chords on Turkish Q: Ctrl+Shift+ı gives C-S-i (default case mapping); a layout-aware letter
-  case would make it C-S-ı.
-- Wide (East Asian) characters and emoji occupying two cells; color emoji.
-- System font fallback for codepoints Consolas lacks.
-- Bold / italic faces, if a theme ever wants them.
-- Themes (Phase 21): an exe-side themes\ folder created after the start (a non-portable install) is seen at the next
-  start (the exe's folder is not watched for folder names); a default input for set-theme's prompt (the minibuffer has
-  none; the current theme is marked instead); light themes wait for the gamma-correct ClearType blending above.
-- Keys typed while ronin's window is being moved or sized by its frame (Windows' modal move loop, a click held on the
-  title bar) are handled but drawn only when the move ends (found while measuring Phase 21: `--bench-latency` loses
-  keys when its window is clicked).
-- Linear-space (gamma-corrected) ClearType blending for dark text on light backgrounds.
-- The layering by use, not only by include (Phase 23): a /Zs compile of src/base/ and src/text/ alone (their headers,
-  platform.h, then their .c files) would fail when text code calls into editor/, project/ or app/; the source check
-  sees only #include lines, and the unity build puts every header before every .c file.
+What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the
+inside (tests, tools, the build). Until Phase 25 this list was "Later", and earlier sections still call it that.
+
+### Features
+
+- An embedded terminal: a terminal buffer inside ronin (a pseudo console, CreatePseudoConsole, drawn in a window like
+  any buffer), so a shell or an AI tool runs beside the code without leaving ronin; the terminals of Phase 20 open
+  outside it.
+- Auto-save (the crash recovery of Phase 15 writes only on an unhandled exception inside ronin).
+- Regular-expression search (isearch-forward-regexp, query-replace-regexp, and in project-search and occur).
 - Line wrapping (visual lines).
 - Cursor blink, smooth scrolling, line numbers: config candidates (each needs a timer or
   more layout).
-- Column cache for very long lines: point's column is found by scanning from the line start
-  (each view_ensure_visible and the drawing scan it; printable ASCII 16 bytes at a time since
-  Phase 9, other text byte by byte). On a 5 MB minified line typing costs 0.75-1.14 ms a key at its end
-  and 0.38-0.64 in its middle, moving 0.47-0.74 (`--bench-longline`, Phase 15). Resumable lexing inside
-  such a line would come after it, if the lexing still shows.
-- Prefix arguments (C-u), the mark ring, rectangle commands, overwrite mode.
-- Clipboard delayed rendering (a 50 MB kill is converted to UTF-16 at once).
-- Auto-scroll while dragging outside the window; after a double or triple click, a drag that
-  extends by words or lines.
-- Multiple cursors spread over a whole 100 MB file cost ~20 ms per key (the gap travels through ~100 MB each
-  command); processing the cursors from the gap's end when it is past the last cursor would halve it.
-- RET on lines with unbalanced braces far apart (the 100 MB bench text) costs ~0.4-0.6 ms per cursor, the
-  same as with one cursor there: the indentation's bracket match lexes back up to SYNTAX_MATCH_MAX (256 KB).
-  Not zeroing the walk's stack gained nothing (Phase 15); a per-line bracket summary (lines that are
-  balanced skipped whole) would.
-- A mark-all with 100,000 cursors (max_cursors at the top of its range) makes them all in one frame (~5.5
-  ms); and keys typed while a long mark-all searches wait instead of being queued.
-- Per-cursor kill rings (the multiple-cursors package's mc/kill-ring); undo with one cursor still restores
-  only its point, not its mark.
-- Auto-save (the crash recovery of Phase 15 writes only on an unhandled exception inside ronin).
-- *Messages*: a message logged outside a command (an undefined key) moves its point without scrolling the
-  window that shows it until the next command (the soak's visibility check skips *Messages*).
-- Saving on a background thread: a save waits for ReplaceFileW, 5-7 ms, once 146 ms in a million soak
-  events (the file system).
-- Writing to a path another buffer visits (Emacs asks first; ronin then has two buffers on it).
-- Clicking a candidate in the list; dimming the shadowed part of a file name ("c:/a/~/b").
-- Candidates' bindings from the minibuffer keymap in M-x annotations (only global ones are shown).
-- A change on disk within the same file-time tick at the same size goes unseen (a content hash on
-  activation would catch it, at the cost of reading every file).
-- Slow directory listings (network shares) block the UI while find-file lists a directory (the scanner's
-  worker could list it now).
-- Projects: updating an index from the change notifications (ReadDirectoryChangesW) instead of rescanning;
-  following symlinks and junctions with loop detection; character classes and escapes in ignore patterns,
-  .git/info/exclude and the global excludes file; frecency (a bonus for visited files in non-empty
-  queries); an optimal alignment for scoring (fzf v2's) instead of a few greedy starts; ranking a million
-  paths on several threads.
-- Revert: map positions through a line diff of the old and new text, so a marker in an unchanged
-  line that moved keeps its place in it (now: line and column inside the replaced range).
-- JSX tags in JavaScript / TypeScript highlighting.
-- Regular-expression search (isearch-forward-regexp, query-replace-regexp, and in project-search and occur).
-- A total match count in isearch ("3/41").
-- Editing the search string in the minibuffer (M-e in isearch).
-- Queueing the keys typed while query-replace searches for its next match on a huge buffer (now
-  ignored beyond one slice).
-- Turkish-aware case folding for search (İ / i, I / ı).
 - Project-wide replace (query-replace over the locations of *search*).
 - Whole-word search (project-search, occur, isearch).
-- Locations that follow later edits (markers in the visited buffers; now a location is its line and
-  byte column as found, so an edit above it moves the target).
-- Columns in characters instead of bytes in results lines (now 1-based byte columns, as grep and ripgrep).
-- Worker thread slots stay until the exit (as many as tasks ever ran at once, each parked thread keeping its
-  stack); ending a slot idle for a while would give that back, at the GPU driver's per-thread cost (Phase 16).
-- Parked worker threads above a small number (say 8) ended in the minimize trim path, next to the results buffers'
-  give-back, so the pool shrinks when the user minimizes (Phase 22: the soak's stacks grew 2.3 -> 3.0 MB as
-  the slots went 24 -> 32).
-- Builds: run and debug commands; several named build commands per project; input to the process;
-  "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
-  line); a save question limited to the project's buffers; a unique-suffix lookup in the project index for
-  error paths that still do not resolve.
-- `--bench-latency` exited 9 once in six runs: 482 of the 500 keys had no Present of their own (Phase 17; the
-  cause not looked into).
-- The command list (Phase 18): the descriptions in M-x's list and in describe-key; M-< / M-> (first and last row);
-  the bindings of the minibuffer's and isearch's keymaps (only the current window's are shown); a field longer
-  than its line scrolls but cannot wrap. The input harness checks `[keys command-list]` only through the global bindings
-  it shares.
+- A total match count in isearch ("3/41").
+- Prefix arguments (C-u), the mark ring, rectangle commands, overwrite mode.
+- Wide (East Asian) characters and emoji occupying two cells; color emoji.
+- System font fallback for codepoints Consolas lacks.
 - The git changes view (Phase 19): staging, unstaging, committing and reverting; a filter field over the file list;
   horizontal scrolling of the diff; word-level highlighting inside changed lines; a refresh on a change in the work
   tree (now g only); stderr in its own pipe (git's messages are picked from the shared one); the diff of the files a
   selection passed over fetched ahead; keys typed before the box opens queued for it; showing a line-ending change
   (now one CR is dropped from each line).
+- Legacy code pages (Windows-1254, Latin-1, ...) and BOM-less UTF-16 detection.
+- Linear-space (gamma-corrected) ClearType blending for dark text on light backgrounds.
+- Themes (Phase 21): an exe-side themes\ folder created after the start (a non-portable install) is seen at the next
+  start (the exe's folder is not watched for folder names); a default input for set-theme's prompt (the minibuffer has
+  none; the current theme is marked instead); light themes wait for the gamma-correct ClearType blending above.
+- Bold / italic faces, if a theme ever wants them.
+- Window configurations (winner-mode undo of window changes, C-x r w / C-x r j).
+- ESC as the Meta prefix, as in Emacs (ESC is keyboard-quit for now).
+- Builds: run and debug commands; several named build commands per project; input to the process;
+  "Entering directory" tracking; user-defined error formats; showing a line before its newline (a progress
+  line); a save question limited to the project's buffers; a unique-suffix lookup in the project index for
+  error paths that still do not resolve.
 - Terminals (Phase 20): a terminal program of the user's choice (any command line, a Windows Terminal profile); the
   region or the file's name handed to the AI tool; looking for the AI command before the window opens (cmd says it is
   missing inside the new window now).
+- Projects: updating an index from the change notifications (ReadDirectoryChangesW) instead of rescanning;
+  following symlinks and junctions with loop detection; character classes and escapes in ignore patterns,
+  .git/info/exclude and the global excludes file; frecency (a bonus for visited files in non-empty
+  queries); an optimal alignment for scoring (fzf v2's) instead of a few greedy starts; ranking a million
+  paths on several threads.
+- The command list (Phase 18): the descriptions in M-x's list and in describe-key; M-< / M-> (first and last row);
+  the bindings of the minibuffer's and isearch's keymaps (only the current window's are shown); a field longer
+  than its line scrolls but cannot wrap. The input harness checks `[keys command-list]` only through the global bindings
+  it shares.
+- JSX tags in JavaScript / TypeScript highlighting.
+- Editing the search string in the minibuffer (M-e in isearch).
+- Turkish-aware case folding for search (İ / i, I / ı).
+- Locations that follow later edits (markers in the visited buffers; now a location is its line and
+  byte column as found, so an edit above it moves the target).
+- Columns in characters instead of bytes in results lines (now 1-based byte columns, as grep and ripgrep).
+- Revert: map positions through a line diff of the old and new text, so a marker in an unchanged
+  line that moved keeps its place in it (now: line and column inside the replaced range).
+- Writing to a path another buffer visits (Emacs asks first; ronin then has two buffers on it).
+- Clicking a candidate in the list; dimming the shadowed part of a file name ("c:/a/~/b").
+- Candidates' bindings from the minibuffer keymap in M-x annotations (only global ones are shown).
+- Leaving an active minibuffer with C-x o (Emacs lets you edit elsewhere and come back); now refused.
+- Copying the window's remembered positions into the new window on a split (Emacs does).
+- Auto-scroll while dragging outside the window; after a double or triple click, a drag that
+  extends by words or lines.
+- Per-cursor kill rings (the multiple-cursors package's mc/kill-ring); undo with one cursor still restores
+  only its point, not its mark.
+- *Messages*: collapse a repeated message into "msg [2 times]", as Emacs does.
+- *Messages*: a message logged outside a command (an undefined key) moves its point without scrolling the
+  window that shows it until the next command (the soak's visibility check skips *Messages*).
+- Chords on Turkish Q: Ctrl+Shift+ı gives C-S-i (default case mapping); a layout-aware letter
+  case would make it C-S-ı.
+- A change on disk within the same file-time tick at the same size goes unseen (a content hash on
+  activation would catch it, at the cost of reading every file).
+- Slow directory listings (network shares) block the UI while find-file lists a directory (the scanner's
+  worker could list it now).
+
+### Speed on extreme input
+
+- Saving on a background thread: a save waits for ReplaceFileW, 5-7 ms, once 146 ms in a million soak
+  events (the file system).
+- Column cache for very long lines: point's column is found by scanning from the line start
+  (each view_ensure_visible and the drawing scan it; printable ASCII 16 bytes at a time since
+  Phase 9, other text byte by byte). On a 5 MB minified line typing costs 0.75-1.14 ms a key at its end
+  and 0.38-0.64 in its middle, moving 0.47-0.74 (`--bench-longline`, Phase 15). Resumable lexing inside
+  such a line would come after it, if the lexing still shows.
+- RET on lines with unbalanced braces far apart (the 100 MB bench text) costs ~0.4-0.6 ms per cursor, the
+  same as with one cursor there: the indentation's bracket match lexes back up to SYNTAX_MATCH_MAX (256 KB).
+  Not zeroing the walk's stack gained nothing (Phase 15); a per-line bracket summary (lines that are
+  balanced skipped whole) would.
+- Multiple cursors spread over a whole 100 MB file cost ~20 ms per key (the gap travels through ~100 MB each
+  command); processing the cursors from the gap's end when it is past the last cursor would halve it.
+- A mark-all with 100,000 cursors (max_cursors at the top of its range) makes them all in one frame (~5.5
+  ms); and keys typed while a long mark-all searches wait instead of being queued.
+- Queueing the keys typed while query-replace searches for its next match on a huge buffer (now
+  ignored beyond one slice).
+- Clipboard delayed rendering (a 50 MB kill is converted to UTF-16 at once).
+- Keys typed while ronin's window is being moved or sized by its frame (Windows' modal move loop, a click held on the
+  title bar) are handled but drawn only when the move ends (found while measuring Phase 21: `--bench-latency` loses
+  keys when its window is clicked).
+- Worker thread slots stay until the exit (as many as tasks ever ran at once, each parked thread keeping its
+  stack); ending a slot idle for a while would give that back, at the GPU driver's per-thread cost (Phase 16).
+- Parked worker threads above a small number (say 8) ended in the minimize trim path, next to the results buffers'
+  give-back, so the pool shrinks when the user minimizes (Phase 22: the soak's stacks grew 2.3 -> 3.0 MB as
+  the slots went 24 -> 32).
+
+### Inside
+
+- A zip reproducible byte for byte: the release link with /Brepro (no link time in the exe) and fixed file times in the
+  zip, so a fresh clone gives the same SHA-256 (Phase 25: the same file list, exe size and other files only).
+- The CI's smoke as a gate: the bench build's `--smoke` passes on windows-latest (Phase 25: an interactive console
+  session, feature level 11_0 without the debug layer, 82 frames), so its step could fail the run instead of reporting.
+- The site's anchors for non-ASCII punctuation: md_slug keeps every byte of a multi-byte character, where GitHub drops
+  punctuation such as an em dash, so the changelog's "1.0.0 — <date>" has the id `100-—-<date>` on the site and
+  `100--<date>` on GitHub (Phase 25; nothing links to it).
+- The layering by use, not only by include (Phase 23): a /Zs compile of src/base/ and src/text/ alone (their headers,
+  platform.h, then their .c files) would fail when text code calls into editor/, project/ or app/; the source check
+  sees only #include lines, and the unity build puts every header before every .c file.
 - The soak's watch rule (found in Phase 22; its folder is emptied at its start since then, so a seed is one run): it
   counts a buffer opened late in a new folder (live state) as LEAK; it could count only the watches the open buffers'
   folders do not explain. (Its memory rule judges our arenas since Phase 22: Decisions, Phase 22, 7.)
-- README's git changes picture (Phase 22): a screenshot run cannot start the real git (Phase 20's guard refuses it in
-  every batch run), so docs/images/git-changes.png is Phase 19's; a screenshot flag that chooses the real git, as smoke
-  stage 12 does, would let it be retaken.
 - A hard cap on a search's held records (Phase 17): the claim stop at RESULTS_HELD_MAX does not bound them (files
   already claimed still add up to search_max_results records each); stop draining or pause the workers above a
   cap, and assert it.
+- README's git changes picture (Phase 22): a screenshot run cannot start the real git (Phase 20's guard refuses it in
+  every batch run), so docs/images/git-changes.png is Phase 19's; a screenshot flag that chooses the real git, as smoke
+  stage 12 does, would let it be retaken.
+- `--bench-latency` exited 9 once in six runs: 482 of the 500 keys had no Present of their own (Phase 17; the
+  cause not looked into).

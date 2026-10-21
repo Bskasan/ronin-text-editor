@@ -96,7 +96,7 @@ scale and keyboard layout. After a crash, say whether files appeared in `%LOCALA
 - Plugins or a scripting language: a small and simple program comes before features.
 - Other platforms: ronin is a Win32 program from its window to its threads.
 
-What may come later is the "Later" list in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#later).
+What may come later is the "After 1.0" list in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#after-10).
 
 ## Review
 

@@ -17,5 +17,5 @@
 - Crash recovery is a best effort: it writes the unsaved files only when ronin itself crashes, not when the process is
   ended from outside or the power fails.
 
-The full list, with the reasons, is the "Later" section of
-[docs/ARCHITECTURE.md](https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITECTURE.md#later).
+The full list, with the reasons, is the "After 1.0" section of
+[docs/ARCHITECTURE.md](https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITECTURE.md#after-10).

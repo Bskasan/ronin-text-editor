@@ -6,7 +6,7 @@ side-by-side windows, inverse-video mode line, minibuffer, block cursor, point/m
 ring, isearch, M-x), pure Emacs default keys rebindable from a hot-reloaded text config.
 Languages: Jai, C, C++, C#, JavaScript, TypeScript with hand-written lexers (no LSP, no
 tree-sitter). Built in phases; see docs/ARCHITECTURE.md for the roadmap, module map,
-decisions and the "Later" list. A change implements only its own phase. For strangers (Phase 22): README.md,
+decisions and the "After 1.0" list. A change implements only its own phase. For strangers (Phase 22): README.md,
 CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
 windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the docs-check (Phase 24), the
 imports, --version; the bench smoke informational only, the smoke gate and `verify.bat phase` stay local). The
@@ -78,7 +78,7 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
 - Naming: types PascalCase; functions and variables snake_case with a module prefix
   (arena_push, r_push_rect, os_write_file); macros and enum constants UPPER_SNAKE.
 - Scope discipline: build only what the current phase asks for. No speculative
-  abstractions. Park ideas in the "Later" list in docs/ARCHITECTURE.md.
+  abstractions. Park ideas in the "After 1.0" list in docs/ARCHITECTURE.md.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
   configurations (each with the macro check), checks `build.bat clean` on a scratch tree
   (clean-check), runs the source check (`build\check_source.exe`: headers, module map, includes; Phase 23), the
