@@ -2466,6 +2466,124 @@ at most in the first half, 6,296 KB after the last; the leak check 28 scenarios,
 config-reload-cycle/color private commit, as in Phase 23); the exit check PASS in the smoke (debug, bench) and the leak
 check.
 
+## Measurements (Phase 25)
+
+Same machine. The release exe is 470,016 bytes through the whole phase: the manifest change and the version change left
+its size alone (the version text is as long as before).
+
+### Release 1.0.0
+
+Each row against the Phase 15 baseline, or the phase that first measured it (named). Benches on ronin_bench.exe, one
+run each unless said.
+
+| measure | how | Phase 15 (or as named) | 1.0.0 |
+|---|---|---|---|
+| release exe | its size | 397,312 bytes | 470,016 bytes (Phases 16-24: the command list, the git view, terminals, themes, the leak fixes) |
+| imports | `--check-imports` | kernel32, user32, gdi32: 133 functions | the same three DLLs: 135 functions (KERNEL32 79, USER32 50, GDI32 6) |
+| startup to the first Present | `--startup-ms --no-activate`, release | 164 ms, median of 15 | 173 ms, one run (with the owner's permission) |
+| idle CPU | `--idle-check`, 5 s | 0 frames, 0 us | 0 frames, 0 us (0.00% of one core), no main loop pass |
+| typing: command + frame build p50 | `--bench-latency`, 3 runs | 23 us | 24-29 us (Phases 17-20 measured 16-29 us run to run) |
+| typing: arrival to Present returned p50 | `--bench-latency`, 3 runs | 0.41 ms | 0.43-0.48 ms |
+| typing: on screen p50, composed / overlay | `--bench-latency`, 3 runs | 17.1 / 4.9 ms | 16.8-17.9 / 4.3-4.7 ms |
+| memory at idle | release, private bytes 3 s after a start with `--no-activate`, 3 runs | 57.4-59.3 MB | 58.3-59.7 MB |
+| 100 MB load | `--bench-buffer`, warm file cache | 35-40 ms (Phase 3) | 32 ms (3,186 MB/s) |
+| a keystroke at 10,000 cursors | `--bench-cursors`, self-insert on consecutive lines of the 100 MB file | 1.7-2.1 ms (Phase 14) | 2.17 ms avg, worst 2.63 ms |
+| a keystroke's frame over 1,000,000 paths | `--bench-project` | 1,884 us avg, 2,097 worst (Phase 11) | 1,887 us avg, 2,104 worst; ranked after 8 frames (14 at worst) |
+| 100 MB grep, 8 workers, a common word | `--bench-grep` (3,001 files) | first result 2.2 ms, all 28 ms (Phase 12) | first result 3.1 ms, all 28.8 ms (3,485 MB/s) |
+| the build of ronin | `build.bat`, `build.bat release` | 2.8 s, 3.5 s (Phase 17) | 4.6 s, 5.4 s (more code, and the tools make_themes, check_source and make_docs on every build) |
+| verify.bat | the whole gate | 40.1 s (Phase 17) | 57 s (the source check, the docs-check and the larger tests since) |
+| verify.bat phase | the phase gate | 387 s (Phase 17) | see "verify.bat phase" below |
+
+`--bench-project` had 3 frames over its 2,100 us mark (the longest 2,110 us) where Phase 11 had none: within 10 us of it,
+not a failure of the bench (exit 0). `--bench-cursors`' RET on the 100 MB bench text at 10,000 cursors (5.2 s a key) is
+Phase 14's known 5.5-7 s (the brace walk, on the After 1.0 list). Typing while 8 workers search: the key's frame 29-31 us
+avg, worst 221-310 us.
+
+### The CI's informational smoke
+
+The CI run of the push after Phase 24, step "Smoke (bench build; informational)", as the owner reported it: the step's
+process ran in session 2, the interactive console session (`query session`: console, runneradmin, Active), with an
+interactive window station; "--smoke exited 0: pass"; "d3d11: device created in 9678 us (loading d3d11.dll 394 us of
+it), feature level 0xb000, debug layer off"; the swap chain, pipeline and atlas texture 6,256 KB of private bytes at
+29.8 ms; device refcount 0 after the final release, 0 DXGI live-object messages; "smoke: skip: the D3D11 debug layer is
+off in this build"; "smoke: PASS (exit 0, 82 frames)". So GitHub's windows-latest renders (feature level 11_0) and every
+pixel probe of the smoke passes there; the step stays informational (the After 1.0 list has making it a gate).
+
+### The zip
+
+`dist.bat` (verify PASS, then the zip): `dist\ronin-1.0.0-windows-x64.zip`, 263,347 bytes, SHA-256
+a0c37803d9439b82d19ec6273fc2f1969b9aa433152168e0e8a3823f9c6575a3 (dist\SHA256SUMS.txt; `sha256sum -c` OK, PowerShell's
+Get-FileHash the same). Its listing, in a ronin-1.0.0 folder:
+
+| file | bytes | SHA-256 |
+|---|---|---|
+| ronin.exe | 470,016 | 7359cb418521f8e19dd05c9b80ed3b70f202d23f50cc2b725d4cb02c0b9cbb44 |
+| README.md | 4,534 | 004e61f9834537e8f34651c980999379411499f12cbd97f08a71599928c02a22 |
+| CHANGELOG.md | 7,787 | cb2866f6678cf8ccbb6cb1f82948c783a7158fc14b616765b439df96e077e842 |
+| LICENSE | 1,089 | adc4211683518f1d529c30d5f07cecea4f7244cdc5c63eb6784c21765e8e029a |
+| THIRD_PARTY.md | 2,753 | cced70f349a2004b339570868fe007d93dbe8975d3537b23dc15df77e501c7cb |
+| samples\Inventory.cs | 1,289 | b0a7fcf274eaaa14e10b5c3f72df00d23e0a719a4fcc0057972020bc761c5a62 |
+| samples\particles.jai | 1,016 | cc75e6c1eeb699fb30d03e2b20ddee2ca3b53775dd598ef99eb1e41fc4324a98 |
+| samples\ring.c | 1,132 | 9a68f43b0d39a7eef32045c3d86f71fc66a0034709830c84f36039e6c0023015 |
+| samples\shapes.ts | 1,235 | 1bc189934a113570f98af4a0c446b5199088a96b464e83a7b22cd0c14940ea4a |
+| samples\vec.cpp | 992 | 19169e6c1ea7681b405cf858040af377baa1965817f55d31a9b83fcd9a9c796e |
+| samples\wordcount.js | 1,122 | a61ee541f5327bd7d92757a34167466f50972e2944ce9158eb93bbf49b0eee59 |
+
+The listing check proven: a twelfth file in samples\ gives "dist: FAIL: the zip holds 12 files, not 11". The manifest
+without assemblyIdentity (5be1fe2): the exe's size unchanged, `--dpi-check` PASS (96 -> 120 -> 96 dpi, the frame after
+coming back equal: the PerMonitorV2 element still read), the version resource unchanged.
+
+### The fresh clone
+
+`git clone` of this repository at 2ac48ad (the code and every file of the zip final) into build\tmp\fresh: 0.4 s, 163
+files; `build.bat release` 6.3 s, ronin.exe 470,016 bytes; `dist.bat` 57.1 s, PASS. Its listing equals ours, its exe has
+the same size (2 bytes differ: the link time), and the ten other files are equal by SHA-256; its zip is 263,348 bytes
+(the files' times inside).
+
+The first comparison found a difference that was this working copy's, not the clone's: README.md, LICENSE, THIRD_PARTY.md
+and the six samples had LF line ends here (written by tools in earlier phases; git leaves a file it considers unchanged
+as it is), CRLF in the clone (`* text=auto` on Windows). The first zip (263,273 bytes) carried the LF files. Those nine
+files were checked out again (CRLF, `git status` clean before and after) and the zip made again: the one above. dist.bat
+packs the working copy's files; CLAUDE.md says so next to its command.
+
+### The portable check
+
+The zip unpacked by tar into build\tmp\release_test\zip, every run with APPDATA and LOCALAPPDATA pointed at empty folders
+of build\tmp\release_test (ronin reads both with GetEnvironmentVariableW):
+
+| check | result |
+|---|---|
+| `ronin.exe --version` (redirected) | "ronin 1.0.0", exit 0 |
+| the version resource (what the Details tab shows) | FileVersion and ProductVersion 1.0.0, 1.0.0.0, "ronin text editor", "Copyright (c) 2026 Bekir Kasan. MIT License." |
+| a start with `--no-activate`, 3 s, CloseMainWindow | the title "*scratch* - ronin", 58.5-59.6 MB, exit 0 |
+| what that start wrote | nothing in the unzipped folder or APPDATA; under LOCALAPPDATA only Microsoft\Windows\Caches, empty, made by Windows for a process with a window (the real one holds the shell's cversions databases; ronin's code names no such path) |
+
+Then a ronin_debug.exe of the same commit beside a second unpacked copy (its log beside it), with `--keys` and
+`--screenshot`, each frame looked at and a background pixel read with System.Drawing:
+
+| keys or file | frame |
+|---|---|
+| none | ronin's background #072626 |
+| `C-S-p e n d` | the command list filtered by "end", 91 of 141 (build\shots\p25_portable_cmdlist.png) |
+| `M-x set-theme RET moonfly RET` | #080808, moonfly's |
+| themes\mine.conf beside the exe (background #203040), set-theme mine | #203040: the exe's themes\ folder |
+| ronin.conf beside the exe with `theme = vague` | #141415, vague's: the portable configuration wins |
+| `C-c ,` with no ronin.conf beside the exe | "Created ...\appdata\ronin\ronin.conf from the built-in defaults", 23,776 bytes; nothing else appeared in APPDATA or LOCALAPPDATA |
+
+The git changes view from that folder is HUMAN (step 41 with the zip's exe): every batch run refuses a real git.
+
+### Versions in the tree
+
+`git grep` for 0.1.0 and 1.0.0 (the generated HTML aside): src/app/version.h; CHANGELOG.md (the two headings and the
+1.0.0 entry's mentions of 0.1.0); this phase's own records (Decisions, Phase 25, the After 1.0 item on the changelog's
+anchor, MANUAL_TESTS section AA and steps 60-66, docs/releases); and dated evidence of earlier phases (Measurements of
+Phases 17, 22 and 23, MANUAL_TESTS Q2, Q3, Q17, S12 naming the version they saw). Nothing a later release must change by
+hand: the manifest's version is gone, and CLAUDE.md and the HUMAN steps name the version of src/app/version.h.
+
+### verify.bat phase
+
+Once, at the end of the phase, when the owner says so.
+
 ## Roadmap
 
 - [x] 1. Skeleton, window, D3D11, rect renderer

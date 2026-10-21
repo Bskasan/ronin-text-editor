@@ -603,6 +603,24 @@ The steps start at Z2: Z1 is the idle step in section K, an id of the original l
 | Z13 | verify.bat and verify.bat phase run at below-normal priority with (logical processors - 2) workers | AUTOMATED-NEW | Measurements (Phase 24): a child of the restarted verify reports BelowNormal; the sweep's log "over 14 worker processes"; VERIFY_WORKERS refused outside 1 to 64. |
 | Z14 | The CI run after the push is green, the docs-check step included | HUMAN | Only GitHub's runner proves it; HUMAN step 59. |
 
+## AA. The release 1.0.0 (Phase 25)
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| AA1 | `ronin --version` prints "ronin 1.0.0", and the exe's version resource says 1.0.0 | AUTOMATED + HUMAN | verify.bat "version" (the form "ronin X.Y.Z") on every run; the portable check (Measurements (Phase 25)): the zip's exe printed "ronin 1.0.0", exit 0, VersionInfo FileVersion / ProductVersion 1.0.0, 1.0.0.0, "ronin text editor", the copyright. Explorer's Details tab: HUMAN step 29. |
+| AA2 | `dist.bat` makes `dist\ronin-1.0.0-windows-x64.zip` with exactly ronin.exe, README.md, LICENSE, THIRD_PARTY.md, CHANGELOG.md and the six samples in a ronin-1.0.0 folder, and `dist\SHA256SUMS.txt` with its SHA-256 | AUTOMATED-NEW | dist.bat checks the listing (11 files, the five by name) and the hash (64 hex digits from certutil); shown to fail with a twelfth file in samples\ ("the zip holds 12 files, not 11"); `sha256sum -c SHA256SUMS.txt`: OK; PowerShell's Get-FileHash gives the same hash. |
+| AA3 | The zip comes out of a fresh clone the same: the file list, the exe's size, the other files byte for byte | AUTOMATED-NEW | dev helper run in this phase (Measurements (Phase 25), "The fresh clone"): equal listing, ronin.exe 470,016 bytes in both (2 bytes differ, the link time), the ten other files equal by SHA-256. It first found this working copy's LF files (Measurements). |
+| AA4 | The unzipped exe, with no configuration anywhere, starts and writes nothing until C-c , creates `%APPDATA%\ronin\ronin.conf` | AUTOMATED-NEW + HUMAN | the portable check (APPDATA and LOCALAPPDATA pointed at empty folders): a start and a close left the folder and APPDATA unchanged (only Windows' own empty Microsoft\Windows\Caches folder appeared under LOCALAPPDATA); C-c , (the dev copy) created exactly appdata\ronin\ronin.conf, 23,776 bytes. In a real profile: HUMAN steps 61 and 62. |
+| AA5 | Themes, the command list, a theme in `themes\` beside the exe and a ronin.conf beside the exe work from the unzipped folder | AUTOMATED-NEW | the portable check, a ronin_debug.exe of the same commit beside the unzipped files: the command list filtered by "end" drawn; set-theme moonfly (background #080808), set-theme mine from the exe's themes\ (#203040), a ronin.conf beside the exe with `theme = vague` (#141415); screenshots build\shots\p25_portable_*.png looked at. |
+| AA6 | The git changes view from the unzipped folder | HUMAN | every batch run refuses a real git (Phase 20's guard), and the release exe takes no keys from the command line; HUMAN step 41 with the zip's exe. |
+| AA7 | The zip's exe through SmartScreen | HUMAN | only a file with the mark of the web shows SmartScreen; HUMAN step 60. |
+| AA8 | The commits and the tag v1.0.0 pushed | HUMAN | the owner pushes; HUMAN step 63. The tag exists locally on the phase's last commit (`git describe`). |
+| AA9 | The GitHub release with the zip, SHA256SUMS.txt and the notes of docs/releases/1.0.0.md | HUMAN | HUMAN step 64. |
+| AA10 | The Releases page and README's release badge show 1.0.0 | HUMAN | HUMAN step 65 (and 58). |
+| AA11 | The zip downloaded from GitHub has the notes' SHA-256 and runs | HUMAN | HUMAN step 66. |
+| AA12 | No version written anywhere but src/app/version.h, the changelog's headings and the release notes | AUTOMATED-NEW | `git grep` for 0.1.0 and 1.0.0 (Measurements (Phase 25)): only those, and dated records of earlier phases. The manifest's assemblyIdentity, a second version, is gone (Decisions, Phase 25, 8). |
+| AA13 | Every HUMAN step is in the release checklist | AUTOMATED-NEW | docs/releases/checklist-1.0.0.md lists steps 1 to 66, each with its tests; counted against this file's "HUMAN steps" (66 numbered steps). |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -792,6 +810,25 @@ Phase 24, the documentation site (after you push):
 59. **Z14**: The Actions tab: the "build" run of your push is green, the step "Documentation site up to date
     (docs-check)" included (it prints "docs-check: PASS: ..."). Report the informational smoke step's last lines as for
     step 50: they go into Measurements (Phase 24).
+
+Phase 25, the release (60 to 62 before the tag, with 41 and 47 on the zip's exe; 63 to 66 after it, in order):
+
+60. **AA7**: Copy dist\ronin-1.0.0-windows-x64.zip to a new folder and mark it downloaded, in PowerShell:
+    ``Set-Content <zip> -Stream Zone.Identifier -Value "[ZoneTransfer]`nZoneId=3"``. Extract it with Explorer's Extract All
+    and double-click ronin.exe: SmartScreen says "Windows protected your PC"; More info, Run anyway: "*scratch* - ronin"
+    opens.
+61. **AA4**: Close ronin, rename `%APPDATA%\ronin` (if you have one) to `ronin.keep`, and start that ronin.exe again: ronin's
+    own colors; use it a little; `%APPDATA%\ronin` does not appear.
+62. **AA4**: Then C-c , : `%APPDATA%\ronin\ronin.conf` is created and shown ("Created ... from the built-in defaults"); add
+    `theme = vague` under [settings] and C-x C-s: the colors change at once. Close ronin, delete the new `%APPDATA%\ronin`
+    and rename `ronin.keep` back.
+63. **AA8**: `git push`, then `git push origin v1.0.0`.
+64. **AA9**: On GitHub, Releases, Draft a new release: tag v1.0.0, title "ronin 1.0.0", the text of docs/releases/1.0.0.md,
+    dist\ronin-1.0.0-windows-x64.zip and dist\SHA256SUMS.txt attached, "Set as the latest release", Publish (or
+    `gh release create`, as the release report gives it).
+65. **AA10**: The Releases page lists ronin 1.0.0 with both files; README's release badge says v1.0.0 (step 58).
+66. **AA11**: Download the zip from the release, `Get-FileHash` it: the SHA-256 of the notes and of SHA256SUMS.txt. Unzip it
+    and run ronin.exe once.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

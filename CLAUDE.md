@@ -145,7 +145,11 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (once per phase)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
-                                     # README.md, LICENSE, THIRD_PARTY.md); the version is src/app/version.h's
+                                     # README.md, LICENSE, THIRD_PARTY.md, CHANGELOG.md, samples\; the listing
+                                     # checked: 11 files) and dist\SHA256SUMS.txt (its SHA-256, sha256sum's format);
+                                     # last line "dist: PASS: <zip> (<bytes> bytes, SHA-256 <hash>)"; the version
+                                     # is src/app/version.h's. It packs the working copy's files: a text file a tool
+                                     # wrote with LF stays LF until checked out again (a fresh clone has CRLF)
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
@@ -649,7 +653,7 @@ because GitHub Pages serves those files; verify's docs-check keeps them equal to
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |
-| `dist\` | dist.bat (the staging folder; the zip goes to dist\ at the root) |
+| `dist\` | dist.bat (the staging folder and `contents.txt`, the zip's listing; the zip and `SHA256SUMS.txt` go to dist\ at the root) |
 | `proof\` | scratch copies of the repository for a proof, made by hand; never required |
 
 ## Theme (the default theme: themes/ronin.conf, embedded by tools/make_themes.c)
