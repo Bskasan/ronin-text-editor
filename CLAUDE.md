@@ -162,8 +162,8 @@ is opened, each at the +LINE[:COLUMN] before it (one with no file after it: the 
 *scratch*); the first is shown, and with startup_windows = 2 the second window shows the second.
 A directory instead of a file is opened as the project (`ronin <directory>`): nothing is visited for it,
 *scratch* and C-x C-f start there, C-x p f lists it. Any unrecognized argument starting with `--` (or a flag missing its value) exits at once with
-code 10, before a window exists. `--version` prints "ronin 0.1.0" (through a redirected standard
-output, else the console that started it) and exits 0 before any window or thread.
+code 10, before a window exists. `--version` prints "ronin <version>", the version of src/app/version.h, through a
+redirected standard output, else the console that started it, and exits 0 before any window or thread.
 
 `--startup-ms` works in both builds: it exits right after the first Present with exit code =
 ms since process creation. Git Bash `$?` truncates exit codes to 8 bits, so read it from

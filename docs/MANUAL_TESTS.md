@@ -412,8 +412,8 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | Step | What | Status | Evidence |
 |---|---|---|---|
 | Q1 | Nothing says teal any more: the window title, the config file (`ronin.conf`, `%APPDATA%\ronin`), `.ronin-project`, messages, the log | AUTOMATED-NEW | smoke (the title "*scratch* - ronin"; the block reason "Unsaved changes in ronin"); the config and .ronin-project tests read the new names; `grep -rin teal` leaves N3's "teal line numbers" (a color), this step, the old-name notes in ARCHITECTURE.md (Phase 15 decisions) and CHANGELOG.md. |
-| Q2 | `ronin --version` prints "ronin 0.1.0" and exits 0, without a window | AUTOMATED-NEW + HUMAN | verify.bat "version" (redirected output, the release exe); the command line test (`--version` a flag of every build); in a console (Start-Process -NoNewWindow): "ronin 0.1.0". In a terminal by hand: HUMAN step 33. |
-| Q3 | ronin.exe's Properties show version 0.1.0, "ronin text editor", the copyright | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows FileVersion / ProductVersion 0.1.0, the description and the copyright; Explorer's Details tab: HUMAN step 29. |
+| Q2 | `ronin --version` prints "ronin <version>" (the version of src/app/version.h) and exits 0, without a window | AUTOMATED-NEW + HUMAN | verify.bat "version" (redirected output, the release exe); the command line test (`--version` a flag of every build); in a console (Start-Process -NoNewWindow): "ronin 0.1.0" in Phase 15. In a terminal by hand: HUMAN step 33. |
+| Q3 | ronin.exe's Properties show the version of src/app/version.h, "ronin text editor", the copyright | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows FileVersion / ProductVersion (0.1.0 in Phase 15), the description and the copyright; Explorer's Details tab: HUMAN step 29. |
 | Q4 | The icon in the title bar, the taskbar, Alt+Tab and Explorer | AUTOMATED-NEW + HUMAN | smoke "class icons set / set; the 16 px icon: stem #d3b58d, beside #072626, corner none" (shown to fail with the icon's text color changed by one); how it looks: HUMAN step 28. |
 | Q5 | After a crash, each modified file is in `%LOCALAPPDATA%\ronin\recovery` as a save would write it (encoding, BOM, line endings), with a .path file; unmodified files are not | AUTOMATED-NEW | crash test (CRLF UTF-8, UTF-16 LE with CRLF and an astral character, UTF-16 BE, UTF-8 BOM, mixed: byte for byte against a save; the sidecars; none for the unmodified file); shown to fail with the contents not written (a scratch copy). |
 | Q6 | The next start says how many recovery files there are and where; *Messages* lists each with its original; M-x recover-file shows the original and the copy side by side and overwrites nothing | AUTOMATED-NEW + HUMAN | crash test (the echo text, the *Messages* line, two windows, the original's bytes unchanged, the files kept; no notice without files). A crash in a real session: HUMAN step 32. |
@@ -427,7 +427,7 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | Q14 | A million random events: no assert, no leak, no slowdown, flat memory | AUTOMATED-NEW | `--soak 1000000` on bench and debug in `verify.bat phase` (peak and final memory logged). |
 | Q15 | Every seeded test group passes for 256 seeds | AUTOMATED-NEW | `--fuzz-seeds 1 256` in `verify.bat phase`. |
 | Q16 | The release exe imports only kernel32, user32 and gdi32 and no C runtime DLL | AUTOMATED-NEW | verify.bat "check-imports" against res\imports.txt. |
-| Q17 | `dist.bat` makes `dist\ronin-0.1.0-windows-x64.zip` with ronin.exe, README.md and LICENSE | AUTOMATED-NEW | dist.bat runs verify.bat, checks each copy and tar's exit code, and prints the zip's size (224,440 bytes; `unzip -t`: no errors; the three files in ronin-0.1.0\). |
+| Q17 | `dist.bat` makes `dist\ronin-<version>-windows-x64.zip` with ronin.exe, README.md and LICENSE (its contents since Phase 25: AA2) | AUTOMATED-NEW | Phase 15: dist.bat runs verify.bat, checks each copy and tar's exit code, and prints the zip's size (224,440 bytes; `unzip -t`: no errors; the three files in ronin-0.1.0\). |
 
 ## R. Memory and resource leaks (Phase 16)
 
@@ -467,7 +467,7 @@ commands against the one-cursor commands applied cursor by cursor to a flat text
 | S9 | The screenshot commands of this list work after a clean (`--screenshot build\shots\..`, `--dpi-check build\shots\dpi`) | FIXED | found by reading the code: nothing made build\shots but `--leak-check`, and `--dpi-check` wrote into a directory nothing made (exit 7); fixed in 878ee9a (build.bat makes build\shots, `--dpi-check` makes its directory); `--dpi-check build\shots\dpi` with the directory missing: PASS. |
 | S10 | The measurement flags do not read the user's ronin.conf | FIXED | found by reading the code: `--memory-report`, `--bench-latency`, `--startup-capture` and `--bench-longline` read it; fixed in 466d840; regression in "test: ok: command line" (fails with --memory-report left out: "batch flag 14 of the built-in config list reads the user's config"). |
 | S11 | `build.bat clean`, `build.bat`, then ronin starts and works | HUMAN | a real start from a fresh build; HUMAN step 36. |
-| S12 | After a clean build the exe's Details tab still shows the version and the icon | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows 0.1.0, the description and the copyright after the clean; Explorer's Details tab and icon: HUMAN step 37. |
+| S12 | After a clean build the exe's Details tab still shows the version and the icon | HUMAN | `(Get-Item build\ronin.exe).VersionInfo` shows the version (0.1.0 in Phase 17), the description and the copyright after the clean; Explorer's Details tab and icon: HUMAN step 37. |
 | S13 | Project searches again and again leave the same memory behind, however the workers' timing went; a large search's extra memory goes back on a minimize | FIXED | found by `verify.bat phase`: `--leak-check grep-cycle/done` LEAK in 2 of 4 runs (*search*'s held[0] reaching its 64 KB high-water after the first window); fixed in 7aad9d0 (held and pend committed to a 256 KB floor at the buffer's first run, what grew above it given back by app_trim on a minimize); regression "test: ok: results transient" (fails with the floor off: held 4096 / 0, pend 4096; with the trim off: 3,145,728 / 2,097,152 / 1,048,576 after a minimize); `--leak-check grep-cycle` 5 times: OK, 6,459,392 bytes in every sample. |
 
 ## T. The modal layer and the command list (Phase 18)
@@ -679,7 +679,7 @@ Phase 15, the release:
 
 28. **Q4**: Look at the icon in the title bar, the taskbar, Alt+Tab and Explorer (large icons view) at
     100% and 150% display scale: an "r" with a green block cursor on a rounded square of the background color, crisp.
-29. **Q3**: Explorer, right-click build\ronin.exe, Properties, Details: version 0.1.0, "ronin text editor",
+29. **Q3**: Explorer, right-click build\ronin.exe, Properties, Details: the version of src\app\version.h, "ronin text editor",
     the copyright.
 30. **Q7**: Put `early_window = true` in ronin.conf (C-c ,) and start ronin from Explorer five times: the
     window appears at once in the background color and the text follows; no white or black flash, no
@@ -689,7 +689,7 @@ Phase 15, the release:
 32. **Q6**: `build\ronin_debug.exe x.txt --keys "h i" --crash --recovery-dir "%LOCALAPPDATA%\ronin\recovery"`
     (x.txt any scratch file), then start `build\ronin.exe`: the echo area says 1 recovery file;
     M-x recover-file RET shows x.txt and the copy with "hi" side by side. Delete the files afterwards.
-33. **Q2**: In cmd and in PowerShell, `build\ronin.exe --version`: "ronin 0.1.0" appears (in cmd it may
+33. **Q2**: In cmd and in PowerShell, `build\ronin.exe --version`: "ronin <version>" (src\app\version.h's) appears (in cmd it may
     come after the next prompt, as for any windowed program); no window opens.
 
 Phase 16, leaks:
@@ -706,7 +706,7 @@ Phase 17, cleanup:
 
 36. **S11**: In a command prompt in the repository (ronin closed): `build.bat clean`, then `build.bat`, then
     `build\ronin_debug.exe`. The window opens with *scratch* and the title "*scratch* - ronin"; typing works.
-37. **S12**: `build.bat release`, then in Explorer right-click build\ronin.exe, Properties, Details: version 0.1.0,
+37. **S12**: `build.bat release`, then in Explorer right-click build\ronin.exe, Properties, Details: the version of src\app\version.h,
     "ronin text editor", the copyright; Explorer shows the icon (the "r" with the green block cursor).
 
 Phase 18, the command list:
