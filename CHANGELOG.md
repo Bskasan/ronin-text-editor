@@ -2,13 +2,15 @@
 
 ## Unreleased
 
-**Changed**
+### Changed
 
 - Contributing: every change now starts as a GitHub issue and reaches main through a pull request; CONTRIBUTING.md
   describes the branches, the flow and the versions.
 
-**Fixed**
+### Fixed
 
+- Documentation site: links to a section that appears more than once on a page, such as each version's Changed in the
+  changelog, now go to the right section, the same as on GitHub.
 - The git changes view (`C-x g`): `RET` or a double click on a file whose diff has not arrived yet now opens the file at
   its first change once git answers, instead of at line 1. The status line says it is waiting; any other key, `C-g` or
   a click elsewhere cancels.
