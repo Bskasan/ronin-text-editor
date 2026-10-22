@@ -4239,9 +4239,10 @@ After 1.0.0 the work moved from phases committed to main to GitHub issues, branc
 8. Heavy runs and CI (#22). A run expected to take more than about 2 minutes (`verify.bat phase`, `--soak`,
    `--fuzz-seeds`, repeated `--test` runs, benchmarks, long leak checks) is announced first with its list and an
    estimated total time and waits for approval: measurements need an idle machine, and other heavy programs have to be
-   closed before. Heavy runs come as one block at the end of the work; a failing run is reported with its log, never
-   retried to get a pass. A failed CI check is reported with its log and a fix proposed as a plan; nothing is pushed
-   to fix it without approval, and CI is not fixed automatically.
+   closed before. An ordinary `verify.bat` before a commit needs no announcement. Heavy runs come as one block at the
+   end of the work; a failing run is reported with its log, never retried to get a pass. A failed CI check is reported
+   with its log and a fix proposed as a plan; nothing is pushed to fix it without approval, and CI is not fixed
+   automatically.
 
 ### Decisions, #1 git changes view: an accept before the diff
 
