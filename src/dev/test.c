@@ -14185,13 +14185,38 @@ static b32 test_git_job(Test *t) {
     n = test_git_job_run(t, &q, b, 10000, 0);
     TEST_CHECK(t, n >= 1 && b[0]->kind == GIT_BATCH_TOPLEVEL && str8_equal(b[0]->text, STR8_LIT("isolated")), "git job: env gave '%S'",
                n ? b[0]->text : str8(NULL, 0));
+    // A gate (--child's "gate NAME"): git's answer is held until the test opens it, then comes whole.
+    OsEvent gate = { 0 };
+    String8 gate_name = os_dev_gate_create(&t->arena, "job", &gate);
+    TEST_CHECK(t, gate_name.len, "git job: no gate");
+    const char *gated[] = { "diff", (const char *)str8_fmt(&t->arena, "gate %S\nraw @@ -2 +2 @@\\n-a\\n+b\\n\n%c", gate_name, 0).data };
+    dir = test_git_fake(t, "job_gate", gated, 2);
+    q = test_git_request(t, GIT_JOB_DIFF, dir);
+    q.path = STR8_LIT("g.c");
+    GitJob *gj = git_job_create(&q);
+    TEST_CHECK(t, gj && git_job_start(gj), "git job: the gated job did not start");
+    for (i32 i = 0; i < 2000 && !test_git_calls(t, dir).len; i++) os_dev_wake_wait(5); // the fake git runs: at its gate or before it
+    b32 held = test_git_calls(t, dir).len && !git_job_take(gj);
+    os_event_set(gate);
+    b32 last = 0, answered = 0;
+    for (u64 deadline = os_time_us() + 10000 * 1000ull; !last && os_time_us() < deadline;) {
+        os_dev_wake_wait(5);
+        for (GitBatch *x = git_job_take(gj); x; x = x->next) {
+            answered |= x->kind == GIT_BATCH_DIFF && x->diff.first_changed == 2 && x->diff.count == 3;
+            last |= x->last;
+        }
+    }
+    git_job_ended(gj);
+    git_job_free(gj);
+    os_event_destroy(gate);
+    TEST_CHECK(t, held && last && answered, "git job: the gate: held %d, last %d, answered %d", held, last, answered);
     TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0 &&
                       os_dev_live_handles() == ledger0,
                "git job: counters back (%d processes, %d threads, %d events, ledger %d -> %d)", os_dev_live_processes(),
                os_dev_live_threads(), os_dev_live_events(), ledger0, os_dev_live_handles());
     LOG("test: ok: git job (the open's two command lines and the three diffs' exactly, exit 1 from --no-index only; not a work tree, "
         "another refusal, a failing status and diff in git's words; a missing directory; git_path nowhere, no git.exe on PATH; the "
-        "line limit stopping git; the timeout; a cancel; the environment block; nothing left)");
+        "line limit stopping git; the timeout; a cancel; the environment block; a gate holding the answer; nothing left)");
     return 1;
 }
 

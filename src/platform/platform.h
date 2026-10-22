@@ -241,6 +241,9 @@ void os_dev_thread_abandoned(void);    // a worker left to the process exit at s
 void os_dev_thread_reclaimed(void);    // ... joined after all (tests): os_thread_join counts it again
 void os_dev_thread_pool_end(void);     // the parked worker threads end (the exit check, the tests' ledger); made again on demand
 i32  os_dev_live_events(void);         // created and not destroyed
+// Tests: a gate the fake git's "gate NAME" waits on (--child), closed; its NAME for the script (empty: not made). Opened
+// with os_event_set (it stays open), freed with os_event_destroy; counted as an event.
+String8 os_dev_gate_create(Arena *arena, const char *tag, OsEvent *gate);
 void os_dev_background_normal(b32 on); // --bench-grep: background workers start at normal priority (the comparison)
 i32  os_dev_thread_priority(OsThread thread); // the thread's priority (Win32 value: 0 normal, -1 below normal)
 b32  os_dev_make_junction(String8 link, String8 target); // a new directory junction (no admin rights needed)
