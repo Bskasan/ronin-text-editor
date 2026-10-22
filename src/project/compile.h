@@ -123,6 +123,29 @@ typedef struct CompileLine {
     u16 path_off, path_len, num_off, num_len, kind_off, kind_len;
 } CompileLine;
 
+#if RONIN_DEV
+typedef enum CompileDevEnd { // why the read loop ended
+    COMPILE_DEV_END_NONE,        // not reached (no process)
+    COMPILE_DEV_END_FLAG,        // the cancel flag, seen at the loop's top
+    COMPILE_DEV_END_SEND,        // cancelled while waiting for a batch to come back
+    COMPILE_DEV_END_READ_CANCEL, // os_process_read: OS_PROCESS_CANCELLED
+    COMPILE_DEV_END_EXITED,      // ... OS_PROCESS_EXITED
+    COMPILE_DEV_END_ERROR,       // ... OS_PROCESS_ERROR or OS_PROCESS_TIMEOUT
+} CompileDevEnd;
+
+#define COMPILE_DEV_PROCS 8
+
+// The stages of a run's end (#25): os_time_us at each, 0 when not reached.
+typedef struct CompileDevStages {
+    u64 entered, started, read_end, killed, waited, closed, sent;
+    CompileDevEnd end;
+    b32 wait_ok;                                // os_process_wait saw cmd.exe end (not its timeout)
+    OsDevProcessId procs[COMPILE_DEV_PROCS];    // the job's processes just before the kill
+    i32 proc_count;                             // ... recorded in procs
+    i32 proc_total;                             // ... the job held (more than COMPILE_DEV_PROCS: not all recorded)
+} CompileDevStages;
+#endif
+
 typedef struct CompileRun {
     // The request: set before compile_start, read-only while the worker runs.
     String8 command, dir, root; // dir: where it runs; root: the project (path resolution), may be empty
@@ -140,6 +163,10 @@ typedef struct CompileRun {
     u64 start_us, end_us;
     i64 bytes;                  // output read
     u32 pid;
+#if RONIN_DEV
+    CompileDevStages dev;       // as the result: written before the last batch is queued under `lock`, read after the
+                                // main thread took that batch and joined the worker (c->ended)
+#endif
     // The worker's own.
     Arena arena;
     Arena temp;                 // one line's cleaning at a time

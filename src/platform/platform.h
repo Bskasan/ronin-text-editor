@@ -250,6 +250,17 @@ b32  os_dev_make_junction(String8 link, String8 target); // a new directory junc
 b32  os_dev_remove_dir(String8 path);                     // an empty directory, or a junction (not its target)
 i32  os_dev_live_processes(void);      // os_process_start minus os_process_close
 b32  os_dev_process_alive(u32 pid);    // a process with this id is running
+// A process known by its id and its creation time (FILETIME; 0: it had ended when it was listed), so a reused id is
+// never taken for it (#25).
+typedef struct OsDevProcessId {
+    u32 pid;
+    u64 created;
+} OsDevProcessId;
+// The processes of a build's job (cmd.exe and what it started): at most `cap` into `out` (the count returned), *total
+// how many the job held (more than cap: the list is not complete). Any thread.
+i32  os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total);
+// That very process still runs: one with its id exists, was created at its time, and has not ended. Any thread.
+b32  os_dev_process_running(OsDevProcessId id);
 void os_dev_kill_pid(u32 pid);         // tests: a leftover they made goes
 i32  os_dev_handle_count(void);        // the process's open kernel handles
 i32  os_dev_live_handles(void);        // the ledger: kernel handles the os_* layer opened and has not closed (the worker
