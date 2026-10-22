@@ -12415,6 +12415,80 @@ static b32 test_compile_run(Test *t) {
     return 1;
 }
 
+// A time from the cancel as "+12.3" / "-0.4", or a duration as "12.3" (ms, one decimal).
+static String8 test_kill_ms(Arena *arena, i64 us, b32 sign) {
+    u64 mag = us < 0 ? (u64)0 - (u64)us : (u64)us;
+    return str8_fmt(arena, "%s%U.%U", !sign ? "" : us < 0 ? "-" : "+", mag / 1000, mag % 1000 / 100);
+}
+
+// A kill round's end, stage by stage (#25): each point the worker recorded, the cancel (c0) and the end the test saw
+// (seen), in time order relative to the cancel, then the longest step between two of them.
+static String8 test_kill_stages(Arena *arena, CompileRun *c, u64 c0, u64 seen) {
+    static const char *ends[] = { "not reached", "the cancel flag", "a batch wait cancelled", "the cancelled read", "cmd.exe's end",
+                                  "a read error" };
+    CompileDevStages *d = &c->dev;
+    typedef struct TestKillPoint { const char *name; u64 at; } TestKillPoint;
+    TestKillPoint p[9] = {
+        { "cancel", c0 }, { "entered", d->entered }, { "started", d->started }, { "read end", d->read_end }, { "killed", d->killed },
+        { d->wait_ok ? "cmd.exe ended" : "the wait timed out", d->waited }, { "closed", d->closed }, { "last batch", d->sent },
+        { "seen", seen },
+    };
+    i32 n = 0;
+    for (i32 i = 0; i < ARRAY_COUNT(p); i++) { // the points reached, by time (insertion)
+        if (!p[i].at) continue;
+        TestKillPoint x = p[i];
+        i32 k = n++;
+        for (; k > 0 && x.at < p[k - 1].at; k--) p[k] = p[k - 1];
+        p[k] = x;
+    }
+    String8 s = str8(NULL, 0);
+    i32 longest = 0;
+    for (i32 i = 0; i < n; i++) {
+        s = str8_fmt(arena, "%S%s%s %S", s, i ? ", " : "", p[i].name, test_kill_ms(arena, (i64)(p[i].at - c0), 1));
+        if (i && (!longest || p[i].at - p[i - 1].at > p[longest].at - p[longest - 1].at)) longest = i;
+    }
+    s = str8_fmt(arena, "%S ms (read ended by %s)", s, ends[d->end]);
+    if (longest) {
+        s = str8_fmt(arena, "%S; the longest: %s -> %s, %S ms", s, p[longest - 1].name, p[longest].name,
+                     test_kill_ms(arena, (i64)(p[longest].at - p[longest - 1].at), 0));
+    }
+    return s;
+}
+
+// Why a kill round did not end as a kill should (#25), or empty: causes, not a clock. The 3 s guard and the 1000 ms for
+// the tree are bounds for a failure only.
+static String8 test_kill_round_cause(Arena *arena, CompileRun *c) {
+    static const char *ends[] = { "nothing", "the cancel flag", "a batch wait cancelled", "the cancelled read", "cmd.exe's end",
+                                  "a read error" };
+    CompileDevStages *d = &c->dev;
+    if (!c->ended) return STR8_LIT("it did not end within the 3 s guard");
+    if (c->start_status != OS_FILE_OK) return str8_fmt(arena, "the process did not start (status %d)", (i32)c->start_status);
+    if (!c->killed || (d->end != COMPILE_DEV_END_FLAG && d->end != COMPILE_DEV_END_SEND && d->end != COMPILE_DEV_END_READ_CANCEL)) {
+        return str8_fmt(arena, "the read ended by %s (killed %d), not by the cancel", ends[d->end], c->killed);
+    }
+    if (!d->wait_ok) return STR8_LIT("the wait after the kill ended by its 1000 ms timeout, not by cmd.exe's end");
+    if (d->proc_total > d->proc_count) {
+        return str8_fmt(arena, "the job held %d processes, more than the %d recorded", d->proc_total, d->proc_count);
+    }
+    OsEvent pause = { 0 };
+    os_event_create(&pause);
+    u64 t0 = os_time_us();
+    i32 running = -1;
+    for (;;) { // one bound for the whole tree
+        running = -1;
+        for (i32 i = 0; i < d->proc_count && running < 0; i++) {
+            if (os_dev_process_running(d->procs[i])) running = i;
+        }
+        if (running < 0 || os_time_us() - t0 >= 1000000) break;
+        os_event_wait(pause, 10);
+    }
+    os_event_destroy(pause);
+    if (running >= 0) {
+        return str8_fmt(arena, "process %u (created %U) of the tree still runs after 1000 ms", d->procs[running].pid, d->procs[running].created);
+    }
+    return str8(NULL, 0);
+}
+
 static b32 test_compile_kill(Test *t) {
     i32 procs0 = os_dev_live_processes(), threads0 = os_dev_live_threads(), events0 = os_dev_live_events();
     String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13", t->tmp_dir));
@@ -12444,10 +12518,14 @@ static b32 test_compile_kill(Test *t) {
     if (gpid) os_dev_kill_pid(gpid);
     TEST_CHECK(t, b.ended && !b.c->killed && alive, "kill: a normal end: ended %d, killed %d, grandchild %u alive %d", b.ended, b.c->killed, gpid, alive);
     test_build_free(&b);
-    // Starts and kills, many times: each ends within 500 ms of its cancel; nothing grows.
+    // Starts and kills, many times (#25): each ends by its causes (the cancel ends the read, the wait sees cmd.exe end
+    // after the kill, the tree is gone), not within a time; nothing grows. The slowest round's stages are logged, and
+    // every round over 100 ms (information, never a failure).
     String8 slow = test_child(t, "k_slow", STR8_LIT("out a\nsleep 10\nout b\nhang\n"));
     i32 handles_first = 0;
     u64 worst = 0;
+    String8 worst_stages = str8(NULL, 0);
+    i32 worst_round = 0;
     for (i32 round = 0; round < 100; round++) {
         CompileRun *c = compile_create(slow, dir, str8(NULL, 0), MB(16));
         TEST_CHECK(t, compile_start(c), "kill: round %d did not start", round);
@@ -12466,18 +12544,27 @@ static b32 test_compile_kill(Test *t) {
                 compile_give_back(c, batch);
             }
         }
-        u64 end_took = os_time_us() - c0;
-        worst = MAX(worst, end_took);
-        TEST_CHECK(t, c->ended && end_took <= 500000, "kill: round %d ended %d after %U ms", round, c->ended, end_took / 1000);
-        compile_free(c);
+        u64 seen = os_time_us(), end_took = seen - c0;
+        // Everything the report needs goes into the test's arena before the run is freed: a failing round leaves
+        // nothing open behind it, so it is reported once.
+        String8 why = test_kill_round_cause(&t->arena, c);
+        String8 stages = c->ended ? test_kill_stages(&t->arena, c, c0, seen) : STR8_LIT("(not ended: no stages)");
+        if (end_took > 100000) LOG("test: kill: round %d took %U ms: %S", round, end_took / 1000, stages);
+        if (end_took >= worst) {
+            worst = end_took;
+            worst_stages = stages;
+            worst_round = round;
+        }
+        if (c->ended || compile_join(c, os_time_us() + 1000000)) compile_free(c); // a worker stuck past it cannot be freed
+        TEST_CHECK(t, !why.len, "kill: round %d: %S; %S", round, why, stages);
         if (!round) handles_first = os_dev_handle_count();
     }
     TEST_CHECK(t, os_dev_handle_count() <= handles_first + 2, "kill: handles grew from %d to %d over 100 rounds", handles_first, os_dev_handle_count());
     TEST_CHECK(t, os_dev_live_processes() == procs0 && os_dev_live_threads() == threads0 && os_dev_live_events() == events0,
                "kill: counters back (%d processes, %d threads, %d events)", os_dev_live_processes(), os_dev_live_threads(), os_dev_live_events());
     LOG("test: ok: build kills (the child and its grandchild gone, %U ms; during a 50 MB flood, %U ms; a normal end lets a grandchild go; "
-        "100 start / kill rounds, the worst %U ms from the cancel to the end; handles %d -> %d)", took / 1000, flood_took / 1000, worst / 1000,
-        handles_first, os_dev_handle_count());
+        "100 start / kill rounds, each ended by the cancel with cmd.exe's end seen and its tree gone; the slowest, round %d, %U ms: %S; "
+        "handles %d -> %d)", took / 1000, flood_took / 1000, worst_round, worst / 1000, worst_stages, handles_first, os_dev_handle_count());
     return 1;
 }
 
