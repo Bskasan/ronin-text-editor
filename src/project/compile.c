@@ -727,6 +727,12 @@ static void compile_worker_main(void *data) {
         if (killed) {
 #if RONIN_DEV
             c->dev.proc_count = os_dev_job_processes(&proc, c->dev.procs, COMPILE_DEV_PROCS, &c->dev.proc_total);
+            OsEvent pause;
+            if (c->dev_kill_delay_ms && os_event_create(&pause)) { // never set: the wait is the delay
+                os_event_wait(pause, c->dev_kill_delay_ms);
+                os_event_destroy(pause);
+            }
+            if (!c->dev_skip_kill)
 #endif
             os_process_kill(&proc);
 #if RONIN_DEV

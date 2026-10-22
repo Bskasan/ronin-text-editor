@@ -150,6 +150,11 @@ typedef struct CompileRun {
     // The request: set before compile_start, read-only while the worker runs.
     String8 command, dir, root; // dir: where it runs; root: the project (path resolution), may be empty
     i64 max_output;             // bytes of output kept; past it one COMPILE_TRUNCATED line, the rest read and dropped
+#if RONIN_DEV
+    // Tests (#25): faults injected into a run's end, part of the request (set before compile_start).
+    u32 dev_kill_delay_ms;      // a wait before os_process_kill
+    b32 dev_skip_kill;          // os_process_kill is not called (the job's close ends the tree)
+#endif
     // Shared.
     volatile i32 cancel;
     OsEvent cancel_event;       // set only to cancel (the process read waits on it)
