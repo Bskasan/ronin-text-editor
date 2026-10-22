@@ -70,6 +70,10 @@ and without git or outside a work tree a message says so and nothing opens.</p>
 <tr><td><code>C-g</code></td><td><code>keyboard-quit</code></td><td>close the box</td></tr>
 </tbody>
 </table>
+<p><code>RET</code> or a double click on a file whose diff has not arrived yet waits for it: the status line says so (&quot;Visiting
+a.c at its first change once git answers…&quot;), and the file opens there when git answers (where finding the file would
+put point if git fails or the file has no changed line, as for a binary file). Any other key, <code>C-g</code> or a click
+elsewhere cancels.</p>
 <p><img src="images/git-changes.png" alt="The git changes view on a test repository: a.c's diff with a removed and an added line" width="1280" height="800" loading="lazy"></p>
 <h2 id="settings">Settings</h2>
 <p>ronin runs <code>git.exe</code> from PATH, or the program <code>git_path</code> names. A diff is cut after <code>git_diff_max_lines</code> lines and the

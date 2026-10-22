@@ -7,6 +7,12 @@
 - Contributing: every change now starts as a GitHub issue and reaches main through a pull request; CONTRIBUTING.md
   describes the branches, the flow and the versions.
 
+**Fixed**
+
+- The git changes view (`C-x g`): `RET` or a double click on a file whose diff has not arrived yet now opens the file at
+  its first change once git answers, instead of at line 1. The status line says it is waiting; any other key, `C-g` or
+  a click elsewhere cancels.
+
 ## 1.0.0 — 2026-10-21
 
 ronin 1.0.0 is the first release for everyone: a small, fast, Emacs-style code editor for Windows 10 and 11 (x64), one
