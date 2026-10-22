@@ -1566,6 +1566,21 @@ i32 os_dev_live_events(void) {
     return (i32)InterlockedOr(&g_platform->live_events, 0);
 }
 
+// The fake git's gates (win32_child.c's "gate NAME"): named manual-reset events; the process id in the name keeps
+// the --fuzz-seeds workers' gates apart.
+#define WIN32_DEV_GATE_PREFIX "Local\\ronin-gate-"
+
+String8 os_dev_gate_create(Arena *arena, const char *tag, OsEvent *gate) {
+    String8 name = str8_fmt(arena, "%u-%s", (u32)GetCurrentProcessId(), tag);
+    String16 full = str16_from_str8(arena, str8_fmt(arena, "%s%S", WIN32_DEV_GATE_PREFIX, name));
+    gate->handle = CreateEventW(NULL, TRUE, FALSE, (WCHAR *)full.data);
+    if (!gate->handle) return str8(NULL, 0);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) ResetEvent(gate->handle); // a leftover child's: closed again
+    InterlockedIncrement(&g_platform->live_events);
+    WIN32_DEV_HANDLES(1);
+    return name;
+}
+
 i32 os_dev_live_processes(void) {
     return (i32)InterlockedOr(&g_platform->live_processes, 0);
 }

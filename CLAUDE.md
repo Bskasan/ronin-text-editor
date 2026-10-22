@@ -298,7 +298,9 @@ Dev-build flags (RONIN_DEV=1 only); everything is logged to build\ronin.log:
     build/ronin_debug.exe --child <script>                # the tests' scripted program (no window, no log):
                                                           # out / err TEXT, raw / rawerr TEXT (escapes \r \n
                                                           # \t \e \xHH), sleep MS, exit N, hang (120 s at
-                                                          # most), spawn FILE (a grandchild), flood BYTES,
+                                                          # most), gate NAME (until the test opens the gate,
+                                                          # os_dev_gate_create; 120 s at most), spawn FILE (a
+                                                          # grandchild), flood BYTES,
                                                           # cwd, write PATH TEXT, env NAME, repeat N TEXT,
                                                           # launch FILE (a grandchild let go: how it started)
     build/ronin_debug.exe --fake-git DIR ARGS...           # the tests' git (no window, no log; every argument after

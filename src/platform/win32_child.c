@@ -16,6 +16,7 @@
 //   sleep MS                  waits
 //   exit N                    ends with exit code N (the end of the script: 0)
 //   hang                      waits; gives up after 120 s (exit 99), so a broken test leaves nothing for long
+//   gate NAME                 waits until the test opens the gate NAME (os_dev_gate_create); gives up after 120 s (exit 99)
 //   spawn FILE                a grandchild on another script, inheriting stdout and stderr; prints "grandchild <pid>"
 //   launch FILE               a grandchild on another script through os_process_launch (nothing inherited); prints how it
 //                             started (os_dev_last_launch: out of the job or inside it); exit 94 when it did not
@@ -136,6 +137,12 @@ static i32 win32_dev_child(Platform *p, String8 script) {
         } else if (str8_equal(cmd, STR8_LIT("hang"))) {
             Sleep(120000);
             return 99;
+        } else if (str8_equal(cmd, STR8_LIT("gate"))) {
+            String16 name16 = str16_from_str8(arena, str8_fmt(arena, "%s%S", WIN32_DEV_GATE_PREFIX, arg));
+            HANDLE gate = CreateEventW(NULL, TRUE, FALSE, (WCHAR *)name16.data); // the test's, or one it opens later
+            DWORD w = gate ? WaitForSingleObject(gate, 120000) : WAIT_FAILED;
+            if (gate) CloseHandle(gate);
+            if (w != WAIT_OBJECT_0) return 99;
         } else if (str8_equal(cmd, STR8_LIT("spawn"))) {
             String8 exe = os_dev_exe_path(arena);
             String16 line16 = str16_from_str8(arena, str8_fmt(arena, "\"%S\" --child \"%S\"", exe, arg));
