@@ -15250,6 +15250,7 @@ static b32 test_markdown(Test *t) {
         { "text [not a link] and [x] (y)\n", "<p>text [not a link] and [x] (y)</p>\n" },
         { "[![badge](images/x.png)](https://a.b/c?d=1&e=2)\n",
           "<p><a href=\"https://a.b/c?d=1&amp;e=2\"><img src=\"images/x.png\" alt=\"badge\" width=\"10\" height=\"20\" loading=\"lazy\"></a></p>\n" },
+        { "## A\ntext\n## a\n## A 1\n## a\n", "<h2 id=\"a\">A</h2>\n<p>text</p>\n<h2 id=\"a-1\">a</h2>\n<h2 id=\"a-1-1\">A 1</h2>\n<h2 id=\"a-2\">a</h2>\n" },
     };
     MdError err;
     for (i32 i = 0; i < ARRAY_COUNT(goldens); i++) {
@@ -15272,8 +15273,7 @@ static b32 test_markdown(Test *t) {
         { "x\ny `z\n", 2, "unclosed code span" },
         { "x\n| a |\nb\n", 2, "without a |---| row" },
         { "| a |\n|:-|\n", 2, "alignment" },
-        { "## A\ntext\n## a\n", 3, "already (#a)" },
-        { "## main\n", 1, "already (#main)" },
+        { "## main\n", 1, "the template's id (#main)" },
         { "##### deep\n", 1, "deeper than ####" },
         { "a\n---\n", 2, "rules and setext" },
         { "```\ncode\n", 1, "unclosed ``` fence" },
@@ -15297,13 +15297,28 @@ static b32 test_markdown(Test *t) {
     // GitHub's anchors (the README check's too).
     static const struct { const char *heading, *slug; } slugs[] = {
         { "Global (`[keys]`)", "global-keys" }, { "What a pull request must meet", "what-a-pull-request-must-meet" },
-        { "C-x p f", "c-x-p-f" }, { "a_b.c -- d", "a_bc----d" }, { "\xc3\x9c" "ber \xc3\xa9t\xc3\xa9", "\xc3\x9c" "ber-\xc3\xa9t\xc3\xa9" },
+        { "C-x p f", "c-x-p-f" }, { "a_b.c -- d", "a_bc----d" }, { "\xc3\x9c" "ber \xc3\xa9t\xc3\xa9", "\xc3\xbc" "ber-\xc3\xa9t\xc3\xa9" },
+        { "See [the keys](keys.html#global) here", "see-the-keys-here" }, { "The `` `x` `` macro", "the-x-macro" },
     };
     for (i32 i = 0; i < ARRAY_COUNT(slugs); i++) {
         u8 out[MD_SLUG_CAP];
         String8 s = str8(out, md_slug(md_cstr(slugs[i].heading), out, MD_SLUG_CAP));
         TEST_CHECK(t, str8_equal(s, str8_cstr(slugs[i].slug)), "markdown: slug of '%s': %S", slugs[i].heading, s);
     }
+    // Ids: the same text twice numbered; two texts with one hash stay two ids; a page holds MD_IDS_CAP of them.
+    MdIds *ids = PUSH_STRUCT(&t->arena, MdIds);
+    u8 id[32];
+    i64 x1 = md_unique_id(ids, md_cstr("x"), id, sizeof(id)), x2 = md_unique_id(ids, md_cstr("x"), id, sizeof(id));
+    TEST_CHECK(t, x1 == 1 && x2 == 3 && str8_equal(str8(id, x2), STR8_LIT("x-1")), "markdown: x twice gave '%S'", str8(id, x2 > 0 ? x2 : 0));
+    TEST_CHECK(t, md_ids_take(ids, (const u8 *)"y", 1, md_hash((const u8 *)"z", 1)), "markdown: an id taken with another's hash");
+    i64 nz = md_unique_id(ids, md_cstr("z"), id, sizeof(id));
+    TEST_CHECK(t, nz == 1 && id[0] == 'z', "markdown: 'z' after 'y' with z's hash gave '%S'", str8(id, nz > 0 ? nz : 0));
+    u8 *many = PUSH_ARRAY(&t->arena, u8, 5 * (MD_IDS_CAP + 1) + 1);
+    for (i32 i = 0; i <= MD_IDS_CAP; i++) memcpy(many + 5 * i, "## h\n", 5);
+    many[5 * (MD_IDS_CAP + 1)] = 0;
+    got = test_md_body(t, (const char *)many, NULL, &err);
+    TEST_CHECK(t, !got.len && err.line == MD_IDS_CAP + 1 && test_md_has(str8(err.text, err.text_len), "more headings than a page holds"),
+               "markdown: %d headings on a page: line %D '%S'", MD_IDS_CAP + 1, err.line, str8(err.text, err.text_len));
     // The navigation, and refusals of nav.txt.
     MdNav *nav = PUSH_STRUCT(&t->arena, MdNav);
     const char *nav_text = "# pages\n[Start]\nindex  Overview\ninstall Install\n\n[Use]\nediting Editing & more\n";
@@ -15347,8 +15362,8 @@ static b32 test_markdown(Test *t) {
     TEST_CHECK(t, !md_page(nav, 0, md_cstr("no title\n"), md_cstr("a.md"), NULL, &s2, &o2, &err) && test_md_has(str8(err.text, err.text_len), "one # title"),
                "markdown: a page without its title");
     LOG("test: ok: markdown (%d goldens, a fragment, an include's links, %d refusals with their lines, an error inside an include, %d slugs, "
-        "nav.txt and %d refusals, a page twice the same, too large, without a title)", ARRAY_COUNT(goldens), ARRAY_COUNT(refused), ARRAY_COUNT(slugs),
-        ARRAY_COUNT(bad_nav));
+        "ids (a repeat numbered, one hash for two texts, %d headings refused), nav.txt and %d refusals, a page twice the same, too large, "
+        "without a title)", ARRAY_COUNT(goldens), ARRAY_COUNT(refused), ARRAY_COUNT(slugs), MD_IDS_CAP + 1, ARRAY_COUNT(bad_nav));
     return 1;
 }
 
@@ -15504,18 +15519,27 @@ static i32 readme_heading(String8 line, String8 *text) {
     return level;
 }
 
-// GitHub's anchor for a heading: md_slug, the one the docs site's converter gives its headings (Phase 24).
+// GitHub's slug for a heading: md_slug, the one the docs site's converter gives its headings (Phase 24; twice the
+// heading's length, since U+0130 grows).
 static String8 readme_slug(Arena *arena, String8 heading) {
-    u8 *out = PUSH_ARRAY(arena, u8, heading.len + 1);
-    return str8(out, md_slug(md_str(heading.data, heading.len), out, heading.len + 1));
+    u8 *out = PUSH_ARRAY(arena, u8, 2 * heading.len + 1);
+    return str8(out, md_slug(md_str(heading.data, heading.len), out, 2 * heading.len + 1));
 }
 
+// Whether a heading of the lines (outside code blocks) has the id `anchor`, a repeat numbered as GitHub and the site
+// number it (md_unique_id, #20).
 static b32 readme_has_anchor(Arena *arena, String8 *lines, i64 count, String8 anchor) {
+    MdIds ids;
+    memset(&ids, 0, sizeof(ids));
     b32 code = 0;
     for (i64 i = 0; i < count; i++) {
         if (readme_is_fence(lines[i])) code = !code;
         String8 text;
-        if (!code && readme_heading(lines[i], &text) && str8_equal(readme_slug(arena, text), anchor)) return 1;
+        if (code || !readme_heading(lines[i], &text)) continue;
+        String8 slug = readme_slug(arena, text);
+        u8 *id = PUSH_ARRAY(arena, u8, slug.len + 16);
+        i64 n = md_unique_id(&ids, md_str(slug.data, slug.len), id, slug.len + 16);
+        if (n >= 0 && str8_equal(str8(id, n), anchor)) return 1;
     }
     return 0;
 }
@@ -15819,22 +15843,14 @@ static void readme_links(ReadmeCheck *c, i64 line, String8 s) {
 // Checks the lines in c (c->file names them, or c->line_files line by line); the failures stay in c. need_tables:
 // README (no key table at all is a failure). In README and CONTRIBUTING the ## section decides what is checked; on a
 // page of the site (c->site) the page does: ini blocks on configuration, themes and settings, '_' names everywhere,
-// prose keys everywhere but limits and roadmap; and its headings must be unique (they are its anchors).
+// prose keys everywhere but limits and roadmap. A repeated heading is numbered as GitHub numbers it (#20).
 static void readme_check_lines(ReadmeCheck *c, b32 need_tables) {
     String8 section = str8(NULL, 0); // the current ## heading
     i32 tables0 = c->tables;
-    u64 *slugs = PUSH_ARRAY(&c->t->arena, u64, c->line_count + 1);
-    i64 slug_count = 0;
     for (i64 i = 0; i < c->line_count; i++) {
         String8 line = c->lines[i], heading;
         i32 level = readme_heading(line, &heading);
         if (level == 2) section = heading;
-        if (level && c->site) {
-            String8 slug = readme_slug(&c->t->arena, heading);
-            u64 h = md_hash(slug.data, slug.len);
-            for (i64 k = 0; k < slug_count; k++) if (slugs[k] == h) readme_fail(c, i + 1, "a second heading #%S on the page", slug);
-            slugs[slug_count++] = h;
-        }
         b32 config_section = c->site || str8_equal(section, STR8_LIT("Configuration"));
         b32 exempt = c->site ? c->site_exempt : str8_equal(section, STR8_LIT("Known limits")) || str8_equal(section, STR8_LIT("Roadmap"));
         b32 ini_here = c->site ? c->site_ini : str8_equal(section, STR8_LIT("Configuration")) || str8_equal(section, STR8_LIT("Themes"));
@@ -15947,6 +15963,55 @@ static b32 readme_expect(ReadmeCheck *c, const char *fragment, const char *prefi
     return 0;
 }
 
+// The site's heading ids against GitHub's (#20): res/heading_ids.md converted as make_docs converts a page must give
+// exactly the ids of res/heading_ids.txt (GitHub's, from `gh api markdown -f mode=markdown`, asked once), and the
+// README check must resolve each of them and nothing past them.
+static b32 test_heading_ids(Test *t) {
+    String8 root = str8_fmt(&t->arena, "%S\\..", os_exe_dir(&t->arena)), src, want_text;
+    TEST_CHECK(t, os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\res\\heading_ids.md", root), MB(1), &src) == OS_FILE_OK &&
+                  os_read_small_file(&t->arena, str8_fmt(&t->arena, "%S\\res\\heading_ids.txt", root), MB(1), &want_text) == OS_FILE_OK,
+               "heading ids: cannot read res\\heading_ids.md and .txt under %S", root);
+    // CRLF into LF, as make_docs reads its sources (a checkout may have either).
+    u8 *lf = PUSH_ARRAY(&t->arena, u8, src.len);
+    i64 lf_len = 0;
+    for (i64 i = 0; i < src.len; i++) if (!(src.data[i] == '\r' && i + 1 < src.len && src.data[i + 1] == '\n')) lf[lf_len++] = src.data[i];
+    i64 want_count;
+    String8 *want_lines = readme_split(&t->arena, want_text, &want_count), want[64];
+    i32 nwant = 0;
+    for (i64 i = 0; i < want_count && nwant < ARRAY_COUNT(want); i++)
+        if (want_lines[i].len && want_lines[i].data[0] != '#') want[nwant++] = want_lines[i];
+    MdNav *nav = PUSH_STRUCT(&t->arena, MdNav);
+    MdError err = { 0 };
+    TEST_CHECK(t, md_nav_parse(md_cstr("[A]\nheading-ids Heading ids\n"), md_cstr("nav.txt"), nav, &err), "heading ids: the nav");
+    MdOut scratch = { PUSH_ARRAY(&t->arena, u8, KB(64)), 0, KB(64), 0 }, out = { PUSH_ARRAY(&t->arena, u8, KB(64)), 0, KB(64), 0 };
+    TEST_CHECK(t, md_page(nav, 0, md_str(lf, lf_len), md_cstr("res/heading_ids.md"), NULL, &scratch, &out, &err),
+               "heading ids: the converter refused %S:%D: %S", str8((u8 *)err.file.data, err.file.len), err.line, str8(err.text, err.text_len));
+    // The ids in page order: <hN id="...">.
+    String8 body = str8(scratch.data, scratch.len), got[64];
+    i32 ngot = 0;
+    for (i64 i = 0; i + 8 < body.len; i++) {
+        if (body.data[i] != '<' || body.data[i + 1] != 'h' || body.data[i + 2] < '1' || body.data[i + 2] > '6' ||
+            !str8_equal(str8(body.data + i + 3, 5), STR8_LIT(" id=\"")))
+            continue;
+        i64 s = i + 8, e = s;
+        while (e < body.len && body.data[e] != '"') e++;
+        if (ngot < ARRAY_COUNT(got)) got[ngot] = str8(body.data + s, e - s);
+        ngot++;
+        i = e;
+    }
+    for (i32 k = 0; k < ngot && k < nwant; k++)
+        TEST_CHECK(t, str8_equal(got[k], want[k]), "heading ids: heading %d: '%S', GitHub '%S'", k + 1, got[k], want[k]);
+    TEST_CHECK(t, ngot == nwant && nwant > 0, "heading ids: %d headings, GitHub %d", ngot, nwant);
+    // Every id resolves as a link's #anchor; the next numbers do not.
+    i64 line_count;
+    String8 *lines = readme_split(&t->arena, str8(lf, lf_len), &line_count);
+    for (i32 k = 0; k < nwant; k++) TEST_CHECK(t, readme_has_anchor(&t->arena, lines, line_count, want[k]), "heading ids: no anchor #%S", want[k]);
+    TEST_CHECK(t, !readme_has_anchor(&t->arena, lines, line_count, STR8_LIT("changed-4")) &&
+                  !readme_has_anchor(&t->arena, lines, line_count, STR8_LIT("added-3")), "heading ids: an anchor past the last repeat resolves");
+    LOG("test: ok: heading ids (%d headings of res/heading_ids.md equal GitHub's and resolve; #changed-4 and #added-3 do not)", nwant);
+    return 1;
+}
+
 static b32 test_readme(Test *t) {
     u64 t0 = os_time_us();
     ReadmeCheck *c = PUSH_STRUCT(&t->arena, ReadmeCheck);
@@ -16012,7 +16077,8 @@ static b32 test_readme(Test *t) {
         { "| keys | command | what it does |\n|---|---|---|\n| `C-x C-f` | `find-files` | x |\n", "frag.md:3: ",
           "describe-key says \"C-x C-f runs the command find-file\"" },
         { "| command | what it does |\n|---|---|\n| `no-such-command` | x |\n", "frag.md:3: ", "no command no-such-command" },
-        { "## Twice\n\ntext\n\n## Twice\n", "frag.md:5: ", "a second heading #twice" },
+        { "## Twice\n\ntext\n\n## Twice\n\nSee [the first](#twice), [the second](#twice-1) and [a third](#twice-2).\n", "frag.md:7: ",
+          "link #twice-2: no heading #twice-2" },
         { "Set `undo_limt_mb` to keep more.\n", "frag.md:1: ", "`undo_limt_mb` is no setting and no color" },
     };
     i32 site_caught = 0;
@@ -16369,6 +16435,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_theme_fuzz(&t, seed);
     arena_reset(&t.arena);
     test_markdown(&t);
+    arena_reset(&t.arena);
+    test_heading_ids(&t);
     arena_reset(&t.arena);
     test_dump_docs(&t);
     arena_reset(&t.arena);

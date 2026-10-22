@@ -8,13 +8,14 @@
    ====================================================================== */
 
 // The converter of the documentation site (Phase 24): one page of docs/src/*.md into one HTML file of docs/, inside the
-// site's template with its navigation. tools/make_docs.c includes this file (with its own u8 / i32 / i64 / b32 / u64
-// and MAKE_DOCS defined), so the converter --test checks is the one the tool runs. It includes nothing, uses only
+// site's template with its navigation. tools/make_docs.c includes this file (with its own u8 / i32 / u32 / i64 / b32 /
+// u64 and MAKE_DOCS defined), so the converter --test checks is the one the tool runs. It includes nothing, uses only
 // memcpy and memset, and writes into memory the caller gives; the output depends on nothing but its input (no date,
 // no path).
 //
 // The subset, everything else refused with its line:
-//   blocks   # to #### headings (one # per page, the title; every heading an id by md_slug, unique in the page);
+//   blocks   # to #### headings (one # per page, the title; every heading GitHub's id: md_slug, a repeat numbered by
+//            md_unique_id);
 //            paragraphs; ``` fences with an optional language (ini lines colored: comments, [sections], keys);
 //            - and 1. lists, nested by indentation, tight (a blank line ends the list), continuation lines;
 //            tables (a header row and a |---| row, no alignment colons, every row on one line);
@@ -33,6 +34,7 @@
 #define MD_NAV_CAP 64
 #define MD_LIST_DEPTH 8
 #define MD_SLUG_CAP 256
+#define MD_IDS_POOL 16384
 
 typedef struct MdStr {
     const u8 *data;
@@ -167,19 +169,6 @@ static void md_escape(MdOut *o, MdStr s, b32 newline_space) {
     }
 }
 
-// GitHub's anchor of a heading: ASCII letters lowercased; letters, digits, '-', '_' and every byte of a multi-byte
-// character kept; a space becomes '-'; everything else (backticks, punctuation) dropped. The README check uses it too.
-i64 md_slug(MdStr heading, u8 *out, i64 cap) {
-    i64 n = 0;
-    for (i64 i = 0; i < heading.len && n < cap; i++) {
-        u8 b = heading.data[i];
-        if (b >= 'A' && b <= 'Z') out[n++] = (u8)(b - 'A' + 'a');
-        else if ((b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-' || b == '_' || b >= 0x80) out[n++] = b;
-        else if (b == ' ') out[n++] = '-';
-    }
-    return n;
-}
-
 static u64 md_hash(const u8 *data, i64 len) {
     u64 h = 0xcbf29ce484222325ull;
     for (i64 i = 0; i < len; i++) h = (h ^ data[i]) * 0x100000001b3ull;
@@ -200,17 +189,74 @@ static void md_set_error(MdError *err, MdStr file, i64 line, const char *a, MdSt
 // ---------------------------------------------------------------------------
 // Conversion state
 
+// The ids a page has given its headings: each its 64-bit FNV-1a hash, its counter (github-slugger's occurrences) and
+// its text in `pool`. Two ids are the same only when their texts are: the hash only skips the comparison.
+typedef struct MdId {
+    u64 hash;
+    i32 count;
+    i32 at, len;
+} MdId;
+
+typedef struct MdIds {
+    MdId taken[MD_IDS_CAP];
+    i32 count;
+    i32 pool_len;
+    u8 pool[MD_IDS_POOL];
+} MdIds;
+
+static i32 md_ids_find(const MdIds *ids, const u8 *s, i64 len) {
+    u64 h = md_hash(s, len);
+    for (i32 i = 0; i < ids->count; i++) {
+        const MdId *id = &ids->taken[i];
+        if (id->hash == h && id->len == len && md_equal(md_str(ids->pool + id->at, len), md_str(s, len))) return i;
+    }
+    return -1;
+}
+
+// Records `s` with the hash `h` (always md_hash of `s`, except in a test of a collision); 0 when `ids` is full.
+static b32 md_ids_take(MdIds *ids, const u8 *s, i64 len, u64 h) {
+    if (ids->count == MD_IDS_CAP || ids->pool_len + len > MD_IDS_POOL) return 0;
+    MdId *id = &ids->taken[ids->count++];
+    id->hash = h;
+    id->count = 0;
+    id->at = ids->pool_len;
+    id->len = (i32)len;
+    if (len) memcpy(ids->pool + ids->pool_len, s, (size_t)len);
+    ids->pool_len += (i32)len;
+    return 1;
+}
+
+// GitHub's id of a heading whose slug is `slug` (github-slugger's rule, #20): the slug while no heading of the page has
+// that id; else the slug's counter goes up until "slug-N" is free. The id is recorded; its length, or -1 when `ids` is
+// full or the id longer than `cap`. The README check uses it too.
+i64 md_unique_id(MdIds *ids, MdStr slug, u8 *out, i64 cap) {
+    if (slug.len > cap) return -1;
+    if (slug.len) memcpy(out, slug.data, (size_t)slug.len);
+    i64 n = slug.len;
+    i32 base = md_ids_find(ids, slug.data, slug.len);
+    while (md_ids_find(ids, out, n) >= 0) {
+        u8 digits[12];
+        i32 count = ++ids->taken[base].count, d = 0;
+        do {
+            digits[d++] = (u8)('0' + count % 10);
+            count /= 10;
+        } while (count);
+        if (slug.len + 1 + d > cap) return -1;
+        n = slug.len;
+        out[n++] = '-';
+        while (d) out[n++] = digits[--d];
+    }
+    return md_ids_take(ids, out, n, md_hash(out, n)) ? n : -1;
+}
+
 typedef struct MdPageState {
-    u64 ids[MD_IDS_CAP];
-    i32 id_count;
+    MdIds ids;
     MdStr title; // the # heading's text
     i32 titles;
 } MdPageState;
 
 static void md_page_init(MdPageState *page) {
     memset(page, 0, sizeof(*page));
-    MdStr main_id = md_cstr("main"); // the template's own id
-    page->ids[page->id_count++] = md_hash(main_id.data, main_id.len);
 }
 
 typedef struct MdCtx {
@@ -287,6 +333,104 @@ static b32 md_link_at(MdStr s, i64 at, MdStr *text, MdStr *url, i64 *end) {
 
 static b32 md_external(MdStr url) {
     return md_starts(url, "http://") || md_starts(url, "https://") || md_starts(url, "mailto:");
+}
+
+static void md_slug_put(u8 *out, i64 *n, i64 cap, const u8 *bytes, i64 len) {
+    if (*n + len > cap) {
+        *n = cap + 1; // full: nothing more goes in
+        return;
+    }
+    memcpy(out + *n, bytes, (size_t)len);
+    *n += len;
+}
+
+// Plain text into anchor characters, GitHub's way (res/heading_ids.md shows each rule, #20): ASCII letters lowercased,
+// digits, '-' and '_' kept, a space a '-', other ASCII dropped; Latin-1 and Latin Extended-A capitals lowercased (U+0130
+// as "i" and U+0307), U+00D7, U+00F7 and General Punctuation (U+2010-U+205E: dashes, quotes, the ellipsis) dropped;
+// every other character kept as it is.
+static void md_slug_chars(MdStr s, u8 *out, i64 *n, i64 cap) {
+    for (i64 i = 0; i < s.len && *n <= cap;) {
+        u8 b = s.data[i];
+        if (b < 0x80) {
+            u8 c = b >= 'A' && b <= 'Z' ? (u8)(b - 'A' + 'a') : b == ' ' ? (u8)'-' : b;
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') md_slug_put(out, n, cap, &c, 1);
+            i++;
+            continue;
+        }
+        i64 len = 1;
+        u32 cp = 0;
+        if (b >= 0xc2 && b <= 0xdf && i + 1 < s.len && (s.data[i + 1] & 0xc0) == 0x80) {
+            len = 2;
+            cp = ((u32)(b & 0x1f) << 6) | (s.data[i + 1] & 0x3f);
+        } else if (b == 0xe2 && i + 2 < s.len && (s.data[i + 1] & 0xc0) == 0x80 && (s.data[i + 2] & 0xc0) == 0x80) {
+            len = 3;
+            cp = 0x2000 | ((u32)(s.data[i + 1] & 0x3f) << 6) | (s.data[i + 2] & 0x3f);
+        }
+        u32 lower = cp;
+        if (cp >= 0xc0 && cp <= 0xde) lower = cp + 0x20;
+        else if ((cp >= 0x100 && cp <= 0x12f) || (cp >= 0x132 && cp <= 0x137) || (cp >= 0x14a && cp <= 0x177)) lower = cp | 1;
+        else if ((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17e)) lower = cp + (cp & 1);
+        else if (cp == 0x178) lower = 0xff;
+        if (cp == 0xd7 || cp == 0xf7 || (cp >= 0x2010 && cp <= 0x205e)) {
+            // dropped
+        } else if (cp == 0x130) {
+            static const u8 dotted_i[3] = { 'i', 0xcc, 0x87 };
+            md_slug_put(out, n, cap, dotted_i, 3);
+        } else if (lower != cp) {
+            u8 two[2] = { (u8)(0xc0 | (lower >> 6)), (u8)(0x80 | (lower & 0x3f)) };
+            md_slug_put(out, n, cap, two, 2);
+        } else {
+            md_slug_put(out, n, cap, s.data + i, len);
+        }
+        i += len;
+    }
+}
+
+// A heading's Markdown as the text GitHub reads (a code span its content, one padding space each side dropped as
+// md_inline does; a link its text; an image nothing), through md_slug_chars.
+static void md_slug_text(MdStr s, u8 *out, i64 *n, i64 cap) {
+    i64 i = 0, plain = 0;
+    while (i < s.len) {
+        u8 b = s.data[i];
+        MdStr text = { 0 }, url;
+        i64 end = -1;
+        b32 code = b == '`', image = 0, link = 0;
+        if (b == '!' && i + 1 < s.len && s.data[i + 1] == '[' && md_link_at(s, i + 1, &text, &url, &end)) image = 1;
+        else if (b == '[' && md_link_at(s, i, &text, &url, &end)) link = 1;
+        if (!code && !image && !link) {
+            i++;
+            continue;
+        }
+        md_slug_chars(md_str(s.data + plain, i - plain), out, n, cap);
+        if (code) {
+            i64 k = 0;
+            while (i + k < s.len && s.data[i + k] == '`') k++;
+            i64 close = md_code_close(s, i + k, k);
+            if (close < 0) { // literal backticks: punctuation
+                i += k;
+            } else {
+                MdStr inner = md_str(s.data + i + k, close - i - k);
+                b32 blank = 1;
+                for (i64 j = 0; j < inner.len; j++) blank &= inner.data[j] == ' ';
+                if (inner.len >= 2 && !blank && inner.data[0] == ' ' && inner.data[inner.len - 1] == ' ') inner = md_str(inner.data + 1, inner.len - 2);
+                md_slug_chars(inner, out, n, cap);
+                i = close + k;
+            }
+        } else {
+            if (link) md_slug_text(text, out, n, cap);
+            i = end;
+        }
+        plain = i;
+    }
+    md_slug_chars(md_str(s.data + plain, i - plain), out, n, cap);
+}
+
+// GitHub's anchor of one heading (its slug, before md_unique_id numbers a repeat). The README check uses it too. At
+// most `cap` bytes; U+0130 makes the slug longer than the heading's text (2 bytes -> 3).
+i64 md_slug(MdStr heading, u8 *out, i64 cap) {
+    i64 n = 0;
+    md_slug_text(heading, out, &n, cap);
+    return n > cap ? cap : n;
 }
 
 // A link's target as the page writes it: in an included repository file a relative link becomes the GitHub page of
@@ -518,21 +662,22 @@ static void md_heading(MdCtx *c, MdStr line, i64 n) {
         }
         c->page->title = text;
     }
-    u8 slug[MD_SLUG_CAP];
+    u8 slug[MD_SLUG_CAP], id[MD_SLUG_CAP + 16];
     i64 len = md_slug(text, slug, MD_SLUG_CAP);
-    u64 h = md_hash(slug, len);
-    for (i32 i = 0; i < c->page->id_count; i++) {
-        if (c->page->ids[i] == h) {
-            md_fail(c, n, "a heading whose anchor the page has already (#", md_str(slug, len), ")");
-            return;
-        }
+    if (md_equal(md_str(slug, len), md_cstr("main"))) {
+        md_fail(c, n, "a heading with the template's id (#main)", md_str(NULL, 0), "");
+        return;
     }
-    if (c->page->id_count < MD_IDS_CAP) c->page->ids[c->page->id_count++] = h;
+    i64 id_len = md_unique_id(&c->page->ids, md_str(slug, len), id, (i64)sizeof(id));
+    if (id_len < 0) {
+        md_fail(c, n, "more headings than a page holds (", text, ")");
+        return;
+    }
     u8 tag = (u8)('0' + level);
     md_puts(c->out, "<h");
     md_put(c->out, &tag, 1);
     md_puts(c->out, " id=\"");
-    md_escape(c->out, md_str(slug, len), 0);
+    md_escape(c->out, md_str(id, id_len), 0);
     md_puts(c->out, "\">");
     md_inline(c, text, n);
     md_puts(c->out, "</h");
