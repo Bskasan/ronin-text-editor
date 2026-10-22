@@ -663,6 +663,9 @@ static void compile_worker_line(void *data, String8 raw) {
 
 static void compile_worker_main(void *data) {
     CompileRun *c = data;
+#if RONIN_DEV
+    c->dev.entered = os_time_us();
+#endif
     CompileWorker w = { .c = c };
     Arena cache_arena = arena_create(MB(64));
     compile_cache_init(&w.cache, &cache_arena, compile_exists_fs, NULL);
@@ -683,15 +686,26 @@ static void compile_worker_main(void *data) {
     OsProcess proc;
     c->start_us = os_time_us();
     c->start_status = os_process_start(&c->arena, c->command, c->dir, &proc);
+#if RONIN_DEV
+    c->dev.started = os_time_us();
+#endif
     if (c->start_status == OS_FILE_OK) {
         c->pid = proc.pid;
         b32 killed = 0;
         for (;;) {
             if (compile_cancelled(c) || w.stop) {
+#if RONIN_DEV
+                c->dev.end = compile_cancelled(c) ? COMPILE_DEV_END_FLAG : COMPILE_DEV_END_SEND;
+                c->dev.read_end = os_time_us();
+#endif
                 killed = 1;
                 break;
             }
             if (w.batch->used && !compile_send(&w, 0)) { // what it has goes before the read waits
+#if RONIN_DEV
+                c->dev.end = COMPILE_DEV_END_SEND;
+                c->dev.read_end = os_time_us();
+#endif
                 killed = 1;
                 break;
             }
@@ -702,18 +716,37 @@ static void compile_worker_main(void *data) {
                 compile_split_feed(&split, buf, got, compile_worker_line, &w);
                 continue;
             }
+#if RONIN_DEV
+            c->dev.end = r == OS_PROCESS_CANCELLED ? COMPILE_DEV_END_READ_CANCEL
+                       : r == OS_PROCESS_EXITED    ? COMPILE_DEV_END_EXITED : COMPILE_DEV_END_ERROR;
+            c->dev.read_end = os_time_us();
+#endif
             killed = r == OS_PROCESS_CANCELLED;
             break; // the end (or a broken pipe)
         }
         if (killed) {
+#if RONIN_DEV
+            c->dev.proc_count = os_dev_job_processes(&proc, c->dev.procs, COMPILE_DEV_PROCS, &c->dev.proc_total);
+#endif
             os_process_kill(&proc);
+#if RONIN_DEV
+            c->dev.killed = os_time_us();
+#endif
             c->killed = 1;
         } else {
             compile_split_end(&split, compile_worker_line, &w);
         }
+#if RONIN_DEV
+        c->dev.wait_ok = os_process_wait(&proc, killed ? 1000 : 5000);
+        c->dev.waited = os_time_us();
+#else
         os_process_wait(&proc, killed ? 1000 : 5000);
+#endif
         c->exit_code = os_process_exit_code(&proc);
         os_process_close(&proc, killed);
+#if RONIN_DEV
+        c->dev.closed = os_time_us();
+#endif
     }
     c->end_us = os_time_us();
     os_release(cache_arena.base);
@@ -725,6 +758,9 @@ static void compile_worker_main(void *data) {
         if (!w.batch) w.batch = PUSH_STRUCT(&c->arena, CompileBatch);
         w.batch->used = 0;
     }
+#if RONIN_DEV
+    c->dev.sent = os_time_us(); // the last write of the run: compile_send(last) queues it under the lock
+#endif
     compile_send(&w, 1);
 }
 

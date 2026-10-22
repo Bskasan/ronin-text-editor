@@ -1593,6 +1593,46 @@ b32 os_dev_process_alive(u32 pid) {
     return alive;
 }
 
+static u64 win32_dev_process_created(HANDLE h) {
+    FILETIME created, exited, kernel, user;
+    if (!GetProcessTimes(h, &created, &exited, &kernel, &user)) return 0;
+    return (u64)created.dwHighDateTime << 32 | created.dwLowDateTime;
+}
+
+i32 os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total) {
+    *total = 0;
+    if (!p->job || cap <= 0) return 0;
+    union {
+        JOBOBJECT_BASIC_PROCESS_ID_LIST list;
+        u8 room[sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 63 * sizeof(ULONG_PTR)];
+    } ids;
+    memset(&ids, 0, sizeof(ids));
+    i32 room = (i32)MIN((i64)cap, 64);
+    DWORD size = (DWORD)(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + (DWORD)(room - 1) * sizeof(ULONG_PTR));
+    // With more processes than room the call fails with ERROR_MORE_DATA, the count of all of them filled in.
+    if (!QueryInformationJobObject(p->job, JobObjectBasicProcessIdList, &ids.list, size, NULL) && GetLastError() != ERROR_MORE_DATA) {
+        return 0;
+    }
+    *total = (i32)ids.list.NumberOfAssignedProcesses;
+    i32 n = (i32)MIN((i64)ids.list.NumberOfProcessIdsInList, (i64)room);
+    for (i32 i = 0; i < n; i++) {
+        u32 pid = (u32)ids.list.ProcessIdList[i];
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        out[i] = (OsDevProcessId){ pid, h ? win32_dev_process_created(h) : 0 };
+        if (h) CloseHandle(h);
+    }
+    return n;
+}
+
+b32 os_dev_process_running(OsDevProcessId id) {
+    if (!id.created) return 0;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, id.pid);
+    if (!h) return 0;
+    b32 running = win32_dev_process_created(h) == id.created && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+    CloseHandle(h);
+    return running;
+}
+
 void os_dev_kill_pid(u32 pid) {
     HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
     if (!h) return;
