@@ -1599,9 +1599,9 @@ static u64 win32_dev_process_created(HANDLE h) {
     return (u64)created.dwHighDateTime << 32 | created.dwLowDateTime;
 }
 
-i32 os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total) {
+i32 os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total, i32 fault) {
     *total = 0;
-    if (!p->job || cap <= 0) return 0;
+    if (!p->job || cap <= 0 || fault == OS_DEV_JOB_FAULT_QUERY) return OS_DEV_JOB_QUERY_FAILED;
     union {
         JOBOBJECT_BASIC_PROCESS_ID_LIST list;
         u8 room[sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 63 * sizeof(ULONG_PTR)];
@@ -1611,15 +1611,28 @@ i32 os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total)
     DWORD size = (DWORD)(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + (DWORD)(room - 1) * sizeof(ULONG_PTR));
     // With more processes than room the call fails with ERROR_MORE_DATA, the count of all of them filled in.
     if (!QueryInformationJobObject(p->job, JobObjectBasicProcessIdList, &ids.list, size, NULL) && GetLastError() != ERROR_MORE_DATA) {
-        return 0;
+        return OS_DEV_JOB_QUERY_FAILED;
     }
     *total = (i32)ids.list.NumberOfAssignedProcesses;
     i32 n = (i32)MIN((i64)ids.list.NumberOfProcessIdsInList, (i64)room);
     for (i32 i = 0; i < n; i++) {
         u32 pid = (u32)ids.list.ProcessIdList[i];
+        out[i] = (OsDevProcessId){ pid, 0 };
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        out[i] = (OsDevProcessId){ pid, h ? win32_dev_process_created(h) : 0 };
-        if (h) CloseHandle(h);
+        if (!h) {
+            if (GetLastError() == ERROR_INVALID_PARAMETER) continue; // no process with that id: it ended since the listing
+            return OS_DEV_JOB_READ_FAILED;                          // it exists and could not be opened
+        }
+        BOOL in_job = FALSE;
+        if (!IsProcessInJob(h, p->job, &in_job)) {
+            CloseHandle(h);
+            return OS_DEV_JOB_READ_FAILED;
+        }
+        u64 created = !in_job ? 0 : fault == OS_DEV_JOB_FAULT_TIMES ? 0 : win32_dev_process_created(h);
+        CloseHandle(h);
+        if (!in_job) continue; // the id already belongs to another process: the one listed is gone
+        if (!created) return OS_DEV_JOB_READ_FAILED;
+        out[i].created = created;
     }
     return n;
 }

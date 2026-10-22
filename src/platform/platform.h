@@ -257,8 +257,15 @@ typedef struct OsDevProcessId {
     u64 created;
 } OsDevProcessId;
 // The processes of a build's job (cmd.exe and what it started): at most `cap` into `out` (the count returned), *total
-// how many the job held (more than cap: the list is not complete). Any thread.
-i32  os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total);
+// how many the job held (more than cap: the list is not complete). A process that ended since the job listed it (its id
+// no longer exists, or already belongs to a process outside the job) is recorded as gone (created 0). A failure is a
+// negative count: OS_DEV_JOB_QUERY_FAILED (the job could not be listed) or OS_DEV_JOB_READ_FAILED (a process that exists
+// could not be opened, or its creation time read). `fault` (tests, OS_DEV_JOB_FAULT_*) takes a failure's path on
+// purpose. Any thread.
+#define OS_DEV_JOB_QUERY_FAILED (-1)
+#define OS_DEV_JOB_READ_FAILED (-2)
+enum { OS_DEV_JOB_FAULT_NONE, OS_DEV_JOB_FAULT_QUERY, OS_DEV_JOB_FAULT_TIMES };
+i32  os_dev_job_processes(OsProcess *p, OsDevProcessId *out, i32 cap, i32 *total, i32 fault);
 // That very process still runs: one with its id exists, was created at its time, and has not ended. Any thread.
 b32  os_dev_process_running(OsDevProcessId id);
 void os_dev_kill_pid(u32 pid);         // tests: a leftover they made goes

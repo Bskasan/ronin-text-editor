@@ -141,7 +141,7 @@ typedef struct CompileDevStages {
     CompileDevEnd end;
     b32 wait_ok;                                // os_process_wait saw cmd.exe end (not its timeout)
     OsDevProcessId procs[COMPILE_DEV_PROCS];    // the job's processes just before the kill
-    i32 proc_count;                             // ... recorded in procs
+    i32 proc_count;                             // ... recorded in procs; negative: the listing failed (OS_DEV_JOB_*_FAILED)
     i32 proc_total;                             // ... the job held (more than COMPILE_DEV_PROCS: not all recorded)
 } CompileDevStages;
 #endif
@@ -154,6 +154,7 @@ typedef struct CompileRun {
     // Tests (#25): faults injected into a run's end, part of the request (set before compile_start).
     u32 dev_kill_delay_ms;      // a wait before os_process_kill
     b32 dev_skip_kill;          // os_process_kill is not called (the job's close ends the tree)
+    i32 dev_listing_fault;      // given to os_dev_job_processes (OS_DEV_JOB_FAULT_*)
 #endif
     // Shared.
     volatile i32 cancel;
