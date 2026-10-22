@@ -16,5 +16,5 @@ Closes #
 - [ ] A new feature is a named command with a one-line description
 - [ ] Tests for the change, and how I saw them fail without it:
 - [ ] README.md, the site's pages (`docs/src`, then `build.bat docs`), docs/MANUAL_TESTS.md and docs/ARCHITECTURE.md updated where they describe what changed
-- [ ] CHANGELOG.md's "Unreleased" section updated, for a change a user sees
+- [ ] CHANGELOG.md's "Unreleased" section updated, for a change a user sees, installs or configures
 - [ ] A screenshot, for a visual change

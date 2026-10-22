@@ -123,7 +123,8 @@ every piece of work is a GitHub issue, worked on its own branch and merged throu
 - Versions follow Semantic Versioning (semver.org): PATCH (1.0.1) for bug fixes only, MINOR (1.1.0) for
   backward-compatible features, MAJOR only for a change that breaks an existing ronin.conf, theme file or key.
   src/app/version.h changes only in a release pull request. CHANGELOG.md keeps an "Unreleased" section at its top
-  that every pull request updates (Added / Changed / Fixed, in a user's words).
+  that every pull request that changes what a user sees, installs or configures updates (Added / Changed / Fixed, in a
+  user's words); workflow and contributor-only changes need no entry.
 - main is always releasable; nothing is committed to it directly. Every change starts as an issue (labels feature,
   bug, performance, docs, chore, backlog; a milestone per version: the next PATCH for bug fixes, a MINOR for
   features). Its branch is `<type>/<issue>-<short-slug>`, type one of feat, fix, perf, docs, chore, test
@@ -132,7 +133,15 @@ every piece of work is a GitHub issue, worked on its own branch and merged throu
 - On the branch every rule of this file holds: the plan shown and approved before implementation, `verify.bat` PASS
   before every commit, one logical change per commit, docs/MANUAL_TESTS.md, README.md and the site's pages updated
   where they describe what changed. Commit messages end with the issue: `feat(view): line numbers (#4)`.
-  `verify.bat phase` runs before the pull request for anything larger than a small fix; say so before running it.
+  `verify.bat phase` runs before the pull request for anything larger than a small fix, announced as a heavy run.
+- Heavy runs: any run expected to take more than about 2 minutes (`verify.bat phase`, `--soak`, `--fuzz-seeds`,
+  repeated `--test` runs, benchmarks, long leak checks) is announced before it starts, with the list of runs and an
+  estimated total time, and waits for approval, so the machine can be freed first (other heavy programs closed, the
+  machine left alone). Heavy runs are grouped into one block at the end of the work. If a run in the block fails, stop
+  and report it with its log; do not retry it to get a pass. An ordinary `verify.bat` before a commit needs no
+  announcement.
+- CI: when a CI check fails, report the failure and its log, and propose a fix as a plan; do not push a fix without
+  approval. No automatic fixing of CI.
 - Pushing the branch (`git push -u origin <branch>`) and opening its pull request with `gh pr create` are allowed.
   The title is in the commit format; the body is the issue's summary, .github/PULL_REQUEST_TEMPLATE.md's checklist
   filled in, and `Closes #N`. Merging into main, tagging and publishing releases stay with the maintainer. main takes
