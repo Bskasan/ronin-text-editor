@@ -130,7 +130,12 @@ static void git_changes_fetch(App *app, GitView *v) {
     q.path = row->path;
     q.orig = row->orig;
     q.mode = mode;
-    GitJob *j = git_changes_start(&q);
+    GitJob *j = NULL;
+#if RONIN_DEV
+    if (app->git.dev_fail_diff_start) app->git.dev_fail_diff_start = 0;
+    else
+#endif
+    j = git_changes_start(&q);
     if (!j) {
         row->state = GIT_ROW_FAILED;
         row->error = STR8_LIT("git: cannot start a worker");
@@ -325,6 +330,12 @@ static void git_changes_waited(App *app) {
     git_changes_visit_target(app, v, row, line);
     modal_close(app);
     app_run_command(app, &CMD_GIT_CHANGES_VISIT, 0, 0);
+}
+
+// Another frame: a diff still being copied, or a waited diff's answer (or its failure to start) whose visit has not run.
+// Whatever sets wait_done is then followed by a frame, on any path, without a wake.
+static b32 git_changes_wants_frame(App *app) {
+    return app->git.work_pending || (app->git.view && app->git.view->wait_done);
 }
 
 static String8 git_changes_status(App *app, void *data, Arena *scratch) {

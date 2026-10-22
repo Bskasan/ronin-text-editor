@@ -149,6 +149,7 @@ static void modal_draw(App *app, Renderer *r, AppLayout *l, FrameInput *in);
 static b32  git_changes_wake(App *app);
 static b32  git_changes_work(App *app, u64 deadline, i64 budget);
 static void git_changes_waited(App *app);
+static b32  git_changes_wants_frame(App *app);
 static void git_changes_quit(App *app);
 static void git_changes_shutdown(App *app, u64 deadline);
 
@@ -2211,7 +2212,7 @@ static void app_catch_up(App *app, Arena *scratch, u64 end) {
 }
 
 b32 app_wants_frame(App *app) {
-    return app->syntax_pending || app->search_pending || app->rank_pending || app->results_pending || app->git.work_pending;
+    return app->syntax_pending || app->search_pending || app->rank_pending || app->results_pending || git_changes_wants_frame(app);
 }
 
 u32 app_wait_ms(App *app) {

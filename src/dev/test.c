@@ -14466,16 +14466,44 @@ typedef struct TestGitEarly {
     i32 procs0, threads0, events0, ledger0;
 } TestGitEarly;
 
-// Frames and the wake until row `row` of the open view is in `state`; `ms` is a failure bound only.
+// One step as the platform's loop takes it, without input: a frame only when a worker's wake brought news or the
+// app wants one (a frame no one asked for would hide a visit left waiting). True when a frame ran.
+static b32 test_git_platform_frame(Test *t, App *app) {
+    b32 frame = app_wants_frame(app);
+    if (os_dev_wake_wait(frame ? 0 : 5) && app_wake(app)) frame = 1;
+    if (frame) app_dev_feed_events(app, NULL, 0, &t->arena);
+    return frame;
+}
+
+// test_git_wait with the platform's frames: until git's jobs are settled; `ms` is a failure bound only.
+static b32 test_git_settle(Test *t, App *app, u32 ms) {
+    u64 deadline = os_time_us() + (u64)ms * 1000;
+    while (os_time_us() < deadline) {
+        test_git_platform_frame(t, app);
+        if (!app_dev_git_busy(app)) return 1;
+    }
+    return 0;
+}
+
+// The platform's frames until row `row` of the open view is in `state`; `ms` is a failure bound only.
 static b32 test_git_until(Test *t, App *app, i64 row, u32 state, u32 ms) {
     u64 deadline = os_time_us() + (u64)ms * 1000;
     for (;;) {
         GitView *v = app->git.view;
         if (v && row < v->count && v->rows[row].state == state) return 1;
         if (os_time_us() >= deadline) return 0;
-        if (os_dev_wake_wait(app_wants_frame(app) ? 0 : 5)) app_wake(app);
-        app_dev_feed_events(app, NULL, 0, &t->arena);
+        test_git_platform_frame(t, app);
     }
+}
+
+// After a visit the app goes idle: no frame wanted within 5 frames, and none over 10 more steps without input.
+static b32 test_git_quiet(Test *t, App *app) {
+    for (i32 i = 0; i < 5 && app_wants_frame(app); i++) app_dev_feed_events(app, NULL, 0, &t->arena);
+    for (i32 i = 0; i < 10; i++) {
+        if (app_wants_frame(app)) return 0;
+        test_git_platform_frame(t, app);
+    }
+    return !app_wants_frame(app);
 }
 
 // The wake alone, no frame, until the pending accept has its answer; `ms` is a failure bound only.
@@ -14545,7 +14573,7 @@ static b32 test_git_early_start(Test *t, TestGitEarly *e, const char *name, cons
         app_switch_buffer(app, app_selected_view(app), e->home);
     }
     app_dev_feed(app, "C-x g", &t->arena);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && modal_active(app) && app->git.view && app->git.view->rows[0].state == GIT_ROW_CACHED,
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && modal_active(app) && app->git.view && app->git.view->rows[0].state == GIT_ROW_CACHED,
                "git early %s: did not open with a.c's diff", name);
     return 1;
 }
@@ -14562,7 +14590,7 @@ static b32 test_git_early_clean(Test *t, TestGitEarly *e) {
     b32 settled = 1, clean = 1;
     if (e->app) {
         if (modal_active(e->app)) app_dev_feed(e->app, "C-g", &t->arena);
-        settled = test_git_wait(t, e->app, 20000);
+        settled = test_git_settle(t, e->app, 20000);
         clean = app_shutdown(e->app) == 0;
         e->app = NULL;
     }
@@ -14594,8 +14622,9 @@ static b32 test_git_early_ret(Test *t, TestGitEarly *e) {
                "git early RET: after RET: open %d, status '%S', shown %S at line %D", modal_active(app), test_git_status_line(t, app),
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && test_git_visited(app, "far.c", 7), "git early RET: shown %S at line %D",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "far.c", 7), "git early RET: shown %S at line %D",
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
+    TEST_CHECK(t, test_git_quiet(t, app), "git early RET: frames still wanted after the visit");
     if (!test_git_early_end(t, e, "RET")) return 0;
     LOG("test: ok: git early RET (RET on far.c while its diff is held: the box stays with \"" TEST_GIT_WAITING("far.c") "\", bound "
         "to the running diff's serial; the answer visits far.c at line 7)");
@@ -14620,8 +14649,9 @@ static b32 test_git_early_dbl(Test *t, TestGitEarly *e) {
     TEST_CHECK(t, modal_active(app) && str8_equal(test_git_status_line(t, app), STR8_LIT(TEST_GIT_WAITING("far.c"))),
                "git early double click: a third press on the row: status '%S'", test_git_status_line(t, app));
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && test_git_visited(app, "far.c", 7), "git early double click: shown %S at line %D",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "far.c", 7), "git early double click: shown %S at line %D",
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
+    TEST_CHECK(t, test_git_quiet(t, app), "git early double click: frames still wanted after the visit");
     if (!test_git_early_end(t, e, "double click")) return 0;
     LOG("test: ok: git early double click (on row 2 while its diff is held, then a third press on it: still waiting; the answer "
         "visits far.c at line 7)");
@@ -14637,7 +14667,7 @@ static b32 test_git_early_fail(Test *t, TestGitEarly *e) {
     TEST_CHECK(t, modal_active(app) && str8_equal(test_git_status_line(t, app), STR8_LIT(TEST_GIT_WAITING("fail.c"))),
                "git early failed diff: after RET: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && test_git_visited(app, "fail.c", 4), "git early failed diff: shown %S at line %D",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "fail.c", 4), "git early failed diff: shown %S at line %D",
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
     if (!test_git_early_end(t, e, "failed diff")) return 0;
     LOG("test: ok: git early failed diff (git exits 128 after RET: fail.c where find-file puts point, its line 4)");
@@ -14653,7 +14683,7 @@ static b32 test_git_early_bin(Test *t, TestGitEarly *e) {
     TEST_CHECK(t, modal_active(app) && str8_equal(test_git_status_line(t, app), STR8_LIT(TEST_GIT_WAITING("bin.png"))),
                "git early no change: after RET: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && test_git_visited(app, "bin.png", 1), "git early no change: shown %S at line %D",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "bin.png", 1), "git early no change: shown %S at line %D",
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
     if (!test_git_early_end(t, e, "no change")) return 0;
     LOG("test: ok: git early no change (a binary file's diff after RET: bin.png at line 1)");
@@ -14670,7 +14700,7 @@ static b32 test_git_early_timeout(Test *t, TestGitEarly *e) {
     test_app_feed_batch(t, app, "<down> RET");
     TEST_CHECK(t, modal_active(app) && str8_equal(test_git_status_line(t, app), STR8_LIT(TEST_GIT_WAITING("far.c"))),
                "git early timeout: after RET: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && test_git_visited(app, "far.c", 1), "git early timeout: shown %S at line %D",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "far.c", 1), "git early timeout: shown %S at line %D",
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
     if (!test_git_early_end(t, e, "timeout")) return 0;
     LOG("test: ok: git early timeout (git silent for git_timeout_ms = 1000 after RET: far.c where find-file puts point)");
@@ -14687,7 +14717,7 @@ static b32 test_git_early_cg(Test *t, TestGitEarly *e) {
                "git early C-g: after RET: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
     app_dev_feed(app, "C-g", &t->arena);
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && !modal_active(app) && test_git_not_visited(e, "far.c"), "git early C-g: shown %S",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && !modal_active(app) && test_git_not_visited(e, "far.c"), "git early C-g: shown %S",
                app_selected_view(app)->buffer->name);
     if (!test_git_early_end(t, e, "C-g")) return 0;
     LOG("test: ok: git early C-g (C-g while waiting: closed, nothing visited when the answer comes)");
@@ -14707,7 +14737,7 @@ static b32 test_git_early_key(Test *t, TestGitEarly *e) {
     TEST_CHECK(t, modal_active(app) && m->lists[0].selected == 2 && !app->git.view->wait_path.len, "git early other key: still waiting: '%S'",
                test_git_status_line(t, app));
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && modal_active(app) && m->lists[0].selected == 2 && test_git_not_visited(e, "far.c") &&
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && modal_active(app) && m->lists[0].selected == 2 && test_git_not_visited(e, "far.c") &&
                       test_git_not_visited(e, "b.c") && str8_equal(test_git_status_line(t, app), STR8_LIT("main: 3 changed files")),
                "git early other key: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
     if (!test_git_early_end(t, e, "other key")) return 0;
@@ -14727,7 +14757,7 @@ static b32 test_git_early_click(Test *t, TestGitEarly *e) {
     test_modal_click(t, app, (i32)m->g.panes[1].x0 + 50, (i32)m->g.panes[1].y0 + 5, 1);
     TEST_CHECK(t, modal_active(app) && !app->git.view->wait_path.len, "git early click elsewhere: still waiting: '%S'", test_git_status_line(t, app));
     os_event_set(e->gates[0]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && modal_active(app) && test_git_not_visited(e, "far.c"), "git early click elsewhere: open %d",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && modal_active(app) && test_git_not_visited(e, "far.c"), "git early click elsewhere: open %d",
                modal_active(app));
     if (!test_git_early_end(t, e, "click elsewhere")) return 0;
     LOG("test: ok: git early click elsewhere (a press in the diff pane while waiting cancels; the answer visits nothing)");
@@ -14754,7 +14784,7 @@ static b32 test_git_early_stale(Test *t, TestGitEarly *e) {
                       test_git_not_visited(e, "s2.c"),
                "git early stale reply: after s1.c's answer: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
     os_event_set(e->gates[1]);
-    TEST_CHECK(t, test_git_wait(t, app, 20000) && test_git_visited(app, "s2.c", 5), "git early stale reply: shown %S at line %D",
+    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "s2.c", 5), "git early stale reply: shown %S at line %D",
                app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
     if (!test_git_early_end(t, e, "stale reply")) return 0;
     LOG("test: ok: git early stale reply (RET on s2.c queued behind s1.c's held diff: s1.c's answer visits nothing; s2.c's diff "
@@ -14782,11 +14812,40 @@ static b32 test_git_early_same(Test *t, TestGitEarly *e) {
     return 1;
 }
 
+static b32 test_git_early_nostart(Test *t, TestGitEarly *e) {
+    // (k) The waited file's diff cannot start (no worker; injected) when the copy it was queued behind ends: no answer
+    // will come, and with no further input the file opens where find-file puts point, then the app goes idle.
+    if (!test_git_early_start(t, e, "early_nostart", "raw ## main\\x00 M a.c\\x00 M s1.c\\x00 M far.c\\x00\n", NULL)) return 0;
+    App *app = e->app;
+    GitView *v = app->git.view;
+    app_dev_feed(app, "<down>", &t->arena);
+    app_dev_feed(app, "<down>", &t->arena);
+    app_dev_feed(app, "RET", &t->arena);
+    TEST_CHECK(t, v->rows[1].state == GIT_ROW_FETCHING && v->rows[2].state == GIT_ROW_NONE && v->wait_serial == 0 &&
+                      str8_equal(test_git_status_line(t, app), STR8_LIT(TEST_GIT_WAITING("far.c"))),
+               "git early worker cannot start: after RET: status '%S'", test_git_status_line(t, app));
+    app->git.dev_fail_diff_start = 1;
+    os_event_set(e->gates[0]);
+    u64 deadline = os_time_us() + 20000 * 1000ull;
+    while (app->git.view && v->rows[2].state != GIT_ROW_FAILED && os_time_us() < deadline) test_git_platform_frame(t, app);
+    TEST_CHECK(t, !app->git.dev_fail_diff_start && (!app->git.view || v->rows[2].state == GIT_ROW_FAILED),
+               "git early worker cannot start: far.c's start was not refused");
+    for (i32 i = 0; i < 10 && app->git.view; i++) if (!test_git_platform_frame(t, app)) break; // no input from here on
+    TEST_CHECK(t, test_git_visited(app, "far.c", 1), "git early worker cannot start: open %d, a frame wanted %d, shown %S",
+               modal_active(app), app_wants_frame(app), app_selected_view(app)->buffer->name);
+    TEST_CHECK(t, test_git_quiet(t, app), "git early worker cannot start: frames still wanted after the visit");
+    if (!test_git_early_end(t, e, "worker cannot start")) return 0;
+    LOG("test: ok: git early worker cannot start (far.c queued behind s1.c's held diff, RET, then its start refused when "
+        "s1.c's copy ends: with no input, far.c opens where find-file puts point; then no frame wanted)");
+    return 1;
+}
+
 // The cases, each with its own app and fake git; a failed case is cleaned up and the next one runs.
 static b32 test_git_early(Test *t) {
     static b32 (*const cases[])(Test *, TestGitEarly *) = {
         test_git_early_ret, test_git_early_dbl, test_git_early_fail, test_git_early_bin, test_git_early_timeout,
         test_git_early_cg, test_git_early_key, test_git_early_click, test_git_early_stale, test_git_early_same,
+        test_git_early_nostart,
     };
     i32 failures = t->failures;
     for (i32 i = 0; i < (i32)ARRAY_COUNT(cases); i++) {

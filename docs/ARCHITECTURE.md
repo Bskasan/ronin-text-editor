@@ -4252,7 +4252,10 @@ click on a row not yet selected hit it almost every time: its first press starts
 3. The visit runs in the frame, after its events, not in app_wake: commands run only inside a frame. The platform
    takes the workers' answers (app_wake) before it pumps the window messages of the same frame, so a key that came
    before git's answer can be handled after it; their order is unknown. The rule is that input in that frame wins: a
-   key or a press cancels the wait and nothing is visited. Input in a later frame goes to the visited buffer.
+   key or a press cancels the wait and nothing is visited. Input in a later frame goes to the visited buffer. Whatever
+   sets the answer's flag also makes the app want a frame (app_wants_frame asks while it is set, and the visit clears
+   it), so a diff that cannot start, found when a copy ends after that frame's visit check, is not left until the next
+   input.
 4. The modal layer got an optional `input` hook (ModalSpec): a key or a press reached the box, before it is handled,
    with the pane and row pressed. The owner learns of every input without the layer knowing why; the git view cancels
    the wait unless the press is on the waiting row itself (the third press of an impatient double click keeps it). The

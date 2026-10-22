@@ -624,8 +624,9 @@ The steps start at Z2: Z1 is the idle step in section K, an id of the original l
 ## AB. git changes view: RET or a double click before the diff (#1)
 
 Each case runs on its own fake git whose diff answers wait behind a gate (`--child`'s `gate NAME`) until the test
-opens it, so the accept always comes before git's answer; git's idle timeout is 600000 ms there (except AB5). All in
-`test_git_early` (`--test`), each logged as "test: ok: git early <case>".
+opens it, so the accept always comes before git's answer; git's idle timeout is 600000 ms there (except AB5). Frames
+run only as the platform runs them, after a wake with news or while the app wants one. All in `test_git_early`
+(`--test`), each logged as "test: ok: git early <case>".
 
 | Step | What | Status | Evidence |
 |---|---|---|---|
@@ -640,6 +641,7 @@ opens it, so the accept always comes before git's answer; git's idle timeout is 
 | AB9 | RET on a file whose diff waits behind another file's: the other file's answer opens nothing; the file opens at its first change when its own diff comes | AUTOMATED-NEW | "git early stale reply" (the accept bound to its diff's serial; s2.c at line 5). |
 | AB10 | git's answer and C-g handled in the same frame: C-g wins, nothing opens | AUTOMATED-NEW | "git early C-g with the answer" (the answer taken without a frame, then C-g). |
 | AB11 | On a real repository with the real mouse: C-x g and at once a double click on a file further down opens it at its first change | HUMAN | real mouse timing against a real git; HUMAN step 67. |
+| AB12 | RET on a file queued behind another file's diff, whose own diff then cannot start (no worker): with no further input the file opens where find-file puts point, and the app goes idle after it | AUTOMATED-NEW | "git early worker cannot start" (the start refused by the dev-only `dev_fail_diff_start`; far.c at line 1, then no frame wanted over 10 steps). Before the fix (review of #23): the box stayed open, no frame wanted, nothing visited. |
 
 ## HUMAN steps
 

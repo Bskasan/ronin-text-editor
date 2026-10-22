@@ -38,6 +38,7 @@ typedef struct GitChanges {
     i32 dev_abandoned;           // workers left to the process exit by the shutdown
     u64 dev_diff_jobs;           // diff jobs started (the cache: once per file per open)
     u64 dev_copy_max_us;         // the longest copy slice since it was last read (--bench-git)
+    b32 dev_fail_diff_start;     // tests: the next diff job does not start, as when no worker can (then cleared)
 #endif
 } GitChanges;
 
