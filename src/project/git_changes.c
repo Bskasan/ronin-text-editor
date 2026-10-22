@@ -9,7 +9,8 @@
 
 // see git_changes.h. show-git-changes, the modal layer's second owner: the files git status lists
 // on the left, the selected file's diff on the right, each diff fetched once per open and copied into the modal's
-// arena inside the frame budget; RET visits the file at its first change; g runs git status again.
+// arena inside the frame budget; RET visits the file at its first change (before its diff came, once it comes); g runs
+// git status again.
 //
 // The box opens only once rev-parse has answered, so a folder git does not know (or no git at all) opens nothing.
 // Closing it cancels its jobs: they go to the dying list and are freed when their last batch comes; the main thread
@@ -53,6 +54,11 @@ struct GitView {
     GitJob *copy_job;          // the diff being copied (its batch lives in the job)
     GitBatch *copy_batch;
     i64 copy_row, copy_text;   // the row, the bytes copied so far
+    // RET or a double click before the selected file's diff came (#1): the file is visited once that diff is in.
+    String8 wait_path;         // its row (it stays selected: any other key or press cancels); empty: nothing waits
+    u64 wait_serial;           // the diff it waits for (GitJob.serial); 0: not started yet (queued behind another)
+    i64 wait_line;             // the line to visit once it came (0: where find-file puts point)
+    b32 wait_done;             // it came: visited after the next frame's events, unless one of them cancels
 };
 
 static Keymap *git_changes_keymap(App *app, void *data) {
@@ -100,6 +106,19 @@ static void git_changes_bury(App *app, GitJob *j) {
     g->dying[g->dying_count++] = j;
 }
 
+// Nothing waits for a diff any more.
+static void git_changes_unwait(GitView *v) {
+    v->wait_path = str8(NULL, 0);
+    v->wait_serial = 0;
+    v->wait_line = 0;
+    v->wait_done = 0;
+}
+
+// The accept waiting for `row`'s diff, if one does and its diff has not started.
+static b32 git_changes_waits_unstarted(GitView *v, GitRow *row) {
+    return v->wait_path.len && !v->wait_serial && !v->wait_done && str8_equal(row->path, v->wait_path);
+}
+
 // The diff of the selected file, if it is not fetched yet: started now, or after the running diff or copy.
 static void git_changes_fetch(App *app, GitView *v) {
     GitRow *row = git_changes_selected(app, v);
@@ -115,8 +134,11 @@ static void git_changes_fetch(App *app, GitView *v) {
     if (!j) {
         row->state = GIT_ROW_FAILED;
         row->error = STR8_LIT("git: cannot start a worker");
+        if (git_changes_waits_unstarted(v, row)) v->wait_done = 1; // no answer will come: where find-file puts point
         return;
     }
+    j->serial = ++app->git.serial;
+    if (git_changes_waits_unstarted(v, row)) v->wait_serial = j->serial;
     row->state = GIT_ROW_FETCHING;
     v->diff_job = j;
     v->diff_row = row - v->rows;
@@ -213,6 +235,14 @@ static void git_changes_batch(App *app, GitView *v, GitJob *j, GitBatch *b) {
     if (j == v->diff_job) {
         GitRow *row = &v->rows[v->diff_row];
         b32 copying = 0;
+        if (v->wait_path.len && !v->wait_done && j->serial == v->wait_serial) { // the diff an accept waits for (no other one)
+            if (b->kind == GIT_BATCH_CANCELLED) { // only a buried job is cancelled; its batches never come here
+                git_changes_unwait(v);
+            } else {
+                v->wait_line = b->kind == GIT_BATCH_DIFF ? b->diff.first_changed : 0; // failed, timed out: as find-file
+                v->wait_done = 1;
+            }
+        }
         if (b->kind == GIT_BATCH_DIFF) {
             git_changes_diff_came(app, v, j, b);
             copying = 1;
@@ -240,6 +270,20 @@ static void git_changes_closed(App *app, void *data) {
     app->git.work_pending = 0;
 }
 
+// git-changes-visit's target: the row's file under the top level, at `line` (0: where find-file puts point).
+static void git_changes_visit_target(App *app, GitView *v, GitRow *row, i64 line) {
+    GitChanges *g = &app->git;
+    if (!g->arena.base) g->arena = arena_create(MB(1));
+    arena_reset(&g->arena);
+    String8 path = str8_fmt(&g->arena, "%S\\%S", v->toplevel, row->path);
+    for (i64 i = 0; i < path.len; i++) if (path.data[i] == '/') path.data[i] = '\\';
+    g->visit_path = path;
+    g->visit_line = line;
+    g->pending_dir = str8(NULL, 0);
+}
+
+// RET or a double click: the selected file at its first change. Before its diff came (fetched, or queued behind
+// another file's) the box stays and the accept waits for that diff; git_changes_waited visits it then.
 static void git_changes_accept(App *app, void *data, i32 pane, i64 row_index) {
     GitView *v = data;
     (void)pane;
@@ -250,20 +294,43 @@ static void git_changes_accept(App *app, void *data, i32 pane, i64 row_index) {
         echo_message(&app->echo, "%S is deleted in the working tree", row->path);
         return;
     }
-    GitChanges *g = &app->git;
-    if (!g->arena.base) g->arena = arena_create(MB(1));
-    arena_reset(&g->arena);
-    String8 path = str8_fmt(&g->arena, "%S\\%S", v->toplevel, row->path);
-    for (i64 i = 0; i < path.len; i++) if (path.data[i] == '/') path.data[i] = '\\';
-    g->visit_path = path;
-    g->visit_line = row->state == GIT_ROW_COPYING || row->state == GIT_ROW_CACHED ? row->first_changed : 0;
-    g->pending_dir = str8(NULL, 0);
+    if (row->state == GIT_ROW_NONE || row->state == GIT_ROW_FETCHING) {
+        git_changes_unwait(v);
+        v->wait_path = row->path;
+        v->wait_serial = row->state == GIT_ROW_FETCHING && v->diff_job ? v->diff_job->serial : 0;
+        return;
+    }
+    git_changes_visit_target(app, v, row, row->state == GIT_ROW_FAILED ? 0 : row->first_changed);
     modal_run_after_close(app, &CMD_GIT_CHANGES_VISIT);
+}
+
+// A key or a press reached the box: a waiting accept is cancelled, except by a press on its own row (the third press
+// of an impatient double click); RET or a double click there makes it wait again.
+static void git_changes_input(App *app, void *data, i32 pane, i64 row) {
+    GitView *v = data;
+    if (v->wait_path.len && !(pane == 0 && row == modal_list(app, 0)->selected)) git_changes_unwait(v);
+}
+
+// After the frame's events: an accept whose diff came (and that none of them cancelled) visits its file, as RET does
+// once the diff is in. Input in the same frame wins: the platform takes git's answers before the frame's input, so
+// the order between them is unknown.
+static void git_changes_waited(App *app) {
+    GitView *v = app->git.view;
+    if (!v || !v->wait_done) return;
+    GitRow *row = git_changes_selected(app, v);
+    b32 same = row && str8_equal(row->path, v->wait_path);
+    i64 line = v->wait_line;
+    git_changes_unwait(v);
+    if (!same) return;
+    git_changes_visit_target(app, v, row, line);
+    modal_close(app);
+    app_run_command(app, &CMD_GIT_CHANGES_VISIT, 0, 0);
 }
 
 static String8 git_changes_status(App *app, void *data, Arena *scratch) {
     GitView *v = data;
     if (v->message.len) return v->message;
+    if (v->wait_path.len) return str8_fmt(scratch, "Visiting %S at its first change once git answers\xe2\x80\xa6", v->wait_path);
     GitRow *row = git_changes_selected(app, v);
     if (row && row->state == GIT_ROW_FAILED) return row->error;
     if (!v->listed || v->status_job || v->diff_job || (row && row->state == GIT_ROW_FETCHING)) return STR8_LIT(GIT_RUNNING);
@@ -330,7 +397,7 @@ static b32 git_changes_open(App *app, GitJob *j, GitBatch *b) {
     ModalSpec spec = {
         .name = STR8_LIT("git changes view"), .keymap = git_changes_keymap, .status_line = 1, .panes = 2, .scroll_panes = 1u << 1,
         .width_pct = 90, .height_pct = 80, .pane_split_pct = 30, .full_height = 1, .accept = git_changes_accept,
-        .selected = git_changes_selected_moved, .draw_row = git_changes_draw_row, .status = git_changes_status, .closed = git_changes_closed,
+        .selected = git_changes_selected_moved, .input = git_changes_input, .draw_row = git_changes_draw_row, .status = git_changes_status, .closed = git_changes_closed,
     };
     if (!modal_open(app, &spec)) return 0;
     Arena *a = modal_arena(app);
@@ -592,7 +659,7 @@ const Command CMD_GIT_CHANGES_VISIT = { "git-changes-visit", "Visit the file cho
 static b32 app_dev_git_busy(App *app) {
     GitChanges *g = &app->git;
     GitView *v = g->view;
-    return g->pending || g->dying_count || g->work_pending || (v && (v->status_job || v->diff_job || v->copy_job));
+    return g->pending || g->dying_count || g->work_pending || (v && (v->status_job || v->diff_job || v->copy_job || v->wait_done));
 }
 
 // One git command on this thread (dev setup only), to its end; its exit code (0xFFFFFFFF: it did not start).

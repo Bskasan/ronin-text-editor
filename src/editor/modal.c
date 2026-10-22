@@ -264,6 +264,7 @@ static void modal_key(App *app, Event *e) {
     if (app->dev_log_keys) app_dev_log_key(app, e, &k, 0, 0);
 #endif
     if (k.kind == KEY_RESULT_IGNORED || k.kind == KEY_RESULT_DROPPED) return;
+    if (m->spec.input) m->spec.input(app, m->spec.data, -1, -1);
     app->landing_buffer = NULL;
     u8 seq[KEY_SEQ_TEXT_CAP];
     i64 n = key_seq_print(&k.seq, seq, sizeof(seq) - 1);
@@ -307,12 +308,26 @@ static void modal_key(App *app, Event *e) {
     modal_after(app);
 }
 
-// A left press: outside the box it closes, as C-g does (the press does nothing else); in the field it moves
-// point; on a row it selects it and focuses its pane, and a double click accepts it.
+// The pane under (x, y) and its row there (maybe past its last); -1 when no pane is there.
+static i32 modal_pane_at(Modal *m, AppLayout *l, i32 x, i32 y, i64 *row) {
+    for (i32 p = 0; p < m->spec.panes; p++) {
+        if (!modal_inside(m->g.panes[p], x, y)) continue;
+        *row = m->lists[p].top + (i64)((y - (i32)m->g.panes[p].y0) / MAX(l->line_h, 1));
+        return p;
+    }
+    *row = -1;
+    return -1;
+}
+
+// A left press: the owner hears of it first; outside the box it closes, as C-g does (the press does nothing else);
+// in the field it moves point; on a row it selects it and focuses its pane, and a double click accepts it.
 static void modal_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
     Modal *m = &app->modal;
     ModalGeometry *g = &m->g;
     app->ctx.last_command = NULL;
+    i64 row;
+    i32 p = modal_pane_at(m, l, x, y, &row);
+    if (m->spec.input) m->spec.input(app, m->spec.data, p, row);
     if (!modal_inside(g->box, x, y)) {
         modal_close(app);
         return;
@@ -325,29 +340,25 @@ static void modal_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
         view_ensure_visible(v);
         return;
     }
-    for (i32 p = 0; p < m->spec.panes; p++) {
-        if (!modal_inside(g->panes[p], x, y)) continue;
-        ModalList *list = &m->lists[p];
-        i64 row = list->top + (i64)((y - (i32)g->panes[p].y0) / MAX(l->line_h, 1));
-        if (modal_scrolls(m, p)) { // no selection: the click focuses it; a double click accepts its row
-            m->focus = p;
-            if (clicks == 2 && m->spec.accept) {
-                m->spec.accept(app, m->spec.data, p, row);
-                modal_after(app);
-            }
-            return;
-        }
-        if (row >= list->count) return;
+    if (p < 0) return;
+    ModalList *list = &m->lists[p];
+    if (modal_scrolls(m, p)) { // no selection: the click focuses it; a double click accepts its row
         m->focus = p;
-        i64 before = list->selected;
-        list->selected = row;
-        modal_list_show(list, g->rows);
-        modal_selection_moved(app, p, before);
-        if (clicks == 2 && m->spec.accept && m->active) {
+        if (clicks == 2 && m->spec.accept) {
             m->spec.accept(app, m->spec.data, p, row);
             modal_after(app);
         }
         return;
+    }
+    if (row >= list->count) return;
+    m->focus = p;
+    i64 before = list->selected;
+    list->selected = row;
+    modal_list_show(list, g->rows);
+    modal_selection_moved(app, p, before);
+    if (clicks == 2 && m->spec.accept && m->active) {
+        m->spec.accept(app, m->spec.data, p, row);
+        modal_after(app);
     }
 }
 

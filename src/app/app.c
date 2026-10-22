@@ -148,6 +148,7 @@ static void modal_draw(App *app, Renderer *r, AppLayout *l, FrameInput *in);
 // git_changes.c: the git changes view.
 static b32  git_changes_wake(App *app);
 static b32  git_changes_work(App *app, u64 deadline, i64 budget);
+static void git_changes_waited(App *app);
 static void git_changes_quit(App *app);
 static void git_changes_shutdown(App *app, u64 deadline);
 
@@ -2287,6 +2288,7 @@ static b32 app_update(App *app, FrameInput *in) {
             break;
         }
     }
+    git_changes_waited(app); // RET or a double click that waited for git's diff, unless this frame's input cancelled it
     if (config_pending(&app->config_source)) app_reload_config(app, 0); // a settle delay or retry may be due (EVENT_WAKEUP)
     files_poll(app);
     if (app->quit) return 0;
