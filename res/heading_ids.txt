@@ -1,0 +1,30 @@
+# GitHub's ids for res/heading_ids.md, in order: gh api markdown -f mode=markdown -F text=@res/heading_ids.md
+# (each heading's href="#ID"), 2026-10-22. Test data for the docs site's heading ids (#20): tests read it, never fetch it.
+heading-ids
+unreleased
+added
+changed
+fixed
+101--2026-11-01
+added-1
+changed-1
+changed-2
+fixed-1
+100--2026-10-21
+added-2
+changed-3
+fixed-2
+added-1-1
+the-keys-section-and-c-x--
+the-x-macro
+see-the-keys-here
+notes-ab-c-de--f
+version-101-and-2-of-3
+über-straße-café
+şişli--quoted--ok
+punctuation-ab-ab-ab-q--5-1-a-12-ab
+capitals-à-þ---ÿ-ā-ž-ā-ž-ÿ
+extended-ĳ-ĳ-ķ-ķ-ĸ-ĺ-ň-ŉ-ŋ-ŷ-ź-ſ
+turkish-i̇-ı-i-i
+spaced-out
+a_b----c
