@@ -4330,8 +4330,15 @@ went, and the failure leaked the round's two events into a second failure line.
    - The test later asks for each by its id and creation time (`os_dev_process_running`), so a finished process's id
      given to an unrelated one never counts as the tree still running. One bound, 1000 ms, covers the whole tree.
    - Eight entries are recorded together with the job's real count (NumberOfAssignedProcesses). A job holding more
-     fails the round, naming both numbers, rather than checking a cut list. The rounds' child (cmd.exe and one
-     `--child`) never reaches it, so no test runs that branch.
+     fails the round, naming both numbers, rather than checking a cut list. The ordinary rounds never reach it; the
+     fault case (d) does, with a `--child` that starts 9 grandchildren (the job held 12 there, the twelfth most likely
+     the console host Windows adds; the test takes the job's own count).
+   - A listing that fails is a failure, never an empty tree (review of PR #33). A failed query is
+     `OS_DEV_JOB_QUERY_FAILED`; a process that exists but cannot be opened, or whose creation time cannot be read, is
+     `OS_DEV_JOB_READ_FAILED`; either fails the round with its own message. A process that ended between the listing
+     and its open is not a failure but gone (recorded with created 0, as an entry): OpenProcess fails with
+     ERROR_INVALID_PARAMETER when no process has that id, and `IsProcessInJob` false means the id already belongs to a
+     process outside the job. No case makes that race happen on purpose, so the gone path has no test of its own.
 4. One failure, one report. The round formats its cause and its stages into the test's arena, frees its run (or joins a
    worker that has not ended for 1 s more, and frees it only then), and only then fails. The leak metrics no longer
    repeat a kill round's failure as "the tests left 2 handle(s) open".
@@ -4341,6 +4348,14 @@ went, and the failure leaked the round's two events into a second failure line.
    - The breakdown sorts the points by time from the cancel and ends with the longest step between two of them.
 6. The issue's proposed mutation slept 300 ms before the kill; that stays under the old 500 ms limit and could not show
    the difference, so the proof used 600 ms (over the old limit, under the 3 s guard).
+7. The steps are committed tests, not scratch mutations (review of PR #33), through dev-only faults in the run's
+   request, as #1's `dev_fail_diff_start`: `dev_kill_delay_ms` (a wait on an event never set, no busy loop),
+   `dev_skip_kill` and `dev_listing_fault`. They are set before `compile_start`, so the worker only reads them. The
+   round is a function (`test_kill_round`) that returns its cause, its stages and its time instead of failing the
+   suite, so `test_compile_kill_faults` asserts each fault's exact result. There is no flag that forces a failure:
+   every failing case is a real one (no kill, a job over the cap, a failed listing), so the worker never records a
+   result that did not happen. The guard is a parameter: 3 s for the ordinary rounds, 10 s for the fault cases,
+   whose 600 ms and 1000 ms are slow on purpose and must give their own message on a slow runner, never the guard's.
 
 ### Measurements, #25 Build kill rounds
 
@@ -4365,6 +4380,20 @@ All on the maintainer's machine. The mutations were scratch changes on ronin_ben
   7a45c081e048d4986411649da543c9a3793fdea05bb25dbe821a19bd195c1da3. `--check-imports`: PASS, 3 DLLs, 135 functions.
 - **`verify.bat phase`**: PASS in 536 s, the seed sweep 256 seeds PASS (192 s), the soaks PASS (bench 43.7 s, debug
   38.4 s), the leak check PASS.
+
+The fault cases (review of PR #33), each shown to fail by a scratch mutation that undoes what it guards (ronin_bench.exe
+`--test`, never committed):
+
+| case | mutation | the failing line |
+|---|---|---|
+| (a) 600 ms before the kill passes | a 500 ms clock limit put back into the cause check | `kill faults: a 600 ms delay before the kill: 'MUTATION: over 500 ms'; ... the longest: read end -> killed, 611.0 ms` |
+| (b) no kill gives the wait's message | the worker records the wait as seen, always | `kill faults: no kill: ''; ... the longest: killed -> cmd.exe ended, 1001.5 ms` |
+| (c) a failing round leaves nothing open | `test_kill_round` does not free a failing round | `kill faults: no kill left the ledger 0 -> 2, events 0 -> 2, processes 0 -> 0, threads 0 -> 0` |
+| (d) a job over the cap fails | the cap check removed | `kill faults: a job over the cap: 9 grandchildren, the job held 12, ''` |
+| (e) a failed listing fails | a failed query listed as 0 processes again | `kill faults: a failed listing (fault 1): ''; ...` |
+
+After the review's commits the release exe was built again and compared with 996703b's: the same 4 bytes differ (the
+two TimeDateStamps), the SHA-256 with them zeroed is the same 7a45c081..., `--check-imports` PASS.
 
 ## After 1.0
 
