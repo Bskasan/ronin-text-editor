@@ -45,7 +45,7 @@ dev builds; they are not part of the repository.
 | `--startup-capture` / `--bench-latency` / `--bench-longline` / `--memory-report` | Phase 15 measurements, never taking the focus: the early window on screen after each composition; key arrival to Present and to the vertical blank that showed it; a 5 MB line; private bytes by owner. |
 | `--leak-check` | Phase 16, debug build, in `verify.bat phase`: every scenario repeated after a prime step and 20 warm-up cycles, 4 windows of 50 cycles, one table a scenario in build\ronin.log (LEAK exits 6); the window never shown. The "exit-check:" block ends every dev exit with a window. |
 | `--fake-git DIR ARGS` | Phase 19, dev builds: the tests' git. It appends its arguments to DIR\calls.txt and runs the `--child` script DIR\map.txt names for the first key found in them. |
-| git tests | The `--test` groups logged as "test: ok: programs", "git parse", "git job", "git changes", "git errors", "git real" (or "test: skip: git real" without git on PATH) and the seeded "git fuzz" (Phase 19). |
+| git tests | The `--test` groups logged as "test: ok: programs", "git parse", "git job", "git changes", "git errors", "git real" (or "test: skip: git real" without git on PATH) and the seeded "git fuzz" (Phase 19); "git early <case>" (#1: RET or a double click before the diff, git's answers held behind `--child`'s `gate NAME`). |
 | `--bench-git` | Phase 19: git's status and diff parsed from memory (5,000 files, 50,000 lines), and a 20,000-line diff copied into the open view: frames, the longest slice and frame build. Never takes the focus. |
 | `--fake-terminal DIR ...` | Phase 20, dev builds: the tests' terminal. It appends its working directory, the program and console it stands for and its command line exactly as it came to DIR\calls.txt, then exits. |
 | terminal tests | The `--test` groups logged as "test: ok: launch", "terminal config" and "terminal" (Phase 20), smoke stage 13 ("smoke: ok: terminal"), `--leak-check terminal-cycle` and the soak's "soak: terminals" line. |
@@ -621,6 +621,26 @@ The steps start at Z2: Z1 is the idle step in section K, an id of the original l
 | AA12 | No version written anywhere but src/app/version.h, the changelog's headings and the release notes | AUTOMATED-NEW | `git grep` for 0.1.0 and 1.0.0 (Measurements (Phase 25)): only those, and dated records of earlier phases. The manifest's assemblyIdentity, a second version, is gone (Decisions, Phase 25, 8). |
 | AA13 | Every HUMAN step is in the release checklist | AUTOMATED-NEW | docs/releases/checklist-1.0.0.md lists steps 1 to 66, each with its tests; counted against this file's "HUMAN steps" (66 numbered steps). |
 
+## AB. git changes view: RET or a double click before the diff (#1)
+
+Each case runs on its own fake git whose diff answers wait behind a gate (`--child`'s `gate NAME`) until the test
+opens it, so the accept always comes before git's answer; git's idle timeout is 600000 ms there (except AB5). All in
+`test_git_early` (`--test`), each logged as "test: ok: git early <case>".
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| AB1 | RET on a file just selected, before its diff came: the box stays, the status line says "Visiting far.c at its first change once git answers…", then the file opens at its first change | AUTOMATED-NEW | "git early RET" (far.c at line 7). Before the fix: the box closed at once, far.c at line 1. |
+| AB2 | A double click on a file not selected, before its diff came (a third press on it changes nothing): the file opens at its first change | AUTOMATED-NEW | "git early double click": the presses as the platform makes them (EVENT_MOUSE_DOWN with 1, 2, 3 clicks); far.c at line 7. Before the fix: far.c at line 1. |
+| AB3 | The diff fails after RET: the file where find-file puts point | AUTOMATED-NEW | "git early failed diff" (git exits 128; fail.c, visited before, at its line 4). |
+| AB4 | The diff has no changed line (a binary file): line 1 | AUTOMATED-NEW | "git early no change" (bin.png at line 1). |
+| AB5 | git says nothing for git_timeout_ms after RET: the file where find-file puts point | AUTOMATED-NEW | "git early timeout" (git_timeout_ms = 1000 for that diff only; its gate never opened; far.c at line 1). |
+| AB6 | C-g while waiting: the box closes; nothing opens when git answers | AUTOMATED-NEW | "git early C-g". |
+| AB7 | Another key while waiting (`<down>`): the wait ends, the box stays; nothing opens when git answers | AUTOMATED-NEW | "git early other key". |
+| AB8 | A click elsewhere (the diff pane) while waiting: the wait ends; nothing opens | AUTOMATED-NEW | "git early click elsewhere". |
+| AB9 | RET on a file whose diff waits behind another file's: the other file's answer opens nothing; the file opens at its first change when its own diff comes | AUTOMATED-NEW | "git early stale reply" (the accept bound to its diff's serial; s2.c at line 5). |
+| AB10 | git's answer and C-g handled in the same frame: C-g wins, nothing opens | AUTOMATED-NEW | "git early C-g with the answer" (the answer taken without a frame, then C-g). |
+| AB11 | On a real repository with the real mouse: C-x g and at once a double click on a file further down opens it at its first change | HUMAN | real mouse timing against a real git; HUMAN step 67. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -829,6 +849,13 @@ Phase 25, the release (60 to 62 before the tag, with 41 and 47 on the zip's exe;
 65. **AA10**: The Releases page lists ronin 1.0.0 with both files; README's release badge says v1.0.0 (step 58).
 66. **AA11**: Download the zip from the release, `Get-FileHash` it: the SHA-256 of the notes and of SHA256SUMS.txt. Unzip it
     and run ronin.exe once.
+
+Issue #1, the git changes view:
+
+67. **AB11**: In `build\ronin.exe` on a real repository (ronin's own, with uncommitted changes in two or more files, one of
+    them changed further down than its first screen): C-x g, and at once, before its diff shows, double-click a file
+    further down the list. The status line says "Visiting <file> at its first change once git answers…" (or the file opens
+    at once if git was quicker), then the file opens at its first change, not at line 1.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

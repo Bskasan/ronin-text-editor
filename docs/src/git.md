@@ -20,6 +20,11 @@ While the box is open:
 | `g` | `git-changes-refresh` | run git status again |
 | `C-g` | `keyboard-quit` | close the box |
 
+`RET` or a double click on a file whose diff has not arrived yet waits for it: the status line says so ("Visiting
+a.c at its first change once git answers…"), and the file opens there when git answers (where finding the file would
+put point if git fails or the file has no changed line, as for a binary file). Any other key, `C-g` or a click
+elsewhere cancels.
+
 ![The git changes view on a test repository: a.c's diff with a removed and an added line](images/git-changes.png)
 
 ## Settings

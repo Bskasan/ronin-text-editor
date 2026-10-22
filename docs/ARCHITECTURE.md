@@ -4234,6 +4234,32 @@ After 1.0.0 the work moved from phases committed to main to GitHub issues, branc
    and docs, its other defaults kept); the feature request template labels `feature`. Milestones: 1.0.1 (bug fixes),
    1.1.0 (small features), 1.2.0 (navigation and formatting), 1.3.0 (the embedded terminal); backlog issues have none.
 
+### Decisions, #1 git changes view: an accept before the diff
+
+RET or a double click in the git changes view took the first changed line only from a row whose diff was in; before
+git answered (the row's diff running, or queued behind another file's), the file opened at find-file's point. A double
+click on a row not yet selected hit it almost every time: its first press starts the diff, its second accepts.
+
+1. An accept on a row whose diff is not in waits for it, and the box stays open with its status line saying so
+   ("Visiting <file> at its first change once git answers…"). The issue proposed closing the box at once and visiting
+   later; an open box keeps C-g, a key or a click able to cancel, and shows why nothing happened yet.
+2. The wait is bound to the diff request, not to a list index: GitJob.serial (there since Phase 19, unused until now)
+   numbers every diff job from one counter that is never reset, and the wait keeps the serial of the diff it waits for
+   (0 while that diff is queued: it takes the serial when the diff starts). An answer with another serial, the diff of a
+   file passed over, leaves it alone. The answer comes through the existing queue and os_wake_main; a failed diff,
+   git's idle timeout (git_timeout_ms) and a diff without a changed line visit the file where find-file puts point. No
+   timer, no thread, no new channel.
+3. The visit runs in the frame, after its events, not in app_wake: commands run only inside a frame. The platform
+   takes the workers' answers (app_wake) before it pumps the window messages of the same frame, so a key that came
+   before git's answer can be handled after it; their order is unknown. The rule is that input in that frame wins: a
+   key or a press cancels the wait and nothing is visited. Input in a later frame goes to the visited buffer.
+4. The modal layer got an optional `input` hook (ModalSpec): a key or a press reached the box, before it is handled,
+   with the pane and row pressed. The owner learns of every input without the layer knowing why; the git view cancels
+   the wait unless the press is on the waiting row itself (the third press of an impatient double click keeps it). The
+   wheel only scrolls and does not cancel.
+5. The tests hold git's answer instead of delaying it: `--child`'s `gate NAME` waits on a named event the test creates
+   (os_dev_gate_create) and opens when it chooses, so each case's order of accept and answer is fixed, never the clock's.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the
