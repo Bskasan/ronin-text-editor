@@ -12467,6 +12467,9 @@ static String8 test_kill_round_cause(Arena *arena, CompileRun *c, u64 guard_us) 
         return str8_fmt(arena, "the read ended by %s (killed %d), not by the cancel", ends[d->end], c->killed);
     }
     if (!d->wait_ok) return STR8_LIT("the wait after the kill ended by its 1000 ms timeout, not by cmd.exe's end");
+    // A listing that failed checks nothing: it is a failure, never an empty tree.
+    if (d->proc_count == OS_DEV_JOB_QUERY_FAILED) return STR8_LIT("could not list the job's processes (the query failed)");
+    if (d->proc_count < 0) return STR8_LIT("could not read a process of the job (it exists, but opening it or reading its creation time failed)");
     if (d->proc_total > d->proc_count) {
         return str8_fmt(arena, "the job held %d processes, more than the %d recorded", d->proc_total, d->proc_count);
     }
@@ -12493,6 +12496,7 @@ static String8 test_kill_round_cause(Arena *arena, CompileRun *c, u64 guard_us) 
 typedef struct TestKillFaults {
     u32 kill_delay_ms;
     b32 skip_kill;
+    i32 listing_fault;
 } TestKillFaults;
 
 typedef struct TestKillRound {
@@ -12510,6 +12514,7 @@ static void test_kill_round(Test *t, String8 command, String8 dir, i32 round, Te
     CompileRun *c = compile_create(command, dir, str8(NULL, 0), MB(16));
     c->dev_kill_delay_ms = faults.kill_delay_ms;
     c->dev_skip_kill = faults.skip_kill;
+    c->dev_listing_fault = faults.listing_fault;
     if (!compile_start(c)) {
         compile_free(c);
         out->why = STR8_LIT("it did not start");
@@ -12596,8 +12601,22 @@ static b32 test_compile_kill_faults(Test *t) {
                "kill faults: a job over the cap: %d grandchildren, the job held %d, '%S'", grandchildren, held, why);
     TEST_CHECK(t, test_kill_counts_equal(before, after), "kill faults: the job over the cap left the ledger %d -> %d, events %d -> %d, processes %d -> %d",
                before.ledger, after.ledger, before.events, after.events, before.processes, after.processes);
+    // (e) A listing of the job that fails is a failure, not an empty tree: the query, then a creation time.
+    static const struct { i32 fault; const char *want; } listings[] = {
+        { OS_DEV_JOB_FAULT_QUERY, "could not list the job's processes (the query failed)" },
+        { OS_DEV_JOB_FAULT_TIMES, "could not read a process of the job (it exists, but opening it or reading its creation time failed)" },
+    };
+    for (i32 i = 0; i < ARRAY_COUNT(listings); i++) {
+        before = test_kill_counts();
+        test_kill_round(t, slow, dir, 1, (TestKillFaults){ .listing_fault = listings[i].fault }, guard, &r);
+        after = test_kill_counts();
+        TEST_CHECK(t, str8_equal(r.why, str8_cstr(listings[i].want)), "kill faults: a failed listing (fault %d): '%S'; %S", listings[i].fault, r.why, r.stages);
+        TEST_CHECK(t, test_kill_counts_equal(before, after), "kill faults: a failed listing (fault %d) left the ledger %d -> %d, events %d -> %d, processes %d -> %d",
+                   listings[i].fault, before.ledger, after.ledger, before.events, after.events, before.processes, after.processes);
+    }
     LOG("test: ok: build kill faults (a 600 ms delay before the kill passes: %S; no kill fails by the wait's timeout, one message, the "
-        "ledger back; a job of %d processes fails by the cap of %d, the ledger back)", slow_stages, held, COMPILE_DEV_PROCS);
+        "ledger back; a job of %d processes fails by the cap of %d, the ledger back; a failed query and a failed creation time each "
+        "fail the round, the ledger back)", slow_stages, held, COMPILE_DEV_PROCS);
     return 1;
 }
 
