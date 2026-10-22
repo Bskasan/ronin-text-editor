@@ -359,7 +359,7 @@ the real keymap; the builds there are `--child` programs run through cmd.exe). S
 | O7 | M-g n / M-g p from any window go to the next / previous error (notes skipped), and the place stays highlighted until the next key | AUTOMATED-NEW | builds in the app (next-error to a.c 2:5, the note skipped, b.h, a.c 4, "No more matches", previous-error; the whole line highlighted, gone after C-f); the landing highlight test (search results too); screenshots p13_landing.png, p13_selfbuild_next_error.png. |
 | O8 | In *compilation*: RET visits the error on its line, n / p show the next / previous one in the other window, q closes the window; RET on another line says so | AUTOMATED-NEW | builds in the app (RET on "Building...": "No error on this line"; n, n skipping the note, p; RET on the note visits note.h; q closes the window; [keys compilation]'s defaults and describe-key). |
 | O9 | g in *compilation* and M-x recompile run the last command again without asking | AUTOMATED-NEW | builds in the app (g, M-x recompile from a.c, "No previous compilation" before any build); recompile in *search* still searches again (results tests). |
-| O10 | C-c C-k (M-x kill-compilation) stops the build and every process it started | AUTOMATED-NEW | build kills (a child and its grandchild gone within 1 s; a kill during a 50 MB flood; 100 start / kill rounds); builds in the app (C-c C-k: "Compilation killed", the grandchild gone; "No compilation process" with none). |
+| O10 | C-c C-k (M-x kill-compilation) stops the build and every process it started | AUTOMATED-NEW | build kills (a child and its grandchild gone within 1 s; a kill during a 50 MB flood; 100 start / kill rounds, each checked by its causes: ended by the cancel, cmd.exe's end seen by the wait after the kill, every process of the job gone by its id and creation time; a 3 s bound, no time limit; the slowest round's stages logged, #25, section AD); builds in the app (C-c C-k: "Compilation killed", the grandchild gone; "No compilation process" with none). |
 | O11 | C-x p c while a build runs asks "A compilation process is running; kill it? (yes or no)": no keeps it, yes starts the new one | AUTOMATED-NEW | builds in the app (no: the same build runs on; yes: a new build, the old tree gone). |
 | O12 | Unsaved files before a build: asked one by one (y, n, q) by default, or all saved, or left, by compilation_save_buffers | AUTOMATED-NEW | builds in the app (ask with y / n / q, all, none: asked or not, saved or not, the build started each time). |
 | O13 | The *compilation* window follows the output until the first error (or always, or never, by compilation_scroll_output) | AUTOMATED-NEW | builds in the app (first-error: point on the first error's line; true: at the end; false: at the start); screenshot p13_running.png (point following the output). |
@@ -654,6 +654,22 @@ in res/heading_ids.txt; the tests never use the network.
 | AC2 | The other ids of the fixture equal GitHub's: the em dash, code spans, a link, punctuation, digits, Latin-1 and Latin Extended-A letters, Turkish İ ı I i, spaces around the text | AUTOMATED-NEW | `test_heading_ids` (all 28 headings, the first difference named). |
 | AC3 | A link to a numbered anchor resolves; a link to an anchor that does not exist still fails | AUTOMATED-NEW | `test_heading_ids` (each of the 28 resolves, `#changed-4` and `#added-3` do not); `test_readme`'s small site: "link #twice-2: no heading #twice-2" with `#twice` and `#twice-1` resolving. |
 | AC4 | On the published site and on GitHub, a link to a repeated heading lands on the right section | HUMAN | the published site and GitHub's page only exist after the merge; HUMAN step 68. |
+
+## AD. Build kill rounds: causes, not a clock (#25)
+
+`test_compile_kill`'s 100 start / kill rounds once required each run to end within 500 ms of its cancel; a slow CI
+runner failed one at 575 ms and the log could not say where the time went. Dev builds now record the stages of a run's
+end (`CompileRun.dev`), and each round checks why it ended. The mutations below were scratch changes, never committed;
+their lines are in Measurements, #25 (docs/ARCHITECTURE.md).
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| AD1 | A kill round passes because the cancel ended the read, the wait after the kill saw cmd.exe end, and every process of the build's job is gone (by its id and its creation time, so a reused id is never taken for it); only a 3 s bound, for a run that does not end at all | AUTOMATED-NEW | `test_compile_kill` (`test_kill_round_cause`), "test: ok: build kills (... each ended by the cancel with cmd.exe's end seen and its tree gone ...)". |
+| AD2 | A round made slow on purpose passes and its log names the stage that was slow | AUTOMATED-NEW | Mutation: a 600 ms busy wait before `os_process_kill`. The old test: "kill: round 0 ended 1 after 608 ms". The new one passes, each round logged as "the longest: read end -> killed, 600.0 ms". |
+| AD3 | A kill that does nothing fails the round through its cause, not the clock | AUTOMATED-NEW | Mutation: `os_process_kill` removed. The old test: "kill: round 0 ended 1 after 1018 ms". The new one: "kill: round 0: the wait after the kill ended by its 1000 ms timeout, not by cmd.exe's end; ...". |
+| AD4 | A failing round is reported once: it frees its run first, so no handle is left for the leak metrics to report | AUTOMATED-NEW | Mutation: round 47 forced to fail. One "kill: round 47: ..." line, then "test: ok: leak metrics (... the ledger back at 0)". Before: the CI run's second line "the tests left 2 handle(s) open". |
+| AD5 | The slowest round's stages are in the log on every run, and every round over 100 ms on a line of its own (information, never a failure) | AUTOMATED-NEW | "the slowest, round 0, 8 ms: cancel +0.0, entered +0.0, started +8.1, read end +8.1, killed +8.2, cmd.exe ended +8.5, closed +8.6, last batch +8.7, seen +8.7 ms (read ended by the cancel flag); the longest: entered -> started, 8.1 ms". |
+| AD6 | The release exe does not change | AUTOMATED-NEW | Built before and after, compared byte for byte: 471,040 bytes each, 4 bytes differ (the COFF and the POGO TimeDateStamps), SHA-256 with them zeroed equal; `--check-imports` PASS. |
 
 ## HUMAN steps
 

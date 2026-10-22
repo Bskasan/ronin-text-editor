@@ -601,7 +601,8 @@ GCC / Clang, includes, Jai, tsc's pretty form; times, URLs, versions and linker 
 a location and what does not count); path resolution (each step, the order, the cache); the build settings
 and colors; cleaning (CR, ANSI, OEM) and lines across reads (random slicing, the cut); builds of --child
 programs (order, exit codes, the cap, a missing command or directory, locations from a .bat that changes
-directory); kills (the tree gone, during a flood, 100 start / kill rounds, handles); builds through the
+directory); kills (the tree gone, during a flood, 100 start / kill rounds each checked by its causes and the slowest
+one's stages logged (#25), handles); builds through the
 headless app (the prompt, the exact *compilation* text, the mode line's state, the summary, next-error over
 errors and a note, RET, n, p, q, g, recompile, every compilation_scroll_output and compilation_save_buffers
 value, a second build, C-c C-k, killing the buffer, quitting, a link-only failure, files rewritten by a build,
