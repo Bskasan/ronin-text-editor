@@ -4209,8 +4209,9 @@ After 1.0.0 the work moved from phases committed to main to GitHub issues, branc
    features, MAJOR only for a change that breaks an existing ronin.conf, theme file or key. A user can then tell from
    the number alone whether an update can change what they rely on. src/app/version.h, still the version's only home
    (Decisions, Phase 25, 1), changes only in a release pull request, so main's version is always the last release's.
-   CHANGELOG.md keeps an "Unreleased" section at its top that every pull request updates, so a release's notes are
-   written as the work lands, not reconstructed from the log.
+   CHANGELOG.md keeps an "Unreleased" section at its top that every pull request changing what a user sees, installs
+   or configures updates, so a release's notes are written as the work lands, not reconstructed from the log; workflow
+   and contributor-only changes need no entry (#22).
 2. main is always releasable and takes no direct commits. Every change starts as an issue; its branch is
    `<type>/<issue>-<short-slug>` (the commit types: feat, fix, perf, docs, chore, test), created from an up-to-date
    main. The issue holds the problem and the plan, the branch name ties the work back to it.
@@ -4235,6 +4236,12 @@ After 1.0.0 the work moved from phases committed to main to GitHub issues, branc
 7. Labels: feature, bug, performance, docs, chore, backlog (GitHub's enhancement and documentation renamed to feature
    and docs, its other defaults kept); the feature request template labels `feature`. Milestones: 1.0.1 (bug fixes),
    1.1.0 (small features), 1.2.0 (navigation and formatting), 1.3.0 (the embedded terminal); backlog issues have none.
+8. Heavy runs and CI (#22). A run expected to take more than about 2 minutes (`verify.bat phase`, `--soak`,
+   `--fuzz-seeds`, repeated `--test` runs, benchmarks, long leak checks) is announced first with its list and an
+   estimated total time and waits for approval: measurements need an idle machine, and other heavy programs have to be
+   closed before. Heavy runs come as one block at the end of the work; a failing run is reported with its log, never
+   retried to get a pass. A failed CI check is reported with its log and a fix proposed as a plan; nothing is pushed
+   to fix it without approval, and CI is not fixed automatically.
 
 ### Decisions, #1 git changes view: an accept before the diff
 

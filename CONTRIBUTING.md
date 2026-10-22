@@ -52,9 +52,10 @@ to `main` directly, the maintainer included.
 
 ronin follows [Semantic Versioning](https://semver.org/): a PATCH release (1.0.1) has bug fixes only, a MINOR one
 (1.1.0) features that keep every existing configuration and key working, and a MAJOR one is kept for a change that
-breaks an existing ronin.conf, theme file or key. Every pull request adds its user-visible change to the "Unreleased"
-section of [CHANGELOG.md](CHANGELOG.md). A release is a pull request of its own (the version in `src/app/version.h`,
-the changelog's section dated, the release notes in `docs/releases/`); the maintainer tags and publishes it.
+breaks an existing ronin.conf, theme file or key. Every pull request that changes what a user sees, installs or
+configures adds that change to the "Unreleased" section of [CHANGELOG.md](CHANGELOG.md); workflow and contributor-only
+changes need no entry. A release is a pull request of its own (the version in `src/app/version.h`, the changelog's
+section dated, the release notes in `docs/releases/`); the maintainer tags and publishes it.
 
 ## What a pull request must meet
 
@@ -71,7 +72,7 @@ the changelog's section dated, the release notes in `docs/releases/`); the maint
   [keys](https://bskasan.github.io/ronin-text-editor/keys.html) and
   [settings](https://bskasan.github.io/ronin-text-editor/settings.html) pages are generated from the exe: a new command
   or setting appears there by itself.
-- CHANGELOG.md's "Unreleased" section updated for a change a user sees.
+- CHANGELOG.md's "Unreleased" section updated for a change a user sees, installs or configures.
 - One logical change per commit, each message `<type>(<scope>): <summary> (#<issue>)` with type one of feat, fix,
   perf, refactor, test, docs, build, chore. Example: `fix(isearch): wrap past the last match (#21)`.
 - A screenshot (`--screenshot`) for a visual change.
