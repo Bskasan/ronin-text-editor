@@ -12455,13 +12455,13 @@ static String8 test_kill_stages(Arena *arena, CompileRun *c, u64 c0, u64 seen) {
     return s;
 }
 
-// Why a kill round did not end as a kill should (#25), or empty: causes, not a clock. The 3 s guard and the 1000 ms for
-// the tree are bounds for a failure only.
-static String8 test_kill_round_cause(Arena *arena, CompileRun *c) {
+// Why a kill round did not end as a kill should (#25), or empty: causes, not a clock. The guard (guard_us) and the
+// 1000 ms for the tree are bounds for a failure only.
+static String8 test_kill_round_cause(Arena *arena, CompileRun *c, u64 guard_us) {
     static const char *ends[] = { "nothing", "the cancel flag", "a batch wait cancelled", "the cancelled read", "cmd.exe's end",
                                   "a read error" };
     CompileDevStages *d = &c->dev;
-    if (!c->ended) return STR8_LIT("it did not end within the 3 s guard");
+    if (!c->ended) return str8_fmt(arena, "it did not end within the %U ms guard", guard_us / 1000);
     if (c->start_status != OS_FILE_OK) return str8_fmt(arena, "the process did not start (status %d)", (i32)c->start_status);
     if (!c->killed || (d->end != COMPILE_DEV_END_FLAG && d->end != COMPILE_DEV_END_SEND && d->end != COMPILE_DEV_END_READ_CANCEL)) {
         return str8_fmt(arena, "the read ended by %s (killed %d), not by the cancel", ends[d->end], c->killed);
@@ -12487,6 +12487,118 @@ static String8 test_kill_round_cause(Arena *arena, CompileRun *c) {
         return str8_fmt(arena, "process %u (created %U) of the tree still runs after 1000 ms", d->procs[running].pid, d->procs[running].created);
     }
     return str8(NULL, 0);
+}
+
+// Faults injected into one round (#25; CompileRun's dev_ fields).
+typedef struct TestKillFaults {
+    u32 kill_delay_ms;
+    b32 skip_kill;
+} TestKillFaults;
+
+typedef struct TestKillRound {
+    String8 why;    // the first cause that failed (test_kill_round_cause), empty when it ended as a kill should
+    String8 stages; // test_kill_stages
+    u64 took;       // from the cancel to the end the test saw
+} TestKillRound;
+
+// One start / kill round of `command` (#25), its result in `out`: it never fails the suite, the caller judges `out`.
+// Before the cancel it waits as the round number says (0: at once; 1: some output; 2: round % 7 ms). The guard bounds a
+// run that does not end; everything the result needs is in the test's arena before the run is freed, so a failing round
+// leaves nothing open behind it.
+static void test_kill_round(Test *t, String8 command, String8 dir, i32 round, TestKillFaults faults, u64 guard_us, TestKillRound *out) {
+    *out = (TestKillRound){ 0 };
+    CompileRun *c = compile_create(command, dir, str8(NULL, 0), MB(16));
+    c->dev_kill_delay_ms = faults.kill_delay_ms;
+    c->dev_skip_kill = faults.skip_kill;
+    if (!compile_start(c)) {
+        compile_free(c);
+        out->why = STR8_LIT("it did not start");
+        return;
+    }
+    if (round % 3 == 1) { // after some output
+        os_dev_wake_wait(2000);
+    } else if (round % 3 == 2) {
+        u64 w0 = os_time_us();
+        while (os_time_us() - w0 < (u64)(round % 7) * 1000) {}
+    }
+    u64 c0 = os_time_us();
+    compile_cancel(c);
+    while (!c->ended && os_time_us() - c0 < guard_us) {
+        os_dev_wake_wait(5);
+        for (CompileBatch *batch = compile_take(c), *next; batch; batch = next) {
+            next = batch->next;
+            compile_give_back(c, batch);
+        }
+    }
+    u64 seen = os_time_us();
+    out->took = seen - c0;
+    out->why = test_kill_round_cause(&t->arena, c, guard_us);
+    out->stages = c->ended ? test_kill_stages(&t->arena, c, c0, seen) : STR8_LIT("(not ended: no stages)");
+    if (c->ended || compile_join(c, os_time_us() + 1000000)) compile_free(c); // a worker stuck past it cannot be freed
+}
+
+// The counters a failing round must leave as it found them (#25).
+typedef struct TestKillCounts {
+    i32 ledger, events, processes, threads;
+} TestKillCounts;
+
+static TestKillCounts test_kill_counts(void) {
+    return (TestKillCounts){ os_dev_live_handles(), os_dev_live_events(), os_dev_live_processes(), os_dev_live_threads() };
+}
+
+static b32 test_kill_counts_equal(TestKillCounts a, TestKillCounts b) {
+    return a.ledger == b.ledger && a.events == b.events && a.processes == b.processes && a.threads == b.threads;
+}
+
+// The fault cases of the kill rounds (#25), each judged by its result. Their guard is 10 s, so a slow machine never
+// turns a case that is slow on purpose (600 ms, the wait's 1000 ms) into a guard failure.
+static b32 test_compile_kill_faults(Test *t) {
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p13", t->tmp_dir));
+    test_child(t, "hang", STR8_LIT("hang\n"));
+    String8 hang = str8_fmt(&t->arena, "%S\\hang.txt", dir);
+    String8 slow = test_child(t, "k_slow", STR8_LIT("out a\nsleep 10\nout b\nhang\n"));
+    u64 guard = 10000000;
+    TestKillRound r;
+    // (a) A kill made slow on purpose: the round passes and its stages name where the time went.
+    test_kill_round(t, slow, dir, 1, (TestKillFaults){ .kill_delay_ms = 600 }, guard, &r);
+    TEST_CHECK(t, !r.why.len && test_contains(r.stages, "the longest: read end -> killed"),
+               "kill faults: a 600 ms delay before the kill: '%S'; %S", r.why, r.stages);
+    String8 slow_stages = r.stages;
+    // (b) No kill: the wait after it times out, and that is the cause reported. (c) One message, nothing left open.
+    TestKillCounts before = test_kill_counts();
+    test_kill_round(t, slow, dir, 1, (TestKillFaults){ .skip_kill = 1 }, guard, &r);
+    TestKillCounts after = test_kill_counts();
+    TEST_CHECK(t, str8_equal(r.why, STR8_LIT("the wait after the kill ended by its 1000 ms timeout, not by cmd.exe's end")),
+               "kill faults: no kill: '%S'; %S", r.why, r.stages);
+    TEST_CHECK(t, test_kill_counts_equal(before, after), "kill faults: no kill left the ledger %d -> %d, events %d -> %d, processes %d -> %d, threads %d -> %d",
+               before.ledger, after.ledger, before.events, after.events, before.processes, after.processes, before.threads, after.threads);
+    // (d) A job over the recorded cap: cmd.exe, the child and its 9 grandchildren, all running at the cancel.
+    String8 many = str8(NULL, 0);
+    for (i32 i = 0; i < 9; i++) many = str8_fmt(&t->arena, "%Sspawn %S\n", many, hang);
+    many = str8_fmt(&t->arena, "%Sout spawned\nhang\n", many);
+    before = test_kill_counts();
+    TestBuild b;
+    test_build(t, test_child(t, "k_many", many), dir, str8(NULL, 0), MB(16), "spawned", 10000, &b);
+    String8 why = b.ended ? test_kill_round_cause(&t->arena, b.c, guard) : STR8_LIT("it did not end");
+    i32 held = b.c ? b.c->dev.proc_total : 0; // the job's own count: the console host Windows may add is in it too
+    i32 grandchildren = 0;
+    String8 key = STR8_LIT("grandchild ");
+    for (i64 i = 0; i + key.len <= b.text.len; i++) {
+        if (!mem_equal(b.text.data + i, key.data, key.len)) continue;
+        u32 pid = test_grandchild_pid(str8(b.text.data + i, b.text.len - i));
+        grandchildren++;
+        if (pid && !test_pid_gone(pid, 1000)) os_dev_kill_pid(pid);
+    }
+    test_build_free(&b);
+    after = test_kill_counts();
+    String8 want = str8_fmt(&t->arena, "the job held %d processes, more than the %d recorded", held, COMPILE_DEV_PROCS);
+    TEST_CHECK(t, grandchildren == 9 && held >= 2 + grandchildren && str8_equal(why, want),
+               "kill faults: a job over the cap: %d grandchildren, the job held %d, '%S'", grandchildren, held, why);
+    TEST_CHECK(t, test_kill_counts_equal(before, after), "kill faults: the job over the cap left the ledger %d -> %d, events %d -> %d, processes %d -> %d",
+               before.ledger, after.ledger, before.events, after.events, before.processes, after.processes);
+    LOG("test: ok: build kill faults (a 600 ms delay before the kill passes: %S; no kill fails by the wait's timeout, one message, the "
+        "ledger back; a job of %d processes fails by the cap of %d, the ledger back)", slow_stages, held, COMPILE_DEV_PROCS);
+    return 1;
 }
 
 static b32 test_compile_kill(Test *t) {
@@ -12527,36 +12639,15 @@ static b32 test_compile_kill(Test *t) {
     String8 worst_stages = str8(NULL, 0);
     i32 worst_round = 0;
     for (i32 round = 0; round < 100; round++) {
-        CompileRun *c = compile_create(slow, dir, str8(NULL, 0), MB(16));
-        TEST_CHECK(t, compile_start(c), "kill: round %d did not start", round);
-        if (round % 3 == 1) { // after some output
-            os_dev_wake_wait(2000);
-        } else if (round % 3 == 2) {
-            u64 w0 = os_time_us();
-            while (os_time_us() - w0 < (u64)(round % 7) * 1000) {}
-        }
-        u64 c0 = os_time_us();
-        compile_cancel(c);
-        while (!c->ended && os_time_us() - c0 < 3000000) {
-            os_dev_wake_wait(5);
-            for (CompileBatch *batch = compile_take(c), *next; batch; batch = next) {
-                next = batch->next;
-                compile_give_back(c, batch);
-            }
-        }
-        u64 seen = os_time_us(), end_took = seen - c0;
-        // Everything the report needs goes into the test's arena before the run is freed: a failing round leaves
-        // nothing open behind it, so it is reported once.
-        String8 why = test_kill_round_cause(&t->arena, c);
-        String8 stages = c->ended ? test_kill_stages(&t->arena, c, c0, seen) : STR8_LIT("(not ended: no stages)");
-        if (end_took > 100000) LOG("test: kill: round %d took %U ms: %S", round, end_took / 1000, stages);
-        if (end_took >= worst) {
-            worst = end_took;
-            worst_stages = stages;
+        TestKillRound r;
+        test_kill_round(t, slow, dir, round, (TestKillFaults){ 0 }, 3000000, &r);
+        if (r.took > 100000) LOG("test: kill: round %d took %U ms: %S", round, r.took / 1000, r.stages);
+        if (r.took >= worst) {
+            worst = r.took;
+            worst_stages = r.stages;
             worst_round = round;
         }
-        if (c->ended || compile_join(c, os_time_us() + 1000000)) compile_free(c); // a worker stuck past it cannot be freed
-        TEST_CHECK(t, !why.len, "kill: round %d: %S; %S", round, why, stages);
+        TEST_CHECK(t, !r.why.len, "kill: round %d: %S; %S", round, r.why, r.stages);
         if (!round) handles_first = os_dev_handle_count();
     }
     TEST_CHECK(t, os_dev_handle_count() <= handles_first + 2, "kill: handles grew from %d to %d over 100 rounds", handles_first, os_dev_handle_count());
@@ -16472,6 +16563,8 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_compile_run(&t);
     arena_reset(&t.arena);
     test_compile_kill(&t);
+    arena_reset(&t.arena);
+    test_compile_kill_faults(&t);
     arena_reset(&t.arena);
     test_compile_app(&t);
     arena_reset(&t.arena);
