@@ -4301,6 +4301,71 @@ page) could not repeat Added / Changed / Fixed under a second version. Every hea
 5. The em dash in "1.0.0 — 2026-10-21" no longer reaches the id: `100--2026-10-21`, GitHub's. Nothing linked to the old
    `100-—-2026-10-21` (the repository, docs/ and the v1.0.0 release notes searched, also percent-encoded).
 
+### Decisions, #25 Build kill rounds
+
+`test_compile_kill`'s 100 start / kill rounds required each run to end within 500 ms of `compile_cancel`. A CI runner
+(debug `--test`, below-normal priority on a shared machine) ended one after 575 ms, the log could not say where the time
+went, and the failure leaked the round's two events into a second failure line.
+
+1. Causes, not a clock. A round passes because:
+   - the cancel ended the read (`CompileDevEnd`: the flag at the loop's top, a batch wait cancelled, or the cancelled
+     read);
+   - the wait after the kill saw cmd.exe end, not its 1000 ms timeout;
+   - every process of the job is gone.
+
+   A clock limit measures the machine: the same code passed at 1-2 ms on 12 runs and failed at 575 ms on one. The 3 s
+   guard stays, as a bound for a run that never ends, and so does the 1000 ms for the tree to go; neither is how a
+   round passes. A kill that does not happen still fails, through the wait's timeout, which names the stage (#25's
+   mutations, Measurements).
+2. The stages are recorded in dev builds only (`CompileRun.dev`: os_time_us when the worker entered, the process
+   started, the read ended, the kill returned, the wait returned, the handles closed, the last batch was queued).
+   - The worker writes them as it writes the run's result, before its last batch is queued under `c->lock`. The main
+     thread reads them only after it took that batch under the same lock and joined the worker (`c->ended`).
+   - Every line is inside `#if RONIN_DEV`; `os_process_wait`'s result is kept under RONIN_DEV with an `#else` holding
+     the old statement, so the release build's tokens are unchanged (the release exe compared byte for byte,
+     Measurements).
+   - The worker calls only os_time_us and the any-thread dev query below; it never logs.
+3. The tree is known by the job, not guessed. Before the kill, the worker lists the job's processes
+   (`os_dev_job_processes`: JobObjectBasicProcessIdList, then each process's creation time).
+   - The test later asks for each by its id and creation time (`os_dev_process_running`), so a finished process's id
+     given to an unrelated one never counts as the tree still running. One bound, 1000 ms, covers the whole tree.
+   - Eight entries are recorded together with the job's real count (NumberOfAssignedProcesses). A job holding more
+     fails the round, naming both numbers, rather than checking a cut list. The rounds' child (cmd.exe and one
+     `--child`) never reaches it, so no test runs that branch.
+4. One failure, one report. The round formats its cause and its stages into the test's arena, frees its run (or joins a
+   worker that has not ended for 1 s more, and frees it only then), and only then fails. The leak metrics no longer
+   repeat a kill round's failure as "the tests left 2 handle(s) open".
+5. The log shows where time goes without failing on it:
+   - The slowest round's stages are in the "test: ok: build kills" line on every run.
+   - Every round over 100 ms gets a line of its own, "test: kill: round N took X ms: ...", for information only.
+   - The breakdown sorts the points by time from the cancel and ends with the longest step between two of them.
+6. The issue's proposed mutation slept 300 ms before the kill; that stays under the old 500 ms limit and could not show
+   the difference, so the proof used 600 ms (over the old limit, under the 3 s guard).
+
+### Measurements, #25 Build kill rounds
+
+All on the maintainer's machine. The mutations were scratch changes on ronin_bench.exe `--test`: the old code is a
+`git archive` copy of main at 996703b in build\proof\p25\main, the new code is this branch.
+
+| run | the kill rounds' lines |
+|---|---|
+| old, 600 ms before the kill | `test: FAIL: kill: round 0 ended 1 after 608 ms`; `test: FAIL: leak metrics: the tests left 2 handle(s) open (the ledger 2, 0 at the start)` |
+| old, no kill | `test: FAIL: kill: round 0 ended 1 after 1018 ms` (and the app's C-c C-k test, also broken by it: 6 handles left in all) |
+| new, 600 ms before the kill | PASS; all 100 rounds logged, e.g. `round 1 took 601 ms: entered -26.5, started -24.2, cancel +0.0, read end +0.0, killed +600.0, cmd.exe ended +601.3, ... (read ended by the cancelled read); the longest: read end -> killed, 600.0 ms` |
+| new, no kill | `test: FAIL: kill: round 0: the wait after the kill ended by its 1000 ms timeout, not by cmd.exe's end; cancel +0.0, entered +0.0, started +7.2, read end +7.2, killed +7.2, the wait timed out +1015.5, ... the longest: killed -> the wait timed out, 1008.3 ms` (no clock failure; only the app test's 4 handles left) |
+| new, round 47 forced to fail | one `test: FAIL: kill: round 47: ...` line, then `test: ok: leak metrics (... the ledger back at 0)`; no "handle(s) open" line |
+
+- **The slowest round without a mutation** (`verify.bat phase`, debug `--test`): round 0, 8 ms. The breakdown: cancel
+  +0.0, entered +0.0, started +8.1, read end +8.1, killed +8.2, cmd.exe ended +8.5, closed +8.6, last batch +8.7,
+  seen +8.7 ms (read ended by the cancel flag); the longest step is entered -> started, 8.1 ms. That step is the
+  process creation, since round 0 cancels before the worker runs. Bench: round 0, 8 ms, the same longest step
+  (7.6 ms).
+- **The release exe**: built at 996703b and on this branch, 471,040 bytes each. 4 bytes differ: the COFF
+  TimeDateStamp and the POGO debug entry's TimeDateStamp, 2 bytes each. With those zeroed, both SHA-256 are
+  7a45c081e048d4986411649da543c9a3793fdea05bb25dbe821a19bd195c1da3. `--check-imports`: PASS, 3 DLLs, 135 functions.
+- **`verify.bat phase`**: PASS in 536 s, the seed sweep 256 seeds PASS (192 s), the soaks PASS (bench 43.7 s, debug
+  38.4 s), the leak check PASS.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the
