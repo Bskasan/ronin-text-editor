@@ -643,6 +643,18 @@ run only as the platform runs them, after a wake with news or while the app want
 | AB11 | On a real repository with the real mouse: C-x g and at once a double click on a file further down opens it at its first change | HUMAN | real mouse timing against a real git; HUMAN step 67. |
 | AB12 | RET on a file queued behind another file's diff, whose own diff then cannot start (no worker): with no further input the file opens where find-file puts point, and the app goes idle after it | AUTOMATED-NEW | "git early worker cannot start" (the start refused by the dev-only `dev_fail_diff_start`; far.c at line 1, then no frame wanted over 10 steps). Before the fix (review of #23): the box stayed open, no frame wanted, nothing visited. |
 
+## AC. Site: repeated headings get GitHub's anchors (#20)
+
+GitHub's ids come from its own renderer, asked once (`gh api markdown -f mode=markdown`) for res/heading_ids.md and kept
+in res/heading_ids.txt; the tests never use the network.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| AC1 | A heading repeated on a page (Added / Changed / Fixed under three versions) gets `changed`, `changed-1`, ... in page order, a heading named "Changed 1" taking its number first; `build.bat docs` no longer stops | AUTOMATED-NEW | `test_heading_ids` (headings 3-15 of the fixture); `test_markdown`'s golden `a`, `a-1`, `a-1-1`, `a-2`. Before the fix: "the converter refused res/heading_ids.md:13: a heading whose anchor the page has already (#added)". A mutation without numbering: "heading 7: 'added', GitHub 'added-1'". |
+| AC2 | The other ids of the fixture equal GitHub's: the em dash, code spans, a link, punctuation, digits, Latin-1 and Latin Extended-A letters, Turkish İ ı I i, spaces around the text | AUTOMATED-NEW | `test_heading_ids` (all 28 headings, the first difference named). |
+| AC3 | A link to a numbered anchor resolves; a link to an anchor that does not exist still fails | AUTOMATED-NEW | `test_heading_ids` (each of the 28 resolves, `#changed-4` and `#added-3` do not); `test_readme`'s small site: "link #twice-2: no heading #twice-2" with `#twice` and `#twice-1` resolving. |
+| AC4 | On the published site and on GitHub, a link to a repeated heading lands on the right section | HUMAN | the published site and GitHub's page only exist after the merge; HUMAN step 68. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -858,6 +870,9 @@ Issue #1, the git changes view:
     them changed further down than its first screen): C-x g, and at once, before its diff shows, double-click a file
     further down the list. The status line says "Visiting <file> at its first change once git answers…" (or the file opens
     at once if git was quicker), then the file opens at its first change, not at line 1.
+68. **AC4**: After the merge, once GitHub Pages has published: open
+    https://bskasan.github.io/ronin-text-editor/changelog.html#changed-1, and on GitHub CHANGELOG.md on main with
+    `#changed-1` after its address. Both scroll to 1.0.0's "Changed" (the second one on the page), not to Unreleased's.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

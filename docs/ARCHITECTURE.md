@@ -100,10 +100,10 @@ The only folder that may include Windows SDK headers.
 
 | file | description | details |
 |---|---|---|
-| `test.c` | dev: the headless tests (--test), the fuzz groups, the soak | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits; Phase 22: the README check, `test_readme`: README.md's key tables through describe-key or their keymap, its settings tables and ini blocks through the config parser, the prose keys, commands and names, README.md's and CONTRIBUTING.md's links and anchors, and the checker's own broken fragments; Phase 23: the map report reads src\'s folders; Phase 24: the docs site's converter, `test_markdown`; `--dump-docs`, `test_dump_docs`; the README check over the site's pages of docs/src with their fragments in place (cross-page links and anchors, images, `| command |` tables, unique headings, README's `href` / `src`), with a small site of its own for its broken fragments) and the `--bench-buffer` core |
+| `test.c` | dev: the headless tests (--test), the fuzz groups, the soak | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits; Phase 22: the README check, `test_readme`: README.md's key tables through describe-key or their keymap, its settings tables and ini blocks through the config parser, the prose keys, commands and names, README.md's and CONTRIBUTING.md's links and anchors, and the checker's own broken fragments; Phase 23: the map report reads src\'s folders; Phase 24: the docs site's converter, `test_markdown`; `--dump-docs`, `test_dump_docs`; the README check over the site's pages of docs/src with their fragments in place (cross-page links and anchors, images, `| command |` tables, README's `href` / `src`), with a small site of its own for its broken fragments; #20: the site's heading ids against GitHub's for res/heading_ids.md, `test_heading_ids`, and repeated headings numbered in the README check) and the `--bench-buffer` core |
 | `leak.c` | dev: the leak check (--leak-check), its scenarios and verdicts | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19, terminal-cycle since Phase 20, theme-cycle since Phase 21) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `dump_docs.c` | dev: --dump-docs, the docs site's keys and settings fragments | Phase 24: `--dump-docs DIR` writes keys.md (per keymap section of the built-in configuration, in its order: the section's comment, then a key table of the commands bound there in command-table order; then the commands bound nowhere) and settings.md (per comment of [settings]: the comment as paragraphs, the settings with their defaults as an ini block); every setting the parser knows in [settings] once (exit 9 otherwise); build.bat docs and verify's docs-check run it |
-| `markdown.c` | dev: the docs site's Markdown subset to HTML (tools/make_docs.c) | Phase 24: one page of docs/src/*.md into the site's template with its navigation (`md_page`), nav.txt (`md_nav_parse`), GitHub's heading anchors (`md_slug`, the README check's too); includes nothing, writes into the caller's memory; tools/make_docs.c includes it with its own types, so `--test` (`test_markdown`) checks the converter the tool runs |
+| `markdown.c` | dev: the docs site's Markdown subset to HTML (tools/make_docs.c) | Phase 24: one page of docs/src/*.md into the site's template with its navigation (`md_page`), nav.txt (`md_nav_parse`), GitHub's heading anchors (`md_slug` from the heading's text, a repeat numbered by `md_unique_id` (#20), both the README check's too); includes nothing, writes into the caller's memory; tools/make_docs.c includes it with its own types, so `--test` (`test_markdown`) checks the converter the tool runs |
 | `png.c` | dev: PNG encoder for screenshots (stored deflate) | dev-only PNG encoder (stored deflate, CRC32, Adler-32) |
 
 ### `tools/`
@@ -4265,6 +4265,34 @@ click on a row not yet selected hit it almost every time: its first press starts
 5. The tests hold git's answer instead of delaying it: `--child`'s `gate NAME` waits on a named event the test creates
    (os_dev_gate_create) and opens when it chooses, so each case's order of accept and answer is fixed, never the clock's.
 
+### Decisions, #20 Heading anchors
+
+The site's converter refused a heading whose anchor the page already had, so CHANGELOG.md (included by the changelog
+page) could not repeat Added / Changed / Fixed under a second version. Every heading now gets the id GitHub gives it.
+
+1. The rule is GitHub's own, taken from its renderer, not from memory: res/heading_ids.md was sent once to `gh api
+   markdown -f mode=markdown -F text=@res/heading_ids.md` and the ids of the answer (each heading's `href="#ID"`) are
+   res/heading_ids.txt. `mode=gfm`, GitHub's comment renderer, gives headings no id at all; `mode=markdown` is the one
+   of repository files. The tests read both files and never use the network (`test_heading_ids`).
+2. A repeat is numbered as github-slugger does: a slug no heading of the page has yet is the id; otherwise the slug's
+   own counter goes up until "slug-N" is free, and that id is taken too. So "Changed 1" before a second "Changed"
+   pushes it to `changed-2`, and a later "Added 1" after `added-1` becomes `added-1-1`. `md_unique_id` (markdown.c) is
+   the one implementation: the converter gives the ids, the README check resolves links by them.
+3. Ids are compared by their text: each taken id keeps its 64-bit FNV-1a hash (md_hash) to skip most comparisons and
+   its text in a 16 KB pool, so two slugs with one hash stay two ids. A page holds 512 ids; one more is refused at its
+   line, as are a pool overflow and a heading whose slug is `main` (the template's `<main id="main">`; numbering it
+   would differ from GitHub, which calls it `main`).
+4. The slug reads the heading's text as GitHub does, not its Markdown: a code span's content (one padding space each
+   side dropped, as the converter shows it), a link's text, an image nothing. The characters: ASCII letters lowercased,
+   digits, '-' and '_' kept, a space a '-', other ASCII dropped; U+00C0-U+00DE and the Latin Extended-A capitals
+   lowercased (U+0130 İ as "i" and U+0307, as GitHub does); U+00D7, U+00F7 and General Punctuation U+2010-U+205E
+   dropped. Each range and each exception has a sample in the fixture (À Þ Ü; Ā Ĳ Ķ Ş Ŋ Ŷ; Ĺ Ň Ž; Ÿ; İ; × ÷; ‐ ‑ ‒ – —
+   ‘ ’ “ ” • … ‰ ′ ‹ › ⁄ ⁞; the kept ß é ÿ ā ž ĳ ķ ĸ ŉ ź ſ ı); characters outside them stay as they were (After 1.0,
+   Inside).
+   The image rule has no sample: no heading of the docs holds an image.
+5. The em dash in "1.0.0 — 2026-10-21" no longer reaches the id: `100--2026-10-21`, GitHub's. Nothing linked to the old
+   `100-—-2026-10-21` (the repository, docs/ and the v1.0.0 release notes searched, also percent-encoded).
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the
@@ -4379,9 +4407,10 @@ regular-expression search (#14), line wrapping (#15), project-wide replace (#16)
   zip, so a fresh clone gives the same SHA-256 (Phase 25: the same file list, exe size and other files only).
 - The CI's smoke as a gate: the bench build's `--smoke` passes on windows-latest (Phase 25: an interactive console
   session, feature level 11_0 without the debug layer, 82 frames), so its step could fail the run instead of reporting.
-- The site's anchors for non-ASCII punctuation: md_slug keeps every byte of a multi-byte character, where GitHub drops
-  punctuation such as an em dash, so the changelog's "1.0.0 — <date>" has the id `100-—-<date>` on the site and
-  `100--<date>` on GitHub (Phase 25; nothing links to it).
+- The site's anchors outside the characters #20 handles: md_slug lowercases ASCII, Latin-1 and Latin Extended-A and
+  drops ASCII punctuation, × ÷ and General Punctuation (each rule shown by res/heading_ids.md); any other character
+  (Greek or Cyrillic capitals, other non-ASCII punctuation and symbols) is kept as it is, where GitHub lowercases or
+  drops it. Nothing in the docs has one; a fixture line rendered by GitHub would show the rule before widening it.
 - The layering by use, not only by include (Phase 23): a /Zs compile of src/base/ and src/text/ alone (their headers,
   platform.h, then their .c files) would fail when text code calls into editor/, project/ or app/; the source check
   sees only #include lines, and the unity build puts every header before every .c file.
