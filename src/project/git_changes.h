@@ -31,6 +31,7 @@ typedef struct GitChanges {
     String8 visit_path;          // git-changes-visit: the file and its 1-based line (0: where find-file puts point)
     i64 visit_line;
     b32 work_pending;            // a diff is being copied into the box: another frame
+    u64 serial;                  // the last diff job's GitJob.serial (never reset: unique across opens)
 #if RONIN_DEV
     String8 dev_program, dev_prefix, dev_env; // tests: the fake git, or the real one with an isolated configuration
     b32 dev_allow_real;          // tests: PATH's git though a batch run (a PATH without one: nothing real can start)

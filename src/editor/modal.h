@@ -59,6 +59,9 @@ typedef struct ModalSpec {
     void (*field_changed)(App *app, void *data, String8 text); // the field's text changed (also once at open)
     void (*accept)(App *app, void *data, i32 pane, i64 row);   // modal-accept (RET) or a double-click on a row
     void (*selected)(App *app, void *data, i32 pane, i64 row); // a pane's selection moved (keys, a click); may be NULL
+    void (*input)(App *app, void *data, i32 pane, i64 row);    // a key or a press reached it, before it is handled: the
+                                                               // pane and row pressed (the row may be past the pane's
+                                                               // last; -1, -1: a key, a press on no pane); may be NULL
     void (*draw_row)(App *app, void *data, Renderer *r, ModalRow *row);
     String8 (*status)(App *app, void *data, Arena *scratch);   // the right end of the field line ("12/137"), or the status
                                                                // line's text; may be empty
