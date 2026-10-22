@@ -124,6 +124,8 @@ Build-time programs, not part of the exe; compiled by build.bat on every build.
 | `res/ronin.manifest` | PerMonitorV2 DPI, longPathAware, supportedOS Windows 10 |
 | `res/ronin.rc` | the icon (build\gen\ronin.ico) and the version resource (src/app/version.h) |
 | `res/imports.txt` | the DLLs the release exe may import (checked by verify.bat with `--check-imports`) |
+| `res/heading_ids.md` | #20: headings whose ids GitHub was asked for once (repeats, an em dash, code, a link, punctuation, Latin-1 and Latin Extended-A letters, Turkish İ); test data, never sent by a test |
+| `res/heading_ids.txt` | #20: GitHub's ids for res/heading_ids.md in order (`gh api markdown -f mode=markdown`), what `--test` compares the site's converter with |
 | `themes/*.conf` | the built-in themes' sources (ronin, moonfly, oxide, vague, mellifluous): a [theme] block (name, source, commit, license, author) and [colors]; embedded by tools/make_themes.c |
 | `build.bat`, `verify.bat`, `dist.bat` | the build, the gate before every commit, the release zip |
 | `docs/src/*.md`, `docs/src/nav.txt` | the documentation site's pages in Markdown and their order (Phase 24); made into docs/*.html by `build.bat docs` |
