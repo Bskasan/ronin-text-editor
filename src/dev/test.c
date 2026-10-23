@@ -21,6 +21,14 @@ typedef struct Test {
     u64 rng;
     i32 failures;
     String8 tmp_dir; // build\tmp: round-trip inputs stay there for inspection
+    // The settings test_setting_set loaded into setting_app (#29): "name = value" lines, the file, the defaults.
+    App *setting_app;
+    u8 setting_text[2048];
+    i64 setting_len;
+    u8 setting_path[600];
+    i64 setting_path_len;
+    Settings setting_defaults;
+    b32 setting_defaults_made;
 } Test;
 
 static u64 test_rand(Test *t) { // splitmix64
@@ -5730,10 +5738,128 @@ static App *test_app_create(Test *t) {
 }
 
 static b32 test_app_destroy(Test *t, App *app, const char *what) {
+    if (app == t->setting_app) t->setting_app = NULL;
     i32 leaks = app_shutdown(app);
     TEST_CHECK(t, leaks == 0, "%s: %d leak(s) at shutdown", what, leaks);
     return 1;
 }
+
+// ---------------------------------------------------------------------------
+// Settings in the coverage map (#29). A setting counts only through these two. test_setting_set loads
+// "name = value", with the settings it loaded before on the same app, through a config file over the built-in
+// configuration (as C-c r), and fails on a diagnostic, a name that is no setting, or the default value.
+// TEST_SETTING_EFFECT checks the setting's effect, then counts the setting only if the app still reads that file and
+// still holds a value other than the default. Parsing a value never counts.
+
+static const Settings *test_setting_defaults(Test *t) {
+    if (!t->setting_defaults_made) {
+        u64 mark = arena_pos(&t->arena);
+        Config *c = PUSH_STRUCT(&t->arena, Config);
+        config_defaults(c, &t->arena);
+        t->setting_defaults = c->settings;
+        t->setting_defaults_made = 1;
+        arena_pop_to(&t->arena, mark);
+    }
+    return &t->setting_defaults;
+}
+
+// The settings loaded so far as a config file, build\tmp\p29set\<file>.conf; its path (empty: not written).
+static String8 test_setting_file(Test *t, const char *file) {
+    String8 dir = str8_fmt(&t->arena, "%S\\p29set", t->tmp_dir);
+    os_make_dir(dir);
+    String8 path = str8_fmt(&t->arena, "%S\\%s.conf", dir, file);
+    if (!os_write_file(path, str8_fmt(&t->arena, "[settings]\n%S", str8(t->setting_text, t->setting_len)))) return str8(NULL, 0);
+    i64 n = MIN(path.len, (i64)sizeof(t->setting_path));
+    memcpy(t->setting_path, path.data, (size_t)n);
+    t->setting_path_len = n;
+    return path;
+}
+
+static b32 test_setting_add(Test *t, App *app, const char *name, const char *value) {
+    String8 n = str8_cstr(name);
+    TEST_CHECK(t, config_dev_setting_differs(test_setting_defaults(t), test_setting_defaults(t), n) >= 0, "setting %s: no such setting", name);
+    if (app != t->setting_app) t->setting_len = 0;
+    t->setting_app = app;
+    String8 line = str8_fmt(&t->arena, "%s = %s\n", name, value);
+    TEST_CHECK(t, t->setting_len + line.len <= (i64)sizeof(t->setting_text), "setting %s: too many settings on one app", name);
+    memcpy(t->setting_text + t->setting_len, line.data, (size_t)line.len);
+    t->setting_len += line.len;
+    return 1;
+}
+
+// The loaded configuration is clean and holds a value other than the default.
+static b32 test_setting_loaded(Test *t, App *app, const char *name, const char *value) {
+    ConfigDiags *d = &app->config->diags;
+    TEST_CHECK(t, d->errors == 0 && d->warnings == 0, "setting %s = %s: %d error(s), %d warning(s), the first '%S'", name, value, d->errors,
+               d->warnings, d->first ? d->first->text : STR8_LIT(""));
+    TEST_CHECK(t, config_dev_setting_differs(&app->config->settings, test_setting_defaults(t), str8_cstr(name)) == 1,
+               "setting %s = %s: that is the default value", name, value);
+    return 1;
+}
+
+// Loads `name = value` into a running app (as C-c r), with the settings loaded into it before.
+static b32 test_setting_set(Test *t, App *app, const char *name, const char *value) {
+    if (!test_setting_add(t, app, name, value)) return 0;
+    String8 path = test_setting_file(t, name);
+    TEST_CHECK(t, path.len, "setting %s: cannot write its config", name);
+    app_dev_use_config(app, path);
+    return test_setting_loaded(t, app, name, value);
+}
+
+// The app back on the built-in configuration (no config file, no watch on one), its loaded settings forgotten.
+static void test_setting_reset(Test *t, App *app) {
+    app_dev_use_config(app, str8(NULL, 0));
+    if (app == t->setting_app) t->setting_app = NULL;
+}
+
+static App *test_manual_app(Test *t, String8 file, i64 line, i64 col, String8 config);
+
+// A setting read at startup: the config file an app is then created with (empty: not written), and the app made with
+// it, checked as test_setting_set checks a reload.
+static String8 test_setting_startup(Test *t, const char *name, const char *value) {
+    t->setting_app = NULL;
+    t->setting_len = 0;
+    if (!test_setting_add(t, NULL, name, value)) return str8(NULL, 0);
+    return test_setting_file(t, name);
+}
+
+static b32 test_setting_started(Test *t, App *app, const char *name, const char *value) {
+    t->setting_app = app;
+    TEST_CHECK(t, app, "setting %s = %s: app_create failed", name, value);
+    return test_setting_loaded(t, app, name, value);
+}
+
+// A headless app started with `name = value`, visiting `file` at line:col if given (NULL: failed, reported).
+static App *test_setting_app(Test *t, const char *name, const char *value, String8 file, i64 line, i64 col) {
+    String8 path = test_setting_startup(t, name, value);
+    App *app = path.len ? test_manual_app(t, file, line, col, path) : NULL;
+    if (path.len && !test_setting_started(t, app, name, value)) {
+        if (app) app_shutdown(app);
+        t->setting_app = NULL;
+        return NULL;
+    }
+    return app;
+}
+
+// The setting's effect was checked: counted if test_setting_set loaded it on this app, the app still reads that file
+// and the value is still not the default.
+static b32 test_setting_covered(Test *t, App *app, const char *name) {
+    String8 n = str8_cstr(name), loaded = str8(t->setting_text, t->setting_len);
+    b32 listed = 0;
+    for (i64 i = 0; i + n.len < loaded.len && !listed; i++) {
+        listed = (i == 0 || loaded.data[i - 1] == '\n') && memcmp(loaded.data + i, n.data, (size_t)n.len) == 0 && loaded.data[i + n.len] == ' ';
+    }
+    TEST_CHECK(t, app && app == t->setting_app && listed, "setting %s: its effect was checked, but test_setting_set did not load it into this app", name);
+    TEST_CHECK(t, str8_equal(app->config_path, str8(t->setting_path, t->setting_path_len)), "setting %s: the app reads another config (%S)", name,
+               app->config_path);
+    TEST_CHECK(t, config_dev_setting_differs(&app->config->settings, test_setting_defaults(t), n) == 1,
+               "setting %s: back at its default where its effect was checked", name);
+    os_dev_cover_hit("setting", str8(NULL, 0), n);
+    return 1;
+}
+
+#define TEST_SETTING_EFFECT(t, app, name, cond, ...) \
+    do { TEST_CHECK(t, cond, __VA_ARGS__); if (!test_setting_covered(t, app, name)) return 0; } while (0)
 
 // show_paren_mode in a headless app: the opener at point, the closer before point (which wins), a
 // bracket in a string, the setting off.
@@ -5755,9 +5881,8 @@ static b32 test_show_paren(Test *t) {
     view_set_point(v, &v->cursors[0], 3); // no bracket
     TEST_CHECK(t, !app_dev_paren(app, &t->arena, &a, &b), "paren: none at point");
     view_set_point(v, &v->cursors[0], 13);
-    app->config->settings.show_paren_mode = 0;
-    TEST_CHECK(t, !app_dev_paren(app, &t->arena, &a, &b), "paren: show_paren_mode off");
-    app->config->settings.show_paren_mode = 1;
+    if (!test_setting_set(t, app, "show_paren_mode", "false")) return 0;
+    TEST_SETTING_EFFECT(t, app, "show_paren_mode", !app_dev_paren(app, &t->arena, &a, &b), "paren: show_paren_mode off");
     if (!test_app_destroy(t, app, "paren")) return 0;
     os_file_delete(path);
     LOG("test: ok: show-paren (an opener at point, the closer before point wins, in a string, none, off)");
@@ -7438,12 +7563,14 @@ static b32 test_disk(Test *t) {
     TEST_CHECK(t, !app->mini.active && test_file_is(t, path, "unfocused\nm!") && b->disk_state == BUFFER_DISK_OK, "disk: saved again");
 
     // auto_revert off: an unmodified buffer is flagged like a modified one.
-    app->config->settings.auto_revert = 0;
+    if (!test_setting_set(t, app, "auto_revert", "false")) return 0;
     TEST_CHECK(t, os_write_file(path, STR8_LIT("no revert\n")), "disk: change");
     test_focus(app, 0, &t->arena);
     test_focus(app, 1, &t->arena);
-    TEST_CHECK(t, test_text_is(t, b, STR8_LIT("unfocused\nm!")) && b->disk_state == BUFFER_DISK_CHANGED, "disk: auto_revert off");
-    app->config->settings.auto_revert = 1;
+    TEST_SETTING_EFFECT(t, app, "auto_revert", test_text_is(t, b, STR8_LIT("unfocused\nm!")) && b->disk_state == BUFFER_DISK_CHANGED,
+                        "disk: auto_revert off");
+    test_setting_reset(t, app);
+    TEST_CHECK(t, app->config->settings.auto_revert, "disk: auto_revert back on with the built-in configuration");
 
     // Watches follow the displayed buffers and are all released.
     app_dev_feed(app, "C-x b * s c r a t c h * RET", &t->arena);
@@ -9633,9 +9760,7 @@ static b32 test_window_popup(Test *t) {
     String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p10windows", t->tmp_dir));
     os_make_dir(dir);
     String8 file = str8_fmt(&t->arena, "%S\\other.txt", dir), anchor = str8_fmt(&t->arena, "%S\\anchor.txt", dir);
-    String8 conf = str8_fmt(&t->arena, "%S\\narrow.conf", dir);
-    TEST_CHECK(t, os_write_file(file, STR8_LIT("other\n")) && os_write_file(anchor, STR8_LIT("anchor\n")) &&
-                  os_write_file(conf, STR8_LIT("[settings]\nsplit_width_threshold = 200\n")), "pop-up: cannot write the files");
+    TEST_CHECK(t, os_write_file(file, STR8_LIT("other\n")) && os_write_file(anchor, STR8_LIT("anchor\n")), "pop-up: cannot write the files");
     App *app = test_app_create(t);
     TEST_CHECK(t, app, "pop-up: app_create failed");
 
@@ -9655,10 +9780,11 @@ static b32 test_window_popup(Test *t) {
     TEST_CHECK(t, app_dev_window_count(app) == 3 && app_dev_window_selected(app) == 1 && str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("pop")),
                "pop-up: the least recently used other window (selected %d)", app_dev_window_selected(app));
     // One window in a frame narrower than split_width_threshold: one above the other.
-    app_dev_use_config(app, conf);
+    if (!test_setting_set(t, app, "split_width_threshold", "200")) return 0;
     app_dev_feed(app, "C-x 1 C-x 4 b * s c r a t c h * RET", &t->arena);
-    TEST_CHECK(t, app_dev_window_count(app) == 2 && test_win(app, 1)->x == 0 && test_win(app, 1)->y > 0 && app_dev_window_selected(app) == 1,
-               "pop-up: below 200 columns, one above the other");
+    TEST_SETTING_EFFECT(t, app, "split_width_threshold",
+                        app_dev_window_count(app) == 2 && test_win(app, 1)->x == 0 && test_win(app, 1)->y > 0 && app_dev_window_selected(app) == 1,
+                        "pop-up: below 200 columns, one above the other");
     // C-h e: *Messages* in another window, not selected, point at its end.
     app_dev_feed(app, "C-x 1 C-h e", &t->arena);
     TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 0 && test_win(app, 1)->buffer == app->messages &&
@@ -9918,20 +10044,22 @@ static b32 test_window_startup(Test *t) {
     String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p10windows", t->tmp_dir));
     os_make_dir(dir);
     String8 a = str8_fmt(&t->arena, "%S\\first.txt", dir), b = str8_fmt(&t->arena, "%S\\second.txt", dir);
-    String8 conf = str8_fmt(&t->arena, "%S\\two.conf", dir);
     u8 *text = PUSH_ARRAY(&t->arena, u8, 100 * 16);
     i64 n = 0;
     for (i32 i = 0; i < 100; i++) n += fmt_buf(text + n, 16, "row %d\n", i);
-    TEST_CHECK(t, os_write_file(a, str8(text, n)) && os_write_file(b, str8(text, n)) && os_write_file(conf, STR8_LIT("[settings]\nstartup_windows = 2\n")),
-               "startup: cannot write the files");
+    String8 conf = test_setting_startup(t, "startup_windows", "2");
+    TEST_CHECK(t, os_write_file(a, str8(text, n)) && os_write_file(b, str8(text, n)) && conf.len, "startup: cannot write the files");
     AppFileArg files[2] = { { a, 10, 3 }, { b, 50, 0 } };
     AppArgs args = { .dpi_scale = 1.0f, .headless = 1, .files = files, .file_count = 2, .config_path = conf };
     App *app = app_create(&t->arena, &args);
     TEST_CHECK(t, app, "startup: app_create failed");
     app_dev_feed_events(app, NULL, 0, &t->arena);
-    TEST_CHECK(t, app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 0 &&
-                  str8_equal(test_win(app, 0)->buffer->name, STR8_LIT("first.txt")) && str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("second.txt")) &&
-                  test_win(app, 1)->x == 640, "startup: startup_windows = 2 shows the two files side by side");
+    if (!test_setting_started(t, app, "startup_windows", "2")) return 0;
+    TEST_SETTING_EFFECT(t, app, "startup_windows",
+                        app_dev_window_count(app) == 2 && app_dev_window_selected(app) == 0 &&
+                            str8_equal(test_win(app, 0)->buffer->name, STR8_LIT("first.txt")) &&
+                            str8_equal(test_win(app, 1)->buffer->name, STR8_LIT("second.txt")) && test_win(app, 1)->x == 640,
+                        "startup: startup_windows = 2 shows the two files side by side");
     Buffer *fa = test_win(app, 0)->buffer, *fb = test_win(app, 1)->buffer;
     TEST_CHECK(t, test_win_point(app, 0) == buffer_line_start(fa, 9) + 2 && test_win_point(app, 1) == buffer_line_start(fb, 49),
                "startup: each file at its own +LINE:COLUMN");
@@ -10106,16 +10234,16 @@ static b32 test_finder(Test *t) {
                os_dev_live_threads() - threads0);
 
     // project_max_files: the scan stops there and says so; the finder says where it stopped.
-    String8 limit_conf = str8_fmt(&t->arena, "%S\\p11limit.conf", t->tmp_dir);
-    TEST_CHECK(t, os_write_file(limit_conf, STR8_LIT("[settings]\nproject_max_files = 1000\n")), "finder: cannot write the config");
-    app = test_manual_app(t, big, 0, 0, limit_conf);
-    TEST_CHECK(t, app && app->config->settings.project_max_files == 1000, "finder: limit: the config");
+    app = test_setting_app(t, "project_max_files", "1000", big, 0, 0);
+    TEST_CHECK(t, app, "finder: cannot start with the config");
+    TEST_CHECK(t, app->config->settings.project_max_files == 1000, "finder: limit: the config");
     app_dev_feed(app, "C-x p f", &t->arena);
     TEST_CHECK(t, finder_dev_wait(app, 10000), "finder: limit: the scan did not end");
     test_finder_settle(t, app);
-    TEST_CHECK(t, str8_equal(test_echo(app), STR8_LIT("Project has more than 1000 files; listed the first 1000")) &&
-                  str8_equal(test_finder_status(t, app), STR8_LIT("stopped at 1000 files")) && app->mini.match_total == 1000,
-               "finder: limit: echo '%S', status '%S', %D files", test_echo(app), test_finder_status(t, app), app->mini.match_total);
+    TEST_SETTING_EFFECT(t, app, "project_max_files",
+                        str8_equal(test_echo(app), STR8_LIT("Project has more than 1000 files; listed the first 1000")) &&
+                            str8_equal(test_finder_status(t, app), STR8_LIT("stopped at 1000 files")) && app->mini.match_total == 1000,
+                        "finder: limit: echo '%S', status '%S', %D files", test_echo(app), test_finder_status(t, app), app->mini.match_total);
     app_dev_feed(app, "C-g", &t->arena);
     if (!test_app_destroy(t, app, "finder: limit")) return 0;
 
@@ -10909,12 +11037,14 @@ static b32 test_results(Test *t) {
         String8 got = test_results_text(t, app);
         TEST_CHECK(t, str8_equal(got, want2), "results: unsaved buffers: *search* holds\n%S\n---- expected\n%S", got, want2);
         // The cap keeps the first matches in list order.
-        app_dev_use_config(app, test_results_conf(t, "p12cap.conf", "[settings]\nsearch_max_results = 2\n"));
+        if (!test_setting_set(t, app, "search_max_results", "2")) return 0;
         app_dev_feed(app, "g", &t->arena);
         TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "results: the capped search did not end");
         got = test_results_text(t, app);
-        TEST_CHECK(t, test_contains(got, "a.c:1:5: int foo;\na.c:2:1: foo(); foo\nStopped at 2 matches (search_max_results) in 1 file;") &&
-                          !test_contains(got, "a.c:2:8"), "results: search_max_results 2: '%S'", got);
+        TEST_SETTING_EFFECT(t, app, "search_max_results",
+                            test_contains(got, "a.c:1:5: int foo;\na.c:2:1: foo(); foo\nStopped at 2 matches (search_max_results) in 1 file;") &&
+                                !test_contains(got, "a.c:2:8"),
+                            "results: search_max_results 2: '%S'", got);
         // A rebinding in [keys search-results].
         app_dev_use_config(app, test_results_conf(t, "p12keys.conf", "[keys search-results]\nz  next-error-no-select\n"));
         app_dev_feed(app, "g", &t->arena);
@@ -11840,12 +11970,18 @@ static b32 test_terminal(Test *t) {
     TEST_CHECK(t, modal_active(app) && test_contains(test_echo(app), "open-ai-terminal is not available in the"), "terminal: in the command list: '%S'",
                test_echo(app));
     app_dev_feed(app, "C-g", &t->arena);
-    // A reload: the next C-c a runs the new ai_command.
-    String8 conf = test_results_conf(t, "p20term.conf", "[settings]\nai_provider = custom\nai_command = reloaded --yes\nproject_markers = p20-marker\n");
-    app_dev_use_config(app, conf);
+    // A reload: the next C-c a runs the new ai_command, in the root project_markers finds.
+    if (!test_setting_set(t, app, "ai_provider", "custom") || !test_setting_set(t, app, "ai_command", "reloaded --yes") ||
+        !test_setting_set(t, app, "project_markers", "p20-marker")) {
+        return 0;
+    }
     app_dev_feed(app, "C-c a", &t->arena);
-    TEST_TERMINAL_LINE("%S|wt.exe|0|-d \"%S\" %S /s /k \"reloaded --yes\"", root, root, qcmd);
-    app_dev_use_config(app, str8(NULL, 0));
+    line = test_terminal_next(t, dir, &seen);
+    String8 reloaded = str8_fmt(&t->arena, "%S|wt.exe|0|-d \"%S\" %S /s /k \"reloaded --yes\"", root, root, qcmd);
+    TEST_SETTING_EFFECT(t, app, "ai_command", str8_equal(line, reloaded), "terminal: line %D:\n  got  '%S'\n  want '%S' (echo '%S')", seen, line,
+                        reloaded, test_echo(app));
+    TEST_SETTING_EFFECT(t, app, "project_markers", str8_equal(line, reloaded), "terminal: the root by project_markers: '%S'", line);
+    test_setting_reset(t, app);
     s = &app->config->settings;
     memcpy(s->project_markers, "p20-marker", 10); // the reload put the built-in markers back
     s->project_markers_len = 10;
@@ -12893,42 +13029,54 @@ static b32 test_compile_app(Test *t) {
 
     // compilation_scroll_output: the window follows until the first error, always, never.
     {
-        static const struct { const char *conf; i32 want; } cases[] = {
-            { "[settings]\ncompilation_save_buffers = none\ncompilation_scroll_output = first-error\n", 0 },
-            { "[settings]\ncompilation_save_buffers = none\ncompilation_scroll_output = true\n", 1 },
-            { "[settings]\ncompilation_save_buffers = none\ncompilation_scroll_output = false\n", 2 },
-        };
+        static const struct { const char *value; i32 want; } cases[] = { { "first-error", 0 }, { "true", 1 }, { "false", 2 } };
         for (i32 c = 0; c < ARRAY_COUNT(cases); c++) {
-            App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p13scroll.conf", cases[c].conf));
+            // The default (first-error) as a plain config; the others through the setting.
+            App *app = cases[c].want == 0 ? test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p13scroll.conf", "[settings]\ncompilation_save_buffers = none\n"
+                                                                                                                  "compilation_scroll_output = first-error\n"))
+                                          : test_setting_app(t, "compilation_save_buffers", "none", a_c, 0, 0);
+            TEST_CHECK(t, app && (cases[c].want == 0 || test_setting_set(t, app, "compilation_scroll_output", cases[c].value)),
+                       "compile app: scroll %d: the app or its setting", c);
             app_dev_feed(app, "C-x p c RET", &t->arena);
             TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: scroll %d did not end", c);
             Buffer *cb = buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
             i64 p = test_compile_window_point(app);
             i64 want = cases[c].want == 0 ? buffer_line_start(cb, 4) : cases[c].want == 1 ? buffer_size(cb) : 0;
-            TEST_CHECK(t, p == want, "compile app: compilation_scroll_output case %d: point %D, expected %D", c, p, want);
+            if (cases[c].want == 0) {
+                TEST_CHECK(t, p == want, "compile app: compilation_scroll_output case %d: point %D, expected %D", c, p, want);
+            } else {
+                TEST_SETTING_EFFECT(t, app, "compilation_scroll_output", p == want, "compile app: compilation_scroll_output case %d: point %D, expected %D",
+                                    c, p, want);
+            }
             if (!test_app_destroy(t, app, "compile app")) return 0;
         }
     }
 
     // compilation_save_buffers: ask (y, n, q), all, none.
     {
-        static const struct { const char *conf, *keys; b32 asked, saved; } cases[] = {
-            { "[settings]\ncompilation_save_buffers = ask\n", "y", 1, 1 },
-            { "[settings]\ncompilation_save_buffers = ask\n", "n", 1, 0 },
-            { "[settings]\ncompilation_save_buffers = ask\n", "q", 1, 0 },
-            { "[settings]\ncompilation_save_buffers = all\n", NULL, 0, 1 },
-            { "[settings]\ncompilation_save_buffers = none\n", NULL, 0, 0 },
+        static const struct { const char *value, *keys; b32 asked, saved; } cases[] = {
+            { "ask", "y", 1, 1 }, { "ask", "n", 1, 0 }, { "ask", "q", 1, 0 }, { "all", NULL, 0, 1 }, { "none", NULL, 0, 0 },
         };
         for (i32 c = 0; c < ARRAY_COUNT(cases); c++) {
             os_write_file(a_c, STR8_LIT("line one\nint y = x;\nline three\nint z\nline five\n"));
-            App *app = test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p13save.conf", cases[c].conf));
+            // The default (ask) as a plain config; all and none through the setting.
+            b32 setting = !cases[c].asked;
+            App *app = setting ? test_setting_app(t, "compilation_save_buffers", cases[c].value, a_c, 0, 0)
+                               : test_manual_app(t, a_c, 0, 0, test_results_conf(t, "p13save.conf", "[settings]\ncompilation_save_buffers = ask\n"));
+            TEST_CHECK(t, app, "compile app: save case %d: no app", c);
             Buffer *ab = test_current(app);
             app_dev_feed(app, "M-> x C-x p c RET", &t->arena);
             b32 asked = test_contains(app_dev_prompt(app), "Save file");
             if (asked && cases[c].keys) app_dev_feed(app, cases[c].keys, &t->arena);
             b32 started = results_compile_running(app) || buffer_list_find_name(&app->buffers, STR8_LIT("*compilation*"));
-            TEST_CHECK(t, asked == cases[c].asked && ab->modified == !cases[c].saved && started, "compile app: save case %d: asked %d, modified %d, "
-                       "started %d ('%S')", c, asked, ab->modified, started, app_dev_prompt(app));
+            if (setting) {
+                TEST_SETTING_EFFECT(t, app, "compilation_save_buffers", asked == cases[c].asked && ab->modified == !cases[c].saved && started,
+                                    "compile app: save case %d: asked %d, modified %d, started %d ('%S')", c, asked, ab->modified, started,
+                                    app_dev_prompt(app));
+            } else {
+                TEST_CHECK(t, asked == cases[c].asked && ab->modified == !cases[c].saved && started, "compile app: save case %d: asked %d, modified %d, "
+                           "started %d ('%S')", c, asked, ab->modified, started, app_dev_prompt(app));
+            }
             TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: save case %d did not end", c);
             if (ab->modified) app_dev_feed(app, "C-x C-s", &t->arena);
             if (!test_app_destroy(t, app, "compile app")) return 0;
@@ -13039,9 +13187,10 @@ static b32 test_compile_app(Test *t) {
                                                                     "out b.h:3:1: warning: relative\n"
                                                                     "exit 1\n", root_fwd, out_fwd));
         String8 rel_conf = test_results_conf(t, "p13rel.conf", "[settings]\ncompilation_save_buffers = none\n");
-        String8 off_conf = test_results_conf(t, "p13reloff.conf", "[settings]\ncompilation_save_buffers = none\ncompilation_relative_paths = false\n");
         for (i32 on = 1; on >= 0; on--) {
-            App *app = test_manual_app(t, a_c, 0, 0, on ? rel_conf : off_conf);
+            // Off through the setting (the built-in value is on).
+            App *app = on ? test_manual_app(t, a_c, 0, 0, rel_conf) : test_setting_app(t, "compilation_save_buffers", "none", a_c, 0, 0);
+            TEST_CHECK(t, app && (on || test_setting_set(t, app, "compilation_relative_paths", "false")), "compile app: relative paths %d: no app", on);
             results_compile_remember(app, root, abs);
             app_dev_feed(app, "C-x p c RET", &t->arena);
             TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "compile app: the absolute build did not end");
@@ -13050,7 +13199,12 @@ static b32 test_compile_app(Test *t) {
             String8 first = on ? STR8_LIT("a.c") : str8_fmt(&t->arena, "%S/a.c", root_fwd);
             String8 want = str8_fmt(&t->arena, "Command: %S\nDirectory: %S\n\n%S(2,5): error C1: under the root\n%S(1): warning C2: outside\n"
                                                "b.h:3:1: warning: relative\n\n", abs, shown, first, out_fwd);
-            TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "compile app: relative paths %d: '%S'", on, got);
+            if (on) {
+                TEST_CHECK(t, got.len > want.len && mem_equal(got.data, want.data, want.len), "compile app: relative paths %d: '%S'", on, got);
+            } else {
+                TEST_SETTING_EFFECT(t, app, "compilation_relative_paths", got.len > want.len && mem_equal(got.data, want.data, want.len),
+                                    "compile app: relative paths %d: '%S'", on, got);
+            }
             TEST_CHECK(t, r && r->count == 3 && r->locs[0].path_off == 0 && r->locs[0].path_len == first.len &&
                               r->locs[0].num_off == first.len && r->locs[0].mark_off == first.len + 7,
                        "compile app: relative paths %d: the offsets", on);
@@ -14893,12 +15047,13 @@ static b32 test_git_early_timeout(Test *t, TestGitEarly *e) {
     // accept (only app_wake takes one), so the outcome never depends on the clock; only the case's length does.
     if (!test_git_early_start(t, e, "early_timeout", "raw ## main\\x00 M a.c\\x00 M far.c\\x00\n", NULL)) return 0;
     App *app = e->app;
-    app_dev_use_config(app, test_results_conf(t, "p1timeout.conf", "[settings]\ngit_timeout_ms = 1000\n"));
+    if (!test_setting_set(t, app, "git_timeout_ms", "1000")) return 0;
     test_app_feed_batch(t, app, "<down> RET");
     TEST_CHECK(t, modal_active(app) && str8_equal(test_git_status_line(t, app), STR8_LIT(TEST_GIT_WAITING("far.c"))),
                "git early timeout: after RET: open %d, status '%S'", modal_active(app), test_git_status_line(t, app));
-    TEST_CHECK(t, test_git_settle(t, app, 20000) && test_git_visited(app, "far.c", 1), "git early timeout: shown %S at line %D",
-               app_selected_view(app)->buffer->name, buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
+    TEST_SETTING_EFFECT(t, app, "git_timeout_ms", test_git_settle(t, app, 20000) && test_git_visited(app, "far.c", 1),
+                        "git early timeout: shown %S at line %D", app_selected_view(app)->buffer->name,
+                        buffer_line_of(app_selected_view(app)->buffer, test_app_point(app)) + 1);
     if (!test_git_early_end(t, e, "timeout")) return 0;
     LOG("test: ok: git early timeout (git silent for git_timeout_ms = 1000 after RET: far.c where find-file puts point)");
     return 1;

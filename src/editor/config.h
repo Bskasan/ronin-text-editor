@@ -143,6 +143,14 @@ OsFileStatus config_load(Config *c, Arena *arena, String8 path, OsFileInfo *info
 OsFileStatus config_read_file(Arena *arena, String8 path, String8 *text, OsFileInfo *info);
 String8 config_file_name(String8 path); // the last path component
 
+#if RONIN_DEV
+// Every setting the parser knows, in --dump-docs' order (the coverage map's settings, #29), and whether one's value
+// differs between two Settings (1, 0; -1: no such setting).
+i32     config_dev_setting_count(void);
+String8 config_dev_setting_name(i32 i);
+i32     config_dev_setting_differs(const Settings *a, const Settings *b, String8 name);
+#endif
+
 // ---------------------------------------------------------------------------
 // Reloading. Driven by directory change notifications, never by a timer: on a notification the
 // file is loaded again only if it differs from the version last loaded. A different size or write
