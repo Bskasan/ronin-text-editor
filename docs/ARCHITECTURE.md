@@ -4463,11 +4463,19 @@ grow. `--test` now counts what deliberate tests run and fails on any zero (src/d
    - `os_dev_own_processes_only` lets only this executable start (the `--child` build, `--fake-git`,
      `--fake-terminal`). Anything else is refused and counted with the batch guard's refusals, which are now checked
      after the harness as well.
-   - At the end of `--test` the check also fails when:
-     - the real clipboard was opened (a dev counter in `win32_open_clipboard`; `--test`'s fake covers the whole
-       process, the harness too);
-     - Windows' clipboard sequence number changed (another program copied meanwhile: run again);
-     - %APPDATA%\ronin or %LOCALAPPDATA%\ronin changed (every entry's size and write time).
+   - The real clipboard is checked by ronin's own use of it, never by its state:
+     - The os_* layer counts every real clipboard call in dev builds (`WIN32_CLIP_USED`): each OpenClipboard attempt,
+       EmptyClipboard, SetClipboardData, GetClipboardData, and GetClipboardSequenceNumber in `os_clipboard_seq`'s
+       real branch.
+     - `--test`'s fake clipboard covers the whole process, the harness included, so the count must stay where it was.
+       The harness checks it around its presses, and the end of `--test` checks it over the whole run.
+     - Windows' sequence number is only logged when it changed ("the clipboard changed during the run, not by
+       ronin"). Another program copying while `--test` runs (the maintainer copies text while `verify.bat` runs)
+       must never fail it.
+     - The first version failed on a changed sequence number. That failed runs through no fault of ronin, and it
+       happened three times while #29 was made (review of PR #35).
+   - The end of `--test` also fails when %APPDATA%\ronin or %LOCALAPPDATA%\ronin changed (every entry's size and
+     write time).
 8. Two dev observation points, each a counter or a value and nothing else:
    - `os_dev_flush_count` (FlushFileBuffers calls: fsync_on_save's effect);
    - `App.dev_last_grep_workers` (search_workers').
@@ -4517,6 +4525,17 @@ The mutations, each in its own `git archive` copy of this branch (build\proof\p2
   3 DLLs, 135 functions.
 - **`verify.bat phase`**: PASS in 503 s. The seed sweep: 256 seeds PASS (183 s). The soaks: PASS (bench 21.5 s, debug
   25.0 s). The leak check: PASS. Both `--test` runs: PASS with "test: coverage: PASS, 0 failure(s)".
+- **The clipboard check by ronin's own use** (review of PR #35):
+  - The mutation, a copy in build\proof\p29\mut_clip, turns the fake clipboard off for the one press of C-y (global)
+    in `it_press_bindings`. That press reads the real clipboard and never writes it.
+  - It fails with exit 9, with `test: FAIL: input US: presses: the real clipboard was used 3 time(s)` (the sequence
+    number, the open, the read), the same on the three other layouts, and `test: FAIL: the real clipboard was used 12
+    time(s) during --test (opened, read or written by ronin)`.
+  - Without the mutation, a run during which another program copied passes. It logs `test: coverage: the clipboard
+    changed during the run, not by ronin (another program)`.
+  - The release exe was built again and compared with 4cacc9c's: 4 bytes differ, the COFF and POGO TimeDateStamps,
+    and the SHA-256 with them zeroed is again 7a45c081e048d4986411649da543c9a3793fdea05bb25dbe821a19bd195c1da3.
+    `--check-imports`: PASS, 3 DLLs, 135 functions.
 
 ## After 1.0
 
