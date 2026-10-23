@@ -10176,11 +10176,14 @@ static b32 test_finder(Test *t) {
     os_file_delete(newfile);
 
     // The other window; C-x p f inside the minibuffer; project-refresh.
+    Buffer *before = test_current(app);
     app_dev_feed(app, "M-x p r o j e c t - f i n d - f i l e - o t h e r - w i n d o w RET", &t->arena);
     finder_dev_wait(app, 5000);
     app_dev_feed(app, "r e a d RET", &t->arena);
     TEST_CHECK(t, app_dev_window_count(app) == 2 && test_current_is(app, "readme.md"), "finder: the other window: %d windows, '%S'",
                app_dev_window_count(app), test_current(app)->name);
+    TEST_CHECK(t, app_dev_window_selected(app) == 1 && test_win(app, 0)->buffer == before, "finder: the other window: the first one still shows %S",
+               before->name);
     app_dev_feed(app, "C-x 1 M-x C-x p f", &t->arena);
     TEST_CHECK(t, test_contains(test_echo(app), "Command attempted to use minibuffer while in minibuffer"), "finder: inside the minibuffer: '%S'",
                test_echo(app));
@@ -16523,6 +16526,419 @@ static b32 test_readme(Test *t) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// #29: the settings no other group checks through the setting itself, each loaded with test_setting_set and its
+// effect checked (TEST_SETTING_EFFECT), against the built-in value where the effect needs a contrast. early_window is
+// on res/coverage_allow.txt: its effect is a window shown before the first frame, and no test shows one.
+
+// tab_width, indent_width, indent_with_tabs, detect_indentation, underscore_is_word, transient_mark_mode,
+// delete_selection_mode, kill_ring_max, undo_limit_mb, max_cursors, completion_lines.
+static b32 test_settings_editing(Test *t) {
+    String8 dir = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p29set", t->tmp_dir));
+    os_make_dir(dir);
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "settings: no app");
+    View *v = app_selected_view(app);
+
+    // tab_width 8: a tab takes 8 columns.
+    if (!test_setting_set(t, app, "tab_width", "8")) return 0;
+    app_dev_show_scratch(app, STR8_LIT("\tx"));
+    app_dev_feed(app, "C-f", &t->arena);
+    i64 col = view_column_of(v->buffer, test_app_point(app));
+    TEST_SETTING_EFFECT(t, app, "tab_width", col == 8, "settings: tab_width 8: the column after a tab is %D", col);
+    test_setting_reset(t, app);
+
+    // indent_width 2: TAB in a block indents by 2 (4 by default).
+    String8 c1 = str8_fmt(&t->arena, "%S\\width.c", dir), c2 = str8_fmt(&t->arena, "%S\\tabs.c", dir);
+    String8 c3 = str8_fmt(&t->arena, "%S\\detect_on.c", dir), c4 = str8_fmt(&t->arena, "%S\\detect_off.c", dir);
+    TEST_CHECK(t, os_write_file(c1, STR8_LIT("int f() {\nx;\n}\n")) && os_write_file(c2, STR8_LIT("int g() {\nx;\n}\n")) &&
+                  os_write_file(c3, STR8_LIT("int h() {\n\ty;\nx;\n}\n")) && os_write_file(c4, STR8_LIT("int h() {\n\ty;\nx;\n}\n")),
+               "settings: cannot write the C files");
+    if (!test_setting_set(t, app, "indent_width", "2")) return 0;
+    TEST_CHECK(t, app_dev_visit(app, c1), "settings: cannot visit width.c");
+    app_dev_feed(app, "M-< C-n TAB", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "indent_width", test_text_is(t, v->buffer, STR8_LIT("int f() {\n  x;\n}\n")), "settings: indent_width 2");
+    test_setting_reset(t, app);
+
+    // indent_with_tabs: a file without indentation takes the setting; TAB indents with a tab.
+    if (!test_setting_set(t, app, "indent_with_tabs", "true")) return 0;
+    TEST_CHECK(t, app_dev_visit(app, c2), "settings: cannot visit tabs.c");
+    app_dev_feed(app, "M-< C-n TAB", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "indent_with_tabs", test_text_is(t, v->buffer, STR8_LIT("int g() {\n\tx;\n}\n")), "settings: indent_with_tabs true");
+    test_setting_reset(t, app);
+
+    // detect_indentation false: a file indented with tabs still indents with spaces (with the default, a tab).
+    TEST_CHECK(t, app_dev_visit(app, c3), "settings: cannot visit detect_on.c");
+    app_dev_feed(app, "M-< C-n C-n TAB", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("int h() {\n\ty;\n\tx;\n}\n")), "settings: detect_indentation by default: a tab");
+    if (!test_setting_set(t, app, "detect_indentation", "false")) return 0;
+    TEST_CHECK(t, app_dev_visit(app, c4), "settings: cannot visit detect_off.c");
+    app_dev_feed(app, "M-< C-n C-n TAB", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "detect_indentation", test_text_is(t, v->buffer, STR8_LIT("int h() {\n\ty;\n    x;\n}\n")),
+                        "settings: detect_indentation false: spaces in a file indented with tabs");
+    test_setting_reset(t, app);
+
+    // underscore_is_word: M-f goes over "foo_bar" as one word.
+    if (!test_setting_set(t, app, "underscore_is_word", "true")) return 0;
+    app_dev_show_scratch(app, STR8_LIT("foo_bar baz"));
+    app_dev_feed(app, "M-f", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "underscore_is_word", test_app_point(app) == 7, "settings: underscore_is_word: M-f to %D", test_app_point(app));
+    test_setting_reset(t, app);
+
+    // transient_mark_mode off: the region is not active, so DEL deletes one character (the region by default).
+    app_dev_show_scratch(app, STR8_LIT("abcd"));
+    app_dev_feed(app, "C-SPC C-f C-f DEL", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("cd")), "settings: transient_mark_mode by default: DEL deletes the region");
+    if (!test_setting_set(t, app, "transient_mark_mode", "false")) return 0;
+    app_dev_show_scratch(app, STR8_LIT("abcd"));
+    app_dev_feed(app, "C-SPC C-f C-f DEL", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "transient_mark_mode", test_text_is(t, v->buffer, STR8_LIT("acd")), "settings: transient_mark_mode false: DEL deletes one");
+    test_setting_reset(t, app);
+
+    // delete_selection_mode: typing replaces the region.
+    if (!test_setting_set(t, app, "delete_selection_mode", "true")) return 0;
+    app_dev_show_scratch(app, STR8_LIT("abcd"));
+    app_dev_feed(app, "C-SPC C-f C-f X", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "delete_selection_mode", test_text_is(t, v->buffer, STR8_LIT("Xcd")), "settings: delete_selection_mode");
+    test_setting_reset(t, app);
+
+    // kill_ring_max 2: three kills keep two.
+    if (!test_setting_set(t, app, "kill_ring_max", "2")) return 0;
+    app_dev_show_scratch(app, STR8_LIT("a\nb\nc\nd\n"));
+    app_dev_feed(app, "C-k C-n C-k C-n C-k", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "kill_ring_max", app->kills.count == 2 && app->kills.max == 2, "settings: kill_ring_max 2: %d entries",
+                        app->kills.count);
+    test_setting_reset(t, app);
+
+    // undo_limit_mb 1: 700 KB killed, yanked and killed again; the log keeps the killed text, so the first kill's record
+    // is dropped and the third undo finds nothing (by default it brings the text back).
+    i64 big_len = 10000 * 70;
+    u8 *big = PUSH_ARRAY(&t->arena, u8, big_len);
+    for (i64 i = 0; i < big_len; i++) big[i] = (i + 1) % 70 == 0 ? '\n' : (u8)('a' + i % 26);
+    for (i32 limited = 0; limited < 2; limited++) {
+        if (limited && !test_setting_set(t, app, "undo_limit_mb", "1")) return 0;
+        app_dev_show_scratch(app, str8(big, big_len));
+        app_dev_feed(app, "C-x h C-w C-y C-x h C-w C-_ C-_ C-_", &t->arena);
+        if (!limited) {
+            TEST_CHECK(t, buffer_size(v->buffer) == big_len, "settings: undo by default: %D bytes", buffer_size(v->buffer));
+        } else {
+            TEST_SETTING_EFFECT(t, app, "undo_limit_mb", buffer_size(v->buffer) == 0 && test_echo_has(app, "No further undo information"),
+                                "settings: undo_limit_mb 1: %D bytes, echo '%S'", buffer_size(v->buffer), test_echo(app));
+        }
+    }
+    test_setting_reset(t, app);
+
+    // max_cursors 2: edit-lines over five lines adds two cursors and says why.
+    if (!test_setting_set(t, app, "max_cursors", "2")) return 0;
+    app_dev_show_scratch(app, STR8_LIT("x\nx\nx\nx\n"));
+    app_dev_feed(app, "C-SPC M-> C-S-c C-S-c", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "max_cursors", v->cursor_count == 2 && test_echo_has(app, "Cursor limit reached (max_cursors = 2)"),
+                        "settings: max_cursors 2: %d cursors, echo '%S'", v->cursor_count, test_echo(app));
+    app_dev_feed(app, "C-g C-g", &t->arena);
+    test_setting_reset(t, app);
+
+    // completion_lines 3: a page of candidates is 3 rows.
+    if (!test_setting_set(t, app, "completion_lines", "3")) return 0;
+    app_dev_feed(app, "M-x <next>", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "completion_lines", app->mini.active && app->mini.selected == 3, "settings: completion_lines 3: <next> to %D",
+                        app->mini.selected);
+    app_dev_feed(app, "C-g", &t->arena);
+    test_setting_reset(t, app);
+
+    if (!test_app_destroy(t, app, "settings")) return 0;
+    LOG("test: ok: settings by their effect (tab_width, indent_width, indent_with_tabs, detect_indentation, underscore_is_word, "
+        "transient_mark_mode, delete_selection_mode, kill_ring_max, undo_limit_mb, max_cursors, completion_lines)");
+    return 1;
+}
+
+// The coverage bytes of a few glyphs, with their sizes: what a render mode draws.
+static String8 test_font_ink(Test *t, Font *f) {
+    String8 out = str8(NULL, 0);
+    const char *text = "agW@";
+    for (i32 i = 0; text[i]; i++) {
+        FontGlyph g = font_lookup(f, NULL, (u32)text[i]);
+        out = str8_fmt(&t->arena, "%S%d,%d,%d,%d:", out, (i32)g.w, (i32)g.h, (i32)g.x, (i32)g.y);
+        for (i32 y = g.v; y < g.v + g.h; y++) {
+            out = str8_fmt(&t->arena, "%S%S", out, str8(f->atlas + ((i64)y * f->atlas_size + g.u) * 4, (i64)g.w * 4));
+        }
+    }
+    return out;
+}
+
+// font, font_size, line_height, render_mode: the font the app's settings make (DirectWrite, no device), against the
+// built-in configuration's.
+static b32 test_settings_font(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "settings font: no app");
+    FontParams p0 = app_font_params(app);
+    Font *base = font_create(&t->arena, &p0, 1.0f);
+    TEST_CHECK(t, base && !base->used_fallback, "settings font: the built-in font");
+    String8 ink0 = test_font_ink(t, base);
+    static const struct { const char *name, *value; } cases[] = {
+        { "font", "Courier New" }, { "font_size", "18" }, { "line_height", "150" }, { "render_mode", "classic" }, { "render_mode", "natural" },
+    };
+    String8 inks[ARRAY_COUNT(cases)] = { 0 };
+    for (i32 c = 0; c < ARRAY_COUNT(cases); c++) {
+        if (!test_setting_set(t, app, cases[c].name, cases[c].value)) return 0;
+        FontParams p = app_font_params(app);
+        Font *f = font_create(&t->arena, &p, 1.0f);
+        TEST_CHECK(t, f, "settings font: %s = %s: font_create failed", cases[c].name, cases[c].value);
+        inks[c] = test_font_ink(t, f);
+        b32 ok = 0;
+        if (c == 0) {
+            ok = !f->used_fallback && str8_equal(str8(f->family, f->family_len), STR8_LIT("Courier New")) &&
+                 (f->cell_w != base->cell_w || f->line_h != base->line_h || f->baseline != base->baseline) && !str8_equal(inks[c], ink0);
+        } else if (c == 1) {
+            ok = f->cell_w > base->cell_w && f->line_h > base->line_h;
+        } else if (c == 2) {
+            ok = f->cell_w == base->cell_w && f->line_h * 2 >= base->line_h * 3 - 2 && f->line_h * 2 <= base->line_h * 3 + 2;
+        } else {
+            ok = !str8_equal(inks[c], ink0) && (c == 3 || !str8_equal(inks[c], inks[3])); // each mode draws differently
+        }
+        TEST_SETTING_EFFECT(t, app, cases[c].name, ok, "settings font: %s = %s: cell %dx%d (built-in %dx%d), %S", cases[c].name, cases[c].value,
+                            f->cell_w, f->line_h, base->cell_w, base->line_h, str8(f->family, f->family_len));
+        i32 refs = font_shutdown(f);
+        TEST_CHECK(t, refs == 0, "settings font: %d DirectWrite references left", refs);
+        test_setting_reset(t, app);
+    }
+    i32 refs = font_shutdown(base);
+    TEST_CHECK(t, refs == 0, "settings font: %d DirectWrite references left", refs);
+    if (!test_app_destroy(t, app, "settings font")) return 0;
+    LOG("test: ok: settings by their effect (font, font_size, line_height, render_mode classic and natural: each draws differently)");
+    return 1;
+}
+
+// project_ignore, search_workers, compilation_max_output_mb, git_diff_max_lines, git_status_max_files, git_path,
+// ai_provider, terminal, fsync_on_save, theme.
+static b32 test_settings_project(Test *t) {
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p29proj", t->tmp_dir));
+    os_make_dir(root);
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", root);
+    String8 out = test_child(t, "p29out", STR8_LIT("repeat 30000 the same build line, about seventy bytes long, again and again\nexit 0\n"));
+    TEST_CHECK(t, os_write_file(a_c, STR8_LIT("int foo;\n")) && os_write_file(str8_fmt(&t->arena, "%S\\b.txt", root), STR8_LIT("foo\n")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8_fmt(&t->arena, "[build]\ncommand = %S\n", out)),
+               "settings project: cannot write the tree");
+
+    // project_ignore: *.txt left out of the finder (the built-in list keeps it).
+    App *app = test_manual_app(t, a_c, 0, 0, str8(NULL, 0));
+    TEST_CHECK(t, app, "settings project: no app");
+    app_dev_feed(app, "C-x p f", &t->arena);
+    TEST_CHECK(t, finder_dev_wait(app, 10000), "settings project: the scan did not end");
+    test_finder_settle(t, app);
+    i64 total0 = app->mini.match_total;
+    app_dev_feed(app, "C-g", &t->arena);
+    if (!test_app_destroy(t, app, "settings project")) return 0;
+    app = test_setting_app(t, "project_ignore", "*.txt", a_c, 0, 0);
+    TEST_CHECK(t, app, "settings project: no app with project_ignore");
+    app_dev_feed(app, "C-x p f", &t->arena);
+    TEST_CHECK(t, finder_dev_wait(app, 10000), "settings project: the scan did not end");
+    test_finder_settle(t, app);
+    b32 txt = 0;
+    for (i64 i = 0; i < app->mini.match_total; i++) {
+        String8 row = test_finder_row(t, app, i);
+        txt |= row.len >= 4 && mem_equal(row.data + row.len - 4, ".txt", 4);
+    }
+    TEST_SETTING_EFFECT(t, app, "project_ignore", app->mini.match_total == total0 - 1 && !txt, "settings project: project_ignore: %D files (%D)",
+                        app->mini.match_total, total0);
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // search_workers 3: the project search starts 3 workers.
+    if (!test_setting_set(t, app, "search_workers", "3")) return 0;
+    app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+    i32 workers = app->dev_last_grep_workers;
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "settings project: the search did not end");
+    TEST_SETTING_EFFECT(t, app, "search_workers", workers == 3, "settings project: search_workers 3: %d workers", workers);
+    app_dev_feed(app, "C-x 1", &t->arena);
+
+    // compilation_max_output_mb 1: about 2 MB of output, cut at 1 MB.
+    if (!test_setting_set(t, app, "compilation_max_output_mb", "1")) return 0;
+    TEST_CHECK(t, app_dev_visit(app, a_c), "settings project: cannot visit a.c");
+    app_dev_feed(app, "C-x p c RET", &t->arena);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 20000), "settings project: the build did not end");
+    String8 text = test_compile_text(t, app);
+    TEST_SETTING_EFFECT(t, app, "compilation_max_output_mb", test_contains(text, COMPILE_TRUNCATED) && text.len < MB(1) + 4096,
+                        "settings project: compilation_max_output_mb 1: %D bytes", text.len);
+    app_dev_feed(app, "C-x 1", &t->arena);
+
+    // fsync_on_save false: a save flushes nothing (once by default).
+    app_dev_visit(app, a_c);
+    test_setting_reset(t, app);
+    i32 flushes = os_dev_flush_count();
+    app_dev_feed(app, "M-> x C-x C-s", &t->arena);
+    TEST_CHECK(t, os_dev_flush_count() == flushes + 1 && !test_current(app)->modified, "settings project: a save flushes once by default");
+    if (!test_setting_set(t, app, "fsync_on_save", "false")) return 0;
+    flushes = os_dev_flush_count();
+    app_dev_feed(app, "y C-x C-s", &t->arena);
+    TEST_SETTING_EFFECT(t, app, "fsync_on_save", os_dev_flush_count() == flushes && !test_current(app)->modified,
+                        "settings project: fsync_on_save false: %d flush(es)", os_dev_flush_count() - flushes);
+    test_setting_reset(t, app);
+
+    // theme vague: its background.
+    if (!test_setting_set(t, app, "theme", "vague")) return 0;
+    TEST_SETTING_EFFECT(t, app, "theme", app->config->theme.background == 0x141415 && str8_equal(app->config->theme_name, STR8_LIT("vague")),
+                        "settings project: theme vague: background %06x", app->config->theme.background);
+    test_setting_reset(t, app);
+
+    // terminal cmd and ai_provider openai, with the fake terminal.
+    String8 term = test_terminal_fake(t, app, "p29term");
+    i64 seen = 0;
+    if (!test_setting_set(t, app, "terminal", "cmd")) return 0;
+    app_dev_feed(app, "C-c t", &t->arena);
+    String8 line = test_terminal_next(t, term, &seen);
+    TEST_SETTING_EFFECT(t, app, "terminal", test_contains(line, "|cmd.exe|1|"), "settings project: terminal cmd: '%S'", line);
+    test_setting_reset(t, app);
+    if (!test_setting_set(t, app, "ai_provider", "openai")) return 0;
+    app_dev_feed(app, "C-c a", &t->arena);
+    line = test_terminal_next(t, term, &seen);
+    TEST_SETTING_EFFECT(t, app, "ai_provider", test_contains(line, "|wt.exe|0|") && test_contains(line, "/s /k \"codex\""),
+                        "settings project: ai_provider openai: '%S'", line);
+    test_setting_reset(t, app);
+    if (!test_app_destroy(t, app, "settings project")) return 0;
+
+    // git_status_max_files 10, git_diff_max_lines 100: the canned view, its 8 rows and big.c's 20,005-line diff cut.
+    app = test_app_create(t);
+    TEST_CHECK(t, app, "settings git: no app");
+    String8 gdir = test_git_view_fake(t, "p29limits", TEST_GIT_STATUS);
+    test_git_use_fake(t, app, gdir);
+    if (!test_setting_set(t, app, "git_diff_max_lines", "100")) return 0;
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && modal_active(app) && app->git.view, "settings git: the view did not open");
+    app_dev_feed(app, "<down> <down> <down> <down> <down> <down>", &t->arena);
+    GitView *gv = app->git.view;
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && modal_list(app, 0)->selected == 6, "settings git: big.c not selected");
+    GitRow *big_row = &gv->rows[6];
+    TEST_SETTING_EFFECT(t, app, "git_diff_max_lines", big_row->count == 101 && big_row->lines[100].kind == GIT_LINE_CUT,
+                        "settings git: git_diff_max_lines 100: %D lines", big_row->count);
+    app_dev_feed(app, "C-g", &t->arena);
+    String8 status = STR8_LIT("raw ## main\\x00");
+    for (i32 i = 0; i < 12; i++) status = str8_fmt(&t->arena, "%S M f%d.c\\x00", status, i);
+    status = str8_fmt(&t->arena, "%S\n%c", status, 0);
+    String8 sdir = test_git_view_fake(t, "p29status", (const char *)status.data);
+    test_git_use_fake(t, app, sdir);
+    if (!test_setting_set(t, app, "git_status_max_files", "10")) return 0;
+    app_dev_feed(app, "C-x g", &t->arena);
+    TEST_CHECK(t, test_git_wait(t, app, 10000) && modal_active(app) && app->git.view, "settings git: the second view did not open");
+    gv = app->git.view;
+    TEST_SETTING_EFFECT(t, app, "git_status_max_files", gv->count == 10 && gv->cut && modal_list(app, 0)->count == 11,
+                        "settings git: git_status_max_files 10: %D rows, cut %d, %D list rows", gv->count, gv->cut, modal_list(app, 0)->count);
+    app_dev_feed(app, "C-g", &t->arena);
+    test_setting_reset(t, app);
+
+    // git_path: the git the view runs (here this executable as the fake git; no test program chosen otherwise).
+    String8 pdir = test_git_view_fake(t, "p29path", TEST_GIT_STATUS);
+    test_git_use_fake(t, app, pdir);
+    app->git.dev_program = str8(NULL, 0);
+    app->git.dev_allow_real = 1; // the program is git_path's: this executable with --fake-git
+    if (!test_setting_set(t, app, "git_path", (const char *)str8_fmt(&t->arena, "%S%c", os_dev_exe_path(&t->arena), 0).data)) return 0;
+    app_dev_feed(app, "C-x g", &t->arena);
+    b32 opened = test_git_wait(t, app, 10000) && modal_active(app) && app->git.view && app->git.view->count == 8;
+    TEST_SETTING_EFFECT(t, app, "git_path", opened && test_contains(test_git_calls(t, pdir), "rev-parse"), "settings git: git_path: open %d, calls '%S'",
+                        opened, test_git_calls(t, pdir));
+    app_dev_feed(app, "C-g", &t->arena);
+    app->git.dev_allow_real = 0;
+    test_setting_reset(t, app);
+    if (!test_app_destroy(t, app, "settings git")) return 0;
+    LOG("test: ok: settings by their effect (project_ignore, search_workers, compilation_max_output_mb, fsync_on_save, theme, terminal, "
+        "ai_provider, git_diff_max_lines, git_status_max_files, git_path)");
+    return 1;
+}
+
+// #29: the default key sequences no test pressed before (#28's audit: C-<left>, C-<up>, C-<down>, C-<end>, S-<delete>,
+// C-<insert>, C-<delete>, C-DEL, C-S-DEL, S-<insert>, M-y, C-i in the buffer and the minibuffer, C-o, C-t, M-u, M-l,
+// C-x `, M-g M-n, M-g M-p), each pressed through the keymap with its effect checked.
+static b32 test_keys_unpressed(Test *t) {
+    String8 root = os_full_path(&t->arena, str8_fmt(&t->arena, "%S\\p29keys_h", t->tmp_dir));
+    os_make_dir(root);
+    String8 a_c = str8_fmt(&t->arena, "%S\\a.c", root), b_c = str8_fmt(&t->arena, "%S\\b.c", root);
+    TEST_CHECK(t, os_write_file(a_c, STR8_LIT("int f() {\nx;\n}\nint foo;\n")) && os_write_file(b_c, STR8_LIT("foo\n")) &&
+                  os_write_file(str8_fmt(&t->arena, "%S\\.ronin-project", root), str8(NULL, 0)),
+               "keys: cannot write the tree");
+    App *app = test_manual_app(t, a_c, 0, 0, str8(NULL, 0));
+    TEST_CHECK(t, app, "keys: no app");
+    View *v = app_selected_view(app);
+    Buffer *src = v->buffer;
+
+    // C-i in the buffer: indent-for-tab-command.
+    app_dev_feed(app, "M-< C-n C-i", &t->arena);
+    TEST_CHECK(t, test_text_is(t, src, STR8_LIT("int f() {\n    x;\n}\nint foo;\n")), "keys: C-i indents");
+
+    // Motion: C-<end>, C-<left> (twice), C-<right>; C-<down> and C-<up> by paragraph.
+    app_dev_show_scratch(app, STR8_LIT("one two three"));
+    app_dev_feed(app, "C-<end>", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 13, "keys: C-<end> to %D", test_app_point(app));
+    app_dev_feed(app, "C-<left>", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 8, "keys: C-<left> to %D", test_app_point(app));
+    app_dev_feed(app, "C-<left> C-<right>", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 7, "keys: C-<left> C-<right> to %D", test_app_point(app));
+    app_dev_show_scratch(app, STR8_LIT("a\nb\n\nc\nd"));
+    app_dev_feed(app, "C-<down>", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 4, "keys: C-<down> to %D", test_app_point(app));
+    app_dev_feed(app, "C-<end> C-<up>", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == 4, "keys: C-<up> to %D", test_app_point(app));
+
+    // Editing: C-o, C-t, M-u, M-l.
+    app_dev_show_scratch(app, STR8_LIT("ab"));
+    app_dev_feed(app, "C-f C-o", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("a\nb")) && test_app_point(app) == 1, "keys: C-o opens a line");
+    app_dev_show_scratch(app, STR8_LIT("ab"));
+    app_dev_feed(app, "C-f C-t", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("ba")), "keys: C-t transposes");
+    app_dev_show_scratch(app, STR8_LIT("foo BAR"));
+    app_dev_feed(app, "M-u", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("FOO BAR")), "keys: M-u upcases the word");
+    app_dev_feed(app, "M-l", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("FOO bar")), "keys: M-l downcases the word");
+
+    // Kills by word and line: C-<delete>, C-DEL, C-S-DEL.
+    app_dev_show_scratch(app, STR8_LIT("foo bar baz\nnext"));
+    app_dev_feed(app, "C-<delete>", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT(" bar baz\nnext")), "keys: C-<delete> kills a word");
+    app_dev_feed(app, "C-e C-DEL", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT(" bar \nnext")), "keys: C-DEL kills a word backward");
+    app_dev_feed(app, "C-S-DEL", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("next")), "keys: C-S-DEL kills the whole line");
+
+    // The clipboard keys (the fake clipboard): C-<insert> copies, S-<insert> yanks, S-<delete> cuts.
+    app_dev_show_scratch(app, STR8_LIT("abc def"));
+    app_dev_feed(app, "C-SPC M-f C-<insert>", &t->arena);
+    String8 clip = { 0 };
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("abc def")) && os_clipboard_get(&t->arena, &clip) && str8_equal(clip, STR8_LIT("abc")),
+               "keys: C-<insert> copies '%S'", clip);
+    app_dev_feed(app, "C-e S-<insert>", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("abc defabc")), "keys: S-<insert> yanks");
+    app_dev_feed(app, "C-SPC C-a S-<delete>", &t->arena);
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT("")) && os_clipboard_get(&t->arena, &clip) && str8_equal(clip, STR8_LIT("abc defabc")),
+               "keys: S-<delete> cuts '%S'", clip);
+
+    // M-y after C-y: the kill before.
+    app_dev_show_scratch(app, STR8_LIT("aa bb"));
+    app_dev_feed(app, "C-a C-<delete> C-f C-<delete> C-y M-y", &t->arena); // C-a first: the kill before was S-<delete>'s
+    TEST_CHECK(t, test_text_is(t, v->buffer, STR8_LIT(" aa")), "keys: M-y replaces the yank with the kill before: '%S'", test_app_text(t, app));
+
+    // C-i in the minibuffer: completion.
+    app_dev_feed(app, "M-x b e g i n n i n g - o f - b u f C-i", &t->arena);
+    TEST_CHECK(t, app->mini.active && str8_equal(test_mini_input(t, app), STR8_LIT("beginning-of-buffer")), "keys: C-i in the minibuffer: '%S'",
+               test_mini_input(t, app));
+    app_dev_feed(app, "C-g", &t->arena);
+
+    // C-x `, M-g M-n, M-g M-p over a project search's two matches.
+    app_dev_visit(app, a_c);
+    app_dev_feed(app, "C-x p g f o o RET", &t->arena);
+    TEST_CHECK(t, results_dev_wait(app, &t->arena, 10000), "keys: the search did not end");
+    app_dev_feed(app, "C-x o C-x `", &t->arena);
+    String8 first = test_results_where(t, app);
+    app_dev_feed(app, "M-g M-n", &t->arena);
+    String8 second = test_results_where(t, app);
+    app_dev_feed(app, "M-g M-p", &t->arena);
+    String8 back = test_results_where(t, app);
+    TEST_CHECK(t, str8_equal(first, STR8_LIT("a.c:23")) && str8_equal(second, STR8_LIT("b.c:0")) && str8_equal(back, first), // a.c as C-i left it
+               "keys: C-x ` to '%S', M-g M-n to '%S', M-g M-p to '%S'", first, second, back);
+    if (!test_app_destroy(t, app, "keys")) return 0;
+    LOG("test: ok: the 20 key sequences no test pressed before, each with its effect (motion, editing, kills, the clipboard keys, M-y, "
+        "C-i twice, next-error)");
+    return 1;
+}
+
 // Every group that takes the seed (not the scanner and the project search: their seed only shapes trees on disk),
 // for --fuzz-seeds; in --test they run through test_seeded, so random input never counts in the coverage map (#29).
 static const struct { const char *name; b32 (*run)(Test *, u64); } test_seeded_groups[] = {
@@ -16827,6 +17243,14 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_crash_recovery(&t);
     arena_reset(&t.arena);
     test_bounded_caps(&t);
+    arena_reset(&t.arena);
+    test_settings_editing(&t);
+    arena_reset(&t.arena);
+    test_settings_font(&t);
+    arena_reset(&t.arena);
+    test_settings_project(&t);
+    arena_reset(&t.arena);
+    test_keys_unpressed(&t);
     arena_reset(&t.arena);
     test_leak_metrics(&t, ledger0);
     arena_reset(&t.arena);

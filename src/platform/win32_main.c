@@ -81,6 +81,7 @@ typedef struct Platform {
     volatile LONG live_processes;      // os_process_start minus os_process_close
     volatile LONG live_handles;        // the ledger: kernel handles opened by the os_* layer and not closed
     volatile LONG real_refused;        // a real terminal or git a batch run would have started (os_dev_real_refused)
+    volatile LONG dev_flushes;         // os_file_flush calls (fsync_on_save's effect, #29)
     u8 last_launch[600];               // os_process_launch's last outcome (its log line), os_dev_last_launch
     i64 last_launch_len;
     i32 exit_handles_window, exit_handles_frame; // the process's handles after the window was created, after the first frame
@@ -649,6 +650,9 @@ OsFileStatus os_file_write(OsFile file, void *data, i64 size) {
 }
 
 OsFileStatus os_file_flush(OsFile file) {
+#if RONIN_DEV
+    InterlockedIncrement(&g_platform->dev_flushes);
+#endif
     return FlushFileBuffers((HANDLE)file.handle) ? OS_FILE_OK : win32_last_file_status();
 }
 
@@ -1715,6 +1719,10 @@ void os_dev_real_refused_add(i32 n) {
 
 i32 os_dev_real_refused(void) {
     return (i32)InterlockedOr(&g_platform->real_refused, 0);
+}
+
+i32 os_dev_flush_count(void) {
+    return (i32)InterlockedOr(&g_platform->dev_flushes, 0);
 }
 
 // The coverage map (#29). Main thread only.
