@@ -4495,8 +4495,28 @@ All on the maintainer's machine, ronin_bench.exe `--test`.
     finder 39 → 39, results 48 → 48, terminal 15 → 17, compile app 84 → 90, git early timeout 2 → 2.
   - The replaced ones are a check turned into its `TEST_SETTING_EFFECT` (the same condition, plus the helper's
     checks), and a config file's write check now made by the helper.
-- **`--test` time** (bench, wall time of the process, the median of three after one warm-up): 36.31 s on main,
-  50.44 s after commit 4. The harness's presses (764: 191 on each of four layouts) add most of the 14.1 s.
+- **`--test` time.** The harness's presses (764: 191 on each of four layouts) add most of the difference.
+
+  | build | how measured | main (4cacc9c) | this branch |
+  |---|---|---|---|
+  | bench | wall time of the process; the median of three after one warm-up | 36.31 s | 50.44 s (+14.1 s) |
+  | debug | wall time of the process at below-normal priority, as `verify.bat phase` runs it; one run | 46.3 s | 58.3 s (+12.0 s) |
+
+The mutations, each in its own `git archive` copy of this branch (build\proof\p29\, never committed), ronin_bench.exe
+`--test`. Each fails with exit 9 and exactly one coverage line:
+
+| mutation | the failing line |
+|---|---|
+| `test_finder`'s M-x project-find-file-other-window and its two checks removed (its only test) | `test: FAIL: coverage: command project-find-file-other-window was never run by a test` (commands 140/141) |
+| the harness skips pressing C-t (`continue` before its case) | `test: FAIL: coverage: binding C-t (global) was never pressed through the input harness` (real 190/191; `test_keys_unpressed` still presses it headless, so "any" stays 191/191) |
+| `indent_width`'s `TEST_SETTING_EFFECT` removed | `test: FAIL: coverage: setting indent_width: no test checked its effect` (settings 36/38) |
+
+- **The release exe**: built at 4cacc9c (main) and on this branch, 471,040 bytes each. Only the COFF TimeDateStamp
+  and the POGO debug entry's TimeDateStamp differ (one byte each this time). With those zeroed, both SHA-256 are
+  7a45c081e048d4986411649da543c9a3793fdea05bb25dbe821a19bd195c1da3, the same as #25's. `--check-imports`: PASS,
+  3 DLLs, 135 functions.
+- **`verify.bat phase`**: PASS in 503 s. The seed sweep: 256 seeds PASS (183 s). The soaks: PASS (bench 21.5 s, debug
+  25.0 s). The leak check: PASS. Both `--test` runs: PASS with "test: coverage: PASS, 0 failure(s)".
 
 ## After 1.0
 
