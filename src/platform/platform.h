@@ -277,6 +277,16 @@ b32  os_dev_batch_run(void);           // --test, --smoke, a bench, --soak, --fu
                                        // real terminal or git may start (Phase 20's guard)
 void os_dev_real_refused_add(i32 n);   // ... the guard refused one (n = 1); a test that meant it takes it back (-1)
 i32  os_dev_real_refused(void);        // ... refused so far in this process: 0 at the end of every run
+// The coverage map (#29): hits counted by key, "kind:scope:name" ("command:undo", "binding:global:C-x u",
+// "setting:tab_width"; no scope: "kind:name"), only between os_dev_cover_enable(1) and (0) and while not paused.
+// Main thread only.
+void os_dev_cover_enable(b32 on);      // --test: counting on (the table made the first time) or off
+void os_dev_cover_pause(b32 paused);   // a seeded group runs: nothing counts meanwhile
+void os_dev_cover_real(b32 real);      // the input harness feeds posted key messages: binding hits count as real too
+b32  os_dev_cover_counting(void);      // enabled and not paused (a hit site can skip its work otherwise)
+void os_dev_cover_hit(const char *kind, String8 scope, String8 name);
+u32  os_dev_cover_count(const char *kind, String8 scope, String8 name, b32 real); // hits so far (any, or real only)
+u64  os_dev_cover_dropped(String8 *first, i32 *used, i32 *slots); // hits not stored, the first one's key; slots in use
 // The leak check's sample (Phase 16). Verdict metrics first, then the informational ones.
 typedef struct OsDevMetrics {
     u64 private_bytes;   // committed private memory

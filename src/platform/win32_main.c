@@ -43,6 +43,18 @@ typedef struct Win32PoolThread {
     volatile b32 quit;
 } Win32PoolThread;
 
+#if RONIN_DEV
+// The coverage map's counters (#29): one slot per key ("command:<name>", "binding:<keymap>:<seq>", "setting:<name>"),
+// the key's text kept, so two keys never share a slot.
+#define WIN32_COVER_SLOTS 2048
+#define WIN32_COVER_KEY_CAP 63
+typedef struct Win32CoverSlot {
+    u32 any, real; // hits; real: through posted key messages (the input harness)
+    u8 len;        // 0: free
+    u8 key[WIN32_COVER_KEY_CAP];
+} Win32CoverSlot;
+#endif
+
 typedef struct Platform {
     HINSTANCE instance;
     HWND hwnd;
@@ -80,6 +92,12 @@ typedef struct Platform {
     i64 clip_len;
     u64 clip_committed;
     u32 clip_seq;
+    Win32CoverSlot *cover;   // WIN32_COVER_SLOTS, from the permanent arena once --test enables counting
+    i32 cover_used;
+    b32 cover_on, cover_paused, cover_real;
+    u64 cover_dropped;       // hits not stored (the table at 75%, or a key too long): the check fails on any
+    u8 cover_drop_key[WIN32_COVER_KEY_CAP + 1]; // ... the first one's key
+    i32 cover_drop_len;
 #endif
 
     i32 width, height; // client area, pixels
@@ -1688,6 +1706,98 @@ void os_dev_real_refused_add(i32 n) {
 
 i32 os_dev_real_refused(void) {
     return (i32)InterlockedOr(&g_platform->real_refused, 0);
+}
+
+// The coverage map (#29). Main thread only.
+void os_dev_cover_enable(b32 on) {
+    Platform *p = g_platform;
+    if (on && !p->cover) p->cover = PUSH_ARRAY(&p->perm, Win32CoverSlot, WIN32_COVER_SLOTS);
+    p->cover_on = on;
+}
+
+void os_dev_cover_pause(b32 paused) {
+    g_platform->cover_paused = paused;
+}
+
+void os_dev_cover_real(b32 real) {
+    g_platform->cover_real = real;
+}
+
+b32 os_dev_cover_counting(void) {
+    Platform *p = g_platform;
+    return p && p->cover_on && !p->cover_paused;
+}
+
+// "kind:scope:name", or "kind:name" without a scope; its length even when longer than cap.
+static i64 win32_cover_key(u8 *out, i64 cap, const char *kind, String8 scope, String8 name) {
+    i64 n = 0;
+    String8 parts[3] = { str8_cstr(kind), scope, name };
+    for (i32 i = 0; i < 3; i++) {
+        if (i == 1 && !scope.len) continue;
+        if (i > 0) {
+            if (n < cap) out[n] = ':';
+            n++;
+        }
+        for (i64 k = 0; k < parts[i].len; k++, n++) {
+            if (n < cap) out[n] = parts[i].data[k];
+        }
+    }
+    return n;
+}
+
+// The key's slot (FNV-1a, linear probing); a new one when `add`. NULL when absent, or not added: then the hit is
+// counted as dropped (the table would pass 75%, or the key is too long).
+static Win32CoverSlot *win32_cover_slot(Platform *p, u8 *key, i64 len, b32 add) {
+    if (!p->cover) return NULL;
+    if (len <= WIN32_COVER_KEY_CAP) {
+        u64 h = 14695981039346656037ull;
+        for (i64 i = 0; i < len; i++) h = (h ^ key[i]) * 1099511628211ull;
+        for (u32 i = (u32)h & (WIN32_COVER_SLOTS - 1);; i = (i + 1) & (WIN32_COVER_SLOTS - 1)) {
+            Win32CoverSlot *s = &p->cover[i];
+            if (s->len == len && memcmp(s->key, key, (size_t)len) == 0) return s;
+            if (s->len) continue;
+            if (!add) return NULL;
+            if ((p->cover_used + 1) * 4 > WIN32_COVER_SLOTS * 3) break;
+            p->cover_used++;
+            s->len = (u8)len;
+            memcpy(s->key, key, (size_t)len);
+            return s;
+        }
+    } else if (!add) {
+        return NULL;
+    }
+    if (!p->cover_dropped++) {
+        p->cover_drop_len = (i32)MIN(len, WIN32_COVER_KEY_CAP);
+        memcpy(p->cover_drop_key, key, (size_t)p->cover_drop_len);
+    }
+    return NULL;
+}
+
+void os_dev_cover_hit(const char *kind, String8 scope, String8 name) {
+    Platform *p = g_platform;
+    if (!os_dev_cover_counting()) return;
+    u8 key[128];
+    i64 len = win32_cover_key(key, sizeof(key), kind, scope, name);
+    Win32CoverSlot *s = win32_cover_slot(p, key, len, 1);
+    if (!s) return;
+    s->any++;
+    if (p->cover_real) s->real++;
+}
+
+u32 os_dev_cover_count(const char *kind, String8 scope, String8 name, b32 real) {
+    Platform *p = g_platform;
+    u8 key[128];
+    i64 len = win32_cover_key(key, sizeof(key), kind, scope, name);
+    Win32CoverSlot *s = win32_cover_slot(p, key, MIN(len, (i64)sizeof(key)), 0);
+    return !s ? 0 : real ? s->real : s->any;
+}
+
+u64 os_dev_cover_dropped(String8 *first, i32 *used, i32 *slots) {
+    Platform *p = g_platform;
+    *first = str8(p->cover_drop_key, p->cover_drop_len);
+    *used = p->cover_used;
+    *slots = WIN32_COVER_SLOTS;
+    return p->cover_dropped;
 }
 
 // The committed bytes of one os_reserve range: its regions while they belong to that allocation.

@@ -269,6 +269,68 @@ static void config_setting(ConfigParser *p, String8 name, String8 value) {
     }
 }
 
+#if RONIN_DEV
+// The settings config_setting reads by name, with the bytes of Settings that hold each value.
+static const struct { const char *name; u32 offset, size, len_offset; } config_named_settings[] = {
+    { "font_size", offsetof(Settings, font_size), sizeof(f32), 0 },
+    { "render_mode", offsetof(Settings, render_mode), sizeof(FbRenderMode), 0 },
+    { "compilation_save_buffers", offsetof(Settings, compilation_save_buffers), sizeof(i32), 0 },
+    { "compilation_scroll_output", offsetof(Settings, compilation_scroll_output), sizeof(i32), 0 },
+    { "ai_provider", offsetof(Settings, ai_provider), sizeof(i32), 0 },
+    { "terminal", offsetof(Settings, terminal_program), sizeof(i32), 0 },
+    { "theme", offsetof(Settings, theme), THEME_NAME_CAP, offsetof(Settings, theme_len) },
+};
+
+// Every setting the parser knows: the int, text and bool tables, then the ones read by name (--dump-docs' order).
+i32 config_dev_setting_count(void) {
+    return (i32)(ARRAY_COUNT(config_int_settings) + ARRAY_COUNT(config_text_settings) + ARRAY_COUNT(config_bool_settings) +
+                 ARRAY_COUNT(config_named_settings));
+}
+
+// The i-th setting's name, and where its value lives: offset and size; a text value also its length's offset.
+static String8 config_dev_setting(i32 i, u32 *offset, u32 *size, u32 *len_offset) {
+    *len_offset = 0;
+    if (i < ARRAY_COUNT(config_int_settings)) {
+        *offset = config_int_settings[i].offset, *size = sizeof(i32);
+        return str8_cstr(config_int_settings[i].name);
+    }
+    i -= ARRAY_COUNT(config_int_settings);
+    if (i < ARRAY_COUNT(config_text_settings)) {
+        *offset = config_text_settings[i].offset, *size = config_text_settings[i].cap, *len_offset = config_text_settings[i].len_offset;
+        return str8_cstr(config_text_settings[i].name);
+    }
+    i -= ARRAY_COUNT(config_text_settings);
+    if (i < ARRAY_COUNT(config_bool_settings)) {
+        *offset = config_bool_settings[i].offset, *size = sizeof(b32);
+        return str8_cstr(config_bool_settings[i].name);
+    }
+    i -= ARRAY_COUNT(config_bool_settings);
+    *offset = config_named_settings[i].offset, *size = config_named_settings[i].size, *len_offset = config_named_settings[i].len_offset;
+    return str8_cstr(config_named_settings[i].name);
+}
+
+String8 config_dev_setting_name(i32 i) {
+    u32 offset, size, len_offset;
+    return config_dev_setting(i, &offset, &size, &len_offset);
+}
+
+// 1 when the setting's value differs between a and b (a text value: its bytes up to its length), 0 when equal,
+// -1 for a name that is no setting.
+i32 config_dev_setting_differs(const Settings *a, const Settings *b, String8 name) {
+    for (i32 i = 0; i < config_dev_setting_count(); i++) {
+        u32 offset, size, len_offset;
+        if (!str8_equal(config_dev_setting(i, &offset, &size, &len_offset), name)) continue;
+        const u8 *x = (const u8 *)a + offset, *y = (const u8 *)b + offset;
+        if (len_offset) {
+            i32 lx = *(const i32 *)((const u8 *)a + len_offset), ly = *(const i32 *)((const u8 *)b + len_offset);
+            return lx != ly || memcmp(x, y, (size_t)lx) != 0;
+        }
+        return memcmp(x, y, size) != 0;
+    }
+    return -1;
+}
+#endif
+
 static const struct { const char *name; u32 offset; } config_colors[] = {
     { "background", offsetof(Theme, background) }, { "text", offsetof(Theme, text) },
     { "cursor", offsetof(Theme, cursor) },         { "selection", offsetof(Theme, selection) },

@@ -45,12 +45,8 @@ static void dump_puts(DumpBuf *b, const char *c) {
 
 // Every setting the parser knows (config.c's tables and the settings it reads by name).
 static i32 dump_setting_names(String8 *names, i32 cap) {
-    static const char *named[] = { "font_size", "render_mode", "compilation_save_buffers", "compilation_scroll_output", "ai_provider", "terminal", "theme" };
     i32 n = 0;
-    for (i32 i = 0; i < ARRAY_COUNT(config_int_settings) && n < cap; i++) names[n++] = str8_cstr(config_int_settings[i].name);
-    for (i32 i = 0; i < ARRAY_COUNT(config_text_settings) && n < cap; i++) names[n++] = str8_cstr(config_text_settings[i].name);
-    for (i32 i = 0; i < ARRAY_COUNT(config_bool_settings) && n < cap; i++) names[n++] = str8_cstr(config_bool_settings[i].name);
-    for (i32 i = 0; i < ARRAY_COUNT(named) && n < cap; i++) names[n++] = str8_cstr(named[i]);
+    for (i32 i = 0; i < config_dev_setting_count() && n < cap; i++) names[n++] = config_dev_setting_name(i);
     return n;
 }
 
