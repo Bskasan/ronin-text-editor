@@ -79,7 +79,9 @@ static void it_pump(void) {
 // The events the window procedure produced, through the app.
 static void it_flush(InputTest *t) {
     Platform *p = t->p;
+    os_dev_cover_real(1); // the coverage map (#29): these came as real key messages
     if (p->event_count && !t->quit && !app_dev_feed_events(t->app, p->events, p->event_count, &t->arena)) t->quit = 1;
+    os_dev_cover_real(0);
     p->event_count = 0;
 }
 
@@ -580,12 +582,218 @@ static void it_cases(InputTest *t) {
     }
 }
 
-// Every binding of the default config: the keys that type its chords on this layout, and what
-// describe-key reports for them (each must be reachable on US). Then the US keys of each binding
-// pressed on this layout, and what they run here.
-static void it_bindings(InputTest *t) {
+// The keys that type a binding's chords on the layout (a plain character from a dead key followed by Space, which
+// gives the accent itself: ^ on Turkish Q and Finnish, in C-x ^). The stroke count; 0 when a chord has no key here.
+static i32 it_binding_strokes(InputTest *t, KeySeq *seq, ItStroke *out) {
+    i32 n = 0;
+    for (i32 k = 0; k < seq->len; k++) {
+        if (!it_chord_stroke(t, t->hkl, t->altgr, seq->chords[k], &out[n])) return 0;
+        b32 dead = 0;
+        KeyChord c = seq->chords[k];
+        if (!(c & (CHORD_CTRL | CHORD_META | CHORD_NAMED))) it_layout_char(t, t->hkl, out[n].vk, out[n].mods, &dead);
+        n++;
+        if (dead) out[n++] = (ItStroke){ 0, VK_SPACE, 0 };
+    }
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// #29: every default binding of the seven keymaps pressed through its own keys on the layout and run, in its keymap's
+// context, by an app on build\tmp\p29keys (a project: a.c, a build that prints one error; the fake git and the fake
+// terminal). Before each press the app is reset (C-g three times, C-x 1; a new app after one that quit) and the
+// context entered again: *scratch* with text (global), C-x b (minibuffer), C-s f o o (isearch), *search* of a real
+// search (search-results), *compilation* of the build (compilation), C-S-p with "end-of-buffer" typed (command-list,
+// so RET runs a harmless command), C-x g on the fake git's canned repository (git-changes). A press counts when its
+// binding's real count rose (the coverage map, counted where the command runs) and the bound command ran. Meanwhile
+// nothing may be written outside the fixture (os_dev_write_root) and no program but this executable may start
+// (os_dev_own_processes_only); either is a failure.
+
+typedef struct ItPress {
+    Test test;        // the test helpers' arena (the apps' too) and tmp folder
+    Config *defaults; // the built-in configuration: the bindings
+    String8 dir, conf, git_dir, term_dir;
+} ItPress;
+
+static const char *const it_press_contexts[] = { "*scratch*", "C-x b", "*search*", "*compilation*", "C-S-p", "C-x g", "C-s f o o" };
+
+// The fixture, made before any guard is on (the fakes' files are written here).
+static b32 it_press_setup(ItPress *P, Platform *p) {
+    P->test.arena = arena_create(GB(1));
+    P->test.tmp_dir = str8_fmt(&P->test.arena, "%S\\tmp", p->exe_dir);
+    Test *tt = &P->test;
+    P->dir = os_full_path(&tt->arena, str8_fmt(&tt->arena, "%S\\p29keys", tt->tmp_dir));
+    os_make_dir(P->dir);
+    P->conf = str8_fmt(&tt->arena, "%S\\ronin.conf", P->dir);
+    os_file_delete(P->conf);
+    String8 build = test_child(tt, "p29keys_build", STR8_LIT("out a.c(1,5): error C1: no foo here\nexit 2\n"));
+    b32 ok = os_write_file(str8_fmt(&tt->arena, "%S\\a.c", P->dir), STR8_LIT("int foo;\nint bar;\n")) &&
+             os_write_file(str8_fmt(&tt->arena, "%S\\.ronin-project", P->dir), str8_fmt(&tt->arena, "[build]\ncommand = %S\n", build));
+    P->git_dir = test_git_view_fake(tt, "p29keys_git", TEST_GIT_STATUS);
+    os_make_dir(str8_fmt(&tt->arena, "%S\\p20", tt->tmp_dir));
+    P->term_dir = os_full_path(&tt->arena, str8_fmt(&tt->arena, "%S\\p20\\p29keys_term", tt->tmp_dir));
+    os_make_dir(P->term_dir);
+    ok = ok && os_write_file(str8_fmt(&tt->arena, "%S\\calls.txt", P->term_dir), str8(NULL, 0));
+    P->defaults = PUSH_STRUCT(&tt->arena, Config);
+    config_defaults(P->defaults, &tt->arena);
+    return ok;
+}
+
+// An app on the fixture's directory, with the fake git and the fake terminal.
+static App *it_press_app(ItPress *P) {
+    App *app = test_manual_app(&P->test, P->dir, 0, 0, P->conf);
+    if (!app) return NULL;
+    app->git.dev_program = os_dev_exe_path(&P->test.arena);
+    app->git.dev_prefix = str8_fmt(&P->test.arena, "--fake-git \"%S\"", P->git_dir);
+    app->git.dev_env = str8(NULL, 0);
+    app->terminal.dev_program = os_dev_exe_path(&P->test.arena);
+    app->terminal.dev_prefix = str8_fmt(&P->test.arena, "--fake-terminal \"%S\"", P->term_dir);
+    app->terminal.dev_wt_present = 1;
+    return app;
+}
+
+// Back to a known state: prompts, isearch, the modal and prefixes ended, one window, builds and searches ended.
+static b32 it_press_reset(InputTest *t, ItPress *P) {
+    if (t->quit) {
+        app_shutdown(t->app);
+        t->app = it_press_app(P);
+        t->quit = 0;
+        if (!t->app) return 0;
+    }
+    app_dev_feed(t->app, "C-g C-g C-g C-x 1", &t->arena);
+    results_dev_wait(t->app, &t->arena, 10000);
+    test_git_wait(&P->test, t->app, 10000);
+    return 1;
+}
+
+static b32 it_press_show(App *app, const char *name) {
+    Buffer *b = buffer_list_find_name(&app->buffers, str8_cstr(name));
+    if (b) app_switch_buffer(app, app_selected_view(app), b);
+    return b != NULL;
+}
+
+// The keymap's context (dump_sections' order: global, minibuffer, search-results, compilation, command-list,
+// git-changes, isearch).
+static b32 it_press_context(InputTest *t, ItPress *P, i32 m) {
+    App *app = t->app;
     Arena *a = &t->arena;
-    i32 total = 0, unreachable = 0, elsewhere = 0, wrong = 0;
+    switch (m) {
+    case 0:
+        app_dev_show_scratch(app, STR8_LIT("alpha beta\ngamma delta\n\nepsilon\n"));
+        return 1;
+    case 1:
+        app_dev_show_scratch(app, STR8_LIT("alpha\n"));
+        app_dev_feed(app, "C-x b", a);
+        return app->mini.active;
+    case 2:
+        if (!it_press_show(app, "*search*")) {
+            app_dev_feed(app, "C-x p g f o o RET", a);
+            results_dev_wait(app, a, 10000);
+        }
+        return it_press_show(app, "*search*");
+    case 3:
+        if (!it_press_show(app, "*compilation*")) {
+            app_dev_feed(app, "C-x p c RET", a);
+            results_dev_wait(app, a, 10000);
+        }
+        return it_press_show(app, "*compilation*");
+    case 4:
+        app_dev_feed(app, "C-S-p e n d - o f - b u f f e r", a);
+        return modal_active(app);
+    case 5:
+        app_dev_feed(app, "C-x g", a);
+        return test_git_wait(&P->test, app, 10000) && modal_active(app) && app->git.view;
+    case 6:
+        app_dev_show_scratch(app, STR8_LIT("foo bar foo baz foo\n"));
+        app_dev_feed(app, "C-s f o o", a);
+        return app->isearch.active;
+    }
+    return 0;
+}
+
+static void it_press_bindings(InputTest *t, ItPress *P) {
+    Arena *a = &t->arena;
+    App *layout_app = t->app;
+    b32 quit = t->quit;
+    t->app = it_press_app(P);
+    t->quit = 0;
+    if (!t->app) {
+        it_fail(t, "presses: no app on the fixture");
+        t->app = layout_app;
+        return;
+    }
+    os_dev_write_root(P->dir);
+    os_dev_own_processes_only(1);
+    i32 refused0 = os_dev_real_refused();
+    i32 pressed[ARRAY_COUNT(dump_sections)] = { 0 }, total[ARRAY_COUNT(dump_sections)] = { 0 }, unreachable = 0;
+    for (i32 m = 0; m < ARRAY_COUNT(dump_sections); m++) {
+        Keymap *map = (Keymap *)((u8 *)P->defaults + dump_sections[m].offset);
+        String8 map_name = str8_cstr(map->name);
+        for (i32 i = 0; i < map->count; i++) {
+            u64 mark = arena_pos(a);
+            KeySeq seq = map->bindings[i].seq;
+            const Command *command = map->bindings[i].command;
+            u8 text_buf[KEY_SEQ_TEXT_CAP];
+            String8 text = str8(text_buf, key_seq_print(&seq, text_buf, sizeof(text_buf)));
+            total[m]++;
+            ItStroke strokes[2 * KEY_SEQ_MAX];
+            i32 n = it_binding_strokes(t, &seq, strokes);
+            if (!n) {
+                unreachable++;
+                LOG("test: input %s: unreachable: %S (%S, %s): a character no key types", t->name, text, map_name, command->name);
+                if (t->hkl == t->us) it_fail(t, "binding %S (%S) unreachable", text, map_name);
+                continue;
+            }
+            b32 ok = 0;
+            IT_CASE(t, "a binding pressed in its keymap") {
+                if (!it_press_reset(t, P) || !it_press_context(t, P, m)) {
+                    it_fail(t, "binding %S (%S): the context %s could not be entered", text, map_name, it_press_contexts[m]);
+                } else {
+                    // Ran: the binding was counted where its command runs, and the command itself ran (what an accept runs
+                    // after it, such as the command list's choice, may be the last command); the modal's quit keys close
+                    // it without a command.
+                    String8 cmd_name = str8_cstr(command->name);
+                    u32 real0 = os_dev_cover_count("binding", map_name, text, 1), runs0 = os_dev_cover_count("command", str8(NULL, 0), cmd_name, 0);
+                    for (i32 k = 0; k < n; k++) it_stroke(t, strokes[k]);
+                    b32 ran = os_dev_cover_count("command", str8(NULL, 0), cmd_name, 0) > runs0 || (command->flags & COMMAND_QUIT);
+                    ok = os_dev_cover_count("binding", map_name, text, 1) > real0 && ran;
+                    if (!ok) {
+                        it_fail(t, "binding %S (%S, %s) pressed with %S in %s: not run", text, map_name, command->name, it_stroke_name(t, a, strokes[0]),
+                                it_press_contexts[m]);
+                    }
+                }
+            }
+            pressed[m] += ok;
+            arena_pop_to(a, mark);
+        }
+    }
+    it_press_reset(t, P);
+    os_dev_own_processes_only(0);
+    u64 writes = os_dev_writes_refused();
+    os_dev_write_root(str8(NULL, 0));
+    if (writes) it_fail(t, "presses: %U write(s) outside %S refused", writes, P->dir);
+    if (os_dev_real_refused() != refused0) it_fail(t, "presses: %d real process(es) refused (git, terminal or build)", os_dev_real_refused() - refused0);
+    String8 counts = str8(NULL, 0);
+    i32 all = 0, all_total = 0;
+    for (i32 m = 0; m < ARRAY_COUNT(dump_sections); m++) {
+        Keymap *map = (Keymap *)((u8 *)P->defaults + dump_sections[m].offset);
+        counts = str8_fmt(a, "%S%s%s %d/%d", counts, m ? ", " : "", map->name, pressed[m], total[m]);
+        all += pressed[m], all_total += total[m];
+    }
+    LOG("test: input %s: %d of %d bindings pressed and run in their keymaps (%S), %d unreachable", t->name, all, all_total, counts, unreachable);
+    if (t->app) {
+        i32 leaks = app_shutdown(t->app);
+        if (leaks) it_fail(t, "presses: %d leak(s) at shutdown", leaks);
+    }
+    t->app = layout_app;
+    t->quit = quit;
+}
+
+// The US keys of every binding pressed on this layout (not US), and what describe-key says they run here: logged where
+// that is something else (informational: a layout's own keys are what it_press_bindings presses).
+static void it_bindings(InputTest *t) {
+    if (t->hkl == t->us) return;
+    Arena *a = &t->arena;
+    i32 total = 0, elsewhere = 0;
     for (i32 map = 0; map < 4; map++) {
         for (i32 i = 0;; i++) {
             u64 mark = arena_pos(a);
@@ -601,10 +809,9 @@ static void it_bindings(InputTest *t) {
             }
             // In [keys] describe-key names the command; the other keymaps' bindings only need their keys.
             String8 want = map == 0 ? str8_fmt(a, "%S runs the command %s", text, command) : text;
-            ItStroke here[KEY_SEQ_MAX], us[KEY_SEQ_MAX];
-            b32 reachable = 1, us_ok = 1;
+            ItStroke us[KEY_SEQ_MAX];
+            b32 us_ok = 1;
             for (i32 k = 0; k < seq.len; k++) {
-                reachable = reachable && it_chord_stroke(t, t->hkl, t->altgr, seq.chords[k], &here[k]);
                 us_ok = us_ok && it_chord_stroke(t, t->us, 0, seq.chords[k], &us[k]);
                 if (us_ok && !us[k].ext) { // the same physical key on this layout
                     u32 scan = MapVirtualKeyExW(us[k].vk, MAPVK_VK_TO_VSC, t->us);
@@ -612,31 +819,7 @@ static void it_bindings(InputTest *t) {
                     us_ok = us[k].vk != 0;
                 }
             }
-            if (!reachable) {
-                unreachable++;
-                LOG("test: input %s: unreachable: %S (%s): a character no key types", t->name, text, command);
-                if (t->hkl == t->us) it_fail(t, "binding %S unreachable", text);
-            } else {
-                // A plain character from a dead key (^ on Turkish Q and Finnish, in C-x ^) is typed as the
-                // dead key, then Space: Space after a dead key gives the accent itself.
-                ItStroke strokes[2 * KEY_SEQ_MAX];
-                i32 n = 0;
-                for (i32 k = 0; k < seq.len; k++) {
-                    strokes[n++] = here[k];
-                    b32 dead = 0;
-                    KeyChord c = seq.chords[k];
-                    if (!(c & (CHORD_CTRL | CHORD_META | CHORD_NAMED))) it_layout_char(t, t->hkl, here[k].vk, here[k].mods, &dead);
-                    if (dead) strokes[n++] = (ItStroke){ 0, VK_SPACE, 0 };
-                }
-                b32 ok = 1;
-                IT_CASE(t, "a binding through its own keys") {
-                    String8 got = it_describe(t, strokes, n);
-                    ok = map == 0 ? str8_equal(got, want) : str8_starts_with(got, str8_fmt(a, "%S ", want));
-                    if (!ok) it_fail(t, "binding %S (%s) with keys %S: echo '%S'", text, command, it_stroke_name(t, a, here[0]), got);
-                }
-                if (!ok) wrong++;
-            }
-            if (t->hkl != t->us && us_ok) {
+            if (us_ok) {
                 String8 got = it_describe(t, us, seq.len);
                 b32 same = map == 0 ? str8_equal(got, want) : str8_starts_with(got, str8_fmt(a, "%S ", want));
                 if (!same) {
@@ -650,8 +833,7 @@ static void it_bindings(InputTest *t) {
             arena_pop_to(a, mark);
         }
     }
-    LOG("test: input %s: %d bindings: %d unreachable, %d wrong through their own keys, %d where the US keys run something else",
-        t->name, total, unreachable, wrong, elsewhere);
+    LOG("test: input %s: %d bindings: %d where the US keys run something else", t->name, total, elsewhere);
 }
 
 // A layout that has AltGr: some key types a character with Ctrl+Alt.
@@ -696,6 +878,11 @@ static DWORD WINAPI it_thread(void *param) {
     p->event_count = 0;
 
     Arena arena = arena_create(GB(1));
+    ItPress press = { 0 };
+    if (!it_press_setup(&press, p)) {
+        LOG("test: FAIL: input: the fixture of the presses (build\\tmp\\p29keys) could not be written");
+        run->failures++;
+    }
     HKL loaded[ARRAY_COUNT(layouts)];
     i32 loaded_count = 0;
     HKL us = LoadKeyboardLayoutW(L"00000409", KLF_NOTELLSHELL);
@@ -725,6 +912,7 @@ static DWORD WINAPI it_thread(void *param) {
         SetKeyboardState(t.state);
         i32 before_failures = t.failures;
         it_cases(&t);
+        it_press_bindings(&t, &press);
         it_bindings(&t);
 
         // Alt + F4 last: its key is the one ronin leaves to DefWindowProc, which makes it SC_CLOSE for an
@@ -753,6 +941,7 @@ static DWORD WINAPI it_thread(void *param) {
         SetKeyboardState(t.state);
     }
 
+    os_release(press.test.arena.base);
     ActivateKeyboardLayout(thread_layout, 0);
     for (i32 i = 0; i < loaded_count; i++) UnloadKeyboardLayout(loaded[i]);
     b32 us_new = 1;

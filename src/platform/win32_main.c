@@ -94,6 +94,7 @@ typedef struct Platform {
     u64 clip_committed;
     u32 clip_seq;
     u32 clip_real_opens;     // the real clipboard opened (none in --test: os_dev_clipboard_real)
+    String8 dev_own_exe;     // os_dev_own_processes_only: the only program that may start (empty: any)
     Win32CoverSlot *cover;   // WIN32_COVER_SLOTS, from the permanent arena once --test enables counting
     i32 cover_used;
     b32 cover_on, cover_paused, cover_real;
@@ -303,8 +304,9 @@ void os_decommit(void *ptr, u64 size) {
 }
 
 #if RONIN_DEV
-// The soak's guard (os_dev_write_root): while a root is set, a write, delete or new directory outside it
-// is refused and counted, whatever path random keys reached in a file prompt.
+// The guard of the soak and of the input harness's presses (os_dev_write_root, #29): while a root is set, a write,
+// delete or new directory outside it (the root itself is inside) is refused and counted, whatever path the keys
+// reached in a file prompt.
 static b32 win32_dev_write_refused(String8 path) {
     Platform *p = g_platform;
     if (!p || !p->dev_write_root.len) return 0;
@@ -312,7 +314,7 @@ static b32 win32_dev_write_refused(String8 path) {
     win32_utf8_to_wide_fixed(path, (u16 *)in, ARRAY_COUNT(in));
     DWORD n = GetFullPathNameW(in, ARRAY_COUNT(full), full, NULL);
     String8 root = p->dev_write_root;
-    b32 inside = n > (DWORD)root.len && n < ARRAY_COUNT(full) && full[root.len] == L'\\';
+    b32 inside = n >= (DWORD)root.len && n < ARRAY_COUNT(full) && (n == (DWORD)root.len || full[root.len] == L'\\'); // the root itself too
     for (i64 i = 0; i < root.len && inside; i++) {
         u32 a = full[i], b = root.data[i];
         if (a >= 'A' && a <= 'Z') a += 32;
@@ -321,7 +323,7 @@ static b32 win32_dev_write_refused(String8 path) {
     }
     if (inside) return 0;
     p->dev_writes_refused++;
-    LOG("soak: refused a write outside %S: %S", root, path);
+    LOG("write guard: refused a write outside %S: %S", root, path);
     return 1;
 }
 
@@ -1234,8 +1236,43 @@ done:
     return status;
 }
 
+#if RONIN_DEV
+// The input harness's presses (#29, os_dev_own_processes_only): a program other than this executable (the --child
+// build, --fake-git, --fake-terminal) is refused and counted with the batch guard's refusals. A command line counts
+// as this executable when it starts with its quoted path.
+static b32 win32_dev_foreign(String8 program, b32 command_line) {
+    Platform *p = g_platform;
+    if (!p->dev_own_exe.len) return 0;
+    String8 exe = p->dev_own_exe;
+    i64 at = 0;
+    if (command_line) {
+        if (!program.len || program.data[0] != '"') goto refused;
+        at = 1;
+    }
+    if (program.len < at + exe.len + (command_line ? 1 : 0)) goto refused;
+    for (i64 i = 0; i < exe.len; i++) {
+        u8 a = program.data[at + i], b = exe.data[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b && !((a == '/' || a == '\\') && (b == '/' || b == '\\'))) goto refused;
+    }
+    if (command_line ? program.data[at + exe.len] == '"' : program.len == exe.len) return 0;
+refused:
+    os_dev_real_refused_add(1); // any thread (git's jobs start their program on a worker): counted, never logged here
+    return 1;
+}
+
+void os_dev_own_processes_only(b32 on) {
+    Platform *p = g_platform;
+    p->dev_own_exe = on ? os_dev_exe_path(&p->perm) : str8(NULL, 0);
+}
+#endif
+
 OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p) {
     memset(p, 0, sizeof(*p));
+#if RONIN_DEV
+    if (win32_dev_foreign(command, 1)) return OS_FILE_ACCESS_DENIED;
+#endif
     u64 mark = arena_pos(arena);
     // The command line: "<system>\cmd.exe" /s /c "<command>" (no search of PATH or the current
     // directory for cmd itself).
@@ -1329,6 +1366,9 @@ static WCHAR *win32_env_block(Arena *arena, String8 extra) {
 
 OsFileStatus os_process_start_program(Arena *arena, String8 program, String8 args, String8 dir, String8 env_extra, OsProcess *p) {
     memset(p, 0, sizeof(*p));
+#if RONIN_DEV
+    if (win32_dev_foreign(program, 0)) return OS_FILE_ACCESS_DENIED;
+#endif
     u64 mark = arena_pos(arena);
     String16 app = str16_from_str8(arena, program);
     String16 args16 = str16_from_str8(arena, args);
@@ -1360,6 +1400,9 @@ OsFileStatus os_process_start_program(Arena *arena, String8 program, String8 arg
 
 u32 os_process_launch(Arena *arena, String8 program, String8 args, String8 dir, b32 new_console) {
     if (!program.len) return ERROR_FILE_NOT_FOUND;
+#if RONIN_DEV
+    if (win32_dev_foreign(program, 0)) return ERROR_ACCESS_DENIED;
+#endif
     if (program.len + args.len + 4 > 32000) return ERROR_FILENAME_EXCED_RANGE;
     u64 mark = arena_pos(arena);
     String16 app = str16_from_str8(arena, program);
