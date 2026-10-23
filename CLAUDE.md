@@ -111,6 +111,10 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
   failing test and the fix commit), or HUMAN (why only a person can judge it, the shortest exact
   instructions, and a dev helper for most of it where possible). Check each step against its own
   wording, not against what the code does; a difference is a finding.
+- A new command, key binding or setting needs a test that exercises it (a binding: pressed, and pressed through the
+  input harness, which presses every default binding; a setting: its effect checked through `test_setting_set` /
+  `TEST_SETTING_EFFECT`), or a line in res/coverage_allow.txt with a reason and an issue: `--test` fails on any
+  command, binding or setting no deterministic test exercised (the coverage map, #29, src/dev/coverage.c).
 - Every pull request keeps README.md and the site's pages current: what it adds (features, keys, configuration,
   limits, status, numbers), each claim checked against the code, the tests and the measurements.
 
@@ -565,9 +569,10 @@ their keys, Alt / Ctrl / Ctrl+Alt chords, Right Alt as Meta or AltGr text and Le
 Alt+Shift and Ctrl+Shift symbols, dead keys (and none left behind by a chord), nothing to
 DefWindowProc for Alt / F10 / Alt+Space, describe-key on keys without a chord, the keypad, a letter
 posted as WM_SYSKEYDOWN without Alt (no focus window) typing its letter, C-x 3 / C-x o / C-M-v /
-C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding through describe-key (a
-plain character from a dead key typed as the dead key and Space; the bindings whose US keys run
-something else on the layout are listed), Alt+F4. Also the command line's files and +LINE:COLUMN. The
+C-M-S-v, no frame for a mouse move or WM_SETCURSOR, every default binding of the seven keymaps pressed
+through its own keys in its keymap's context and run (#29: on build\tmp\p29keys, nothing written outside it and
+no program but this executable started; a plain character from a dead key typed as the dead key and Space; the
+bindings whose US keys run something else on the layout are listed), Alt+F4. Also the command line's files and +LINE:COLUMN. The
 modifier test, the key test and every harness case are shielded from real input (DevShield): each waits
 until no physical modifier is down and checks that its key state held; a case whose key state did not
 hold (passed or failed) is logged as "test: inconclusive: ..." with the reason and repeated (at most 5
@@ -696,7 +701,7 @@ because GitHub Pages serves those files; verify's docs-check keeps them equal to
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\platform\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
-| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme) and verify's and CI's docs-check (tmp\docs_check) |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme), the coverage map's tests and the input harness's presses (tmp\p29set, tmp\p29proj, tmp\p29keys_h, tmp\p29keys) and verify's and CI's docs-check (tmp\docs_check) |
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |

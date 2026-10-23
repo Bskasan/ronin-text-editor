@@ -66,6 +66,9 @@ section dated, the release notes in `docs/releases/`); the maintainer tags and p
 - Every feature is a named command with a one-line description, so it can be bound to a key and found with M-x and
   `C-S-p`.
 - Tests for the change, and you have seen them fail without it: say how in the pull request.
+- A new command, key binding or setting has a test that exercises it (a setting: its effect checked through
+  `test_setting_set` / `TEST_SETTING_EFFECT` in src/dev/test.c), or a line in `res/coverage_allow.txt` with a reason
+  and an issue. `--test` fails on any command, binding or setting no test exercised.
 - README.md, the site's pages (`docs/src`, then `build.bat docs`), [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md) and
   docs/ARCHITECTURE.md updated where they describe what you changed. `--test` checks the keys, settings and links of
   README and of every page of the site against the code. The site's

@@ -38,7 +38,7 @@ The only folder that may include Windows SDK headers.
 | `win32_main.c` | entry point, window, message loop, input, os_* on Win32, dev flags | wWinMain (command line, the files and their +LINE:COLUMN), window, message loop (with directory watches, one-shot tree watches and the workers' wake event), input translation (click counts, `win32_translate`), the mouse cursor (WM_SETCURSOR), clipboard (and the dev fake), directory listing and small-file reads (any thread), threads, locks and events, processes (the job object, the named pipe, the handle list, the overlapped read with the process and a cancel), the end-of-session messages, os_* implementation, dev flags and helpers (`--log-keys`, `--idle-check`, `--dpi-check`, `--clipboard-check`, `--type-ahead-check`, `--bench-project`, `--bench-compile`, `--bench-cursors`, `--scan-hold`, `--compile-wait`, junctions, the input tests' shield; Phase 15: `--check-imports`, `--memory-report`, `--bench-latency`, `--startup-capture`, `--bench-longline`, `--crash`, the fuzz workers; Phase 16: `--leak-check`'s host (the pass of the main loop, the capture), the metrics sampler (`os_dev_metrics`, the handles by type, the memory by owner, the reservations and their origins), the handle ledger, the exit-time check, the main loop's wait shared with it (`win32_wait`, `win32_after_wait`), the worker thread slots reused; Phase 18: `--bench-modal`, the smoke's stage 11 and its frame comparison; Phase 19: `--bench-git`, the smoke's stage 12, the git view's wait in screenshot runs, `--fake-git`'s dispatch; Phase 20: `os_process_launch`, the smoke's stage 13, `--fake-terminal`'s dispatch, the guard's `os_dev_batch_run` and its count; Phase 21: the smoke's stage 14, `os_watch_dir`'s subdirs flag), the CRT-free entry point, the crash filter and the recovery files' os_* calls, `--version` |
 | `win32_dwrite.cpp` | DirectWrite glyph rasterization behind font_backend.h (C-style C++) | the only C++ file: DirectWrite calls behind font_backend.h, nothing else; the second translation unit |
 | `render_d3d11.c` | D3D11 renderer: flip-model swap chain, instanced quads, atlas texture | D3D11 device, flip-model swap chain, instanced-quad pipeline, atlas texture, capture |
-| `win32_input_test.c` | dev: the real Win32 input path on four keyboard layouts (--test) | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app |
+| `win32_input_test.c` | dev: the real Win32 input path on four keyboard layouts (--test) | dev only, in `--test`: the real input path (posted key messages, TranslateMessage, the window procedure) on US, United Kingdom, Turkish Q and Finnish layouts loaded for its thread, into a headless app; since #29 every default binding of the seven keymaps pressed through its own keys in its keymap's context and run (`it_press_bindings`, build\tmp\p29keys; writes outside it and programs other than this executable refused and failed) |
 | `win32_child.c` | dev: the tests' scripted program, fake git and fake terminal | dev only: `--child <script>`, the scripted program the build tests run (lines on stdout and stderr, raw bytes, sleeps, an exit code, a hang, a grandchild, a flood, the working directory, a file rewritten, an environment variable, numbered lines); `--fake-git DIR ARGS`, the tests' git (Phase 19): the calls logged, a script picked by the arguments; Phase 20: `launch FILE` (a grandchild through `os_process_launch`) and `--fake-terminal DIR ...`, the tests' terminal (its working directory and raw command line logged) |
 | `check_macros.c` | build check: every system header, then the unity build, syntax only | compiled by build.bat with /Zs only (never linked): every system header ronin uses, then `ronin.c`, so a ronin identifier that a system header defines as a macro fails the build |
 | `shaders/quad.hlsl` | vertex and pixel shader of the instanced-quad pipeline | vs/ps for the quad pipeline, compiled by fxc to `build/gen/*.h` |
@@ -100,7 +100,7 @@ The only folder that may include Windows SDK headers.
 
 | file | description | details |
 |---|---|---|
-| `test.c` | dev: the headless tests (--test), the fuzz groups, the soak | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits; Phase 22: the README check, `test_readme`: README.md's key tables through describe-key or their keymap, its settings tables and ini blocks through the config parser, the prose keys, commands and names, README.md's and CONTRIBUTING.md's links and anchors, and the checker's own broken fragments; Phase 23: the map report reads src\'s folders; Phase 24: the docs site's converter, `test_markdown`; `--dump-docs`, `test_dump_docs`; the README check over the site's pages of docs/src with their fragments in place (cross-page links and anchors, images, `| command |` tables, README's `href` / `src`), with a small site of its own for its broken fragments; #20: the site's heading ids against GitHub's for res/heading_ids.md, `test_heading_ids`, and repeated headings numbered in the README check) and the `--bench-buffer` core |
+| `test.c` | dev: the headless tests (--test), the fuzz groups, the soak | dev only: `--test` (buffer, marker, column, view, key, config, buffer list and hot reload tests, file round trips, failures, the steps of docs/MANUAL_TESTS.md through the headless app; Phase 11: threads and tree watches, ignore rules, roots, the scanner and its stress, fuzzy ranking, the finder; Phase 12: the search over files and results; Phase 13: processes, the matchers' goldens, path resolution, cleaning and lines, builds and kills of `--child` programs, builds through the headless app, the landing highlight; Phase 14: marker batches, the multiple-cursor driver, undo, kills, commands, the mouse and the differential fuzz; Phase 15: the undo reducer, the crash recovery test, the seed sweep's groups (`--fuzz-seeds`), the soak (`--soak`), the map report; Phase 16: the soak's leak metrics and their rule, the reservations that grew by origin, the regression tests of the leaks found, the caps of the bounded caches, the sampler and the ledger; Phase 18: the command descriptions, where-is, the modal layer with a two-pane test owner, the command list, the seeded modal group, command list sessions in the soak; Phase 19: programs started directly, the git parsers' goldens, git's jobs against the fake git, the git changes view and its error paths, the real git, the seeded git group, git sessions in the soak; Phase 20: the launch and its breakaway retry, the terminal settings, the terminal commands with the fake terminal, the guard, the terminals in the soak; Phase 21: the built-in themes, the resolution order and its seeded group "themes", the theme diagnostics and folders, the masked-theme note, set-theme, the themes' reload through real watches, theme sessions in the soak and set-theme in the modal fuzz, a slow soak event named with its session and its waits; Phase 22: the README check, `test_readme`: README.md's key tables through describe-key or their keymap, its settings tables and ini blocks through the config parser, the prose keys, commands and names, README.md's and CONTRIBUTING.md's links and anchors, and the checker's own broken fragments; Phase 23: the map report reads src\'s folders; Phase 24: the docs site's converter, `test_markdown`; `--dump-docs`, `test_dump_docs`; the README check over the site's pages of docs/src with their fragments in place (cross-page links and anchors, images, `| command |` tables, README's `href` / `src`), with a small site of its own for its broken fragments; #20: the site's heading ids against GitHub's for res/heading_ids.md, `test_heading_ids`, and repeated headings numbered in the README check; #29: the settings helpers `test_setting_set` / `TEST_SETTING_EFFECT` (a setting counts in the coverage map only through them), every setting's effect through the setting, the 20 key sequences no test pressed before, the seeded groups' table `test_seeded_groups` run through `test_seeded`) and the `--bench-buffer` core |
 | `coverage.c` | dev: the feature coverage map (--test) and its allow-list | dev only (#29): at the end of `--test`, after the input harness, every command, default key binding (pressed by any test, and through the harness's real key messages) and setting (its effect checked through `test_setting_set` / `TEST_SETTING_EFFECT`) that no test exercised outside the seeded groups fails, unless res/coverage_allow.txt lists it with a reason and an issue; a stale or malformed entry fails; so do the real clipboard opened or changed, %APPDATA%\ronin or %LOCALAPPDATA%\ronin changed, and a real process refused |
 | `leak.c` | dev: the leak check (--leak-check), its scenarios and verdicts | dev only (Phase 16): `--leak-check`, the scenarios (modal-cycle since Phase 18, git-cycle since Phase 19, terminal-cycle since Phase 20, theme-cycle since Phase 21) (each a setup, a cycle and a teardown driving the app through the window's queue), the prime step, the state each cycle must leave, the metrics, the verdict (LEAK, STEP, WATCH) and the tables, the screenshots before and after; the platform drives it through `LeakHost` |
 | `dump_docs.c` | dev: --dump-docs, the docs site's keys and settings fragments | Phase 24: `--dump-docs DIR` writes keys.md (per keymap section of the built-in configuration, in its order: the section's comment, then a key table of the commands bound there in command-table order; then the commands bound nowhere) and settings.md (per comment of [settings]: the comment as paragraphs, the settings with their defaults as an ini block); every setting the parser knows in [settings] once (exit 9 otherwise); build.bat docs and verify's docs-check run it |
@@ -4395,6 +4395,108 @@ The fault cases (review of PR #33), each shown to fail by a scratch mutation tha
 
 After the review's commits the release exe was built again and compared with 996703b's: the same 4 bytes differ (the
 two TimeDateStamps), the SHA-256 with them zeroed is the same 7a45c081..., `--check-imports` PASS.
+
+### Decisions, #29 Feature coverage map
+
+#28's audit found features no test exercised. Nothing failed when a feature lost its last test, so the gap could only
+grow. `--test` now counts what deliberate tests run and fails on any zero (src/dev/coverage.c).
+
+1. What counts:
+   - **A command:** a run through `view_run_command`, the one driver. Keys, M-x, the command list's RET, Ctrl+wheel and
+     the close button all reach it.
+   - **A binding:** a default binding of one of the seven keymaps whose command ran, counted where it runs.
+     `KeyResult` carries the matching keymap and sequence in dev builds, set only while counting. The run sites are
+     app.c's normal and isearch paths and modal.c's. describe-key, where-is, the quit probe and a key a prompt or the
+     modal refused do not count.
+   - **Two counts per binding:**
+     - any: a deliberate test pressed it;
+     - real: it came through the input harness's posted key messages (`it_flush` marks them).
+   - **A setting:** a value loaded through a config file over the built-in configuration (`test_setting_set` /
+     `test_setting_app`, the real parse and apply path), other than the default, with its effect checked while it is
+     in force (`TEST_SETTING_EFFECT`). Parsing a value never counts.
+     - The macro is the only path to the counter. It also checks that the app still reads that file and still holds a
+       value other than the default.
+     - The names and the comparison come from config.c's own tables (`config_dev_setting_*`; --dump-docs uses the
+       same list), so no list is kept by hand.
+2. Random input never counts. The 21 seeded groups are one table, `test_seeded_groups`, which `--fuzz-seeds` runs.
+   `test_run` calls each through `test_seeded`, which pauses counting. The soak, the fuzz workers, the benches and the
+   leak check never turn counting on.
+3. The counters are one dev table in `Platform`, keyed by text (`command:<name>`, `binding:<keymap>:<seq>`,
+   `setting:<name>`).
+   - Size: 2,048 slots of 72 bytes, 144 KB, from the permanent arena once `--test` starts; FNV-1a with linear probing.
+   - The key's text is kept in its slot, so two keys never share one.
+   - Past 75% load, or for a key over 63 bytes, the hit is counted as dropped. Any drop fails the check: the table
+     never loses a hit silently.
+   - About 395 slots are used.
+   - Platform holds no editor types. Counting happens on one thread at a time: the main thread, or the input
+     harness's while the main thread waits for it.
+4. The allow-list, res/coverage_allow.txt: `<kind> | <name> | <reason> | #<issue>`. These fail:
+   - a line without a reason or an issue;
+   - a name that is no item;
+   - an entry whose item is covered now (stale), so the list only shrinks.
+
+   The map came in with today's 292 zeros on the list, each `#29`. The tests of #29 took them off. One entry is
+   left: early_window (#32). Its effect is the frame DWM composes before the first Present. `--test` never shows a
+   window, and `--startup-capture` puts a topmost window on the screen and depends on composition timing. #32's
+   scenario 9 checks it on the shipped exe.
+5. `render_mode` left the human-only list. `--test` already makes a real DirectWrite font without a device
+   (`test_font_atlas`). `test_settings_font` makes the font the app's settings give, rasterizes four glyphs into the
+   CPU atlas, and checks that classic and natural draw differently from the default symmetric and from each other. The
+   look stays HUMAN (I4).
+6. The input harness presses every default binding of the seven keymaps through its own keys on each layout, and
+   runs it (`it_press_bindings`).
+   - Before #29 it resolved four keymaps through describe-key, which proves the keymap and not the command.
+   - Each press resets the app (C-g three times, C-x 1; a new app after C-x C-c) and enters its keymap's context:
+     - *scratch* with text;
+     - C-x b, a prompt whose RET is harmless;
+     - C-s f o o;
+     - a real search's *search*;
+     - the fixture build's *compilation*;
+     - C-S-p with "end-of-buffer" typed, so its RET runs end-of-buffer;
+     - C-x g on the fake git's canned repository.
+   - A press counts when the binding's real count rose and the bound command ran. Its own run count is used, because
+     an accept's follow-up (minibuffer-done, the command list's choice, git-changes-visit) is the last command
+     afterwards. The modal's quit keys close it without a command.
+   - The US keys of each binding on the other layouts are still described and logged, for information.
+7. Nothing leaves the fixture during the presses:
+   - The soak's write guard is set to build\tmp\p29keys, its root now inside (open-config makes the folder it is in).
+   - `os_dev_own_processes_only` lets only this executable start (the `--child` build, `--fake-git`,
+     `--fake-terminal`). Anything else is refused and counted with the batch guard's refusals, which are now checked
+     after the harness as well.
+   - At the end of `--test` the check also fails when:
+     - the real clipboard was opened (a dev counter in `win32_open_clipboard`; `--test`'s fake covers the whole
+       process, the harness too);
+     - Windows' clipboard sequence number changed (another program copied meanwhile: run again);
+     - %APPDATA%\ronin or %LOCALAPPDATA%\ronin changed (every entry's size and write time).
+8. Two dev observation points, each a counter or a value and nothing else:
+   - `os_dev_flush_count` (FlushFileBuffers calls: fsync_on_save's effect);
+   - `App.dev_last_grep_workers` (search_workers').
+9. The audit's "not covered" `project-find-file-other-window` was covered: `test_finder` runs it through M-x since
+   Phase 11. The map shows it as covered. The test now also checks that the first window keeps its buffer.
+
+### Measurements, #29 Feature coverage map
+
+All on the maintainer's machine, ronin_bench.exe `--test`.
+
+| | before #29's tests (the map on, the allow-list empty) | after |
+|---|---|---|
+| commands | 136 / 141 (reload-config, text-scale-increase / -decrease / -reset, isearch-backward never run) | 141 / 141 |
+| bindings, any test | 121 / 191 (global 71 / 128, minibuffer 13 / 16, search-results 5 / 6, compilation 6 / 7, command-list 9 / 10, git-changes 6 / 12, isearch 11 / 12) | 191 / 191 |
+| bindings, through the harness | 0 / 191 (describe-key only) | 191 / 191 on each of the four layouts, none unreachable |
+| settings | 12 / 38 (the ones commit 1 moved onto the helpers; 0 before) | 37 / 38 (early_window allowed, #32) |
+| failure lines | 292 | 0 |
+
+- The "before" run's lines include `test: FAIL: coverage: command reload-config was never run by a test`,
+  `test: FAIL: coverage: binding C-t (global) was never pressed by a test`, `... binding C-t (global) was never
+  pressed through the input harness` and `test: FAIL: coverage: setting indent_width: no test checked its effect`.
+- **The settings tests moved onto the helpers** keep every check:
+  - The total went from 242 `TEST_CHECK`s to 251 checks and effects.
+  - Per function, before and after: show_paren 7 → 7, disk 29 → 30, window pop-up 13 → 13, window startup 5 → 5,
+    finder 39 → 39, results 48 → 48, terminal 15 → 17, compile app 84 → 90, git early timeout 2 → 2.
+  - The replaced ones are a check turned into its `TEST_SETTING_EFFECT` (the same condition, plus the helper's
+    checks), and a config file's write check now made by the helper.
+- **`--test` time** (bench, wall time of the process, the median of three after one warm-up): 36.31 s on main,
+  50.44 s after commit 4. The harness's presses (764: 191 on each of four layouts) add most of the 14.1 s.
 
 ## After 1.0
 

@@ -109,6 +109,9 @@ section dated, the release notes in <code>docs/releases/</code>); the maintainer
 <li>Every feature is a named command with a one-line description, so it can be bound to a key and found with M-x and
   <code>C-S-p</code>.</li>
 <li>Tests for the change, and you have seen them fail without it: say how in the pull request.</li>
+<li>A new command, key binding or setting has a test that exercises it (a setting: its effect checked through
+  <code>test_setting_set</code> / <code>TEST_SETTING_EFFECT</code> in src/dev/test.c), or a line in <code>res/coverage_allow.txt</code> with a reason
+  and an issue. <code>--test</code> fails on any command, binding or setting no test exercised.</li>
 <li>README.md, the site's pages (<code>docs/src</code>, then <code>build.bat docs</code>), <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/MANUAL_TESTS.md">docs/MANUAL_TESTS.md</a> and
   docs/ARCHITECTURE.md updated where they describe what you changed. <code>--test</code> checks the keys, settings and links of
   README and of every page of the site against the code. The site's
