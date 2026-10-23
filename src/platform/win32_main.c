@@ -1825,7 +1825,7 @@ static Win32CoverSlot *win32_cover_slot(Platform *p, u8 *key, i64 len, b32 add) 
         for (i64 i = 0; i < len; i++) h = (h ^ key[i]) * 1099511628211ull;
         for (u32 i = (u32)h & (WIN32_COVER_SLOTS - 1);; i = (i + 1) & (WIN32_COVER_SLOTS - 1)) {
             Win32CoverSlot *s = &p->cover[i];
-            if (s->len == len && memcmp(s->key, key, (size_t)len) == 0) return s;
+            if (s->len == len && mem_equal(s->key, key, len)) return s;
             if (s->len) continue;
             if (!add) return NULL;
             if ((p->cover_used + 1) * 4 > WIN32_COVER_SLOTS * 3) break;

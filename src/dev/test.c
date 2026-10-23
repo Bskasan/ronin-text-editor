@@ -5847,7 +5847,7 @@ static b32 test_setting_covered(Test *t, App *app, const char *name) {
     String8 n = str8_cstr(name), loaded = str8(t->setting_text, t->setting_len);
     b32 listed = 0;
     for (i64 i = 0; i + n.len < loaded.len && !listed; i++) {
-        listed = (i == 0 || loaded.data[i - 1] == '\n') && memcmp(loaded.data + i, n.data, (size_t)n.len) == 0 && loaded.data[i + n.len] == ' ';
+        listed = (i == 0 || loaded.data[i - 1] == '\n') && mem_equal(loaded.data + i, n.data, n.len) && loaded.data[i + n.len] == ' ';
     }
     TEST_CHECK(t, app && app == t->setting_app && listed, "setting %s: its effect was checked, but test_setting_set did not load it into this app", name);
     TEST_CHECK(t, str8_equal(app->config_path, str8(t->setting_path, t->setting_path_len)), "setting %s: the app reads another config (%S)", name,
