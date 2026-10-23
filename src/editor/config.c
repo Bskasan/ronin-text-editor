@@ -323,9 +323,9 @@ i32 config_dev_setting_differs(const Settings *a, const Settings *b, String8 nam
         const u8 *x = (const u8 *)a + offset, *y = (const u8 *)b + offset;
         if (len_offset) {
             i32 lx = *(const i32 *)((const u8 *)a + len_offset), ly = *(const i32 *)((const u8 *)b + len_offset);
-            return lx != ly || memcmp(x, y, (size_t)lx) != 0;
+            return lx != ly || !mem_equal(x, y, lx);
         }
-        return memcmp(x, y, size) != 0;
+        return !mem_equal(x, y, size);
     }
     return -1;
 }
