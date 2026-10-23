@@ -93,7 +93,7 @@ typedef struct Platform {
     i64 clip_len;
     u64 clip_committed;
     u32 clip_seq;
-    u32 clip_real_opens;     // the real clipboard opened (none in --test: os_dev_clipboard_real)
+    u32 clip_real_calls;     // real clipboard calls: opens, reads, writes, the sequence number (none in --test)
     String8 dev_own_exe;     // os_dev_own_processes_only: the only program that may start (empty: any)
     Win32CoverSlot *cover;   // WIN32_COVER_SLOTS, from the permanent arena once --test enables counting
     i32 cover_used;
@@ -736,11 +736,17 @@ void os_file_delete(String8 path) {
 
 #define WIN32_CLIP_RESERVE GB(8)
 
-static b32 win32_open_clipboard(Platform *p) {
+// Every real clipboard call (open, read, write, the sequence number) is counted in dev builds: --test and its
+// input harness must make none (#29, os_dev_clipboard_real).
 #if RONIN_DEV
-    p->clip_real_opens++;
+#define WIN32_CLIP_USED(p) ((p)->clip_real_calls++)
+#else
+#define WIN32_CLIP_USED(p) ((void)0)
 #endif
+
+static b32 win32_open_clipboard(Platform *p) {
     for (i32 attempt = 0; attempt < 5; attempt++) {
+        WIN32_CLIP_USED(p);
         if (OpenClipboard(p->hwnd)) return 1;
         Sleep(2); // another program holds it: try again shortly
     }
@@ -765,8 +771,8 @@ void os_dev_clipboard_fake(b32 on) {
 }
 
 u32 os_dev_clipboard_real(u32 *seq) {
-    *seq = (u32)GetClipboardSequenceNumber(); // Windows' own, whatever the fake holds
-    return g_platform->clip_real_opens;
+    *seq = (u32)GetClipboardSequenceNumber(); // Windows' own, whatever the fake holds: the observer, not counted
+    return g_platform->clip_real_calls;
 }
 
 void os_dev_clipboard_external(String8 text) {
@@ -790,6 +796,7 @@ static void win32_dev_clip_exclude(void) {
     }
     *zero = 0;
     GlobalUnlock(h);
+    WIN32_CLIP_USED(g_platform);
     if (!SetClipboardData(RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing"), h)) GlobalFree(h);
 }
 #endif
@@ -808,12 +815,14 @@ b32 os_clipboard_set(String8 text) {
 #endif
     if (!win32_open_clipboard(p)) return 0;
     b32 ok = 0;
+    WIN32_CLIP_USED(p);
     EmptyClipboard();
     HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(units + 1) * 2);
     u16 *out = h ? (u16 *)GlobalLock(h) : NULL;
     if (out) {
         out[clip_utf16_write(text, out)] = 0; // straight into the clipboard's memory: no other copy
         GlobalUnlock(h);
+        WIN32_CLIP_USED(p);
         ok = SetClipboardData(CF_UNICODETEXT, h) != NULL;
     }
 #if RONIN_DEV
@@ -836,6 +845,7 @@ b32 os_clipboard_get(Arena *arena, String8 *text) {
 #endif
     if (!win32_open_clipboard(p)) return 0;
     b32 ok = 0;
+    WIN32_CLIP_USED(p);
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
     u16 *data = h ? (u16 *)GlobalLock(h) : NULL;
     if (data) {
@@ -853,6 +863,7 @@ u32 os_clipboard_seq(void) {
 #if RONIN_DEV
     if (g_platform->clip_fake) return g_platform->clip_seq;
 #endif
+    WIN32_CLIP_USED(g_platform);
     return (u32)GetClipboardSequenceNumber();
 }
 
@@ -6558,6 +6569,7 @@ static void win32_dev_memory_report(Platform *p) {
 // give CRLF on the clipboard; another program's CRLF text must yank as LF lines.
 static void win32_dev_clip_put(Platform *p, const u16 *text, i64 len) {
     if (!win32_open_clipboard(p)) return;
+    WIN32_CLIP_USED(p);
     EmptyClipboard();
     if (text) {
         HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(len + 1) * 2);
@@ -6566,6 +6578,7 @@ static void win32_dev_clip_put(Platform *p, const u16 *text, i64 len) {
             memcpy(out, text, (size_t)len * 2);
             out[len] = 0;
             GlobalUnlock(h);
+            WIN32_CLIP_USED(p);
             if (!SetClipboardData(CF_UNICODETEXT, h)) GlobalFree(h);
             else win32_dev_clip_exclude();
         } else if (h) {
@@ -6580,6 +6593,7 @@ static b32 win32_dev_clip_read(Platform *p, Arena *arena, u16 **text, i64 *len) 
     *text = NULL;
     *len = 0;
     if (!win32_open_clipboard(p)) return 0;
+    WIN32_CLIP_USED(p);
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
     u16 *data = h ? (u16 *)GlobalLock(h) : NULL;
     if (data) {

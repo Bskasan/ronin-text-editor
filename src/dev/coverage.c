@@ -16,8 +16,9 @@
 //   - an entry of that list without a reason or an issue, naming no item, or naming one that is covered now (stale:
 //     the list only shrinks);
 //   - the counter table full, or a key too long for it (a hit never goes uncounted silently);
-//   - a side effect --test must not have: the real clipboard opened or changed, %APPDATA%\ronin or
-//     %LOCALAPPDATA%\ronin changed, a real git, terminal or build refused (os_dev_real_refused).
+//   - a side effect --test must not have: ronin using the real clipboard (any open, read or write, counted in the
+//     os_* layer; another program copying meanwhile is only logged), %APPDATA%\ronin or %LOCALAPPDATA%\ronin
+//     changed, a real git, terminal or build refused (os_dev_real_refused).
 
 #if RONIN_DEV
 
@@ -26,7 +27,7 @@
 
 typedef struct Coverage {
     Arena *arena;
-    u32 clip_opens, clip_seq;  // the real clipboard when --test started
+    u32 clip_calls, clip_seq;  // ronin's real clipboard calls and Windows' sequence number when --test started
     String8 trees[2];          // %APPDATA%\ronin and %LOCALAPPDATA%\ronin then, as coverage_tree lists them
 } Coverage;
 
@@ -67,7 +68,7 @@ static String8 coverage_tree(Arena *arena, i32 which) {
 // --test starts: counting on, and what must not change recorded.
 void coverage_begin(Coverage *c, Arena *arena) {
     c->arena = arena;
-    c->clip_opens = os_dev_clipboard_real(&c->clip_seq);
+    c->clip_calls = os_dev_clipboard_real(&c->clip_seq);
     for (i32 i = 0; i < 2; i++) c->trees[i] = coverage_tree(arena, i);
     os_dev_cover_enable(1);
 }
@@ -213,15 +214,14 @@ i32 coverage_check(Coverage *c) {
         failures++;
     }
 
-    // What --test must leave as it was.
-    u32 seq, opens = os_dev_clipboard_real(&seq);
-    if (opens != c->clip_opens) {
-        LOG("test: FAIL: the real clipboard was opened %d time(s) during --test", (i32)(opens - c->clip_opens));
-        failures++;
-    } else if (seq != c->clip_seq) {
-        LOG("test: FAIL: the real clipboard changed during --test (ronin did not open it: another program? run again)");
+    // What --test must leave as it was. The clipboard: ronin's own calls only; another program copying meanwhile
+    // changes Windows' sequence number, which is logged and never a failure.
+    u32 seq, calls = os_dev_clipboard_real(&seq);
+    if (calls != c->clip_calls) {
+        LOG("test: FAIL: the real clipboard was used %d time(s) during --test (opened, read or written by ronin)", (i32)(calls - c->clip_calls));
         failures++;
     }
+    if (seq != c->clip_seq) LOG("test: coverage: the clipboard changed during the run, not by ronin (another program)");
     for (i32 i = 0; i < 2; i++) {
         String8 now = coverage_tree(arena, i), was = c->trees[i];
         if (str8_equal(now, was)) continue;

@@ -121,7 +121,8 @@ u32  os_clipboard_seq(void);                       // changes whenever any progr
 #if RONIN_DEV
 void os_dev_clipboard_fake(b32 on);
 void os_dev_clipboard_external(String8 text); // the fake: as if another program copied text
-u32  os_dev_clipboard_real(u32 *seq); // times the real clipboard was opened; *seq Windows' sequence number (#29)
+u32  os_dev_clipboard_real(u32 *seq); // ronin's real clipboard calls so far (opens, reads, writes, the sequence number);
+                                      // *seq Windows' sequence number, read without counting (#29)
 #endif
 
 // ---------------------------------------------------------------------------

@@ -724,6 +724,7 @@ static void it_press_bindings(InputTest *t, ItPress *P) {
     os_dev_write_root(P->dir);
     os_dev_own_processes_only(1);
     i32 refused0 = os_dev_real_refused();
+    u32 clip_seq, clip0 = os_dev_clipboard_real(&clip_seq);
     i32 pressed[ARRAY_COUNT(dump_sections)] = { 0 }, total[ARRAY_COUNT(dump_sections)] = { 0 }, unreachable = 0;
     for (i32 m = 0; m < ARRAY_COUNT(dump_sections); m++) {
         Keymap *map = (Keymap *)((u8 *)P->defaults + dump_sections[m].offset);
@@ -772,6 +773,8 @@ static void it_press_bindings(InputTest *t, ItPress *P) {
     os_dev_write_root(str8(NULL, 0));
     if (writes) it_fail(t, "presses: %U write(s) outside %S refused", writes, P->dir);
     if (os_dev_real_refused() != refused0) it_fail(t, "presses: %d real process(es) refused (git, terminal or build)", os_dev_real_refused() - refused0);
+    u32 clip = os_dev_clipboard_real(&clip_seq);
+    if (clip != clip0) it_fail(t, "presses: the real clipboard was used %d time(s)", (i32)(clip - clip0));
     String8 counts = str8(NULL, 0);
     i32 all = 0, all_total = 0;
     for (i32 m = 0; m < ARRAY_COUNT(dump_sections); m++) {
