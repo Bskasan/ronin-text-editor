@@ -16523,6 +16523,32 @@ static b32 test_readme(Test *t) {
     return 1;
 }
 
+// Every group that takes the seed (not the scanner and the project search: their seed only shapes trees on disk),
+// for --fuzz-seeds; in --test they run through test_seeded, so random input never counts in the coverage map (#29).
+static const struct { const char *name; b32 (*run)(Test *, u64); } test_seeded_groups[] = {
+    { "buffer fuzz", test_fuzz }, { "markers", test_markers }, { "marker batch", test_marker_batch },
+    { "line states", test_line_states }, { "columns", test_columns }, { "mc undo", test_mc_undo },
+    { "mc fuzz", test_mc_fuzz }, { "view fuzz", test_view_fuzz }, { "window tree", test_window_tree },
+    { "undo buffer", test_undo_buffer }, { "undo commands", test_undo_commands }, { "syntax", test_syntax },
+    { "search", test_search }, { "undo fuzz", test_undo_fuzz }, { "kbd", test_kbd }, { "config", test_config },
+    { "fuzzy", test_fuzzy }, { "grep file", test_grep_file }, { "modal", test_modal_fuzz },
+    { "git", test_git_fuzz },
+    { "themes", test_theme_fuzz },
+};
+
+// A seeded group in --test: the coverage map paused while it runs. A group missing from the table fails.
+static void test_seeded(Test *t, b32 (*run)(Test *, u64), u64 seed) {
+    b32 listed = 0;
+    for (i32 g = 0; g < (i32)ARRAY_COUNT(test_seeded_groups); g++) listed |= test_seeded_groups[g].run == run;
+    if (!listed) {
+        LOG("test: FAIL: a seeded group runs in --test but is not in test_seeded_groups");
+        t->failures++;
+    }
+    os_dev_cover_pause(1);
+    run(t, seed);
+    os_dev_cover_pause(0);
+}
+
 i32 test_run(u64 seed, String8 tmp_dir) {
     i32 ledger0 = os_dev_live_handles();
     Test t = { 0 };
@@ -16532,13 +16558,13 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     u64 t0 = os_time_us();
     syntax_init();
 
-    test_fuzz(&t, seed);
+    test_seeded(&t, test_fuzz, seed);
     arena_reset(&t.arena);
-    test_markers(&t, seed);
+    test_seeded(&t, test_markers, seed);
     arena_reset(&t.arena);
-    test_marker_batch(&t, seed);
+    test_seeded(&t, test_marker_batch, seed);
     arena_reset(&t.arena);
-    test_line_states(&t, seed);
+    test_seeded(&t, test_line_states, seed);
     arena_reset(&t.arena);
     test_capacity(&t);
     arena_reset(&t.arena);
@@ -16554,7 +16580,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_language(&t);
     arena_reset(&t.arena);
-    test_columns(&t, seed);
+    test_seeded(&t, test_columns, seed);
     arena_reset(&t.arena);
     test_motions(&t);
     arena_reset(&t.arena);
@@ -16566,7 +16592,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_mc_collapse(&t);
     arena_reset(&t.arena);
-    test_mc_undo(&t, seed);
+    test_seeded(&t, test_mc_undo, seed);
     arena_reset(&t.arena);
     test_mc_kill(&t);
     arena_reset(&t.arena);
@@ -16576,17 +16602,17 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_mc_mouse(&t);
     arena_reset(&t.arena);
-    test_mc_fuzz(&t, seed);
+    test_seeded(&t, test_mc_fuzz, seed);
     arena_reset(&t.arena);
     test_view_edit_limits(&t);
     arena_reset(&t.arena);
-    test_view_fuzz(&t, seed);
+    test_seeded(&t, test_view_fuzz, seed);
     arena_reset(&t.arena);
-    test_window_tree(&t, seed);
+    test_seeded(&t, test_window_tree, seed);
     arena_reset(&t.arena);
-    test_undo_buffer(&t, seed);
+    test_seeded(&t, test_undo_buffer, seed);
     arena_reset(&t.arena);
-    test_undo_commands(&t, seed);
+    test_seeded(&t, test_undo_commands, seed);
     arena_reset(&t.arena);
     test_region(&t);
     arena_reset(&t.arena);
@@ -16594,7 +16620,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_kill(&t);
     arena_reset(&t.arena);
-    test_syntax(&t, seed);
+    test_seeded(&t, test_syntax, seed);
     arena_reset(&t.arena);
     test_match(&t);
     arena_reset(&t.arena);
@@ -16608,17 +16634,17 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_electric_labels(&t);
     arena_reset(&t.arena);
-    test_search(&t, seed);
+    test_seeded(&t, test_search, seed);
     arena_reset(&t.arena);
     test_edit_commands(&t);
     arena_reset(&t.arena);
-    test_undo_fuzz(&t, seed);
+    test_seeded(&t, test_undo_fuzz, seed);
     arena_reset(&t.arena);
     test_commands(&t);
     arena_reset(&t.arena);
     test_command_descriptions(&t);
     arena_reset(&t.arena);
-    test_kbd(&t, seed);
+    test_seeded(&t, test_kbd, seed);
     arena_reset(&t.arena);
     test_chords(&t);
     arena_reset(&t.arena);
@@ -16626,7 +16652,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_keymap_where_is(&t);
     arena_reset(&t.arena);
-    test_config(&t, seed);
+    test_seeded(&t, test_config, seed);
     arena_reset(&t.arena);
     test_config_minibuffer(&t);
     arena_reset(&t.arena);
@@ -16662,7 +16688,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_command_list(&t);
     arena_reset(&t.arena);
-    test_modal_fuzz(&t, seed);
+    test_seeded(&t, test_modal_fuzz, seed);
     arena_reset(&t.arena);
     test_git_parse(&t);
     arena_reset(&t.arena);
@@ -16676,7 +16702,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_git_real(&t);
     arena_reset(&t.arena);
-    test_git_fuzz(&t, seed);
+    test_seeded(&t, test_git_fuzz, seed);
     arena_reset(&t.arena);
     test_list_dir(&t);
     arena_reset(&t.arena);
@@ -16696,9 +16722,9 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     os_dev_remove_dir(str8_fmt(&t.arena, "%S\\p11scan\\src\\loop", tmp_dir)); // the scanner's junction, whatever its checks did
     arena_reset(&t.arena);
-    test_fuzzy(&t, seed);
+    test_seeded(&t, test_fuzzy, seed);
     arena_reset(&t.arena);
-    test_grep_file(&t, seed);
+    test_seeded(&t, test_grep_file, seed);
     arena_reset(&t.arena);
     test_grep_search(&t, seed);
     arena_reset(&t.arena);
@@ -16786,7 +16812,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     arena_reset(&t.arena);
     test_set_theme(&t);
     arena_reset(&t.arena);
-    test_theme_fuzz(&t, seed);
+    test_seeded(&t, test_theme_fuzz, seed);
     arena_reset(&t.arena);
     test_markdown(&t);
     arena_reset(&t.arena);
@@ -17947,30 +17973,20 @@ i32 test_map_report(String8 map_path, String8 src_dir) {
 // step, ... below end (not the scanner and the project search: their seed only shapes trees on disk). Stops
 // at the first seed that fails.
 i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
-    static const struct { const char *name; b32 (*run)(Test *, u64); } groups[] = {
-        { "buffer fuzz", test_fuzz }, { "markers", test_markers }, { "marker batch", test_marker_batch },
-        { "line states", test_line_states }, { "columns", test_columns }, { "mc undo", test_mc_undo },
-        { "mc fuzz", test_mc_fuzz }, { "view fuzz", test_view_fuzz }, { "window tree", test_window_tree },
-        { "undo buffer", test_undo_buffer }, { "undo commands", test_undo_commands }, { "syntax", test_syntax },
-        { "search", test_search }, { "undo fuzz", test_undo_fuzz }, { "kbd", test_kbd }, { "config", test_config },
-        { "fuzzy", test_fuzzy }, { "grep file", test_grep_file }, { "modal", test_modal_fuzz },
-        { "git", test_git_fuzz },
-        { "themes", test_theme_fuzz },
-    };
     Test t = { 0 };
     t.arena = arena_create(GB(4));
     t.tmp_dir = tmp_dir;
     syntax_init();
-    u64 group_us[ARRAY_COUNT(groups)] = { 0 };
+    u64 group_us[ARRAY_COUNT(test_seeded_groups)] = { 0 };
     u64 t0 = os_time_us(), done = 0, last = first;
     LOG("fuzz-seeds: seeds %U, %U, ... below %U", first, first + step, end);
     for (u64 seed = first; seed < end && !t.failures; seed += step) {
-        for (i32 g = 0; g < (i32)ARRAY_COUNT(groups) && !t.failures; g++) {
+        for (i32 g = 0; g < (i32)ARRAY_COUNT(test_seeded_groups) && !t.failures; g++) {
             u64 g0 = os_time_us();
-            groups[g].run(&t, seed);
+            test_seeded_groups[g].run(&t, seed);
             arena_reset(&t.arena);
             group_us[g] += os_time_us() - g0;
-            if (t.failures) LOG("fuzz-seeds: FAIL at seed %U (0x%X) in %s", seed, seed, groups[g].name);
+            if (t.failures) LOG("fuzz-seeds: FAIL at seed %U (0x%X) in %s", seed, seed, test_seeded_groups[g].name);
         }
         if (!t.failures) done++;
         last = seed;
@@ -17979,8 +17995,9 @@ i32 test_fuzz_seeds(u64 first, u64 end, u64 step, String8 tmp_dir) {
         LOG("test: FAIL: fuzz-seeds: a real terminal or git refused %d time(s)", os_dev_real_refused());
         t.failures++;
     }
-    for (i32 g = 0; g < (i32)ARRAY_COUNT(groups); g++) {
-        LOG("fuzz-seeds: %s: %U ms in all, %U ms a seed", groups[g].name, group_us[g] / 1000, done ? group_us[g] / 1000 / done : 0);
+    for (i32 g = 0; g < (i32)ARRAY_COUNT(test_seeded_groups); g++) {
+        LOG("fuzz-seeds: %s: %U ms in all, %U ms a seed", test_seeded_groups[g].name, group_us[g] / 1000,
+            done ? group_us[g] / 1000 / done : 0);
     }
     LOG("fuzz-seeds: %s, %U seeds passed (%U to %U, step %U), %U ms", t.failures ? "FAIL" : "PASS", done, first, last, step,
         (os_time_us() - t0) / 1000);

@@ -92,6 +92,7 @@ typedef struct Platform {
     i64 clip_len;
     u64 clip_committed;
     u32 clip_seq;
+    u32 clip_real_opens;     // the real clipboard opened (none in --test: os_dev_clipboard_real)
     Win32CoverSlot *cover;   // WIN32_COVER_SLOTS, from the permanent arena once --test enables counting
     i32 cover_used;
     b32 cover_on, cover_paused, cover_real;
@@ -730,6 +731,9 @@ void os_file_delete(String8 path) {
 #define WIN32_CLIP_RESERVE GB(8)
 
 static b32 win32_open_clipboard(Platform *p) {
+#if RONIN_DEV
+    p->clip_real_opens++;
+#endif
     for (i32 attempt = 0; attempt < 5; attempt++) {
         if (OpenClipboard(p->hwnd)) return 1;
         Sleep(2); // another program holds it: try again shortly
@@ -752,6 +756,11 @@ static u16 *win32_fake_clip_space(Platform *p, i64 units) {
 
 void os_dev_clipboard_fake(b32 on) {
     g_platform->clip_fake = on;
+}
+
+u32 os_dev_clipboard_real(u32 *seq) {
+    *seq = (u32)GetClipboardSequenceNumber(); // Windows' own, whatever the fake holds
+    return g_platform->clip_real_opens;
 }
 
 void os_dev_clipboard_external(String8 text) {
@@ -7265,6 +7274,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         return code;
     }
     if (p->test) { // headless: no window, no device, no font
+        Coverage coverage;
+        coverage_begin(&coverage, &p->perm);
         i32 failures = test_run(p->seed, str8_fmt(&p->perm, "%S\\tmp", exe_dir));
         failures += win32_dev_test_wake(p);
         failures += win32_dev_test_thread_reuse(p);
@@ -7273,6 +7284,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         failures += win32_dev_test_args(p);
         failures += win32_dev_test_keys(p);
         failures += win32_dev_input_test(p);
+        failures += coverage_check(&coverage);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
         return failures ? EXIT_TEST : EXIT_OK;
     }

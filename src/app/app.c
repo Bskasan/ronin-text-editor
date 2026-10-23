@@ -1951,6 +1951,9 @@ static b32 app_isearch_key(App *app, KeyResult *k) {
         }
         if (k->command->flags & COMMAND_ISEARCH) {
             echo_clear(&app->echo);
+#if RONIN_DEV
+            key_dev_cover(k);
+#endif
             app_run_command(app, k->command, k->codepoint, k->shift_translated);
             return 1;
         }
@@ -2158,6 +2161,9 @@ static void app_key_event(App *app, Event *e) {
     case KEY_RESULT_SELF_INSERT:
     case KEY_RESULT_QUIT:
         if (!ended) echo_clear(&app->echo); // a message stays until the next key
+#if RONIN_DEV
+        key_dev_cover(&k);
+#endif
         app_run_command(app, k.command, k.codepoint, k.shift_translated);
         break;
     case KEY_RESULT_UNDEFINED:
