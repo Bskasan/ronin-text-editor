@@ -46,6 +46,7 @@ typedef struct Win32PoolThread {
 #if RONIN_DEV
 // The coverage map's counters (#29): one slot per key ("command:<name>", "binding:<keymap>:<seq>", "setting:<name>"),
 // the key's text kept, so two keys never share a slot.
+#define WIN32_DEV_JOB_QUIT 2 // the job watcher's completion key that ends it (a job's key is 1)
 #define WIN32_COVER_SLOTS 2048
 #define WIN32_COVER_KEY_CAP 63
 typedef struct Win32CoverSlot {
@@ -94,7 +95,12 @@ typedef struct Platform {
     u64 clip_committed;
     u32 clip_seq;
     u32 clip_real_calls;     // real clipboard calls: opens, reads, writes, the sequence number (none in --test)
-    String8 dev_own_exe;     // os_dev_own_processes_only: the only program that may start (empty: any)
+    String8 dev_own_exe;     // os_dev_own_processes_only: the only program that may start directly (empty: any)
+    HANDLE dev_job_port, dev_job_thread; // ... every job's new processes, named by win32_dev_job_watch
+    WCHAR dev_job_allowed[3][MAX_PATH];  // ... the images allowed in a job: this exe, cmd.exe, conhost.exe
+    volatile u32 dev_job_seen, dev_job_named, dev_job_unknown, dev_job_foreign; // written by the watcher only
+    WCHAR dev_job_first[600];            // ... the first foreign image
+    u32 dev_job_first_len;
     Win32CoverSlot *cover;   // WIN32_COVER_SLOTS, from the permanent arena once --test enables counting
     i32 cover_used;
     b32 cover_on, cover_paused, cover_real;
@@ -1188,6 +1194,17 @@ static OsFileStatus win32_process_spawn(Arena *arena, WCHAR *app, WCHAR *line, S
         status = win32_last_file_status();
         goto done;
     }
+#if RONIN_DEV
+    // The input harness's presses: every process of this job named as it starts (win32_dev_job_watch). Before the
+    // process is assigned, so its own creation is reported too.
+    if (g_platform->dev_job_port) {
+        JOBOBJECT_ASSOCIATE_COMPLETION_PORT port = { .CompletionKey = (PVOID)1, .CompletionPort = g_platform->dev_job_port };
+        if (!SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation, &port, sizeof(port))) {
+            status = win32_last_file_status();
+            goto done;
+        }
+    }
+#endif
     // Only the pipe's write end and NUL are inherited: no other handle of ronin (another build's pipe
     // included) reaches the child.
     SIZE_T list_size = 0;
@@ -1248,42 +1265,118 @@ done:
 }
 
 #if RONIN_DEV
-// The input harness's presses (#29, os_dev_own_processes_only): a program other than this executable (the --child
-// build, --fake-git, --fake-terminal) is refused and counted with the batch guard's refusals. A command line counts
-// as this executable when it starts with its quoted path.
-static b32 win32_dev_foreign(String8 program, b32 command_line) {
+// The input harness's presses (#29, os_dev_own_processes_only). A program started directly (git, a terminal) other
+// than this executable (--fake-git, --fake-terminal) is refused and counted with the batch guard's refusals. A build's
+// command goes through cmd.exe, so its text says nothing about what starts ("exe --child x & other.exe"): every
+// process that starts in a job is watched instead (win32_dev_job_watch).
+static b32 win32_dev_foreign(String8 program) {
     Platform *p = g_platform;
     if (!p->dev_own_exe.len) return 0;
     String8 exe = p->dev_own_exe;
-    i64 at = 0;
-    if (command_line) {
-        if (!program.len || program.data[0] != '"') goto refused;
-        at = 1;
-    }
-    if (program.len < at + exe.len + (command_line ? 1 : 0)) goto refused;
-    for (i64 i = 0; i < exe.len; i++) {
-        u8 a = program.data[at + i], b = exe.data[i];
+    b32 same = program.len == exe.len;
+    for (i64 i = 0; i < exe.len && same; i++) {
+        u8 a = program.data[i], b = exe.data[i];
         if (a >= 'A' && a <= 'Z') a += 32;
         if (b >= 'A' && b <= 'Z') b += 32;
-        if (a != b && !((a == '/' || a == '\\') && (b == '/' || b == '\\'))) goto refused;
+        same = a == b || ((a == '/' || a == '\\') && (b == '/' || b == '\\'));
     }
-    if (command_line ? program.data[at + exe.len] == '"' : program.len == exe.len) return 0;
-refused:
+    if (same) return 0;
     os_dev_real_refused_add(1); // any thread (git's jobs start their program on a worker): counted, never logged here
     return 1;
+}
+
+// An image path is one of the allowed ones (case folded, ASCII).
+static b32 win32_dev_same_path16(const WCHAR *a, DWORD n, const WCHAR *b) {
+    DWORD i = 0;
+    for (; i < n && b[i]; i++) {
+        WCHAR x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+    }
+    return i == n && !b[i];
+}
+
+// The watcher of the jobs made while own-processes-only is on: every job is tied to one completion port, which gets a
+// message for each process created in it before that process runs. Each one is opened at once and its image read
+// (cmd.exe keeps a handle to its child until it has reaped it, so a child that ended meanwhile can still be named).
+// It must be this executable, cmd.exe or conhost.exe; anything else is foreign, and a process that could not be opened
+// or named is unknown: both fail the presses. Dev only, its own thread: it writes only these counters and the first
+// name, read after it ended.
+static DWORD WINAPI win32_dev_job_watch(void *param) {
+    Platform *p = param;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    for (;;) {
+        DWORD msg = 0;
+        ULONG_PTR key = 0;
+        LPOVERLAPPED ov = NULL;
+        if (!GetQueuedCompletionStatus(p->dev_job_port, &msg, &key, &ov, INFINITE)) break;
+        if (key == WIN32_DEV_JOB_QUIT) break;
+        if (msg != JOB_OBJECT_MSG_NEW_PROCESS) continue;
+        p->dev_job_seen++;
+        DWORD pid = (DWORD)(ULONG_PTR)ov;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        WCHAR image[600];
+        DWORD n = ARRAY_COUNT(image);
+        b32 named = h && QueryFullProcessImageNameW(h, 0, image, &n);
+        if (h) CloseHandle(h);
+        if (!named) {
+            p->dev_job_unknown++;
+            continue;
+        }
+        p->dev_job_named++;
+        b32 allowed = 0;
+        for (i32 i = 0; i < ARRAY_COUNT(p->dev_job_allowed) && !allowed; i++) allowed = win32_dev_same_path16(image, n, p->dev_job_allowed[i]);
+        if (!allowed && !p->dev_job_foreign++) {
+            memcpy(p->dev_job_first, image, n * sizeof(WCHAR));
+            p->dev_job_first_len = n;
+        }
+    }
+    return 0;
 }
 
 void os_dev_own_processes_only(b32 on) {
     Platform *p = g_platform;
     p->dev_own_exe = on ? os_dev_exe_path(&p->perm) : str8(NULL, 0);
+    if (on && !p->dev_job_port) {
+        p->dev_job_seen = p->dev_job_named = p->dev_job_unknown = p->dev_job_foreign = 0;
+        p->dev_job_first_len = 0;
+        DWORD n = GetModuleFileNameW(NULL, p->dev_job_allowed[0], ARRAY_COUNT(p->dev_job_allowed[0]));
+        p->dev_job_allowed[0][n < ARRAY_COUNT(p->dev_job_allowed[0]) ? n : 0] = 0;
+        static const WCHAR *const system_names[] = { L"\\cmd.exe", L"\\conhost.exe" };
+        for (i32 k = 0; k < ARRAY_COUNT(system_names); k++) {
+            WCHAR *out = p->dev_job_allowed[1 + k];
+            UINT len = GetSystemDirectoryW(out, MAX_PATH);
+            if (!len || len >= MAX_PATH) len = 0;
+            for (i32 j = 0; system_names[k][j]; j++) out[len++] = system_names[k][j];
+            out[len] = 0;
+        }
+        p->dev_job_port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
+        p->dev_job_thread = p->dev_job_port ? CreateThread(NULL, 0, win32_dev_job_watch, p, 0, NULL) : NULL;
+    } else if (!on && p->dev_job_port) {
+        // The quit message comes after every process message already queued: all of them are counted first.
+        if (p->dev_job_thread) {
+            PostQueuedCompletionStatus(p->dev_job_port, 0, WIN32_DEV_JOB_QUIT, NULL);
+            WaitForSingleObject(p->dev_job_thread, INFINITE);
+            CloseHandle(p->dev_job_thread);
+        }
+        CloseHandle(p->dev_job_port);
+        p->dev_job_port = p->dev_job_thread = NULL;
+    }
+}
+
+u32 os_dev_job_processes_seen(u32 *named, u32 *unknown, u32 *foreign, Arena *arena, String8 *first) {
+    Platform *p = g_platform;
+    *named = p->dev_job_named;
+    *unknown = p->dev_job_unknown;
+    *foreign = p->dev_job_foreign;
+    *first = p->dev_job_first_len ? str8_from_str16(arena, (u16 *)p->dev_job_first, p->dev_job_first_len) : str8(NULL, 0);
+    return p->dev_job_seen;
 }
 #endif
 
 OsFileStatus os_process_start(Arena *arena, String8 command, String8 dir, OsProcess *p) {
     memset(p, 0, sizeof(*p));
-#if RONIN_DEV
-    if (win32_dev_foreign(command, 1)) return OS_FILE_ACCESS_DENIED;
-#endif
     u64 mark = arena_pos(arena);
     // The command line: "<system>\cmd.exe" /s /c "<command>" (no search of PATH or the current
     // directory for cmd itself).
@@ -1378,7 +1471,7 @@ static WCHAR *win32_env_block(Arena *arena, String8 extra) {
 OsFileStatus os_process_start_program(Arena *arena, String8 program, String8 args, String8 dir, String8 env_extra, OsProcess *p) {
     memset(p, 0, sizeof(*p));
 #if RONIN_DEV
-    if (win32_dev_foreign(program, 0)) return OS_FILE_ACCESS_DENIED;
+    if (win32_dev_foreign(program)) return OS_FILE_ACCESS_DENIED;
 #endif
     u64 mark = arena_pos(arena);
     String16 app = str16_from_str8(arena, program);
@@ -1412,7 +1505,7 @@ OsFileStatus os_process_start_program(Arena *arena, String8 program, String8 arg
 u32 os_process_launch(Arena *arena, String8 program, String8 args, String8 dir, b32 new_console) {
     if (!program.len) return ERROR_FILE_NOT_FOUND;
 #if RONIN_DEV
-    if (win32_dev_foreign(program, 0)) return ERROR_ACCESS_DENIED;
+    if (win32_dev_foreign(program)) return ERROR_ACCESS_DENIED;
 #endif
     if (program.len + args.len + 4 > 32000) return ERROR_FILENAME_EXCED_RANGE;
     u64 mark = arena_pos(arena);

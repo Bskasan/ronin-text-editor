@@ -4460,9 +4460,27 @@ grow. `--test` now counts what deliberate tests run and fails on any zero (src/d
    - The US keys of each binding on the other layouts are still described and logged, for information.
 7. Nothing leaves the fixture during the presses:
    - The soak's write guard is set to build\tmp\p29keys, its root now inside (open-config makes the folder it is in).
-   - `os_dev_own_processes_only` lets only this executable start (the `--child` build, `--fake-git`,
-     `--fake-terminal`). Anything else is refused and counted with the batch guard's refusals, which are now checked
-     after the harness as well.
+   - `os_dev_own_processes_only` guards what starts, by the processes that actually start (review of PR #35):
+     - **A program started directly** must be this executable: git through `os_process_start_program`, a terminal
+       through `os_process_launch`, which breaks away from any job and is the one path outside a job. Neither goes
+       through a shell, so the program is what runs. Anything else is refused and counted with the batch guard's
+       refusals, which are now checked after the harness as well.
+     - **A build** goes through `cmd.exe /s /c`, so its command's text says nothing about what starts
+       (`"exe" --child x & other.exe` starts other.exe). The first version checked that text and missed this. Fixtures
+       may use `&&` legitimately, so no shell syntax is parsed. Instead, every job made while the guard is on (builds
+       and git: `win32_process_spawn`) is tied to one completion port. A dev thread at time-critical priority
+       (`win32_dev_job_watch`) gets a JOB_OBJECT_MSG_NEW_PROCESS message for each process created in the job, before
+       that process runs. It opens it at once and reads its image (cmd.exe keeps a handle to its child until it has
+       reaped it, so a child that ended meanwhile can still be named).
+     - **Allowed images** are this executable, %SystemRoot%\System32\cmd.exe and conhost.exe. Any other is
+       foreign, and a process that could not be opened or named is unknown; both fail the presses. Each layout logs
+       one line, "job processes: N new-process message(s), N opened and named, 0 unknown, 0 foreign".
+     - A listing of the job's processes when the run ends (`os_dev_job_processes`, #25) would not do: it sees only
+       live processes, and a short program such as hostname.exe has ended by then. `cmd /c ver` would also pass,
+       since cmd.exe is allowed.
+   - A harness app that could not be made again (after C-x C-c) stops the presses for that layout with one line,
+     "presses: no app on the fixture after <seq> (<keymap>): the remaining N binding(s) not pressed", instead of
+     feeding keys to no app (review of PR #35).
    - The real clipboard is checked by ronin's own use of it, never by its state:
      - The os_* layer counts every real clipboard call in dev builds (`WIN32_CLIP_USED`): each OpenClipboard attempt,
        EmptyClipboard, SetClipboardData, GetClipboardData, and GetClipboardSequenceNumber in `os_clipboard_seq`'s
@@ -4536,6 +4554,18 @@ The mutations, each in its own `git archive` copy of this branch (build\proof\p2
   - The release exe was built again and compared with 4cacc9c's: 4 bytes differ, the COFF and POGO TimeDateStamps,
     and the SHA-256 with them zeroed is again 7a45c081e048d4986411649da543c9a3793fdea05bb25dbe821a19bd195c1da3.
     `--check-imports`: PASS, 3 DLLs, 135 functions.
+- **What starts, by the started processes** (review of PR #35):
+  - Every `--test` run of that work logged, on each of the four layouts, `job processes: 48 new-process message(s),
+    48 opened and named, 0 unknown, 0 foreign`. No run showed an unknown.
+  - The mutation that adds `& hostname` to the fixture's build command (build\proof\p29\mut_foreign) fails with exit
+    9 on each layout: `50 new-process message(s), 50 opened and named, 0 unknown, 2 foreign`, then `test: FAIL: input
+    US: presses: a program other than this executable started in a job: C:\Program Files\Git\usr\bin\hostname.exe
+    (2 in all)`. The build ran twice in the presses, once for the context and once for `g`, and PATH found Git's
+    hostname.exe first.
+- **A harness app that cannot be made again** (review of PR #35): the mutation in which `it_press_app` returns NULL on
+  its second call (build\proof\p29\mut_null), the restart after C-x C-c on US, fails with exit 9 and no crash:
+  `test: FAIL: input US: presses: no app on the fixture after C-x C-c (global): the remaining 112 binding(s) not
+  pressed`. The other three layouts press all 191.
 
 ## After 1.0
 

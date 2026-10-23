@@ -652,13 +652,19 @@ static App *it_press_app(ItPress *P) {
 }
 
 // Back to a known state: prompts, isearch, the modal and prefixes ended, one window, builds and searches ended.
-static b32 it_press_reset(InputTest *t, ItPress *P) {
-    if (t->quit) {
+// An app to press keys into: a new one after one that quit. False when none could be made (then t->app is NULL).
+static b32 it_press_alive(InputTest *t, ItPress *P) {
+    if (t->quit && t->app) {
         app_shutdown(t->app);
-        t->app = it_press_app(P);
-        t->quit = 0;
-        if (!t->app) return 0;
+        t->app = NULL;
     }
+    t->quit = 0;
+    if (!t->app) t->app = it_press_app(P);
+    return t->app != NULL;
+}
+
+static b32 it_press_reset(InputTest *t, ItPress *P) {
+    if (!it_press_alive(t, P)) return 0;
     app_dev_feed(t->app, "C-g C-g C-g C-x 1", &t->arena);
     results_dev_wait(t->app, &t->arena, 10000);
     test_git_wait(&P->test, t->app, 10000);
@@ -726,16 +732,30 @@ static void it_press_bindings(InputTest *t, ItPress *P) {
     i32 refused0 = os_dev_real_refused();
     u32 clip_seq, clip0 = os_dev_clipboard_real(&clip_seq);
     i32 pressed[ARRAY_COUNT(dump_sections)] = { 0 }, total[ARRAY_COUNT(dump_sections)] = { 0 }, unreachable = 0;
+    i32 all_total = 0, done = 0;
     for (i32 m = 0; m < ARRAY_COUNT(dump_sections); m++) {
+        total[m] = ((Keymap *)((u8 *)P->defaults + dump_sections[m].offset))->count;
+        all_total += total[m];
+    }
+    b32 stopped = 0;
+    u8 last_buf[KEY_SEQ_TEXT_CAP + 32];
+    String8 last = STR8_LIT("the start");
+    for (i32 m = 0; m < ARRAY_COUNT(dump_sections) && !stopped; m++) {
         Keymap *map = (Keymap *)((u8 *)P->defaults + dump_sections[m].offset);
         String8 map_name = str8_cstr(map->name);
-        for (i32 i = 0; i < map->count; i++) {
+        for (i32 i = 0; i < map->count; i++, done++) {
             u64 mark = arena_pos(a);
             KeySeq seq = map->bindings[i].seq;
             const Command *command = map->bindings[i].command;
             u8 text_buf[KEY_SEQ_TEXT_CAP];
             String8 text = str8(text_buf, key_seq_print(&seq, text_buf, sizeof(text_buf)));
-            total[m]++;
+            // No app to press into (a new one after C-x C-c could not be made): the rest is reported, never pressed.
+            if (!it_press_alive(t, P)) {
+                it_fail(t, "presses: no app on the fixture after %S: the remaining %d binding(s) not pressed", last, all_total - done);
+                stopped = 1;
+                break;
+            }
+            last = str8(last_buf, fmt_buf(last_buf, sizeof(last_buf), "%S (%S)", text, map_name));
             ItStroke strokes[2 * KEY_SEQ_MAX];
             i32 n = it_binding_strokes(t, &seq, strokes);
             if (!n) {
@@ -767,8 +787,15 @@ static void it_press_bindings(InputTest *t, ItPress *P) {
             arena_pop_to(a, mark);
         }
     }
-    it_press_reset(t, P);
+    if (t->app) it_press_reset(t, P);
     os_dev_own_processes_only(0);
+    u32 named, unknown, foreign;
+    String8 first;
+    u32 seen = os_dev_job_processes_seen(&named, &unknown, &foreign, a, &first);
+    LOG("test: input %s: job processes: %d new-process message(s), %d opened and named, %d unknown, %d foreign", t->name, (i32)seen,
+        (i32)named, (i32)unknown, (i32)foreign);
+    if (foreign) it_fail(t, "presses: a program other than this executable started in a job: %S (%d in all)", first, (i32)foreign);
+    if (unknown) it_fail(t, "presses: %d process(es) in a job could not be named (unknown)", (i32)unknown);
     u64 writes = os_dev_writes_refused();
     os_dev_write_root(str8(NULL, 0));
     if (writes) it_fail(t, "presses: %U write(s) outside %S refused", writes, P->dir);
@@ -776,11 +803,11 @@ static void it_press_bindings(InputTest *t, ItPress *P) {
     u32 clip = os_dev_clipboard_real(&clip_seq);
     if (clip != clip0) it_fail(t, "presses: the real clipboard was used %d time(s)", (i32)(clip - clip0));
     String8 counts = str8(NULL, 0);
-    i32 all = 0, all_total = 0;
+    i32 all = 0;
     for (i32 m = 0; m < ARRAY_COUNT(dump_sections); m++) {
         Keymap *map = (Keymap *)((u8 *)P->defaults + dump_sections[m].offset);
         counts = str8_fmt(a, "%S%s%s %d/%d", counts, m ? ", " : "", map->name, pressed[m], total[m]);
-        all += pressed[m], all_total += total[m];
+        all += pressed[m];
     }
     LOG("test: input %s: %d of %d bindings pressed and run in their keymaps (%S), %d unreachable", t->name, all, all_total, counts, unreachable);
     if (t->app) {
