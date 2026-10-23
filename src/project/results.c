@@ -810,6 +810,7 @@ static Results *results_project_search(CommandContext *ctx, String8 root, String
         app->dev_grep_stuck_next = 0;
     }
     app->dev_last_grep = s;
+    app->dev_last_grep_workers = workers;
 #endif
     if (!grep_start(s)) {
         grep_free(s);

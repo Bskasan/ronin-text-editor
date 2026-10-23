@@ -14,7 +14,6 @@ command | text-scale-decrease | no deterministic test runs it yet | #29
 command | text-scale-reset | no deterministic test runs it yet | #29
 command | isearch-backward | no deterministic test runs it yet | #29
 binding | global C-p | only seeded groups or other keys run its command | #29
-binding | global M-f | only seeded groups or other keys run its command | #29
 binding | global M-} | only seeded groups or other keys run its command | #29
 binding | global M-{ | only seeded groups or other keys run its command | #29
 binding | global <right> | only seeded groups or other keys run its command | #29
@@ -23,55 +22,31 @@ binding | global <down> | only seeded groups or other keys run its command | #29
 binding | global <up> | only seeded groups or other keys run its command | #29
 binding | global <home> | only seeded groups or other keys run its command | #29
 binding | global <end> | only seeded groups or other keys run its command | #29
-binding | global C-<right> | only seeded groups or other keys run its command | #29
-binding | global C-<left> | only seeded groups or other keys run its command | #29
-binding | global C-<down> | only seeded groups or other keys run its command | #29
-binding | global C-<up> | only seeded groups or other keys run its command | #29
 binding | global C-<home> | only seeded groups or other keys run its command | #29
-binding | global C-<end> | only seeded groups or other keys run its command | #29
 binding | global <next> | only seeded groups or other keys run its command | #29
 binding | global <prior> | only seeded groups or other keys run its command | #29
 binding | global C-d | only seeded groups or other keys run its command | #29
 binding | global <delete> | only seeded groups or other keys run its command | #29
-binding | global DEL | only seeded groups or other keys run its command | #29
 binding | global C-m | only seeded groups or other keys run its command | #29
 binding | global C-j | only seeded groups or other keys run its command | #29
-binding | global TAB | only seeded groups or other keys run its command | #29
-binding | global C-i | only seeded groups or other keys run its command | #29
 binding | global <backtab> | only seeded groups or other keys run its command | #29
 binding | global M-i | only seeded groups or other keys run its command | #29
-binding | global C-o | only seeded groups or other keys run its command | #29
 binding | global M-^ | only seeded groups or other keys run its command | #29
 binding | global M-\ | only seeded groups or other keys run its command | #29
-binding | global C-t | only seeded groups or other keys run its command | #29
-binding | global M-u | only seeded groups or other keys run its command | #29
-binding | global M-l | only seeded groups or other keys run its command | #29
 binding | global M-c | only seeded groups or other keys run its command | #29
 binding | global C-x C-; | only seeded groups or other keys run its command | #29
 binding | global M-; | only seeded groups or other keys run its command | #29
 binding | global C-@ | only seeded groups or other keys run its command | #29
 binding | global M-w | only seeded groups or other keys run its command | #29
-binding | global C-DEL | only seeded groups or other keys run its command | #29
-binding | global C-<delete> | only seeded groups or other keys run its command | #29
-binding | global C-S-DEL | only seeded groups or other keys run its command | #29
-binding | global M-y | only seeded groups or other keys run its command | #29
-binding | global S-<insert> | only seeded groups or other keys run its command | #29
-binding | global C-<insert> | only seeded groups or other keys run its command | #29
-binding | global S-<delete> | only seeded groups or other keys run its command | #29
-binding | global C-_ | only seeded groups or other keys run its command | #29
 binding | global C-x u | only seeded groups or other keys run its command | #29
 binding | global C-M-_ | only seeded groups or other keys run its command | #29
 binding | global C-r | only seeded groups or other keys run its command | #29
-binding | global M-g M-n | only seeded groups or other keys run its command | #29
-binding | global C-x ` | only seeded groups or other keys run its command | #29
-binding | global M-g M-p | only seeded groups or other keys run its command | #29
 binding | global C-x C-+ | only seeded groups or other keys run its command | #29
 binding | global C-x C-= | only seeded groups or other keys run its command | #29
 binding | global C-x C-- | only seeded groups or other keys run its command | #29
 binding | global C-x C-0 | only seeded groups or other keys run its command | #29
 binding | global C-c r | only seeded groups or other keys run its command | #29
 binding | minibuffer C-m | only seeded groups or other keys run its command | #29
-binding | minibuffer C-i | only seeded groups or other keys run its command | #29
 binding | minibuffer <up> | only seeded groups or other keys run its command | #29
 binding | search-results C-m | only seeded groups or other keys run its command | #29
 binding | compilation C-m | only seeded groups or other keys run its command | #29
@@ -274,29 +249,4 @@ binding-real | isearch C-y | the input harness does not press it yet (describe-k
 binding-real | isearch M-p | the input harness does not press it yet (describe-key at most) | #29
 binding-real | isearch M-n | the input harness does not press it yet (describe-key at most) | #29
 binding-real | isearch M-c | the input harness does not press it yet (describe-key at most) | #29
-setting | line_height | no test checks its effect through the setting yet | #29
-setting | tab_width | no test checks its effect through the setting yet | #29
-setting | undo_limit_mb | no test checks its effect through the setting yet | #29
-setting | kill_ring_max | no test checks its effect through the setting yet | #29
-setting | indent_width | no test checks its effect through the setting yet | #29
-setting | completion_lines | no test checks its effect through the setting yet | #29
-setting | search_workers | no test checks its effect through the setting yet | #29
-setting | compilation_max_output_mb | no test checks its effect through the setting yet | #29
-setting | max_cursors | no test checks its effect through the setting yet | #29
-setting | git_diff_max_lines | no test checks its effect through the setting yet | #29
-setting | git_status_max_files | no test checks its effect through the setting yet | #29
-setting | font | no test checks its effect through the setting yet | #29
-setting | project_ignore | no test checks its effect through the setting yet | #29
-setting | git_path | no test checks its effect through the setting yet | #29
-setting | underscore_is_word | no test checks its effect through the setting yet | #29
-setting | fsync_on_save | no test checks its effect through the setting yet | #29
-setting | transient_mark_mode | no test checks its effect through the setting yet | #29
-setting | delete_selection_mode | no test checks its effect through the setting yet | #29
-setting | indent_with_tabs | no test checks its effect through the setting yet | #29
-setting | detect_indentation | no test checks its effect through the setting yet | #29
-setting | early_window | no test checks its effect through the setting yet | #29
-setting | font_size | no test checks its effect through the setting yet | #29
-setting | render_mode | no test checks its effect through the setting yet | #29
-setting | ai_provider | no test checks its effect through the setting yet | #29
-setting | terminal | no test checks its effect through the setting yet | #29
-setting | theme | no test checks its effect through the setting yet | #29
+setting | early_window | its effect is the frame DWM composes before the first Present; --test never shows a window, and only a shown one can show it | #32

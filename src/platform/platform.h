@@ -278,6 +278,7 @@ b32  os_dev_batch_run(void);           // --test, --smoke, a bench, --soak, --fu
                                        // real terminal or git may start (Phase 20's guard)
 void os_dev_real_refused_add(i32 n);   // ... the guard refused one (n = 1); a test that meant it takes it back (-1)
 i32  os_dev_real_refused(void);        // ... refused so far in this process: 0 at the end of every run
+i32  os_dev_flush_count(void);         // os_file_flush calls so far (a save with fsync_on_save flushes once)
 // The coverage map (#29): hits counted by key, "kind:scope:name" ("command:undo", "binding:global:C-x u",
 // "setting:tab_width"; no scope: "kind:name"), only between os_dev_cover_enable(1) and (0) and while not paused.
 // Main thread only.

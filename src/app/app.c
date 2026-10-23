@@ -111,6 +111,7 @@ struct App {
     i32 dev_grep_hold_after;     // --grep-hold N: every search's workers stand still after N files until released
     b32 dev_grep_stuck_next;     // the next search's workers are stuck in the "file system" (shutdown tests)
     GrepSearch *dev_last_grep;
+    i32 dev_last_grep_workers;   // ... its worker threads (search_workers' effect, #29)
     i32 dev_grep_abandoned;      // search workers left to the process exit by the shutdown
     i32 dev_compile_abandoned;   // build workers left to the process exit by the shutdown
     i32 dev_claim_ahead;         // tests: the claim window instead of RESULTS_CLAIM_AHEAD (0 = it)
