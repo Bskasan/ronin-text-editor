@@ -589,8 +589,12 @@ u64  app_dev_build_us(App *app); // the last frame, from its start to r_end_fram
 u64  os_dev_private_bytes(void);  // the process's committed private memory
 void os_dev_write_root(String8 dir); // the soak: writes, deletes and new directories outside `dir` are refused (empty: off)
 u64  os_dev_writes_refused(void);    // how many since os_dev_write_root
-void os_dev_own_processes_only(b32 on); // the input harness's presses (#29): only this executable starts; anything else
-                                        // is refused and counted (os_dev_real_refused)
+void os_dev_own_processes_only(b32 on); // the input harness's presses (#29): only this executable starts directly
+                                        // (anything else refused and counted, os_dev_real_refused), and every process
+                                        // that starts in a build's or git's job is named as it starts: this exe,
+                                        // cmd.exe or conhost.exe, else foreign; one that cannot be named is unknown
+// ... since it was turned on: the new-process messages seen; named, unknown and foreign of them; the first foreign image
+u32  os_dev_job_processes_seen(u32 *named, u32 *unknown, u32 *foreign, Arena *arena, String8 *first);
 typedef struct AppDevMemory {
     u64 undo;        // the active buffer's undo log and group index, committed
     u64 kill_ring;   // the kill ring's committed bytes (shared arena and large entries)
