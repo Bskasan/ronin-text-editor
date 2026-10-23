@@ -680,6 +680,7 @@ void view_run_command(CommandContext *ctx, const Command *cmd) {
         echo_message(ctx->echo, "soak: %s skipped", cmd->name);
         return;
     }
+    os_dev_cover_hit("command", str8(NULL, 0), str8_cstr(cmd->name)); // the coverage map (#29), while --test counts
 #endif
     ctx->this_command = cmd;
     // Commands that only make sense with one cursor (isearch, query-replace, goto-line, ...) collapse first.

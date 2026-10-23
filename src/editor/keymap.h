@@ -101,6 +101,10 @@ typedef struct KeyResult {
     KeySeq seq;           // as typed (before shift-translation)
     u32 codepoint;        // the character of the last chord (TAB gives a tab), 0 for other named keys
     b32 shift_translated; // the binding was found by dropping Shift from the last chord
+#if RONIN_DEV
+    const char *dev_map;  // KEY_RESULT_COMMAND while the coverage map counts (#29): the keymap whose binding matched ...
+    KeySeq dev_seq;       // ... and that binding's sequence (after shift-translation)
+#endif
 } KeyResult;
 
 typedef struct KeyInput {
@@ -123,6 +127,9 @@ i32 keymap_where_is(Keymap **stack, i32 count, const Command *cmd, KeySeq *out, 
 // notation is a chord (a KEY_DOWN); a single character (or SPC) is typed: a KEY_DOWN without
 // Ctrl / Alt, then its text event. Returns the event count (0 for a bad token, *error set).
 i32 key_dev_events(String8 token, Event out[2], const char **error);
+// The coverage map (#29): the binding a KEY_RESULT_COMMAND ran, counted where the command runs (not for describe-key,
+// where-is, or a key a prompt or the modal refused).
+void key_dev_cover(const KeyResult *r);
 #endif
 
 #endif // KEYMAP_H

@@ -93,6 +93,7 @@
 #include "dev/markdown.c" // RONIN_DEV only: the docs site's converter (tools/make_docs.c's too)
 #include "dev/dump_docs.c" // RONIN_DEV only: --dump-docs
 #include "dev/test.c" // RONIN_DEV only
+#include "dev/coverage.c" // RONIN_DEV only: the feature coverage map (#29)
 #include "dev/leak.c" // RONIN_DEV only: --leak-check
 
 #include "platform/render_d3d11.c"

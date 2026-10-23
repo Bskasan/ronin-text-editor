@@ -291,6 +291,9 @@ static void modal_key(App *app, Event *e) {
     const Command *cmd = k.command;
     echo_clear(&app->echo);
     if (cmd->flags & COMMAND_QUIT) { // C-g, ESC: closed, nothing said, the frame underneath as it was
+#if RONIN_DEV
+        key_dev_cover(&k);
+#endif
         modal_close(app);
         app->ctx.last_command = NULL;
         return;
@@ -304,6 +307,9 @@ static void modal_key(App *app, Event *e) {
     app->ctx.view = m->spec.field ? &m->field_view : app_selected_view(app);
     app->ctx.codepoint = k.codepoint;
     app->ctx.shift_translated = k.shift_translated;
+#if RONIN_DEV
+    key_dev_cover(&k);
+#endif
     view_run_command(&app->ctx, cmd);
     modal_after(app);
 }

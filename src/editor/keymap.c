@@ -435,4 +435,22 @@ void key_input_feed(KeyInput *in, Keymap **stack, i32 count, Event *e, KeyResult
     }
     out->command = command;
     out->kind = describe ? KEY_RESULT_DESCRIBE : command ? KEY_RESULT_COMMAND : KEY_RESULT_UNDEFINED;
+#if RONIN_DEV
+    if (out->kind == KEY_RESULT_COMMAND && os_dev_cover_counting()) {
+        for (i32 i = 0; i < count && !out->dev_map; i++) {
+            if (keymap_get(stack[i], &used)) out->dev_map = stack[i]->name; // the map key_lookup took it from
+        }
+        out->dev_seq = used;
+    }
+#endif
 }
+
+#if RONIN_DEV
+void key_dev_cover(const KeyResult *r) {
+    if (!r->dev_map) return;
+    KeySeq seq = r->dev_seq;
+    u8 text[KEY_SEQ_TEXT_CAP];
+    i64 n = key_seq_print(&seq, text, sizeof(text));
+    os_dev_cover_hit("binding", str8_cstr(r->dev_map), str8(text, n));
+}
+#endif
