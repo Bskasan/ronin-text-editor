@@ -4578,9 +4578,19 @@ ever started the zip's own exe. `release-check.bat` is one run the maintainer st
 step of its own.
 
 1. **Two files.** release-check.bat holds the order, the logs and every exit code, with system programs only (git,
-   certutil, findstr, fc, find). find, like tar and sort, has a namesake in Git for Windows' usr\bin, which PATH finds
-   first when the run starts from Git Bash, so it is called as %SystemRoot%\System32\find.exe (the first full run hung
-   there: Git's find walking C:\). tools/release_check.c (build\release_check.exe, built by build.bat like the other tools,
+   certutil, findstr, fc, find, where).
+   - **Every Windows program by its System32 path,** in release-check.bat, verify.bat, dist.bat and build.bat:
+     `%SystemRoot%\System32\<name>.exe` (cmd, findstr, fc, find, where, certutil, tar). Git for Windows' usr\bin has
+     find, tar, sort and more, and on this machine PATH finds it before System32.
+   - The first full run hung on a bare `find`: Git's find walking C:\. bdb06a6 fixed that one call. The audit after it
+     found the rest bare too: `where` and `findstr` in build.bat, verify.bat and dist.bat, `fc` in release-check.bat,
+     and `cmd` in verify.bat's restart.
+   - Visual Studio's vcvars scripts call findstr and where by bare name themselves, so build.bat puts System32 first on
+     PATH before it calls vcvars64.bat.
+   - What stays on PATH: git (release-check.bat logs which one), and MSVC's cl, rc, fxc and link (from vcvars).
+   - The proof (MANUAL_TESTS AF18): a folder of fake find, tar, sort, certutil, fc, findstr and where at the front of
+     PATH, each exiting 1. Before the fix the quick run failed at its first step; after it, the quick run, verify.bat
+     and dist.bat pass. tools/release_check.c (build\release_check.exe, built by build.bat like the other tools,
    compiled in CI but never run there) does what cmd cannot do reliably: the log's time stamp (`%date%` depends on the
    locale), the versions, the zip checks, the foreground watch, the folder snapshots, the HUMAN list and the coverage
    summary. It has its own table-cell splitter instead of markdown.c's `md_cells`. That one keeps a `|` inside a code

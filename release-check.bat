@@ -63,7 +63,13 @@ call :end
 rem --- preconditions --------------------------------------------------------------------------------------------
 set "STEP=preconditions"
 call :begin
-where git >nul 2>nul || (set "M=git is not on PATH" & goto failed)
+rem git is the one PATH finds; every Windows program is called by its System32 path, since Git for Windows' usr\bin
+rem (find, tar, sort, ...) can come first on PATH.
+set "GITEXE="
+for /f "delims=" %%g in ('%SystemRoot%\System32\where.exe git 2^>nul') do if not defined GITEXE set "GITEXE=%%g"
+if not defined GITEXE (set "M=git is not on PATH" & goto failed)
+set "M=release-check: git: !GITEXE! (the first git on PATH)"
+call :say
 call :check_tree
 call :require || goto failed
 call :check_commit
@@ -73,7 +79,7 @@ set CODE=!errorlevel!
 call :show "!RUN!\versions.txt"
 if not "!CODE!"=="0" (set "M=the versions disagree (above)" & goto failed)
 set "VERSION="
-for /f "tokens=3" %%v in ('findstr /b /c:"#define RONIN_VERSION " src\app\version.h') do set "VERSION=%%~v"
+for /f "tokens=3" %%v in ('%SystemRoot%\System32\findstr.exe /b /c:"#define RONIN_VERSION " src\app\version.h') do set "VERSION=%%~v"
 if not defined VERSION (set "M=no RONIN_VERSION in src\app\version.h" & goto failed)
 rem The maintainer's folders and the repository's untracked and ignored paths, compared again at the end.
 build\release_check.exe snapshot "%APPDATA%\ronin" "!RUN!\appdata-before.txt" || (set "M=cannot snapshot %APPDATA%\ronin" & goto failed)
@@ -165,16 +171,16 @@ set "STEP=unchanged"
 call :begin
 build\release_check.exe snapshot "%APPDATA%\ronin" "!RUN!\appdata-after.txt" || (set "M=cannot snapshot %APPDATA%\ronin" & goto failed)
 build\release_check.exe snapshot "%LOCALAPPDATA%\ronin" "!RUN!\localappdata-after.txt" || (set "M=cannot snapshot %LOCALAPPDATA%\ronin" & goto failed)
-fc /b "!RUN!\appdata-before.txt" "!RUN!\appdata-after.txt" >nul || (call :show_pair appdata & set "M=%APPDATA%\ronin changed during the run (before, then after, above)" & goto failed)
-fc /b "!RUN!\localappdata-before.txt" "!RUN!\localappdata-after.txt" >nul || (call :show_pair localappdata & set "M=%LOCALAPPDATA%\ronin changed during the run (before, then after, above)" & goto failed)
+%SystemRoot%\System32\fc.exe /b "!RUN!\appdata-before.txt" "!RUN!\appdata-after.txt" >nul || (call :show_pair appdata & set "M=%APPDATA%\ronin changed during the run (before, then after, above)" & goto failed)
+%SystemRoot%\System32\fc.exe /b "!RUN!\localappdata-before.txt" "!RUN!\localappdata-after.txt" >nul || (call :show_pair localappdata & set "M=%LOCALAPPDATA%\ronin changed during the run (before, then after, above)" & goto failed)
 git status --porcelain > "!RUN!\status-after.txt" 2>nul
-fc /b "!RUN!\status-before.txt" "!RUN!\status-after.txt" >nul || (call :show "!RUN!\status-after.txt" & set "M=git status changed during the run (now above)" & goto failed)
+%SystemRoot%\System32\fc.exe /b "!RUN!\status-before.txt" "!RUN!\status-after.txt" >nul || (call :show "!RUN!\status-after.txt" & set "M=git status changed during the run (now above)" & goto failed)
 git status --porcelain --ignored > "!RUN!\paths-after.txt" 2>nul
 rem The untracked and ignored paths as at the start, but build\ and dist\ (where the run writes; git lists each as one
 rem line, "!! build/"). git writes LF lines, so no findstr /x here (its line end needs a CR).
-findstr /v /r /c:"^.. build/" /c:"^.. dist/" "!RUN!\paths-before.txt" > "!RUN!\outside-before.txt"
-findstr /v /r /c:"^.. build/" /c:"^.. dist/" "!RUN!\paths-after.txt" > "!RUN!\outside-after.txt"
-fc /b "!RUN!\outside-before.txt" "!RUN!\outside-after.txt" >nul || (call :show_pair outside & set "M=the run wrote outside build\ and dist\ (the untracked and ignored paths before, then after, above)" & goto failed)
+%SystemRoot%\System32\findstr.exe /v /r /c:"^.. build/" /c:"^.. dist/" "!RUN!\paths-before.txt" > "!RUN!\outside-before.txt"
+%SystemRoot%\System32\findstr.exe /v /r /c:"^.. build/" /c:"^.. dist/" "!RUN!\paths-after.txt" > "!RUN!\outside-after.txt"
+%SystemRoot%\System32\fc.exe /b "!RUN!\outside-before.txt" "!RUN!\outside-after.txt" >nul || (call :show_pair outside & set "M=the run wrote outside build\ and dist\ (the untracked and ignored paths before, then after, above)" & goto failed)
 set "HEAD_AFTER="
 for /f %%h in ('git rev-parse HEAD') do set "HEAD_AFTER=%%h"
 if not "!HEAD_AFTER!"=="!HEAD_BEFORE!" (set "M=HEAD moved during the run: !HEAD_BEFORE! to !HEAD_AFTER!" & goto failed)
@@ -300,7 +306,7 @@ if exist build\ronin.log copy /y build\ronin.log "!RUN!\coverage-test.log" >nul
 if not "!CODE!"=="0" (
     set "FAILS=0"
     rem System32's find.exe by its path: from Git Bash, PATH finds Git's Unix find first (it would walk C:\).
-    for /f %%n in ('findstr /c:"test: FAIL" "!RUN!\coverage-test.log" ^| %SystemRoot%\System32\find.exe /c /v ""') do set "FAILS=%%n"
+    for /f %%n in ('%SystemRoot%\System32\findstr.exe /c:"test: FAIL" "!RUN!\coverage-test.log" ^| %SystemRoot%\System32\find.exe /c /v ""') do set "FAILS=%%n"
     set "M=coverage: --test exited !CODE! under instrumentation, !FAILS! "test: FAIL" lines (!RUN!\coverage-test.log). Not a gate: the instrumentation changes function addresses and timing, and the uninstrumented --test passed in verify-phase; the report under-counts what --test runs"
     call :say
 )
