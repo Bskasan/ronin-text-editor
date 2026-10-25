@@ -901,7 +901,7 @@ static b32 no_files_below(const char *name, const wchar_t *dir) {
         Entry *e = &w.items[i];
         put("zip: nothing-written: ");
         put(name);
-        put(e->folder ? " has the empty folder " : ": FAIL: a file was written: ");
+        put(e->folder ? " has the folder " : ": FAIL: a file was written: ");
         put_n(e->path, e->path_len);
         end_line();
         if (!e->folder) files++;
