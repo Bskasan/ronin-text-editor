@@ -717,7 +717,7 @@ LOCALAPPDATA pointed at fake folders. Each of those runs ended with the reason's
 | AF9 | Unpacked into a folder with a space and a non-ASCII letter (`İndirilenler ronin`), the zip's exe prints `ronin <version>`, carries the version resource of that version and imports only res\imports.txt's DLLs | AUTOMATED-NEW | every quick run: "version: "ronin 1.0.0", exit 0", "FileVersion and ProductVersion 1.0.0 (1.0.0.0)", "imports: as res\imports.txt lists"; shown to fail with a release exe built at 1.0.1 ("--version printed "ronin 1.0.1""), one built with FILEVERSION 9, 9, 9, 0 ("not 1.0.0.0 (9.9.9.0)") and ronin_debug.exe as the zip's exe ("--check-imports exit 9"). |
 | AF10 | From that folder a `--no-activate` start shows "*scratch* - ronin", closes on WM_CLOSE with exit 0, never gives its window the foreground, and writes nothing (the folder, the redirected APPDATA and LOCALAPPDATA) | AUTOMATED-NEW | every quick run: "foreground changes while it ran: 0, none to its window", "the unpacked folder unchanged, no file in APPDATA or LOCALAPPDATA"; nothing written shown to fail with a file in the redirected APPDATA (`release_check zip` on its own: "APPDATA: FAIL: a file was written: Microsoft/stray.txt"). The foreground watch failing: AF13. |
 | AF11 | `--startup-ms --no-activate` three times from that folder, informational, under the same foreground watch | AUTOMATED-NEW | "startup-ms: 175, 174, 171 ms, median 174 ms" (a quick run on the maintainer's machine); not comparable with Phase 25's foreground numbers. |
-| AF12 | The HUMAN rows left are printed from this file: every HUMAN row and the HUMAN part of each mixed row, with its id and its numbered HUMAN steps | AUTOMATED-NEW | `release_check human`: "72 rows (55 HUMAN, 17 mixed)" with AF13, equal to an independent count of the status column (awk); before AF, 71 (54, 17), the audit's numbers; shown to fail with every HUMAN status removed ("no HUMAN row found", `FAIL: human`). |
+| AF12 | The HUMAN rows left are printed from this file: every HUMAN row and the HUMAN part of each mixed row, with its id and its numbered HUMAN steps | AUTOMATED-NEW | `release_check human`: "72 rows (55 HUMAN, 17 mixed)" with AF13, equal to an independent count of the status column (awk); before AF, 71 (54, 17), the audit's numbers; every row is in a numbered HUMAN step since X4, AA1 and AA6 were added (steps 70, 29, 41: "0 of them in no numbered HUMAN step"); shown to fail with every HUMAN status removed ("no HUMAN row found", `FAIL: human`). |
 | AF13 | The foreground watch fails when the exe takes the foreground | HUMAN | Starting the exe without `--no-activate` takes the foreground, which by CLAUDE.md only the person at the machine may do: HUMAN step 69. |
 | AF14 | The maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin, git status and the untracked and ignored paths outside build\ and dist\ are the same at the end; HEAD did not move | AUTOMATED-NEW | shown to fail with a file written into the (fake) %APPDATA%\ronin during a run (the snapshot before, then after), an ignored stray.log made at the clone's root ("wrote outside build\ and dist\") and README.md changed during a run ("git status changed"). |
 | AF15 | `release-check.bat quick`: the preconditions with the tree and the commit only reported, the zip checks on an existing dist\, the HUMAN list, unchanged; last line `release-check: PASS (quick)` | AUTOMATED-NEW | about 10 s; on the work branch before it was pushed: "quick: not required: the working tree is not clean", "quick: not required: the branch chore/30-release-check is not on origin (push it first)", then `release-check: PASS (quick)`. |
@@ -801,8 +801,8 @@ Phase 15, the release:
 
 28. **Q4**: Look at the icon in the title bar, the taskbar, Alt+Tab and Explorer (large icons view) at
     100% and 150% display scale: an "r" with a green block cursor on a rounded square of the background color, crisp.
-29. **Q3**: Explorer, right-click build\ronin.exe, Properties, Details: the version of src\app\version.h, "ronin text editor",
-    the copyright.
+29. **Q3, AA1**: Explorer, right-click build\ronin.exe, Properties, Details: the version of src\app\version.h, "ronin
+    text editor", the copyright. Then the same for the release zip's ronin.exe, unzipped (AA1).
 30. **Q7**: Put `early_window = true` in ronin.conf (C-c ,) and start ronin from Explorer five times: the
     window appears at once in the background color and the text follows; no white or black flash, no
     jump. Then decide the default: say whether `early_window` should be on.
@@ -846,9 +846,10 @@ Phase 19, the git changes view:
     with tabs lines up as in the buffer, a long line ends at the box's edge. The
     same at 150% (dev helper for the picture: `ronin_debug.exe <file> --scale 150 --keys "C-x g" --screenshot
     build\shots\u18.png`).
-41. **U19**: In `build\ronin.exe` on ronin's own repository with uncommitted changes: C-x g, Down to another file
+41. **U19, AA6**: In `build\ronin.exe` on ronin's own repository with uncommitted changes: C-x g, Down to another file
     (its diff appears), TAB, C-v and M-v (the diff scrolls), TAB, RET (the file at its first change); C-x g again,
-    g (the list again), C-g at once: it closes without waiting.
+    g (the list again), C-g at once: it closes without waiting. Then once more with the release zip's ronin.exe,
+    unzipped into a folder of its own (AA6).
 
 Phase 20, terminals (Windows Terminal installed, `claude` on PATH; each step opens real windows):
 
@@ -946,13 +947,23 @@ Issue #1, the git changes view:
 
 Issue #30, release-check.bat:
 
-69. **AF13**: Run `release-check.bat quick` first (it leaves the unpacked zip), then type nothing until this ends. In a
-    terminal at the repository's root, start the zip's exe *without* `--no-activate`:
-    `build\release_check.exe start-close "build\tmp\release-check\zip\İndirilenler ronin\ronin-1.0.0\ronin.exe"
-    "build\tmp\release-check\zip\İndirilenler ronin\ronin-1.0.0"` (one line; the version of the zip). ronin comes to the
-    front for about 3 s and closes. The output must end with `start-close: FAIL: the foreground went to its window
-    "*scratch* - ronin" at +N ms`, then `start-close: FAIL`. If ronin stays behind with a flashing taskbar button,
-    Windows refused it the foreground: that run shows nothing; say so.
+69. **AF13**: In a cmd window, paste these three lines as they are, then type nothing until the last one ends. The
+    quick run leaves the unpacked zip; the last line starts the zip's exe *without* `--no-activate` (whatever the
+    version: the loops find the `İndirilenler ronin` folder and its `ronin-*` folder):
+
+    ```
+    cd /d C:\web-projects\text-editor
+    release-check.bat quick
+    for /d %d in (build\tmp\release-check\zip\*) do for /d %r in ("%d\ronin-*") do build\release_check.exe start-close "%~r\ronin.exe" "%~r" > build\release-check\af13.txt 2>&1
+    ```
+
+    ronin comes to the front for about 3 s and closes. build\release-check\af13.txt must end with `start-close: FAIL:
+    the foreground went to its window "*scratch* - ronin" at +N ms`, a `start-close: foreground changes while it ran:`
+    line, then `start-close: FAIL`. If ronin stays behind with a flashing taskbar button, Windows refused it the
+    foreground: that run shows nothing; say so. The file goes into AF13's evidence.
+70. **X4**: oxide's `diff_added` against its source (in no numbered step before #30): open
+    https://github.com/oxidescheme/nvim/blob/838760c820821cce6a79706430883439c80dad4c/lua/oxide/colors.lua, line 26
+    (`green = "#5bb661", ... added items`), and `diff_added` in themes\oxide.conf: the same color.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,

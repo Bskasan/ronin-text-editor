@@ -4695,7 +4695,7 @@ in it, the machine left alone; log build\release-check\20261025-131732.log. Its 
 | dist | 68 s | `verify: PASS`, then `dist: PASS: dist\ronin-1.0.0-windows-x64.zip (264185 bytes, ...)` |
 | coverage | 154 s | Microsoft.CodeCoverage.Console 18.4.0-preview.26077.3 (VS 18 Community); `--test` exit 9 under instrumentation, 38 FAIL lines (Decisions, #30, 9); 43 files, 28,511 / 36,045 lines (79.1%) |
 | zip | 5 s | the SHA-256 as SHA256SUMS.txt says; from `İndirilenler ronin`: 11 files as the list, "ronin 1.0.0", the version resource 1.0.0 (1.0.0.0), the imports, the start and close with 0 foreground changes, nothing written; `--startup-ms --no-activate` 178, 171, 173 ms (median 173) |
-| human | 0 s | 72 rows (55 HUMAN, 17 mixed); 3 in no numbered HUMAN step (X4, AA1, AA6) |
+| human | 0 s | 72 rows (55 HUMAN, 17 mixed); 3 in no numbered HUMAN step (X4, AA1, AA6; since added to steps 70, 29 and 41) |
 | unchanged | 0 s | %APPDATA%\ronin and %LOCALAPPDATA%\ronin unchanged, nothing new outside build\ and dist\, HEAD unchanged |
 | **total** | **712 s** | |
 
