@@ -69,7 +69,7 @@ if not defined HASH goto hash_failed
 set "HASH=%HASH: =%"
 if "%HASH:~63,1%"=="" goto hash_failed
 if not "%HASH:~64%"=="" goto hash_failed
-echo %HASH%| findstr /r /x /i "[0-9a-f]*" >nul || goto hash_failed
+echo %HASH%| %SystemRoot%\System32\findstr.exe /r /x /i "[0-9a-f]*" >nul || goto hash_failed
 rem One line in sha256sum's format, without a line end (sha256sum -c would take a CR for part of the name).
 <nul set /p "=%HASH%  %NAME%-windows-x64.zip" > "%SUMS%"
 for %%F in ("%ZIP%") do echo dist: PASS: %ZIP% (%%~zF bytes, SHA-256 %HASH%)
