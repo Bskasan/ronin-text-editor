@@ -117,7 +117,7 @@ Build-time programs, not part of the exe; compiled by build.bat on every build.
 | `make_docs.c` | build tool: converts docs/src/*.md into the documentation site | Phase 24, run by build.bat docs and verify's docs-check: `make_docs <docs dir> <fragments dir> <out dir>` writes every page of docs/src/nav.txt (the conversion is src/dev/markdown.c, included; fragments from `--dump-docs`, image sizes from their PNG headers; a .md of docs/src not in nav.txt refused); `make_docs --compare <docs dir> <scratch dir>`: the committed site against a fresh one, one line per difference |
 | `make_themes.c` | build tool: embeds themes/*.conf into build/gen/themes.h | Phase 21, run by build.bat on every build: comment and blank lines dropped, name order, ronin required, at most 8 KB in all |
 | `check_source.c` | build check: headers, module map and includes of every source file | Phase 23, run by verify.bat and the CI workflow (`check_source <root>`): every source file's header against this map, the two include rules; one `path:line: message` per problem |
-| `release_check.c` | release check: the helper of release-check.bat | #30, run only by release-check.bat (never by CI): `stamp` (the log's name), `versions <root>` (version.h, CHANGELOG.md's first dated section, docs/releases/X.Y.Z.md), `zip ...` (the zip unpacked into a folder with a space and İ: its files against res/dist_files.txt, `--version`, the version resource, `--check-imports`, a `--no-activate` start and close, nothing written, `--startup-ms --no-activate`), `start-close <exe> <cwd> [flags]` (the foreground watched through SetWinEventHook while it runs), `snapshot <dir> <out>`, `human <MANUAL_TESTS.md>` (the HUMAN rows and the HUMAN part of mixed ones), `coverage <cobertura.xml> <src>` (line coverage per file) |
+| `release_check.c` | release check: the helper of release-check.bat | #30, run only by release-check.bat (never by CI): `stamp` (the log's name), `versions <root>` (version.h, CHANGELOG.md's first dated section, docs/releases/X.Y.Z.md), `zip ...` (the zip unpacked into a folder with a space and İ: its files against res/dist_files.txt, `--version`, the version resource, `--check-imports`, a `--no-activate` start and close, nothing written, `--startup-ms --no-activate`), `start-close <exe> <cwd> [flags]` (the foreground watched through SetWinEventHook while it runs), `snapshot <dir> <out>`, `human <MANUAL_TESTS.md>` (the HUMAN rows and the HUMAN part of mixed ones), `coverage <cobertura.xml> <src>` (line coverage per file), `show <file>` and `append-env <name> <log>` (release-check.bat's console and log lines); it writes UTF-8, through WriteConsoleW when its output is a console |
 
 ### Other files
 
@@ -4675,8 +4675,28 @@ step of its own.
       out, must be the same too. git writes LF lines, so findstr's `/x` (which needs a CR) is not used there.
     - %TEMP% and the rest of the disk are not checked, and the log says so.
 11. **Logs.** The whole run goes to build\release-check\<yyyymmdd-hhmmss>.log, each step's output to the folder of the
-    same name. A step's output is captured to a file, then typed to the console and appended to the log, so a long step
+    same name. A step's output is captured to a file, then shown on the console and appended to the log, so a long step
     shows its lines when it ends. This keeps the script free of pipes and self-restarts.
+    - **UTF-8 throughout, and readable in a console.** The helper writes UTF-8. When its standard output is a console it
+      goes through WriteConsoleW (UTF-16), so the console's code page does not matter; a file or a pipe gets the bytes.
+      cmd's `type` would decode a step file in the console's OEM code page ("1.0.0 ÔÇö 2026-10-21"), so `:show` shows it
+      through `release_check show`, and copies the bytes to the log. cmd's `echo >> log` writes the code page too, so
+      `:say` appends through `release_check append-env M` (the variable read as UTF-16). Checked in a console (the
+      Terminal panel, conpty): `1.0.0 — 2026-10-21` and `zip\İndirilenler ronin` read right; the log and a redirected
+      run hold E2 80 94 and C4 B0.
+    - **The unpack folder's name.** Until this fix it was "Ä°ndirilenler ronin", not "İndirilenler ronin". The source
+      held the İ as UTF-8, and build.bat compiles the tools without `/utf-8`, so cl read its two bytes in the ANSI code
+      page (U+00C4 U+00B0). Those runs still unpacked into a folder with a space and two non-ASCII letters. The name is
+      now `L"\u0130ndirilenler ronin"`, an escape that does not depend on the code page; the folder is U+0130.
+    - **A scan of every C literal** in src\ and tools\ (80 files) for non-ASCII bytes found two more, both dev-only and
+      compiled with `/utf-8`, so neither the release exe nor its bytes change:
+      - src/dev/test.c:506, the buffer fuzz's "fragments of multi-byte characters". Its literals hold whole UTF-8
+        characters (C3 A2 "â", C2 82, C2 AC "¬", ...), not the fragments its comment names (E2, 82, AC of "€", ...), so
+        that branch splices whole characters. It should become `\x` escapes of the intended bytes.
+      - src/platform/win32_input_test.c:461, a log line with "´" and "¨". It compiles to their UTF-8 bytes, as
+        `\u00B4` and `\u00A8` would under `/utf-8`.
+
+      Not changed here. #36 now asks the source check to fail on a non-ASCII byte in a C string or character literal.
 12. **`quick` for development runs** (about 10 s): the preconditions, with the clean tree and the published commit
     reported but not required, then the zip checks on an existing dist\, the HUMAN list and the unchanged check. Its
     last line is `release-check: PASS (quick)`, so it is never taken for a release pass.

@@ -33,7 +33,14 @@
 //       row's evidence and the numbered HUMAN steps that name it
 //   release_check coverage <cobertura.xml> <src dir>
 //       line coverage per file under <src dir> (a line counted once per file, covered when any record of it has hits)
-// Every line it prints starts with its mode. Exit 0 = ok, 1 = a failed check, 2 = wrong arguments or unreadable input.
+//   release_check show <file>
+//       a step's output file (UTF-8) to the standard output; release-check.bat's way to show it (cmd's type would decode
+//       it in the console's code page)
+//   release_check append-env <name> <log>
+//       the environment variable as one UTF-8 line at the end of <log> (cmd's echo >> log writes the console's code page)
+// Every line it prints starts with its mode. It writes UTF-8: through WriteConsoleW (UTF-16) when its standard output is
+// a console, as bytes when it is a file or a pipe. Exit 0 = ok, 1 = a failed check, 2 = wrong arguments or unreadable
+// input.
 // No C runtime calls: Win32 only (the CRT's startup aside, as the other tools).
 
 #define WIN32_LEAN_AND_MEAN
@@ -54,7 +61,7 @@ typedef int b32;
 #define COVER_FILES_MAX 512
 #define COVER_LINES_MAX (1 << 18)
 #define TITLE_EXPECTED L"*scratch* - ronin"
-#define UNPACK_FOLDER L"İndirilenler ronin"
+#define UNPACK_FOLDER L"\u0130ndirilenler ronin" // an escape: build.bat compiles the tools without /utf-8
 
 typedef struct Str {
     const u8 *data;
@@ -190,11 +197,29 @@ static void put_percent(i64 part, i64 whole) {
     put("%");
 }
 
+// UTF-8 text to the standard output: a console gets it as UTF-16 through WriteConsoleW (whatever its code page), a file
+// or a pipe gets the UTF-8 bytes. Text is converted in pieces cut at character boundaries.
+static void out_bytes(const u8 *data, i64 len) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode, written;
+    if (!GetConsoleMode(out, &mode)) {
+        WriteFile(out, data, (DWORD)len, &written, NULL);
+        return;
+    }
+    static wchar_t wide[LINE_CAP];
+    for (i64 at = 0; at < len;) {
+        i64 n = len - at < LINE_CAP ? len - at : LINE_CAP;
+        while (n > 1 && at + n < len && (data[at + n] & 0xC0) == 0x80) n--;
+        i32 w = MultiByteToWideChar(CP_UTF8, 0, (const char *)data + at, (i32)n, wide, LINE_CAP);
+        if (w > 0) WriteConsoleW(out, wide, (DWORD)w, &written, NULL);
+        at += n;
+    }
+}
+
 static void end_line(void) {
     line_out[line_len++] = '\r';
     line_out[line_len++] = '\n';
-    DWORD written;
-    WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), line_out, (DWORD)line_len, &written, NULL);
+    out_bytes(line_out, line_len);
     line_len = 0;
 }
 
@@ -1095,10 +1120,9 @@ static i32 mode_zip(const wchar_t *zip_arg, const wchar_t *version_arg, const wc
         i64 after_len = snapshot_text(root, after, sizeof(after));
         if (after_len != before_len || !mem_eq(before, after, before_len)) {
             say("zip: nothing-written: FAIL: the unpacked folder changed; before, then after:");
-            DWORD written;
-            WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), before, (DWORD)before_len, &written, NULL);
+            out_bytes(before, before_len);
             say("--");
-            WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), after, (DWORD)after_len, &written, NULL);
+            out_bytes(after, after_len);
             return 1;
         }
         wchar_t appdata[PATH_CAP], local[PATH_CAP];
@@ -1483,10 +1507,36 @@ static i32 mode_snapshot(const wchar_t *dir, const wchar_t *out) {
     return 0;
 }
 
+// A step's output file (UTF-8) to the standard output, through out_bytes.
+static i32 mode_show(const wchar_t *path) {
+    Str text = read_file(path);
+    if (!text.data) return 2;
+    out_bytes(text.data, text.len);
+    return 0;
+}
+
+// The environment variable as one UTF-8 line (CRLF) at the end of log: what cmd's own "echo >> log" would write in the
+// console's code page.
+static i32 mode_append_env(const wchar_t *name, const wchar_t *log) {
+    static wchar_t value[LINE_CAP];
+    DWORD n = GetEnvironmentVariableW(name, value, LINE_CAP);
+    if (n >= LINE_CAP) n = 0;
+    i32 len = n ? WideCharToMultiByte(CP_UTF8, 0, value, (i32)n, (char *)line_out, LINE_CAP - 2, NULL, NULL) : 0;
+    if (len < 0) len = 0;
+    line_out[len++] = '\r';
+    line_out[len++] = '\n';
+    HANDLE f = CreateFileW(log, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 2;
+    DWORD written = 0;
+    b32 ok = WriteFile(f, line_out, (DWORD)len, &written, NULL) && written == (DWORD)len;
+    CloseHandle(f);
+    return ok ? 0 : 2;
+}
+
 static i32 usage(void) {
     say("release_check: usage: stamp | versions <root> | zip <zip> <version> <work dir> <dist list> <debug exe> "
         "<imports.txt> | start-close <exe> <cwd> [flags...] | snapshot <dir> <out> | human <MANUAL_TESTS.md> | "
-        "coverage <cobertura.xml> <src dir>");
+        "coverage <cobertura.xml> <src dir> | show <file> | append-env <name> <log>");
     return 2;
 }
 
@@ -1500,5 +1550,7 @@ int wmain(int argc, wchar_t **argv) {
     if (weq(mode, L"snapshot") && argc == 4) return mode_snapshot(argv[2], argv[3]);
     if (weq(mode, L"human") && argc == 3) return mode_human(argv[2]);
     if (weq(mode, L"coverage") && argc == 4) return mode_coverage(argv[2], argv[3]);
+    if (weq(mode, L"show") && argc == 3) return mode_show(argv[2]);
+    if (weq(mode, L"append-env") && argc == 4) return mode_append_env(argv[2], argv[3]);
     return usage();
 }
