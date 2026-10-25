@@ -4640,8 +4640,11 @@ step of its own.
    - Then it is resumed, and the helper pumps its messages throughout (out-of-context hooks are delivered through them).
      It waits for the window, the title `*scratch* - ronin`, 3 s, WM_CLOSE (what CloseMainWindow does), and exit 0, then
      pumps 250 ms more for queued events.
-   - Any event naming a window of the process fails. Changes to other programs are counted and reported ("someone used
-     the machine?"). Their titles are not logged.
+   - Any event naming a window of the process fails. Changes to other programs' windows are counted and reported, in
+     two kinds: after WM_CLOSE was sent (by the event's time) or after the process ended, "after its close (the
+     foreground going back)", which is what Windows does when an activated window closes; before that, "before its
+     close (someone used the machine?)". AF13's first run showed why: its one other change was the foreground going
+     back to the cmd window, and the first wording called it someone at the machine. Their titles are not logged.
    - The fixture that shows this failing starts the exe without `--no-activate`. It takes the foreground, so by
      CLAUDE.md only the person at the machine runs it (MANUAL_TESTS AF13).
 8. **`--startup-ms` without the focus.** A plain `--startup-ms` activates its window, so it has no place in a step that

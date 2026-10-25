@@ -499,7 +499,11 @@ typedef struct Watch {
     b32 hit;             // one named a window of the process
     wchar_t title[256];  // the first such window's title
     u64 hit_ms;          // when, since the start
-    i32 others;          // changes to other programs' windows
+    i32 others;          // changes to other programs' windows while it ran
+    i32 returned;        // the same after the close: the foreground going back to whoever had it
+    HANDLE process;
+    b32 closing;         // WM_CLOSE sent, at close_tick (GetTickCount, the hooks' event time)
+    DWORD close_tick;
 } Watch;
 
 static Watch watch;
@@ -519,13 +523,16 @@ static void CALLBACK watch_own(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG 
     watch_record(hwnd);
 }
 
-// The hook on every process: each change counted, attributed by the window's owner.
+// The hook on every process: each change counted, attributed by the window's owner; a change to another window after
+// the close (by its event time) or after the process ended is the foreground going back, not someone at the machine.
 static void CALLBACK watch_any(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG object, LONG child, DWORD thread, DWORD ms) {
-    (void)hook, (void)event, (void)object, (void)child, (void)thread, (void)ms;
+    (void)hook, (void)event, (void)object, (void)child, (void)thread;
     watch.events++;
     DWORD pid = 0;
     if (hwnd) GetWindowThreadProcessId(hwnd, &pid);
     if (pid && pid == watch.pid) watch_record(hwnd);
+    else if ((watch.closing && (i32)(ms - watch.close_tick) >= 0) || WaitForSingleObject(watch.process, 0) == WAIT_OBJECT_0)
+        watch.returned++;
     else watch.others++;
 }
 
@@ -585,6 +592,7 @@ static b32 watched_run(const char *prefix, const wchar_t *exe, const wchar_t *cw
     }
     memset(&watch, 0, sizeof(watch));
     watch.pid = pi.dwProcessId;
+    watch.process = pi.hProcess;
     watch.start = GetTickCount64();
     HWINEVENTHOOK own = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, watch_own, pi.dwProcessId, 0,
                                         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
@@ -636,6 +644,8 @@ static b32 watched_run(const char *prefix, const wchar_t *exe, const wchar_t *cw
                 ok = 0;
             }
             if (!ended) {
+                watch.closing = 1;
+                watch.close_tick = GetTickCount();
                 PostMessageW(ctx.found, WM_CLOSE, 0, 0);
                 ended = pump(pi.hProcess, 10000);
                 if (!ended) {
@@ -690,10 +700,15 @@ static b32 watched_run(const char *prefix, const wchar_t *exe, const wchar_t *cw
     put(": foreground changes while it ran: ");
     put_i64(watch.events);
     put(watch.hit ? " (one of them to its window)" : ", none to its window");
+    if (watch.returned) {
+        put("; ");
+        put_i64(watch.returned);
+        put(" after its close (the foreground going back)");
+    }
     if (watch.others) {
         put("; ");
         put_i64(watch.others);
-        put(" to another program (someone used the machine?)");
+        put(" to another program before its close (someone used the machine?)");
     }
     end_line();
     return ok;
