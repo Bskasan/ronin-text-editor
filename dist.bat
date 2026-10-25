@@ -1,8 +1,8 @@
 @echo off
 rem ronin dist: runs verify.bat (which builds the release exe), then packs dist\ronin-<version>-windows-x64.zip with
-rem ronin.exe, README.md, LICENSE, THIRD_PARTY.md (the ported themes' licenses), CHANGELOG.md and samples\ in a
-rem ronin-<version> folder, checks the zip's listing (exactly those 11 files) and writes its SHA-256 to
-rem dist\SHA256SUMS.txt (sha256sum's format). The version comes from src\app\version.h.
+rem the files of res\dist_files.txt (ronin.exe, README.md, LICENSE, THIRD_PARTY.md: the ported themes' licenses,
+rem CHANGELOG.md and the samples) in a ronin-<version> folder, checks the zip's listing (exactly the list's files) and
+rem writes its SHA-256 to dist\SHA256SUMS.txt (sha256sum's format). The version comes from src\app\version.h.
 rem From Git Bash: cmd //c ".\dist.bat"
 rem The last line is "dist: PASS: <zip> (<bytes> bytes, SHA-256 <hash>)" or "dist: FAIL: <what failed>".
 setlocal
@@ -26,14 +26,15 @@ cd /d "%ROOT%"
 set "NAME=ronin-%VERSION%"
 set "ZIP=dist\%NAME%-windows-x64.zip"
 set "SUMS=dist\SHA256SUMS.txt"
+rem The zip's files: res\dist_files.txt, the one list (release-check.bat checks the unpacked zip against it too).
+set "LIST=res\dist_files.txt"
 if exist build\dist rmdir /s /q build\dist
-mkdir "build\dist\%NAME%\samples"
-copy /y build\ronin.exe "build\dist\%NAME%\" >nul || goto copy_failed
-copy /y README.md "build\dist\%NAME%\" >nul || goto copy_failed
-copy /y LICENSE "build\dist\%NAME%\" >nul || goto copy_failed
-copy /y THIRD_PARTY.md "build\dist\%NAME%\" >nul || goto copy_failed
-copy /y CHANGELOG.md "build\dist\%NAME%\" >nul || goto copy_failed
-copy /y samples\*.* "build\dist\%NAME%\samples\" >nul || goto copy_failed
+mkdir "build\dist\%NAME%"
+set "LISTED=0"
+for /f "usebackq eol=# delims=" %%F in ("%LIST%") do (
+    call :copy_listed "%%F" || goto copy_failed
+    set /a LISTED+=1
+)
 if not exist dist mkdir dist
 if exist "%ZIP%" del /q "%ZIP%"
 if exist "%SUMS%" del /q "%SUMS%"
@@ -44,7 +45,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem The zip's listing: the five files and the six samples, nothing else (folders are listed with a trailing '/').
+rem The zip's listing: the list's files, nothing else (folders are listed with a trailing '/').
 "%SystemRoot%\System32\tar.exe" -t -f "%ZIP%" > build\dist\contents.txt
 if errorlevel 1 (
     echo dist: FAIL: tar could not list the zip
@@ -52,11 +53,11 @@ if errorlevel 1 (
 )
 set "FILES=0"
 for /f "usebackq delims=" %%L in (`findstr /v /r /c:"/$" build\dist\contents.txt`) do set /a FILES+=1
-if not "%FILES%"=="11" (
-    echo dist: FAIL: the zip holds %FILES% files, not 11 ^(build\dist\contents.txt^)
+if not "%FILES%"=="%LISTED%" (
+    echo dist: FAIL: the zip holds %FILES% files, not the %LISTED% of %LIST% ^(build\dist\contents.txt^)
     exit /b 1
 )
-for %%F in (ronin.exe README.md LICENSE THIRD_PARTY.md CHANGELOG.md) do (
+for /f "usebackq eol=# delims=" %%F in ("%LIST%") do (
     findstr /x /c:"%NAME%/%%F" build\dist\contents.txt >nul || goto listing_failed
 )
 
@@ -74,8 +75,18 @@ for %%F in ("%ZIP%") do echo dist: PASS: %ZIP% (%%~zF bytes, SHA-256 %HASH%)
 exit /b 0
 
 :listing_failed
-echo dist: FAIL: the zip lacks one of the five files (build\dist\contents.txt)
+echo dist: FAIL: the zip lacks a file of %LIST% (build\dist\contents.txt)
 exit /b 1
+
+rem --- copy_listed <path>: one file of the list ('/' separated) into the staging folder; ronin.exe comes from build\ ---
+:copy_listed
+set "REL=%~1"
+set "SRC=%REL:/=\%"
+if "%REL%"=="ronin.exe" set "SRC=build\ronin.exe"
+set "DEST=build\dist\%NAME%\%REL:/=\%"
+for %%D in ("%DEST%") do if not exist "%%~dpD" mkdir "%%~dpD"
+copy /y "%SRC%" "%DEST%" >nul
+exit /b %errorlevel%
 
 :hash_failed
 echo dist: FAIL: no SHA-256 from certutil

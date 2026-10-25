@@ -1,0 +1,15 @@
+# The files of the release zip, inside its ronin-<version> folder, '/' separated: dist.bat copies exactly these
+# (ronin.exe from build\, the others from the repository) and checks the zip's listing against them; release-check.bat
+# checks the unpacked zip against them (nothing missing, nothing extra). A file added to or removed from the zip is a
+# change of this list alone.
+ronin.exe
+README.md
+LICENSE
+THIRD_PARTY.md
+CHANGELOG.md
+samples/Inventory.cs
+samples/particles.jai
+samples/ring.c
+samples/shapes.ts
+samples/vec.cpp
+samples/wordcount.js
