@@ -4621,6 +4621,10 @@ step of its own.
    - The helper checks the unpacked zip against the same list: nothing missing, nothing extra, one `ronin-<version>`
      folder at the top.
    - The zip's listing is unchanged: the 11 files of 1.0.0, compared line for line before and after.
+   - dist.bat expands each entry in copy, findstr and call, so it first checks every entry as a plain relative path
+     (letters, digits, . _ - /, no leading /, no ..; a review of PR #37). It runs before verify.bat and before any copy.
+     Each line comes in through a FOR variable, which is never parsed again, and the allowed characters are taken out
+     of it. release_check needs no such guard: it only compares the entries with the paths it walked.
 6. **The zip, in a real user's folder, without the focus.**
    - It is unpacked into `build\tmp\release-check\zip\İndirilenler ronin\`, with a space and a non-ASCII letter, as a
      Downloads folder on a Turkish Windows. cmd reads a .bat in the OEM code page, and Windows' tar.exe takes ANSI

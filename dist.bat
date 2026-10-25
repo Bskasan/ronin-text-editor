@@ -17,6 +17,22 @@ if not defined VERSION (
     exit /b 1
 )
 
+rem The zip's files: res\dist_files.txt, the one list (release-check.bat checks the unpacked zip against it too). Its
+rem entries are expanded in copy, findstr and call below, so first, before verify.bat and before anything is copied,
+rem every entry must be a plain relative path (#30): letters, digits, . _ - and /, no leading /, no "..". The for body
+rem takes each line into ENTRY (a FOR variable is never parsed again; only :check_entry is called, with no arguments).
+set "LIST=res\dist_files.txt"
+if not exist "%LIST%" (
+    echo dist: FAIL: no %LIST%
+    exit /b 1
+)
+set "BAD="
+for /f "usebackq eol=# delims=" %%F in ("%LIST%") do if not defined BAD (
+    set "ENTRY=%%F"
+    call :check_entry
+)
+if defined BAD exit /b 1
+
 call "%ROOT%verify.bat"
 if errorlevel 1 (
     echo dist: FAIL: verify
@@ -27,8 +43,6 @@ cd /d "%ROOT%"
 set "NAME=ronin-%VERSION%"
 set "ZIP=dist\%NAME%-windows-x64.zip"
 set "SUMS=dist\SHA256SUMS.txt"
-rem The zip's files: res\dist_files.txt, the one list (release-check.bat checks the unpacked zip against it too).
-set "LIST=res\dist_files.txt"
 if exist build\dist rmdir /s /q build\dist
 mkdir "build\dist\%NAME%"
 set "LISTED=0"
@@ -78,6 +92,25 @@ exit /b 0
 :listing_failed
 echo dist: FAIL: the zip lacks a file of %LIST% (build\dist\contents.txt)
 exit /b 1
+
+rem --- check_entry: ENTRY, one line of the list, a plain relative path; else its FAIL line and BAD set --------------
+rem Every allowed character is taken out of "#" + ENTRY (cmd's substitution ignores case, so 26 letters cover both);
+rem anything left after the "#" is another character: a quote, & | % ^ !, a space, ':' of a drive, a non-ASCII letter.
+:check_entry
+setlocal EnableDelayedExpansion
+set "REST=#!ENTRY!"
+for %%C in (a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9 . _ - /) do set "REST=!REST:%%C=!"
+set "PLAIN=1"
+if not "!REST!"=="#" set "PLAIN="
+if "!ENTRY:~0,1!"=="/" set "PLAIN="
+if not "!ENTRY:..=!"=="!ENTRY!" set "PLAIN="
+if defined PLAIN (
+    endlocal
+    exit /b 0
+)
+echo dist: FAIL: %LIST%: "!ENTRY!" is not a plain relative path (letters, digits, . _ - /; no leading /, no ..)
+endlocal & set "BAD=1"
+exit /b 0
 
 rem --- copy_listed <path>: one file of the list ('/' separated) into the staging folder; ronin.exe comes from build\ ---
 :copy_listed
