@@ -77,6 +77,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem --- the helper of release-check.bat (tools\release_check.c, #30): compiled here, run only by release-check.bat ---
+cl /nologo /W4 /WX /O2 tools\release_check.c /Fobuild\release_check.obj /Fdbuild\release_check_cl.pdb /Febuild\release_check.exe /link /INCREMENTAL:NO user32.lib version.lib >nul
+if errorlevel 1 (
+    echo ERROR: tools\release_check.c did not compile
+    exit /b 1
+)
+
 rem --- the documentation site's generator (tools\make_docs.c, with src\dev\markdown.c): run by build.bat docs and verify ---
 cl /nologo /W4 /WX /O2 /std:c11 tools\make_docs.c /Fobuild\make_docs.obj /Fdbuild\make_docs_cl.pdb /Febuild\make_docs.exe /link /INCREMENTAL:NO >nul
 if errorlevel 1 (
