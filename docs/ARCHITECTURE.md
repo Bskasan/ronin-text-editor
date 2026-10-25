@@ -4672,6 +4672,40 @@ step of its own.
     working clone, stubs committed and pushed there, fake APPDATA folders. Not committed. The runs are listed in
     MANUAL_TESTS AF.
 
+### Measurements, #30 release-check.bat
+
+The acceptance run: `release-check.bat` (full) on bdb06a6, the branch published on origin with origin's main (2276cfb)
+in it, the machine left alone; log build\release-check\20261025-131732.log. Its last line: `release-check: PASS`.
+
+| step | time | result |
+|---|---|---|
+| tool | 4 s | the debug build |
+| preconditions | 1 s | the tree clean, the commit published; 1.0.0 in version.h, CHANGELOG.md (an Unreleased section above it: a dry run) and docs/releases/1.0.0.md |
+| verify-phase | 478 s | `verify: PASS` (the 17 steps of `verify.bat phase`) |
+| dist | 68 s | `verify: PASS`, then `dist: PASS: dist\ronin-1.0.0-windows-x64.zip (264185 bytes, ...)` |
+| coverage | 154 s | Microsoft.CodeCoverage.Console 18.4.0-preview.26077.3 (VS 18 Community); `--test` exit 9 under instrumentation, 38 FAIL lines (Decisions, #30, 9); 43 files, 28,511 / 36,045 lines (79.1%) |
+| zip | 5 s | the SHA-256 as SHA256SUMS.txt says; from `İndirilenler ronin`: 11 files as the list, "ronin 1.0.0", the version resource 1.0.0 (1.0.0.0), the imports, the start and close with 0 foreground changes, nothing written; `--startup-ms --no-activate` 178, 171, 173 ms (median 173) |
+| human | 0 s | 72 rows (55 HUMAN, 17 mixed); 3 in no numbered HUMAN step (X4, AA1, AA6) |
+| unchanged | 0 s | %APPDATA%\ronin and %LOCALAPPDATA%\ronin unchanged, nothing new outside build\ and dist\, HEAD unchanged |
+| **total** | **712 s** | |
+
+The estimate was 18-25 minutes: dist took 68 s, not 4 minutes. Its verify.bat rebuilds what the phase run had just
+built, so most of its steps are fast. The first full run, on d8f106e, hung after the coverage collect. It counted the
+FAIL lines with `find`, which from Git Bash is Git's Unix find walking C:\. Its verify-phase (488 s) and dist (68 s)
+had passed. Fixed in bdb06a6 (System32's find.exe by its path); this run is the one after the fix.
+
+The coverage of a few files, from the run's coverage.txt (the debug `--test`, under-counted as above):
+
+| file | lines | covered |
+|---|---|---|
+| src/text/search.c, lex_c.c, lex_js.c, lex_jai.c | 245, 186, 154, 94 | 100% |
+| src/editor/view.c | 792 | 99.5% |
+| src/text/buffer.c | 1,095 | 95.0% |
+| src/app/app.c | 2,158 | 61.9% |
+| src/project/finder.c | 447 | 48.8% (the finder tests that fail under instrumentation) |
+| src/platform/win32_main.c | 5,289 | 42.2% (the window, the device and the dev flags --test never runs) |
+| src/dev/leak.c, png.c | 697, 85 | 0% (--leak-check and the screenshots, never in --test) |
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the

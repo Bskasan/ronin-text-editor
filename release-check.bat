@@ -1,6 +1,6 @@
 @echo off
 rem ronin release-check (#30): the maintainer's check before a release pull request. Never run by CI, never needed
-rem from contributors; a full run is one announced heavy run (about 20 minutes, the machine left alone).
+rem from contributors; a full run is one announced heavy run (about 12 minutes, the machine left alone).
 rem   release-check.bat        the preconditions (a clean tree; HEAD published on origin and containing origin's main;
 rem                            src\app\version.h, CHANGELOG.md's first dated section and docs\releases\<version>.md
 rem                            agree), verify.bat phase, dist.bat, the code coverage of the debug build's --test (a
