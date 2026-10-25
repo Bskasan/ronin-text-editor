@@ -341,12 +341,15 @@ exit /b 0
 rem say: M on the console and in the log.
 :say
 echo(!M!
->> "!LOG!" echo(!M!
+rem The log is UTF-8: cmd's own echo >> "!LOG!" would write the console's code page.
+build\release_check.exe append-env M "!LOG!"
 exit /b 0
 
 rem show <file>: the file on the console and in the log.
 :show
-type "%~1"
+rem The helper's files are UTF-8: shown through it (type would decode them in the console's code page), copied to the
+rem log byte for byte.
+build\release_check.exe show "%~1"
 type "%~1" >> "!LOG!"
 exit /b 0
 
