@@ -10,7 +10,8 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 set "VERSION="
-for /f "tokens=3" %%v in ('findstr /b /c:"#define RONIN_VERSION " src\app\version.h') do set "VERSION=%%~v"
+rem Windows programs by their System32 path: Git for Windows' usr\bin (find, tar, sort, ...) can come first on PATH (#30).
+for /f "tokens=3" %%v in ('%SystemRoot%\System32\findstr.exe /b /c:"#define RONIN_VERSION " src\app\version.h') do set "VERSION=%%~v"
 if not defined VERSION (
     echo dist: FAIL: no RONIN_VERSION in src\app\version.h
     exit /b 1
@@ -52,13 +53,13 @@ if errorlevel 1 (
     exit /b 1
 )
 set "FILES=0"
-for /f "usebackq delims=" %%L in (`findstr /v /r /c:"/$" build\dist\contents.txt`) do set /a FILES+=1
+for /f "usebackq delims=" %%L in (`%SystemRoot%\System32\findstr.exe /v /r /c:"/$" build\dist\contents.txt`) do set /a FILES+=1
 if not "%FILES%"=="%LISTED%" (
     echo dist: FAIL: the zip holds %FILES% files, not the %LISTED% of %LIST% ^(build\dist\contents.txt^)
     exit /b 1
 )
 for /f "usebackq eol=# delims=" %%F in ("%LIST%") do (
-    findstr /x /c:"%NAME%/%%F" build\dist\contents.txt >nul || goto listing_failed
+    %SystemRoot%\System32\findstr.exe /x /c:"%NAME%/%%F" build\dist\contents.txt >nul || goto listing_failed
 )
 
 rem The SHA-256: certutil's second line (older Windows put spaces between the bytes), 64 hex digits.

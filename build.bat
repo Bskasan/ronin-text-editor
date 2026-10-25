@@ -15,7 +15,8 @@ if /i "%~1"=="bench" set MODE=bench
 if /i "%~1"=="docs" set DOCS=1
 
 rem --- toolchain -------------------------------------------------------------
-where cl >nul 2>nul
+rem Windows programs by their System32 path: Git for Windows' usr\bin (find, tar, sort, ...) can come first on PATH (#30).
+"%SystemRoot%\System32\where.exe" cl >nul 2>nul
 if not errorlevel 1 goto have_cl
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" goto no_msvc
@@ -23,12 +24,14 @@ set "VSDIR="
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
 if not defined VSDIR goto no_msvc
 if not exist "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" goto no_msvc
+rem Visual Studio's own scripts call findstr and where by bare name: System32 first on PATH for them.
+set "PATH=%SystemRoot%\System32;%PATH%"
 call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 cd /d "%ROOT%"
-where cl >nul 2>nul
+"%SystemRoot%\System32\where.exe" cl >nul 2>nul
 if errorlevel 1 goto no_msvc
 :have_cl
-where fxc >nul 2>nul
+"%SystemRoot%\System32\where.exe" fxc >nul 2>nul
 if errorlevel 1 (
     echo ERROR: fxc.exe not found. Install the Windows 10/11 SDK with Visual Studio.
     exit /b 1

@@ -17,7 +17,8 @@ rem The seed sweep uses (logical processors - 2) workers, at least 1; VERIFY_WOR
 setlocal
 if defined RONIN_VERIFY_LOW goto verify_low
 set RONIN_VERIFY_LOW=1
-start "" /belownormal /b /wait cmd /d /c call "%~f0" %*
+rem Windows programs by their System32 path: Git for Windows' usr\bin (find, tar, sort, ...) can come first on PATH (#30).
+start "" /belownormal /b /wait "%SystemRoot%\System32\cmd.exe" /d /c call "%~f0" %*
 exit /b %errorlevel%
 :verify_low
 setlocal EnableDelayedExpansion
@@ -139,7 +140,7 @@ if not "!CODE!"=="0" (
     call :fail "version (exit !CODE!)"
     exit /b 0
 )
-findstr /r /x /c:"ronin [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\verify\version.log >nul
+%SystemRoot%\System32\findstr.exe /r /x /c:"ronin [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\verify\version.log >nul
 if errorlevel 1 call :fail "version (printed something else)"
 exit /b 0
 
