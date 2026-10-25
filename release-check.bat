@@ -299,7 +299,8 @@ call :show "!RUN!\coverage-collect.txt"
 if exist build\ronin.log copy /y build\ronin.log "!RUN!\coverage-test.log" >nul
 if not "!CODE!"=="0" (
     set "FAILS=0"
-    for /f %%n in ('findstr /c:"test: FAIL" "!RUN!\coverage-test.log" ^| find /c /v ""') do set "FAILS=%%n"
+    rem System32's find.exe by its path: from Git Bash, PATH finds Git's Unix find first (it would walk C:\).
+    for /f %%n in ('findstr /c:"test: FAIL" "!RUN!\coverage-test.log" ^| %SystemRoot%\System32\find.exe /c /v ""') do set "FAILS=%%n"
     set "M=coverage: --test exited !CODE! under instrumentation, !FAILS! "test: FAIL" lines (!RUN!\coverage-test.log). Not a gate: the instrumentation changes function addresses and timing, and the uninstrumented --test passed in verify-phase; the report under-counts what --test runs"
     call :say
 )
