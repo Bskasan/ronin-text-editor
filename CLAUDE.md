@@ -158,7 +158,7 @@ every piece of work is a GitHub issue, worked on its own branch and merged throu
   docs/releases/checklist-<version>.md, `build.bat docs`, dist.bat. After the merge the maintainer tags v<version> on
   main and publishes the release with the zip.
 - A release pull request is opened only after a full `release-check.bat` PASS on its branch's last commit (#30;
-  maintainer only, an announced heavy run of about 20 minutes): the commit published on origin and containing origin's
+  maintainer only, an announced heavy run of about 12 minutes): the commit published on origin and containing origin's
   main, the versions in agreement, `verify.bat phase`, dist.bat, the coverage report, the zip checked without the focus,
   the HUMAN list that is left, the maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin unchanged.
 
@@ -204,7 +204,7 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # last line "dist: PASS: <zip> (<bytes> bytes, SHA-256 <hash>)"; the version
                                      # is src/app/version.h's. It packs the working copy's files: a text file a tool
                                      # wrote with LF stays LF until checked out again (a fresh clone has CRLF)
-    cmd //c ".\release-check.bat"    # maintainer only, before a release pull request (#30; a heavy run, ~20 min):
+    cmd //c ".\release-check.bat"    # maintainer only, before a release pull request (#30; a heavy run, ~12 min):
                                      # the debug build, the preconditions (a clean tree; HEAD = origin's main, or on
                                      # another branch = that branch on origin with origin's main in it, read by
                                      # git ls-remote; version.h = CHANGELOG.md's first dated section, and
