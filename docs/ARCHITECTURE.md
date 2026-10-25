@@ -4584,7 +4584,9 @@ step of its own.
      find, tar, sort and more, and on this machine PATH finds it before System32.
    - The first full run hung on a bare `find`: Git's find walking C:\. bdb06a6 fixed that one call. The audit after it
      found the rest bare too: `where` and `findstr` in build.bat, verify.bat and dist.bat, `fc` in release-check.bat,
-     and `cmd` in verify.bat's restart.
+     and `cmd` in verify.bat's restart. One more, dist.bat's `echo %HASH%| findstr` (the hash's form), was missed by
+     that audit (its search skipped lines starting with echo) and caught by the proof below: dist.bat failed with "FAKE
+     findstr.exe called", then "no SHA-256 from certutil".
    - Visual Studio's vcvars scripts call findstr and where by bare name themselves, so build.bat puts System32 first on
      PATH before it calls vcvars64.bat.
    - What stays on PATH: git (release-check.bat logs which one), and MSVC's cl, rc, fxc and link (from vcvars).
