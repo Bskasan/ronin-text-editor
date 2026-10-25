@@ -4578,7 +4578,9 @@ ever started the zip's own exe. `release-check.bat` is one run the maintainer st
 step of its own.
 
 1. **Two files.** release-check.bat holds the order, the logs and every exit code, with system programs only (git,
-   certutil, findstr, fc). tools/release_check.c (build\release_check.exe, built by build.bat like the other tools,
+   certutil, findstr, fc, find). find, like tar and sort, has a namesake in Git for Windows' usr\bin, which PATH finds
+   first when the run starts from Git Bash, so it is called as %SystemRoot%\System32\find.exe (the first full run hung
+   there: Git's find walking C:\). tools/release_check.c (build\release_check.exe, built by build.bat like the other tools,
    compiled in CI but never run there) does what cmd cannot do reliably: the log's time stamp (`%date%` depends on the
    locale), the versions, the zip checks, the foreground watch, the folder snapshots, the HUMAN list and the coverage
    summary. It has its own table-cell splitter instead of markdown.c's `md_cells`. That one keeps a `|` inside a code
