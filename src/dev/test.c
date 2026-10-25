@@ -12048,10 +12048,10 @@ static String8 test_match_text(Arena *arena, String8 line, b32 ok, const Compile
 static b32 test_compile_match(Test *t) {
     static const struct { const char *line, *want; } located[] = {
         // MSVC (build.bat compiles with /FC: full paths), csc, tsc's plain form, MSBuild
-        { "C:\\web-projects\\text-editor\\src\\edit.c(120): error C2065: 'x': undeclared identifier",
-          "error 120:0 [C:\\web-projects\\text-editor\\src\\edit.c] ((120)) {error}" },
-        { "C:\\web-projects\\text-editor\\src\\app.c(55,9): warning C4100: 'y': unreferenced formal parameter",
-          "warning 55:9 [C:\\web-projects\\text-editor\\src\\app.c] ((55,9)) {warning}" },
+        { "C:\\code\\ronin\\src\\edit.c(120): error C2065: 'x': undeclared identifier",
+          "error 120:0 [C:\\code\\ronin\\src\\edit.c] ((120)) {error}" },
+        { "C:\\code\\ronin\\src\\app.c(55,9): warning C4100: 'y': unreferenced formal parameter",
+          "warning 55:9 [C:\\code\\ronin\\src\\app.c] ((55,9)) {warning}" },
         { "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt\\stdio.h(12): note: see declaration of 'printf'",
           "info 12:0 [C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt\\stdio.h] ((12)) {note}" },
         { "src\\ronin.c(3): fatal error C1083: Cannot open include file: 'nope.h': No such file or directory",

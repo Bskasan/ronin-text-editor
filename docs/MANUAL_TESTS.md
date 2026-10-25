@@ -854,11 +854,11 @@ Phase 19, the git changes view:
 
 Phase 20, terminals (Windows Terminal installed, `claude` on PATH; each step opens real windows):
 
-42. **V1, V5**: `build\ronin.exe src\app\app.c`, C-c t: Windows Terminal opens with its prompt in ...\text-editor\src\app and
+42. **V1, V5**: `build\ronin.exe src\app\app.c`, C-c t: Windows Terminal opens with its prompt in the repository's src\app and
     the echo area says "Opened terminal in .../src". Then C-x b `*scratch*` RET, C-c t: the prompt is in the directory
     ronin was started from (its current directory). Close ronin, start `build\ronin.exe src`, C-c t: the prompt is in src.
-43. **V2**: In src\app\app.c, C-c a: Windows Terminal opens in ...\text-editor (the project's root) running claude. Leave
-    claude (`/exit`): the cmd prompt stays open.
+43. **V2**: In src\app\app.c, C-c a: Windows Terminal opens in the repository's root (the project's root) running claude.
+    Leave claude (`/exit`): the cmd prompt stays open.
 44. **V3**: C-c , and add `terminal = cmd` under [settings], save. C-c t: a classic console window opens in src; C-c a:
     one running claude in the root. Remove the line again.
 45. **V4**: With the terminals of steps 42-44 still open, C-x C-c: ronin closes, every terminal stays open and claude
@@ -948,12 +948,11 @@ Issue #1, the git changes view:
 
 Issue #30, release-check.bat:
 
-69. **AF13**: In a cmd window, paste these three lines as they are, then type nothing until the last one ends. The
-    quick run leaves the unpacked zip; the last line starts the zip's exe *without* `--no-activate` (whatever the
-    version: the loops find the `İndirilenler ronin` folder and its `ronin-*` folder):
+69. **AF13**: In a cmd window opened in the repository's root, paste these two lines as they are, then type nothing
+    until the last one ends. The quick run leaves the unpacked zip; the last line starts the zip's exe *without*
+    `--no-activate` (whatever the version: the loops find the `İndirilenler ronin` folder and its `ronin-*` folder):
 
     ```
-    cd /d C:\web-projects\text-editor
     release-check.bat quick
     for /d %d in (build\tmp\release-check\zip\*) do for /d %r in ("%d\ronin-*") do build\release_check.exe start-close "%~r\ronin.exe" "%~r" > build\release-check\af13.txt 2>&1
     ```
