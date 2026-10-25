@@ -55,7 +55,8 @@ ronin follows [Semantic Versioning](https://semver.org/): a PATCH release (1.0.1
 breaks an existing ronin.conf, theme file or key. Every pull request that changes what a user sees, installs or
 configures adds that change to the "Unreleased" section of [CHANGELOG.md](CHANGELOG.md); workflow and contributor-only
 changes need no entry. A release is a pull request of its own (the version in `src/app/version.h`, the changelog's
-section dated, the release notes in `docs/releases/`); the maintainer tags and publishes it.
+section dated, the release notes in `docs/releases/`); the maintainer tags and publishes it. `release-check.bat` is the
+maintainer's own check before a release (about 20 minutes); contributors never need to run it.
 
 ## What a pull request must meet
 

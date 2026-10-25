@@ -10,7 +10,8 @@ tree-sitter). Built in 25 phases up to 1.0.0; since then through GitHub issues a
 "After 1.0" list. A change implements only its own issue. For strangers (Phase 22): README.md,
 CONTRIBUTING.md, .github/ (issue and pull request templates, blank issues off) and .github/workflows/build.yml (CI on
 windows-latest: the three builds, the source check (Phase 23), --test on debug and bench, the docs-check (Phase 24), the
-imports, --version; the bench smoke informational only, the smoke gate and `verify.bat phase` stay local). The
+imports, --version; the bench smoke informational only, the smoke gate, `verify.bat phase` and `release-check.bat` (#30)
+stay local). The
 documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs/*.html by `build.bat docs`
 (tools/make_docs.c), published by GitHub Pages from docs/.
 
@@ -138,12 +139,12 @@ every piece of work is a GitHub issue, worked on its own branch and merged throu
   before every commit, one logical change per commit, docs/MANUAL_TESTS.md, README.md and the site's pages updated
   where they describe what changed. Commit messages end with the issue: `feat(view): line numbers (#4)`.
   `verify.bat phase` runs before the pull request for anything larger than a small fix, announced as a heavy run.
-- Heavy runs: any run expected to take more than about 2 minutes (`verify.bat phase`, `--soak`, `--fuzz-seeds`,
-  repeated `--test` runs, benchmarks, long leak checks) is announced before it starts, with the list of runs and an
-  estimated total time, and waits for approval, so the machine can be freed first (other heavy programs closed, the
-  machine left alone). Heavy runs are grouped into one block at the end of the work. If a run in the block fails, stop
-  and report it with its log; do not retry it to get a pass. An ordinary `verify.bat` before a commit needs no
-  announcement.
+- Heavy runs: any run expected to take more than about 2 minutes (`verify.bat phase`, `release-check.bat`, `--soak`,
+  `--fuzz-seeds`, repeated `--test` runs, benchmarks, long leak checks) is announced before it starts, with the list of
+  runs and an estimated total time, and waits for approval, so the machine can be freed first (other heavy programs
+  closed, the machine left alone). Heavy runs are grouped into one block at the end of the work. If a run in the block
+  fails, stop and report it with its log; do not retry it to get a pass. An ordinary `verify.bat` before a commit needs
+  no announcement.
 - CI: when a CI check fails, report the failure and its log, and propose a fix as a plan; do not push a fix without
   approval. No automatic fixing of CI.
 - Pushing the branch (`git push -u origin <branch>`) and opening its pull request with `gh pr create` are allowed.
@@ -156,6 +157,10 @@ every piece of work is a GitHub issue, worked on its own branch and merged throu
   "Unreleased" becoming "<version> — <date>", the release notes in docs/releases/<version>.md, the checklist in
   docs/releases/checklist-<version>.md, `build.bat docs`, dist.bat. After the merge the maintainer tags v<version> on
   main and publishes the release with the zip.
+- A release pull request is opened only after a full `release-check.bat` PASS on its branch's last commit (#30;
+  maintainer only, an announced heavy run of about 20 minutes): the commit published on origin and containing origin's
+  main, the versions in agreement, `verify.bat phase`, dist.bat, the coverage report, the zip checked without the focus,
+  the HUMAN list that is left, the maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin unchanged.
 
 ## Commit policy (every branch)
 
@@ -192,12 +197,28 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
     build\check_source.exe .         # the source check alone (built by every build.bat): headers, module map, includes
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (before a pull request, see Workflow)
-    cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (ronin.exe,
-                                     # README.md, LICENSE, THIRD_PARTY.md, CHANGELOG.md, samples\; the listing
-                                     # checked: 11 files) and dist\SHA256SUMS.txt (its SHA-256, sha256sum's format);
+    cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (the files of
+                                     # res\dist_files.txt: ronin.exe, README.md, LICENSE, THIRD_PARTY.md,
+                                     # CHANGELOG.md, the six samples; the listing checked against that list, #30) and
+                                     # dist\SHA256SUMS.txt (its SHA-256, sha256sum's format);
                                      # last line "dist: PASS: <zip> (<bytes> bytes, SHA-256 <hash>)"; the version
                                      # is src/app/version.h's. It packs the working copy's files: a text file a tool
                                      # wrote with LF stays LF until checked out again (a fresh clone has CRLF)
+    cmd //c ".\release-check.bat"    # maintainer only, before a release pull request (#30; a heavy run, ~20 min):
+                                     # the debug build, the preconditions (a clean tree; HEAD = origin's main, or on
+                                     # another branch = that branch on origin with origin's main in it, read by
+                                     # git ls-remote; version.h = CHANGELOG.md's first dated section, and
+                                     # docs\releases\<version>.md), verify.bat phase, dist.bat, coverage (the debug
+                                     # --test under Microsoft.CodeCoverage.Console: a report, never a gate), the zip
+                                     # (unpacked into a folder with a space and İ: its files, --version, the version
+                                     # resource, --check-imports, a --no-activate start and close with the foreground
+                                     # watched, nothing written, --startup-ms --no-activate), the HUMAN list of
+                                     # docs\MANUAL_TESTS.md, the maintainer's folders and the repository unchanged;
+                                     # stops at the first failing step; last line "release-check: PASS" or
+                                     # "release-check: FAIL: <step>"; log build\release-check\<yyyymmdd-hhmmss>.log
+    cmd //c ".\release-check.bat quick"  # development runs (~10 s): the preconditions (tree and commit only reported),
+                                     # the zip checks on an existing dist\, the HUMAN list, unchanged; last line
+                                     # "release-check: PASS (quick)"
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
@@ -697,14 +718,16 @@ because GitHub Pages serves those files; verify's docs-check keeps them equal to
 | `make_themes.exe`, `make_themes.obj` | build.bat (tools\make_themes.c) |
 | `check_source.exe`, `check_source.obj` | build.bat (tools\check_source.c; run by verify.bat and CI) |
 | `make_docs.exe`, `make_docs.obj` | build.bat (tools\make_docs.c with src\dev\markdown.c; run by build.bat docs, verify.bat and CI) |
+| `release_check.exe`, `release_check.obj` | build.bat (tools\release_check.c; run only by release-check.bat, #30) |
 | `gen\themes.h` | build.bat (make_themes, from themes\*.conf: the built-in themes) |
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\platform\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
-| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme), the coverage map's tests and the input harness's presses (tmp\p29set, tmp\p29proj, tmp\p29keys_h, tmp\p29keys) and verify's and CI's docs-check (tmp\docs_check) |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme), the coverage map's tests and the input harness's presses (tmp\p29set, tmp\p29proj, tmp\p29keys_h, tmp\p29keys), verify's and CI's docs-check (tmp\docs_check) and release-check.bat (tmp\release-check: the unpacked zip, the empty APPDATA and LOCALAPPDATA, the coverage tool's TEMP) |
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |
+| `release-check\` | release-check.bat (#30): `<yyyymmdd-hhmmss>.log`, the whole run, and `<yyyymmdd-hhmmss>\`, each step's output (verify's logs of both verify runs, the coverage report, the snapshots) |
 | `dist\` | dist.bat (the staging folder and `contents.txt`, the zip's listing; the zip and `SHA256SUMS.txt` go to dist\ at the root) |
 | `proof\` | scratch copies of the repository for a proof, made by hand; never required |
 

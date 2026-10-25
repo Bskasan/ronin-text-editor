@@ -696,6 +696,34 @@ after counts, the moved checks and the time are in Measurements, #29 (docs/ARCHI
 | AE9 | render_mode classic and natural draw differently from symmetric and from each other | AUTOMATED-NEW | `test_settings_font`: the glyph coverage of "agW@" in each mode's font, made from the app's settings. The look itself stays HUMAN (I4). |
 | AE10 | project-find-file-other-window opens the file in the other window and leaves the first one as it was | AUTOMATED | `test_finder` (since Phase 11, through M-x; #28's audit missed it); #29 added the check of the first window. |
 
+## AF. release-check.bat (#30)
+
+`release-check.bat` is the maintainer's check before a release pull request: the debug build (tool), the preconditions,
+`verify.bat phase`, dist.bat, the coverage report, the zip, the HUMAN list of this file, and the maintainer's folders
+unchanged (Decisions, #30 in docs/ARCHITECTURE.md). Each failure below was shown in build\proof\p30\fx (never
+committed): a bare "origin" cloned from the branch, a working clone of it, stubs committed and pushed there, APPDATA and
+LOCALAPPDATA pointed at fake folders. Each of those runs ended with the reason's line and `release-check: FAIL: <step>`.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| AF1 | The steps run in the order tool, preconditions, verify-phase, dist, coverage, zip, human, unchanged; the run stops at the first failing step; the last line is exactly `release-check: PASS` or `release-check: FAIL: <step>`; the whole run is in build\release-check\<yyyymmdd-hhmmss>.log | AUTOMATED-NEW | every fixture below stops at its own step; a stubbed full run (verify.bat and dist.bat stubs passing, no vswhere) printed every step in order, then `release-check: PASS`; the full run: Measurements, #30. |
+| AF2 | The working tree must be clean | AUTOMATED-NEW | shown to fail with an untracked stray.txt: "the working tree is not clean (git status --porcelain above)", `FAIL: preconditions`. |
+| AF3 | HEAD must be the published commit: on main origin's main; on another branch that branch on origin, with origin's main in it; read with git ls-remote, never fetched | AUTOMATED-NEW | shown to fail with a commit not pushed ("HEAD ... is not origin's chore/30-release-check ... (push or pull first)"), a detached HEAD ("is detached"), origin's main moved on and not fetched ("is not in this clone: git fetch first") and, fetched, not in the branch ("bring the branch up to date with main"). |
+| AF4 | version.h's version, CHANGELOG.md's first dated section and docs/releases/<version>.md agree | AUTOMATED-NEW | `release_check versions`; shown to fail with version.h at 1.0.1 ("its first dated section is 1.0.0, src\app\version.h says 1.0.1"), the PATCH number alone changed ("RONIN_VERSION "1.0.0" but MAJOR.MINOR.PATCH 1.0.2"), the release notes renamed ("docs\releases\1.0.0.md does not exist") and the heading's date removed ("is not "## X.Y.Z — YYYY-MM-DD""). On main between releases it notes "a dry run, not a release". |
+| AF5 | verify-phase and dist each need exit 0 and their own last line | AUTOMATED-NEW | stubs: verify.bat exit 1 (`FAIL: verify-phase`), verify.bat printing "verify: PASSED" with exit 0 ("its last line is "verify: PASSED", not "verify: PASS""), dist.bat exit 1 (`FAIL: dist`), dist.bat printing "dist: done" with exit 0. |
+| AF6 | The coverage report: line coverage per file of src\ from the debug build's `--test`, never a gate | AUTOMATED-NEW | the probe: 43 files, 28,511 / 36,045 lines (79.1%), equal to the report's header; `--test` under instrumentation exits 9 (function addresses and timing; Decisions, #30, 9) and the step says so and goes on; without vswhere (the stubbed full run): "coverage: skipped: Microsoft.CodeCoverage.Console not found", then PASS. |
+| AF7 | The zip is named for version.h's version and SHA256SUMS.txt holds its SHA-256 and name | AUTOMATED-NEW | shown to fail with one digit of SHA256SUMS.txt changed (both lines printed) and with the zip renamed to ronin-1.0.1 ("no dist\ronin-1.0.0-windows-x64.zip"). |
+| AF8 | The zip holds exactly the files of res\dist_files.txt in one ronin-<version> folder | AUTOMATED-NEW | `release_check zip`; shown to fail with a ronin.pdb added ("contents: FAIL: extra ronin.pdb") and with LICENSE left out ("missing LICENSE"), each zip with a matching SHA256SUMS.txt. |
+| AF9 | Unpacked into a folder with a space and a non-ASCII letter (`İndirilenler ronin`), the zip's exe prints `ronin <version>`, carries the version resource of that version and imports only res\imports.txt's DLLs | AUTOMATED-NEW | every quick run: "version: "ronin 1.0.0", exit 0", "FileVersion and ProductVersion 1.0.0 (1.0.0.0)", "imports: as res\imports.txt lists"; shown to fail with a release exe built at 1.0.1 ("--version printed "ronin 1.0.1""), one built with FILEVERSION 9, 9, 9, 0 ("not 1.0.0.0 (9.9.9.0)") and ronin_debug.exe as the zip's exe ("--check-imports exit 9"). |
+| AF10 | From that folder a `--no-activate` start shows "*scratch* - ronin", closes on WM_CLOSE with exit 0, never gives its window the foreground, and writes nothing (the folder, the redirected APPDATA and LOCALAPPDATA) | AUTOMATED-NEW | every quick run: "foreground changes while it ran: 0, none to its window", "the unpacked folder unchanged, no file in APPDATA or LOCALAPPDATA"; nothing written shown to fail with a file in the redirected APPDATA (`release_check zip` on its own: "APPDATA: FAIL: a file was written: Microsoft/stray.txt"). The foreground watch failing: AF13. |
+| AF11 | `--startup-ms --no-activate` three times from that folder, informational, under the same foreground watch | AUTOMATED-NEW | "startup-ms: 175, 174, 171 ms, median 174 ms" (a quick run on the maintainer's machine); not comparable with Phase 25's foreground numbers. |
+| AF12 | The HUMAN rows left are printed from this file: every HUMAN row and the HUMAN part of each mixed row, with its id and its numbered HUMAN steps | AUTOMATED-NEW | `release_check human`: "72 rows (55 HUMAN, 17 mixed)" with AF13, equal to an independent count of the status column (awk); before AF, 71 (54, 17), the audit's numbers; shown to fail with every HUMAN status removed ("no HUMAN row found", `FAIL: human`). |
+| AF13 | The foreground watch fails when the exe takes the foreground | HUMAN | Starting the exe without `--no-activate` takes the foreground, which by CLAUDE.md only the person at the machine may do: HUMAN step 69. |
+| AF14 | The maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin, git status and the untracked and ignored paths outside build\ and dist\ are the same at the end; HEAD did not move | AUTOMATED-NEW | shown to fail with a file written into the (fake) %APPDATA%\ronin during a run (the snapshot before, then after), an ignored stray.log made at the clone's root ("wrote outside build\ and dist\") and README.md changed during a run ("git status changed"). |
+| AF15 | `release-check.bat quick`: the preconditions with the tree and the commit only reported, the zip checks on an existing dist\, the HUMAN list, unchanged; last line `release-check: PASS (quick)` | AUTOMATED-NEW | about 10 s; on the work branch before it was pushed: "quick: not required: the working tree is not clean", "quick: not required: the branch chore/30-release-check is not on origin (push it first)", then `release-check: PASS (quick)`. |
+| AF16 | A tool that does not build fails the first step | AUTOMATED-NEW | shown to fail with a line that is not C appended to tools/release_check.c ("ERROR: tools\release_check.c did not compile", `FAIL: tool`). |
+| AF17 | dist.bat copies exactly res\dist_files.txt's files and checks the zip's listing against it | AUTOMATED-NEW | build\dist\contents.txt of the 1.0.0 zip before and after the change, equal line for line (11 files); dist: PASS. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
@@ -914,6 +942,16 @@ Issue #1, the git changes view:
 68. **AC4**: After the merge, once GitHub Pages has published: open
     https://bskasan.github.io/ronin-text-editor/changelog.html#changed-1, and on GitHub CHANGELOG.md on main with
     `#changed-1` after its address. Both scroll to 1.0.0's "Changed" (the second one on the page), not to Unreleased's.
+
+Issue #30, release-check.bat:
+
+69. **AF13**: Run `release-check.bat quick` first (it leaves the unpacked zip), then type nothing until this ends. In a
+    terminal at the repository's root, start the zip's exe *without* `--no-activate`:
+    `build\release_check.exe start-close "build\tmp\release-check\zip\İndirilenler ronin\ronin-1.0.0\ronin.exe"
+    "build\tmp\release-check\zip\İndirilenler ronin\ronin-1.0.0"` (one line; the version of the zip). ronin comes to the
+    front for about 3 s and closes. The output must end with `start-close: FAIL: the foreground went to its window
+    "*scratch* - ronin" at +N ms`, then `start-close: FAIL`. If ronin stays behind with a flashing taskbar button,
+    Windows refused it the foreground: that run shows nothing; say so.
 
 Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
 `ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
