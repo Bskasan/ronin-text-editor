@@ -107,9 +107,11 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
   verify.bat starts itself again that way, so every child inherits it), and the seed sweep uses (logical processors
   − 2) workers, at least 1, or `VERIFY_WORKERS=N` (1 to 64). The hand-run measurements (`--bench-latency`,
   `--startup-ms`) keep normal priority. Take a screenshot after a visual change and look at it.
-- Anything that takes the foreground or injects real input (`--type-ahead-check` today) is never
-  run by a script or a tool: only by hand, by the person at the machine, one run at a time (keys typed
-  in another window meanwhile would go astray). Everything else that is run must keep not taking the focus.
+- Anything that takes the foreground or injects real input (`--type-ahead-check`, `tools/e2e.c`) runs only
+  with the maintainer's permission for each run, announced with what it does and how long it takes; the
+  maintainer leaves the machine, and the run aborts on any physical input (`--type-ahead-check` reports such
+  a run inconclusive). `release-check.bat`, which runs the driver, is always started by the maintainer.
+  Everything else that is run must keep not taking the focus.
 - Code, comments, docs, commit messages, issues and pull requests in English.
 - A change of more than a few lines starts with a written plan that is reviewed before implementation;
   a revised plan is shown in full with the changes marked.
