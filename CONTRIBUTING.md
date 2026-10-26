@@ -18,13 +18,14 @@ You need Windows 10 or later (x64) and Visual Studio 2022 or later, or the Build
 | `build.bat docs` | the debug build, then the documentation site: `docs\*.html` from `docs\src` (committed, as GitHub Pages serves it) |
 
 - Run `verify.bat` before every commit. It builds all three, runs the source check (see [New files](#new-files)), the
-  docs-check (the site in `docs\` is what its sources make), the smoke test (real frames, pixel checks) and the tests,
-  checks the release exe's imports, and prints one last line: only `verify: PASS` counts.
+  link check (nothing of the C runtime in the release and bench links but memcpy, memset, memmove and the compiler's
+  helpers), the docs-check (the site in `docs\` is what its sources make), the smoke test (real frames, pixel checks)
+  and the tests, checks the release exe's imports, and prints one last line: only `verify: PASS` counts.
 - Run `verify.bat phase` before you open a pull request for anything larger than a small fix (about 9 minutes): it
   adds the full tests on the debug build, a sweep of 256 fuzz seeds, a million-event soak and the leak check.
-- Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
-  the docs-check, the import check and `--version`; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a
-  local `verify.bat` is required.
+- Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the link
+  check, the tests, the docs-check, the import check and `--version`; it cannot run the smoke gate (no GPU, no D3D11
+  debug layer), so a local `verify.bat` is required.
 
 From Git Bash, call them as `cmd //c ".\verify.bat"`. The dev flags are listed in [CLAUDE.md](CLAUDE.md), the design
 in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -61,7 +62,14 @@ maintainer's own check before a release (about 12 minutes); contributors never n
 ## What a pull request must meet
 
 - C11 for MSVC, `/W4 /WX` clean. C++ only in `src/platform/win32_dwrite.cpp`, and only C-style there.
-- No C runtime functions: no stdio, no malloc / free, no `str*` (memcpy, memset and memmove are fine).
+- No C runtime functions: no stdio, no malloc / free, no `str*` (memcpy, memset and memmove are fine). The source
+  check names each call of another one, and each C runtime header in src/platform/ and tools/, with its file and
+  line; the link check catches what a macro or the compiler brings in (such as `RtlEqualMemory`, which is `memcmp`).
+- String and character literals are ASCII: write other characters as `\u` escapes (`\x` for a single byte), so a
+  literal never depends on the code page the compiler reads the file in. Comments may hold any UTF-8.
+- In a .bat file, call every Windows program by its System32 path (`%SystemRoot%\System32\findstr.exe`), also after
+  a pipe and inside `for /f`: Git for Windows' usr\bin has its own find, sort and tar, and can come first on PATH. A
+  bare name is fine for cmd's builtins, cl, rc, fxc and git.
 - No third-party code or libraries, and no new DLL import: `res/imports.txt` stays as it is.
 - Memory from the arenas only; nothing allocated per keystroke or per frame; no idle timers or busy loops.
 - Every feature is a named command with a one-line description, so it can be bound to a key and found with M-x and
@@ -105,8 +113,9 @@ second line saying in at most 72 characters what the file does:
 
 That line is also the file's description in the module map, word for word, in a row under its folder's heading.
 `verify.bat` runs the source check (`build\check_source.exe .`, built by `build.bat`): it names each file without the
-header or a row, each description that differs from the map, each row without a file, and each include that breaks
-the two rules, as `path:line: message`.
+header or a row, each description that differs from the map, each row without a file, each include that breaks the
+two rules, each C runtime call, C runtime header and non-ASCII literal, and each program a .bat file calls by its bare
+name, as `path:line: message`.
 
 ## Reporting a bug
 
