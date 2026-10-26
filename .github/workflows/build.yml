@@ -29,11 +29,13 @@ jobs:
           call .\build.bat release || exit /b 1
           call .\build.bat bench || exit /b 1
 
-      # Every source file's header against docs/ARCHITECTURE.md's module map, and the include rules (Phase 23;
-      # build.bat compiled the check).
-      - name: Source headers, module map and includes
+      # Every source file's header against docs/ARCHITECTURE.md's module map, the include rules (Phase 23; build.bat
+      # compiled the check), and no C runtime functions but memcpy, memset and memmove (#36); its own cases first.
+      - name: Source headers, module map, includes and C runtime calls
         shell: cmd
-        run: build\check_source.exe .
+        run: |
+          build\check_source.exe --self-test || exit /b 1
+          build\check_source.exe .
 
       - name: Toolset and executable sizes
         shell: pwsh
