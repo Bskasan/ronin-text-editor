@@ -3947,7 +3947,7 @@ static i32 win32_smoke_modal(Platform *p) {
     pixels = r_read_capture(p->renderer, &p->scratch, &w2, &h2);
     i64 differ = -1;
     if (pixels && w2 == w && h2 == h) {
-        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (!mem_equal(before + i, pixels + i, 3)) differ = (i64)(i / 4);
     }
     if (!pixels || w2 != w || h2 != h || differ >= 0 || app_dev_modal_open(p->app)) {
         LOG("smoke: FAIL: modal: the frame after C-g differs from the one before C-S-p (%dx%d against %dx%d, first pixel (%D, %D)), open %d",
@@ -4019,7 +4019,7 @@ static i32 win32_smoke_git(Platform *p) {
     i64 differ = -1;
     u64 bytes = (u64)w * (u64)h * 4;
     if (before && pixels && w2 == w && h2 == h) {
-        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (!mem_equal(before + i, pixels + i, 3)) differ = (i64)(i / 4);
     }
     if (!before || !pixels || w2 != w || h2 != h || differ >= 0 || app_dev_modal_open(p->app)) {
         LOG("smoke: FAIL: git changes: the frame after C-g differs from the one before C-x g (first pixel (%D, %D)), open %d",
@@ -4084,7 +4084,7 @@ static i32 win32_smoke_terminal(Platform *p) {
     i64 differ = -1;
     u64 bytes = (u64)w * (u64)MAX(h - lh, 0) * 4; // above the echo line
     if (before && pixels && w2 == w && h2 == h) {
-        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (!mem_equal(before + i, pixels + i, 3)) differ = (i64)(i / 4);
     }
     if (!before || !pixels || w2 != w || h2 != h || differ >= 0) {
         LOG("smoke: FAIL: terminal: the frame above the echo line changed (first pixel (%D, %D))", differ >= 0 ? differ % w : -1,
@@ -4151,7 +4151,7 @@ static i32 win32_smoke_themes(Platform *p) {
     i64 differ = -1;
     u64 bytes = (u64)w * (u64)h * 4;
     if (before && pixels && w2 == w && h2 == h) {
-        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (memcmp(before + i, pixels + i, 3) != 0) differ = (i64)(i / 4);
+        for (u64 i = 0; i < bytes && differ < 0; i += 4) if (!mem_equal(before + i, pixels + i, 3)) differ = (i64)(i / 4);
     }
     if (!before || !pixels || w2 != w || h2 != h || differ >= 0) {
         LOG("smoke: FAIL: themes: the frame back on ronin differs from the one before (first pixel (%D, %D))",
@@ -6765,7 +6765,7 @@ static i32 win32_dev_clipboard_check(Platform *p) {
     u16 *back;
     i64 back_len;
     b32 back_text = win32_dev_clip_read(p, &arena, &back, &back_len);
-    b32 ok_restore = had_text ? back_text && back_len == saved_len && memcmp(back, saved, (size_t)saved_len * 2) == 0
+    b32 ok_restore = had_text ? back_text && back_len == saved_len && mem_equal(back, saved, (i64)saved_len * 2)
                               : !back_text && CountClipboardFormats() == 0;
     b32 ok = app && ok_copy && ok_yank && ok_restore;
     LOG("clipboard-check: %s: kill-ring-save of two lines gives CRLF on the clipboard %d (%D units), another program's CRLF text "
@@ -6814,7 +6814,7 @@ static i32 win32_dev_dpi_check(Platform *p) {
     ok = win32_dev_dpi_capture(p, "dpi_back.png", &c, &wc, &hc) && ok;
     if (!ok) return EXIT_OUTPUT_FILE;
     b32 scaled = wb * 4 >= wa * 5 - wa / 10 && wb * 4 <= wa * 5 + wa / 10 && hb * 4 >= ha * 5 - ha / 10; // the frame scales too
-    b32 same = wa == wc && ha == hc && memcmp(a, c, (size_t)wa * ha * 4) == 0;
+    b32 same = wa == wc && ha == hc && mem_equal(a, c, (i64)wa * ha * 4);
     b32 fonts = setups1 == setups0 + 1 && setups2 == setups1 + 1;
     b32 pass = scaled && same && fonts;
     LOG("dpi-check: %s: %u -> %u -> %u dpi: client %dx%d -> %dx%d -> %dx%d (scaled %d), font set up again at each change %d "
