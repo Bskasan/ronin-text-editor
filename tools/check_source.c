@@ -1,5 +1,5 @@
 /* ======================================================================
-   ronin: build check: headers, module map and includes of every source file
+   ronin: build check: headers, module map, includes, C runtime
 
    Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
    LICENSE in the repository root. This software is provided "as is",
@@ -19,6 +19,13 @@
 // src\text\ includes from src\editor\, src\project\ or src\app\. Only lines whose first non-blank character is '#'
 // count. Each problem is one "path:line: message" line on stdout; the last line is "check_source: PASS: ..." (exit
 // 0) or "check_source: FAIL: N problems" (exit 1). No C runtime calls: Win32 only.
+//
+// The C runtime (#36): in every .c, .h and .cpp under src\ and tools\, a call of a function of CRT_NAMES (an
+// identifier of the list followed by '(', not after '.', '->' or '::'; in a #define body the bare name counts too),
+// outside comments and string and character literals; an #include of a header of CRT_HEADERS in src\platform\ and
+// tools\ (elsewhere in src\ the include rule above refuses it already); a byte >= 0x80 inside a string or character
+// literal (a literal never depends on the code page the compiler reads its source in).
+// "check_source --self-test" runs the cases of the SELF_ tables.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -59,6 +66,69 @@ static const char *const SYSTEM_ALLOWED[] = { "stdint.h", "stddef.h", "stdarg.h"
 static const char *const GENERATED[] = { "quad_vs.h", "quad_ps.h", "themes.h" }; // build\gen, through /Ibuild\gen
 static const char *const MAP_FILE = "docs/ARCHITECTURE.md";
 
+// The C runtime's functions, by header: a call of one fails. memcpy, memset and memmove are not here (allowed).
+static const char *const CRT_NAMES[] = {
+    // <string.h>, <wchar.h> and MSVC's own string functions
+    "memcmp", "memchr", "memccpy", "_memccpy", "_memicmp", "memcpy_s", "memmove_s", "memset_s",
+    "strlen", "strnlen", "strnlen_s", "strcpy", "strcpy_s", "strncpy", "strncpy_s", "strcat", "strcat_s", "strncat",
+    "strncat_s", "strcmp", "strncmp", "strcoll", "strxfrm", "strchr", "strrchr", "strstr", "strspn", "strcspn",
+    "strpbrk", "strtok", "strtok_s", "strerror", "strerror_s", "strdup", "strndup", "_strdup", "_stricmp", "_strnicmp",
+    "stricmp", "strnicmp", "strcasecmp", "strncasecmp", "_strlwr", "_strupr", "_strrev", "_strset",
+    "wcslen", "wcsnlen", "wcscpy", "wcscpy_s", "wcsncpy", "wcsncpy_s", "wcscat", "wcscat_s", "wcsncat", "wcsncat_s",
+    "wcscmp", "wcsncmp", "wcscoll", "wcsxfrm", "wcschr", "wcsrchr", "wcsstr", "wcsspn", "wcscspn", "wcspbrk", "wcstok",
+    "wcstok_s", "wcsdup", "_wcsdup", "_wcsicmp", "_wcsnicmp", "_wcslwr", "_wcsupr", "_wcsrev",
+    "wmemcmp", "wmemchr", "wmemcpy", "wmemmove", "wmemset", "wmemcpy_s", "wmemmove_s",
+    // <stdio.h>
+    "printf", "fprintf", "sprintf", "snprintf", "vprintf", "vfprintf", "vsprintf", "vsnprintf", "_snprintf",
+    "_vsnprintf", "printf_s", "fprintf_s", "sprintf_s", "vsprintf_s", "_snprintf_s", "vsnprintf_s", "_vsnprintf_s",
+    "wprintf", "fwprintf", "swprintf", "vwprintf", "vfwprintf", "vswprintf", "_snwprintf", "_vsnwprintf", "swprintf_s",
+    "_snwprintf_s", "scanf", "fscanf", "sscanf", "vscanf", "vfscanf", "vsscanf", "scanf_s", "fscanf_s", "sscanf_s",
+    "wscanf", "fwscanf", "swscanf", "swscanf_s", "fopen", "fopen_s", "_wfopen", "_wfopen_s", "freopen", "fclose",
+    "fflush", "fread", "fwrite", "fgetc", "fgets", "fputc", "fputs", "getc", "getchar", "gets", "gets_s", "putc",
+    "putchar", "puts", "ungetc", "fseek", "ftell", "_fseeki64", "_ftelli64", "rewind", "fgetpos", "fsetpos", "feof",
+    "ferror", "clearerr", "perror", "remove", "rename", "_wremove", "_wrename", "tmpfile", "tmpnam", "setbuf", "setvbuf",
+    "_fileno", "fgetwc", "fgetws", "fputwc", "fputws", "getwc", "putwc",
+    // <stdlib.h>, <malloc.h>
+    "malloc", "calloc", "realloc", "free", "_aligned_malloc", "_aligned_realloc", "_aligned_free", "_malloca", "_freea",
+    "alloca", "_alloca", "_msize", "_expand", "atoi", "atol", "atoll", "atof", "_atoi64", "_wtoi", "_wtol", "_wtoi64",
+    "_wtof", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "strtold", "_strtoi64", "_strtoui64",
+    "wcstol", "wcstoul", "wcstoll", "wcstoull", "wcstod", "wcstof", "_wcstoi64", "_wcstoui64", "_itoa", "_itoa_s",
+    "_ltoa", "_ltoa_s", "_ultoa", "_ultoa_s", "_i64toa", "_i64toa_s", "_ui64toa", "_ui64toa_s", "_itow", "_itow_s",
+    "_ltow", "_ltow_s", "_ultow", "_ultow_s", "_i64tow", "_i64tow_s", "_ui64tow", "_ui64tow_s", "qsort", "qsort_s",
+    "bsearch", "bsearch_s", "abs", "labs", "llabs", "_abs64", "div", "ldiv", "lldiv", "rand", "srand", "rand_s", "exit",
+    "_exit", "_Exit", "abort", "atexit", "at_quick_exit", "quick_exit", "getenv", "getenv_s", "_wgetenv", "_wgetenv_s",
+    "_putenv", "_wputenv", "system", "_wsystem", "mblen", "mbtowc", "wctomb", "mbstowcs", "wcstombs",
+    // <ctype.h>, <wctype.h>
+    "isalnum", "isalpha", "isblank", "iscntrl", "isdigit", "isgraph", "islower", "isprint", "ispunct", "isspace",
+    "isupper", "isxdigit", "isascii", "__isascii", "tolower", "toupper", "_tolower", "_toupper", "iswalnum", "iswalpha",
+    "iswblank", "iswcntrl", "iswdigit", "iswgraph", "iswlower", "iswprint", "iswpunct", "iswspace", "iswupper",
+    "iswxdigit", "towlower", "towupper",
+    // <math.h>
+    "sqrt", "sqrtf", "pow", "powf", "exp", "expf", "exp2", "exp2f", "log", "logf", "log2", "log2f", "log10", "log10f",
+    "sin", "sinf", "cos", "cosf", "tan", "tanf", "asin", "asinf", "acos", "acosf", "atan", "atanf", "atan2", "atan2f",
+    "sinh", "sinhf", "cosh", "coshf", "tanh", "tanhf", "floor", "floorf", "ceil", "ceilf", "round", "roundf", "lround",
+    "lroundf", "trunc", "truncf", "fmod", "fmodf", "modf", "modff", "frexp", "frexpf", "ldexp", "ldexpf", "fabs",
+    "fabsf", "hypot", "hypotf", "cbrt", "cbrtf", "fmin", "fminf", "fmax", "fmaxf", "copysign", "copysignf", "rint",
+    "rintf", "lrint", "lrintf", "nearbyint", "nearbyintf",
+    // <time.h>
+    "time", "_time64", "clock", "difftime", "mktime", "_mktime64", "gmtime", "gmtime_s", "_gmtime64", "localtime",
+    "localtime_s", "_localtime64", "asctime", "asctime_s", "ctime", "ctime_s", "strftime", "wcsftime", "timespec_get",
+    // the rest: <setjmp.h>, <signal.h>, <locale.h>, <assert.h>, <process.h>, <io.h>, <direct.h>, <conio.h>
+    "setjmp", "longjmp", "signal", "raise", "setlocale", "_wsetlocale", "localeconv", "assert", "_wassert",
+    "_beginthread", "_beginthreadex", "_endthread", "_endthreadex", "_open", "_wopen", "_read", "_write", "_close",
+    "_lseek", "_access", "_waccess", "_getcwd", "_wgetcwd", "_chdir", "_wchdir", "_mkdir", "_wmkdir", "_getch",
+    "_getwch", "_putch", "_kbhit", "_cprintf",
+};
+
+// C runtime headers (#include in src\platform\ and tools\ fails; <string.h> stays for memcpy, memset, memmove).
+static const char *const CRT_HEADERS[] = {
+    "stdio.h", "stdlib.h", "malloc.h", "math.h", "ctype.h", "wctype.h", "wchar.h", "time.h", "locale.h", "setjmp.h",
+    "signal.h", "process.h", "io.h", "direct.h", "conio.h", "assert.h", "errno.h", "tchar.h", "search.h", "fcntl.h",
+    "crtdbg.h", "inttypes.h", "uchar.h", "strsafe.h", // strsafe.h: its inline functions call the CRT
+};
+
+#define CAPTURE_CAP 16384
+
 static SourceFile files[CHECK_FILES_MAX];
 static u32 file_count;
 static MapRow rows[CHECK_ROWS_MAX];
@@ -66,7 +136,10 @@ static u32 row_count;
 static u8 *text; // one file at a time, CHECK_TEXT_CAP
 static char line_out[4096];
 static u32 line_len;
-static u32 problems, include_count;
+static u32 problems, include_count, call_count;
+static int capturing; // the self-test: problem lines go to `capture`, not to stdout
+static char capture[CAPTURE_CAP];
+static u32 capture_len;
 
 // --- strings and output ---------------------------------------------------------------------------------------
 
@@ -120,6 +193,12 @@ static void put_u32(u32 v) {
 }
 
 static void end_line(void) {
+    if (capturing) {
+        for (u32 i = 0; i < line_len && capture_len < CAPTURE_CAP - 1; i++) capture[capture_len++] = line_out[i];
+        if (capture_len < CAPTURE_CAP - 1) capture[capture_len++] = '\n';
+        line_len = 0;
+        return;
+    }
     line_out[line_len++] = '\r';
     line_out[line_len++] = '\n';
     DWORD written;
@@ -462,6 +541,189 @@ static void check_includes(const char *path, u32 len) {
     }
 }
 
+// --- the C runtime in C and C++ source (#36) ------------------------------------------------------------------
+
+#define COUNT(a) ((u32)(sizeof(a) / sizeof((a)[0])))
+
+static u8 lower(u8 c) { return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c; }
+
+static int in_list(const u8 *s, u32 n, const char *const *list, u32 count) {
+    for (u32 k = 0; k < count; k++) if (span_eq(s, n, list[k])) return 1;
+    return 0;
+}
+
+static int ident_char(u8 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+
+static void non_ascii(const char *path, u32 line) {
+    problem(path, line);
+    put("non-ASCII byte in a string or character literal (use \\u or \\x escapes: the compiler may read the file in "
+        "another code page)");
+    end_line();
+}
+
+// A string or character literal from its opening quote at text[i]; returns the index past its closing quote (or its
+// line's end). *line counts the newlines escaped inside it.
+static u32 skip_literal(const char *path, u32 len, u32 i, u32 *line) {
+    u8 q = text[i++];
+    int reported = 0;
+    while (i < len && text[i] != q && text[i] != '\n') {
+        if (text[i] >= 0x80 && !reported) non_ascii(path, *line), reported = 1;
+        if (text[i] == '\\' && i + 1 < len) {
+            if (text[i + 1] >= 0x80 && !reported) non_ascii(path, *line), reported = 1;
+            if (text[i + 1] == '\n') (*line)++;
+            if (text[i + 1] == '\r' && i + 2 < len && text[i + 2] == '\n') (*line)++, i++;
+            i += 2;
+            continue;
+        }
+        i++;
+    }
+    return i < len && text[i] == q ? i + 1 : i;
+}
+
+// C++'s raw string R"delim( ... )delim" from its quote at text[i].
+static u32 skip_raw(const char *path, u32 len, u32 i, u32 *line) {
+    u32 d = i + 1;
+    while (d < len && text[d] != '(' && d - i <= 17) d++;
+    if (d >= len || text[d] != '(') return skip_literal(path, len, i, line);
+    const u8 *delim = text + i + 1;
+    u32 dn = d - i - 1;
+    int reported = 0;
+    for (u32 k = d + 1; k < len; k++) {
+        if (text[k] == '\n') (*line)++;
+        if (text[k] >= 0x80 && !reported) non_ascii(path, *line), reported = 1;
+        if (text[k] != ')' || k + 1 + dn >= len || text[k + 1 + dn] != '"') continue;
+        u32 m = 0;
+        while (m < dn && text[k + 1 + m] == delim[m]) m++;
+        if (m == dn) return k + 2 + dn;
+    }
+    return len;
+}
+
+// Calls of CRT_NAMES, CRT headers (in src/platform/ and tools/) and non-ASCII literals in the file in `text`.
+static void check_c(const char *path, u32 len) {
+    int crt_headers = starts_with(path, "src/platform/") || starts_with(path, "tools/");
+    u32 line = 1, i = 0;
+    int line_start = 1, define = 0, directive = 0, macro_name = 0;
+    u8 last = 0, last2 = 0; // the two code characters before the current one, blanks and comments skipped
+    while (i < len) {
+        u8 c = text[i];
+        if (c == '\n') {
+            line++;
+            i++;
+            line_start = 1;
+            define = directive = macro_name = 0;
+            continue;
+        }
+        if (c == '\\' && i + 1 < len && (text[i + 1] == '\n' || (text[i + 1] == '\r' && i + 2 < len && text[i + 2] == '\n'))) {
+            i += text[i + 1] == '\n' ? 2 : 3; // a continued line: a directive goes on
+            line++;
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v') {
+            i++;
+            continue;
+        }
+        if (c == '/' && i + 1 < len && text[i + 1] == '/') {
+            while (i < len && text[i] != '\n') i++;
+            continue;
+        }
+        if (c == '/' && i + 1 < len && text[i + 1] == '*') {
+            i += 2;
+            while (i < len && !(text[i] == '*' && i + 1 < len && text[i + 1] == '/')) {
+                if (text[i] == '\n') line++;
+                i++;
+            }
+            i = i < len ? i + 2 : len;
+            continue;
+        }
+        if (directive) { // #if, #pragma, #error, #include ...: nothing in them is a call
+            i++;
+            continue;
+        }
+        if (c == '#' && line_start) {
+            line_start = 0;
+            u32 a = i + 1;
+            while (a < len && (text[a] == ' ' || text[a] == '\t')) a++;
+            u32 b = a;
+            while (b < len && ident_char(text[b])) b++;
+            i = b;
+            last = last2 = 0;
+            if (span_eq(text + a, b - a, "define")) {
+                define = macro_name = 1;
+                continue;
+            }
+            directive = 1;
+            if (!crt_headers || !span_eq(text + a, b - a, "include")) continue;
+            u32 p = b;
+            while (p < len && (text[p] == ' ' || text[p] == '\t')) p++;
+            if (p >= len || text[p] != '<') continue;
+            u32 q = ++p;
+            while (q < len && text[q] != '>' && text[q] != '\n') q++;
+            if (in_list(text + p, q - p, CRT_HEADERS, COUNT(CRT_HEADERS))) {
+                problem(path, line);
+                put("#include <");
+                put_n((const char *)text + p, q - p);
+                put(">: a C runtime header (of the C runtime only <string.h>, <stdint.h>, <stddef.h> and <stdarg.h>)");
+                end_line();
+            }
+            continue;
+        }
+        line_start = 0;
+        if (c == '"' || c == '\'') {
+            i = skip_literal(path, len, i, &line);
+            last2 = last, last = '"';
+            continue;
+        }
+        if ((c >= '0' && c <= '9') || (c == '.' && i + 1 < len && text[i + 1] >= '0' && text[i + 1] <= '9')) {
+            // a number, with C++'s digit separators: the ' of 1'000 starts no character literal
+            for (i++; i < len; i++) {
+                u8 d = text[i];
+                if (ident_char(d) || d == '.' || (d == '\'' && i + 1 < len && ident_char(text[i + 1]))) continue;
+                if ((d == '+' || d == '-') && (lower(text[i - 1]) == 'e' || lower(text[i - 1]) == 'p')) continue;
+                break;
+            }
+            last2 = last, last = '0';
+            continue;
+        }
+        if (ident_char(c)) {
+            u32 a = i;
+            while (i < len && ident_char(text[i])) i++;
+            u32 n = i - a;
+            const u8 *w = text + a;
+            if (i < len && text[i] == '"' && (span_eq(w, n, "R") || span_eq(w, n, "LR") || span_eq(w, n, "uR") ||
+                                              span_eq(w, n, "UR") || span_eq(w, n, "u8R"))) {
+                i = skip_raw(path, len, i, &line);
+                last2 = last, last = '"';
+                continue;
+            }
+            if (i < len && (text[i] == '"' || text[i] == '\'') &&
+                (span_eq(w, n, "L") || span_eq(w, n, "u") || span_eq(w, n, "U") || span_eq(w, n, "u8"))) {
+                continue; // a literal's prefix: the literal is next
+            }
+            int member = last == '.' || (last == '>' && last2 == '-') || (last == ':' && last2 == ':');
+            last2 = last, last = 'a';
+            if (macro_name) { // the macro's own name: a definition, not a use
+                macro_name = 0;
+                continue;
+            }
+            u32 p = i;
+            while (p < len && (text[p] == ' ' || text[p] == '\t')) p++;
+            int call = p < len && text[p] == '(';
+            call_count += (u32)call;
+            if ((call || define) && !member && in_list(w, n, CRT_NAMES, COUNT(CRT_NAMES))) {
+                problem(path, line);
+                put("C runtime function '");
+                put_n((const char *)w, n);
+                put("' (only memcpy, memset and memmove are allowed)");
+                end_line();
+            }
+            continue;
+        }
+        last2 = last, last = c;
+        i++;
+    }
+}
+
 static void check_file(const char *path) {
     int in_src = starts_with(path, "src/");
     if (in_src && !has_suffix(path, ".c") && !has_suffix(path, ".h") && !has_suffix(path, ".cpp") && !has_suffix(path, ".hlsl")) {
@@ -491,11 +753,118 @@ static void check_file(const char *path) {
     }
     check_header(path, len, row);
     check_includes(path, len);
+    if (!has_suffix(path, ".hlsl")) check_c(path, len);
+}
+
+// --- the self-test (#36) --------------------------------------------------------------------------------------
+
+typedef struct SelfCase {
+    const char *path;
+    const char *text;
+    const char *expect[4]; // each problem line's start, in order
+} SelfCase;
+
+#define CRT_FN "C runtime function '"
+
+static const SelfCase SELF_C[] = {
+    { "src/x/a.c", "int f(void) { return memcmp(a, b, 4); }", { "src/x/a.c:1: " CRT_FN "memcmp'" } },
+    { "src/x/a.c", "// memcmp(a, b, 4)\n/* strlen(s)\n   free(p) */ int x;", { 0 } },
+    { "src/x/a.c", "const char *s = \"printf(\\\"%d\\\")\"; char c = 'm'; const char *t = \"memcmp(\";", { 0 } },
+    { "src/x/a.c", "b32 e = mem_equal(a, b, 4) && str8_equal(x, y);\nvoid git_job_free(GitJob *j);\nstr_len(s);", { 0 } },
+    { "src/x/a.cpp", "p->free(p); x.time(); ns::abs(1); f->clock (2);", { 0 } },
+    { "src/x/a.c", "memcpy(a, b, 1); memset(a, 0, 1); memmove(a, b, 1);", { 0 } },
+    { "src/x/a.c", "int y;\n#define CMP memcmp\n", { "src/x/a.c:2: " CRT_FN "memcmp'" } },
+    { "src/x/a.c", "#define F(x) strlen(x)\n", { "src/x/a.c:1: " CRT_FN "strlen'" } },
+    { "src/x/a.c", "#define abs(x) ((x) < 0 ? -(x) : (x))\nint y = time;", { 0 } },
+    { "src/x/a.c", "#define LONG(a) \\\n    strlen(a)\nint z;\n", { "src/x/a.c:2: " CRT_FN "strlen'" } },
+    { "src/x/a.c", "#if defined(strlen)\n#endif\n#pragma intrinsic(memcmp)\n#error don't (free)\n", { 0 } },
+    { "src/platform/a.c", "#include <string.h>\n#include <windows.h>\n#include <stdio.h>\n",
+      { "src/platform/a.c:3: #include <stdio.h>: a C runtime header" } },
+    { "tools/t.c", "  #  include <math.h>\n", { "tools/t.c:1: #include <math.h>: a C runtime header" } },
+    { "src/x/a.c", "#include <stdlib.h>\n", { 0 } }, // the include rule refuses it outside src/platform/
+    { "src/x/a.c", "const char *s = \"caf\xC3\xA9\";\nchar c = '\xC3';", { "src/x/a.c:1: non-ASCII byte", "src/x/a.c:2: non-ASCII byte" } },
+    { "src/x/a.c", "// caf\xC3\xA9\n/* \xC3\xA9 */ const char *s = \"caf\\u00e9\";", { 0 } },
+    { "src/x/a.cpp", "int n = 1'000; int m = memchr(a, 0, n) != 0;", { "src/x/a.cpp:1: " CRT_FN "memchr'" } },
+    { "src/x/a.c", "if (x) free (p);\nint q = sqrt(2.0);", { "src/x/a.c:1: " CRT_FN "free'", "src/x/a.c:2: " CRT_FN "sqrt'" } },
+    { "src/x/a.c", "s = \"a\\\"b memcmp(\"; t = memcmp(a, b, 1);", { "src/x/a.c:1: " CRT_FN "memcmp'" } },
+    { "src/x/a.c", "x = L\"memcmp(\"; y = u8\"strlen(\"; z = U'a'; w = toupper(c);", { "src/x/a.c:1: " CRT_FN "toupper'" } },
+    { "src/x/a.c", "/* line 1\n   line 2 */ abort();", { "src/x/a.c:2: " CRT_FN "abort'" } },
+    { "src/x/a.cpp", "auto s = R\"x(memcmp( \" )x\"; qsort(a, 1, 1, f);", { "src/x/a.cpp:1: " CRT_FN "qsort'" } },
+    { "src/x/a.c", "char c = '\\''; int y = isdigit(c);", { "src/x/a.c:1: " CRT_FN "isdigit'" } },
+    { "src/x/a.c", "int a = memcmp_like(x); int b = my_strlen(s); int c = strlen_s(s);", { 0 } },
+};
+
+// Each case's problem lines against its expected starts; returns the failures.
+static u32 self_run(const char *kind, const SelfCase *cases, u32 count) {
+    u32 failed = 0;
+    for (u32 c = 0; c < count; c++) {
+        const SelfCase *k = &cases[c];
+        u32 len = str_len(k->text);
+        for (u32 i = 0; i < len; i++) text[i] = (u8)k->text[i];
+        capturing = 1;
+        capture_len = 0;
+        if (kind[0] == 'C') check_c(k->path, len);
+        capturing = 0;
+        u32 pos = 0, j = 0;
+        int ok = 1;
+        while (pos < capture_len) {
+            u32 e = pos;
+            while (e < capture_len && capture[e] != '\n') e++;
+            const char *want = j < 4 ? k->expect[j] : 0;
+            if (!want || e - pos < str_len(want) || !span_eq((const u8 *)capture + pos, str_len(want), want)) ok = 0;
+            j++;
+            pos = e + 1;
+        }
+        if (j < 4 && k->expect[j]) ok = 0;
+        if (ok) continue;
+        failed++;
+        put("check_source: self-test: FAIL: ");
+        put(kind);
+        put(" case ");
+        put_u32(c + 1);
+        put(" (");
+        put(k->path);
+        put("): expected");
+        end_line();
+        for (u32 e = 0; e < 4 && k->expect[e]; e++) {
+            put("  ");
+            put(k->expect[e]);
+            end_line();
+        }
+        put("got");
+        end_line();
+        for (pos = 0; pos < capture_len;) {
+            u32 e = pos;
+            while (e < capture_len && capture[e] != '\n') e++;
+            put("  ");
+            put_n(capture + pos, e - pos);
+            end_line();
+            pos = e + 1;
+        }
+    }
+    return failed;
+}
+
+static int self_test(void) {
+    u32 failed = 0, total = 0;
+    failed += self_run("C", SELF_C, COUNT(SELF_C)), total += COUNT(SELF_C);
+    put(failed ? "check_source: self-test: FAIL: " : "check_source: self-test: PASS: ");
+    if (failed) {
+        put_u32(failed);
+        put(" of ");
+    }
+    put_u32(total);
+    put(" cases");
+    end_line();
+    return failed ? 1 : 0;
 }
 
 int main(int argc, char **argv) {
+    text = (u8 *)VirtualAlloc(NULL, CHECK_TEXT_CAP, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!text) return 2;
+    if (argc == 2 && str_eq(argv[1], "--self-test")) return self_test();
     if (argc != 2) {
-        put("usage: check_source <repository root>");
+        put("usage: check_source <repository root> | --self-test");
         end_line();
         return 2;
     }
@@ -505,8 +874,6 @@ int main(int argc, char **argv) {
         end_line();
         return 2;
     }
-    text = (u8 *)VirtualAlloc(NULL, CHECK_TEXT_CAP, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!text) return 2;
     read_map();
     walk("src");
     walk("tools");
@@ -541,7 +908,9 @@ int main(int argc, char **argv) {
     put_u32(include_count);
     put(" includes, ");
     put_u32(row_count);
-    put(" map rows");
+    put(" map rows, ");
+    put_u32(call_count);
+    put(" calls without the C runtime");
     end_line();
     return 0;
 }

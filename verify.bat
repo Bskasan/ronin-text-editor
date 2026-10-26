@@ -144,15 +144,22 @@ if not "!CODE!"=="0" (
 if errorlevel 1 call :fail "version (printed something else)"
 exit /b 0
 
-rem --- source-check: tools\check_source.c (built by build.bat) on the repository; its output, kept as
-rem build\verify\source-check.log, is shown when it fails ------------------------------------------------------------
+rem --- source-check: tools\check_source.c (built by build.bat), its own cases first (--self-test, #36), then on the
+rem repository; the output of both, kept as build\verify\source-check.log, is shown when it fails ---------------------
 :source_check
 echo verify: source-check
 if not exist build\check_source.exe (
     call :fail "source-check skipped (no build\check_source.exe)"
     exit /b 0
 )
-build\check_source.exe . > build\verify\source-check.log 2>&1
+build\check_source.exe --self-test > build\verify\source-check.log 2>&1
+set CODE=!errorlevel!
+if not "!CODE!"=="0" (
+    type build\verify\source-check.log
+    call :fail "source-check: --self-test (exit !CODE!)"
+    exit /b 0
+)
+build\check_source.exe . >> build\verify\source-check.log 2>&1
 set CODE=!errorlevel!
 if not "!CODE!"=="0" (
     type build\verify\source-check.log
