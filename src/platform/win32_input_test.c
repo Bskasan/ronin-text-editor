@@ -458,7 +458,7 @@ static void it_cases(InputTest *t) {
         ItStroke e = { 0, 'E', 0 };
         it_expect_text(t, "e right after Left Alt + dead key", &e, 1, STR8_LIT("e"));
     }
-    LOG("test: input %s: %d dead key accent(s) of ´ ` ^ ¨ tested", t->name, dead_found);
+    LOG("test: input %s: %d dead key accent(s) of \u00B4 ` ^ \u00A8 tested", t->name, dead_found);
 
     // Alt alone, F10, Alt + Space: no system menu, no beep (nothing left to DefWindowProc).
     IT_CASE(t, "Alt alone, F10, Alt + Space") {
