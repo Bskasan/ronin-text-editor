@@ -37,6 +37,12 @@ jobs:
           build\check_source.exe --self-test || exit /b 1
           build\check_source.exe .
 
+      # The release and bench links take nothing of the C runtime but memcpy, memset, memmove and the compiler helpers
+      # (#36): their linker maps, which build.bat writes.
+      - name: C runtime symbols in the release and bench links
+        shell: cmd
+        run: build\check_source.exe --link build\ronin.map build\ronin_bench.map
+
       - name: Toolset and executable sizes
         shell: pwsh
         run: |

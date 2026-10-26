@@ -25,6 +25,9 @@
 // outside comments and string and character literals; an #include of a header of CRT_HEADERS in src\platform\ and
 // tools\ (elsewhere in src\ the include rule above refuses it already); a byte >= 0x80 inside a string or character
 // literal (a literal never depends on the code page the compiler reads its source in).
+// "check_source --link MAP..." (the release and bench builds' linker maps) fails on a symbol of a C runtime library but
+// the functions of LINK_FUNCTIONS and the data of LINK_OBJECTS: what a macro or the compiler brings in, which the source
+// does not show.
 // "check_source --self-test" runs the cases of the SELF_ tables.
 
 #define WIN32_LEAN_AND_MEAN
@@ -126,6 +129,21 @@ static const char *const CRT_HEADERS[] = {
     "signal.h", "process.h", "io.h", "direct.h", "conio.h", "assert.h", "errno.h", "tchar.h", "search.h", "fcntl.h",
     "crtdbg.h", "inttypes.h", "uchar.h", "strsafe.h", // strsafe.h: its inline functions call the CRT
 };
+
+// The link check: the C runtime libraries' names in a linker map ("lib:object"), the functions that may come from them,
+// and the objects whose data and local labels may (the data is no call, and its set differs between MSVC versions).
+static const char *const CRT_LIBS[] = {
+    "libcmt", "libcmtd", "libvcruntime", "libvcruntimed", "libucrt", "libucrtd", "msvcrt", "msvcrtd", "vcruntime",
+    "ucrt", "oldnames", "legacy_stdio_definitions", "libcpmt", "libcpmtd", "libconcrt",
+};
+static const char *const LINK_FUNCTIONS[] = {
+    "memcpy", "memmove",       // memcpy.obj: one function
+    "memcpy_repmovs",          // memcpy.obj: its rep movsb path
+    "memset", "memset_repstos", // memset.obj, and its rep stosb path
+    "__chkstk", "_alloca_probe", // chkstk.obj: the stack probe the compiler calls for frames over 4 KB
+    "__isa_available_init",    // cpu_disp.obj: the CPU flags memcpy / memset dispatch on (win32_entry calls it)
+};
+static const char *const LINK_OBJECTS[] = { "memcpy.obj", "memmove.obj", "memset.obj", "chkstk.obj", "cpu_disp.obj" };
 
 #define CAPTURE_CAP 16384
 
@@ -547,8 +565,19 @@ static void check_includes(const char *path, u32 len) {
 
 static u8 lower(u8 c) { return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c; }
 
+static int span_eq_ci(const u8 *s, u32 n, const char *z) {
+    u32 i = 0;
+    for (; i < n; i++) if (!z[i] || lower(s[i]) != (u8)z[i]) return 0;
+    return z[i] == 0;
+}
+
 static int in_list(const u8 *s, u32 n, const char *const *list, u32 count) {
     for (u32 k = 0; k < count; k++) if (span_eq(s, n, list[k])) return 1;
+    return 0;
+}
+
+static int in_list_ci(const u8 *s, u32 n, const char *const *list, u32 count) {
+    for (u32 k = 0; k < count; k++) if (span_eq_ci(s, n, list[k])) return 1;
     return 0;
 }
 
@@ -756,6 +785,89 @@ static void check_file(const char *path) {
     if (!has_suffix(path, ".hlsl")) check_c(path, len);
 }
 
+// --- the link check (#36) -------------------------------------------------------------------------------------
+
+// A linker map's symbol lines ("0001:00053b50  memcpy  0000000140054b50 f  libvcruntime:memcpy.obj", in "Publics by
+// Value" and "Static symbols"): each from a C runtime library must be an allowed function or data of an allowed object.
+// An object is reported once, at its first symbol that fails (the functions come first, its local labels after).
+static u32 check_map(const char *path, u32 len) {
+    u32 pos = 0, number = 0, n, crt = 0, seen_count = 0;
+    char seen[32][CHECK_PATH_CAP];
+    int publics = 0;
+    const u8 *s;
+    while (next_line(len, &pos, &s, &n)) {
+        number++;
+        for (u32 i = 0; i + 16 <= n && !publics; i++) publics = span_eq(s + i, 16, "Publics by Value");
+        const u8 *tok[8];
+        u32 tn[8], k = 0;
+        for (u32 i = 0; i < n && k < 8;) {
+            while (i < n && (s[i] == ' ' || s[i] == '\t')) i++;
+            if (i >= n) break;
+            u32 a = i;
+            while (i < n && s[i] != ' ' && s[i] != '\t') i++;
+            tok[k] = s + a;
+            tn[k++] = i - a;
+        }
+        if (k < 4 || tn[0] != 13 || tok[0][4] != ':') continue;
+        const u8 *obj = tok[k - 1];
+        u32 on = tn[k - 1], colon = 0;
+        while (colon < on && obj[colon] != ':') colon++;
+        if (colon == on || !in_list_ci(obj, colon, CRT_LIBS, COUNT(CRT_LIBS))) continue;
+        crt++;
+        int function = 0;
+        for (u32 j = 3; j + 1 < k; j++) function |= span_eq(tok[j], tn[j], "f");
+        if (function ? in_list(tok[1], tn[1], LINK_FUNCTIONS, COUNT(LINK_FUNCTIONS))
+                     : in_list_ci(obj + colon + 1, on - colon - 1, LINK_OBJECTS, COUNT(LINK_OBJECTS))) {
+            continue;
+        }
+        int reported = 0;
+        for (u32 j = 0; j < seen_count && !reported; j++) reported = span_eq(obj, on, seen[j]);
+        if (reported) continue;
+        if (seen_count < 32) copy_span(seen[seen_count++], CHECK_PATH_CAP, obj, on);
+        problem(path, number);
+        put(function ? "C runtime function '" : "C runtime symbol '");
+        put_n((const char *)tok[1], tn[1]);
+        put("' linked from ");
+        put_n((const char *)obj, on);
+        put(" (only memcpy, memset, memmove and the compiler helpers __chkstk and __isa_available_init are allowed)");
+        end_line();
+    }
+    if (!publics) {
+        problem(path, 0);
+        put("not a linker map (no \"Publics by Value\")");
+        end_line();
+    }
+    return crt;
+}
+
+static int link_check(int count, char **maps) {
+    u32 crt = 0;
+    for (int m = 0; m < count; m++) {
+        u32 len;
+        if (!read_file(maps[m], &len)) {
+            problem(maps[m], 0);
+            put("cannot be read (build.bat release and bench write the maps)");
+            end_line();
+            continue;
+        }
+        crt += check_map(maps[m], len);
+    }
+    if (problems) {
+        put("check_source: link: FAIL: ");
+        put_u32(problems);
+        put(problems == 1 ? " problem" : " problems");
+        end_line();
+        return 1;
+    }
+    put("check_source: link: PASS: ");
+    put_u32((u32)count);
+    put(count == 1 ? " map, " : " maps, ");
+    put_u32(crt);
+    put(" C runtime symbols, each a function of the allowed list or data of its objects");
+    end_line();
+    return 0;
+}
+
 // --- the self-test (#36) --------------------------------------------------------------------------------------
 
 typedef struct SelfCase {
@@ -794,6 +906,28 @@ static const SelfCase SELF_C[] = {
     { "src/x/a.c", "int a = memcmp_like(x); int b = my_strlen(s); int c = strlen_s(s);", { 0 } },
 };
 
+static const SelfCase SELF_MAP[] = {
+    { "x.map",
+      "  Address         Publics by Value              Rva+Base               Lib:Object\n\n"
+      " 0001:00053ad0       __chkstk                   0000000140054ad0 f   libcmt:chkstk.obj\n"
+      " 0001:00053b50       memcpy                     0000000140054b50 f   libvcruntime:memcpy.obj\n"
+      " 0003:00000020       __favor                    000000014006e020     libcmt:cpu_disp.obj\n"
+      " 0001:00000010       app_main                   0000000140001010 f   ronin.obj\n"
+      " 0001:00000020       __imp_CreateFileW          0000000140001020     kernel32:KERNEL32.dll\n",
+      { 0 } },
+    { "x.map",
+      "  Address         Publics by Value              Rva+Base               Lib:Object\n"
+      " 0001:00053b50       memset                     0000000140054b50 f   libvcruntime:memset.obj\n"
+      " 0001:00054000       memcmp                     0000000140055000 f   libvcruntime:memcmp.obj\n"
+      " 0003:00000000       __security_cookie          000000014006e000     libcmt:gs_cookie.obj\n"
+      " 0001:00054010       __isa_available_x          0000000140055010 f   LIBCMT:cpu_disp.obj\n"
+      " 0001:00054020       mcmp10                     0000000140055020     libvcruntime:memcmp.obj\n",
+      { "x.map:3: C runtime function 'memcmp' linked from libvcruntime:memcmp.obj",
+        "x.map:4: C runtime symbol '__security_cookie' linked from libcmt:gs_cookie.obj",
+        "x.map:5: C runtime function '__isa_available_x'" } },
+    { "x.map", "not a map\n", { "x.map: not a linker map" } },
+};
+
 // Each case's problem lines against its expected starts; returns the failures.
 static u32 self_run(const char *kind, const SelfCase *cases, u32 count) {
     u32 failed = 0;
@@ -804,6 +938,7 @@ static u32 self_run(const char *kind, const SelfCase *cases, u32 count) {
         capturing = 1;
         capture_len = 0;
         if (kind[0] == 'C') check_c(k->path, len);
+        if (kind[0] == 'm') check_map(k->path, len);
         capturing = 0;
         u32 pos = 0, j = 0;
         int ok = 1;
@@ -848,6 +983,7 @@ static u32 self_run(const char *kind, const SelfCase *cases, u32 count) {
 static int self_test(void) {
     u32 failed = 0, total = 0;
     failed += self_run("C", SELF_C, COUNT(SELF_C)), total += COUNT(SELF_C);
+    failed += self_run("map", SELF_MAP, COUNT(SELF_MAP)), total += COUNT(SELF_MAP);
     put(failed ? "check_source: self-test: FAIL: " : "check_source: self-test: PASS: ");
     if (failed) {
         put_u32(failed);
@@ -863,8 +999,10 @@ int main(int argc, char **argv) {
     text = (u8 *)VirtualAlloc(NULL, CHECK_TEXT_CAP, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!text) return 2;
     if (argc == 2 && str_eq(argv[1], "--self-test")) return self_test();
+    if (argc >= 3 && str_eq(argv[1], "--link")) return link_check(argc - 2, argv + 2);
     if (argc != 2) {
         put("usage: check_source <repository root> | --self-test");
+        put(" | --link <linker map>...");
         end_line();
         return 2;
     }
