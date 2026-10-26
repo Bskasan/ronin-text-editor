@@ -55,6 +55,13 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
   (/MTd, /GS). The release exe imports only KERNEL32, USER32 and GDI32 (res/imports.txt, checked
   by verify.bat); d3d11, dwmapi and dwrite are loaded with LoadLibraryW where first used. A new
   import or loaded DLL updates res/imports.txt and the import decision in docs/ARCHITECTURE.md.
+  Enforced by the source check (tools/check_source.c, #36: no call of a C runtime function but those three in src/ and
+  tools/, no C runtime header in src/platform/ and tools/, no non-ASCII byte in a string or character literal) and by
+  verify's link-check (`check_source --link` on build\ronin.map and build\ronin_bench.map: nothing from the C runtime
+  libraries but memcpy / memset / memmove, the stack probe, __isa_available_init and their data).
+- Every .bat file calls a Windows program by its System32 path (`%SystemRoot%\System32\findstr.exe`), also after a pipe
+  and inside a for /f command: Git for Windows' usr\bin (find, sort, tar, ...) can come first on PATH (#30). A bare name
+  only for cmd's builtins, cl, rc, fxc and git; the source check enforces it (#36).
 - Memory: arena allocators over VirtualAlloc (reserve large, commit on demand). One
   permanent arena, one per-frame scratch arena. No heap allocation per keystroke or frame.
 - Text: UTF-8 internally, `String8 { u8 *data; i64 len; }`, not NUL-terminated. Convert to
@@ -83,8 +90,9 @@ documentation site (Phase 24): docs/src/*.md and docs/src/nav.txt made into docs
   abstractions. Park ideas in the "After 1.0" list in docs/ARCHITECTURE.md, or as an issue labeled backlog.
 - Verify every change with `verify.bat`, the only gate before a commit: it builds all three
   configurations (each with the macro check), checks `build.bat clean` on a scratch tree
-  (clean-check), runs the source check (`build\check_source.exe`: headers, module map, includes; Phase 23), the
-  docs-check (the site generated again into build\tmp\docs_check and compared with the committed docs\ by
+  (clean-check), runs the source check (`build\check_source.exe`: its `--self-test`, then headers, module map,
+  includes, Phase 23; C runtime calls and headers, non-ASCII literals, the .bat files' programs, #36), the link-check
+  (`check_source --link` on the release and bench maps, #36), the docs-check (the site generated again into build\tmp\docs_check and compared with the committed docs\ by
   `make_docs --compare`; Phase 24), `--smoke` on the debug and the bench build and
   `--test` on the bench build (the optimized build runs the fuzz tests quickly; it includes the README check: README.md's
   key tables, settings, config blocks, prose keys and links against the code, Phase 22, and the same over the site's
@@ -192,9 +200,12 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # docs\src\gen, make_icon --png docs\images\logo.png, make_docs docs\src -> docs\*.html
                                      # (commit what it changes; verify's docs-check fails on a stale site)
 
-    cmd //c ".\verify.bat"           # the gate: three builds, clean-check, the source check, smoke (debug, bench),
-                                     # test (bench), imports, --version; one PASS / FAIL line
-    build\check_source.exe .         # the source check alone (built by every build.bat): headers, module map, includes
+    cmd //c ".\verify.bat"           # the gate: three builds, clean-check, the source check, the link check, smoke
+                                     # (debug, bench), test (bench), imports, --version; one PASS / FAIL line
+    build\check_source.exe .         # the source check alone (built by every build.bat): headers, module map, includes,
+                                     # C runtime calls and headers, non-ASCII literals, the .bat files' programs (#36)
+    build\check_source.exe --self-test   # its own cases (C source, .bat lines, linker maps; #36)
+    build\check_source.exe --link build\ronin.map build\ronin_bench.map  # the link check alone (#36)
     cmd //c ".\verify.bat phase"     # ... plus --test (debug), the seed sweep, the soak and --leak-check all
                                      # (before a pull request, see Workflow)
     cmd //c ".\dist.bat"             # verify.bat, then dist\ronin-<version>-windows-x64.zip (the files of
@@ -713,7 +724,8 @@ because GitHub Pages serves those files; verify's docs-check keeps them equal to
 | path | made by |
 |---|---|
 | `ronin_debug.exe`, `ronin.exe`, `ronin_bench.exe`, their `.obj`, `.pdb`, `*_cl.pdb`, `*_dwrite.obj` | build.bat (debug, release, bench) |
-| `ronin.map` | build.bat release (the linker's /MAP; read by --map-report) |
+| `ronin.map` | build.bat release (the linker's /MAP; read by --map-report and verify's link-check) |
+| `ronin_bench.map` | build.bat bench (the linker's /MAP; read by verify's link-check, #36) |
 | `make_icon.exe`, `make_icon.obj` | build.bat (tools\make_icon.c) |
 | `make_themes.exe`, `make_themes.obj` | build.bat (tools\make_themes.c) |
 | `check_source.exe`, `check_source.obj` | build.bat (tools\check_source.c; run by verify.bat and CI) |

@@ -4745,6 +4745,93 @@ The coverage of a few files, from the run's coverage.txt (the debug `--test`, un
 | src/platform/win32_main.c | 5,289 | 42.2% (the window, the device and the dev flags --test never runs) |
 | src/dev/leak.c, png.c | 697, 85 | 0% (--leak-check and the screenshots, never in --test) |
 
+### Decisions, #36 C runtime and program checks
+
+The rule allowed three C runtime functions (memcpy, memset, memmove) and nothing enforced it: main had six `memcmp`
+calls in dev code of win32_main.c. The release exe never compiles them, and the bench link resolves `memcmp` from
+libvcruntime.lib, which is named on its link line for memcpy and memset. #30 fixed bare Windows programs in the .bat
+files by hand, with nothing to keep them fixed. Two checks now hold both rules, both in tools/check_source.c.
+
+1. **The source check** (`check_source .`, verify's source-check and CI):
+   - a call of a function of `CRT_NAMES` in a .c, .h or .cpp under src/ and tools/. The list is fixed, by header: string
+     and wide-string functions, stdio, stdlib and malloc.h, ctype, math, time, and setjmp, signal, locale, assert,
+     process.h, io.h, direct.h, conio.h. No prefix rules, since `str8_*` and `str_len` are ronin's own;
+   - the lexer skips comments, string and character literals (prefixes, escapes, C++ raw strings, digit separators) and
+     members or scopes (`p->free(`, `ns::abs(`). In a #define body the bare name counts (`#define CMP memcmp`), the
+     macro's own name does not; other directives are skipped;
+   - a C runtime header (`CRT_HEADERS`, from <stdio.h> to <strsafe.h>, whose inline functions call the CRT) in
+     src/platform/ and tools/. Elsewhere in src/ the include rule of Phase 23 refuses it already;
+   - a byte >= 0x80 in a string or character literal: build.bat compiles the tools without /utf-8, so a UTF-8 literal
+     there is read in the console's code page (#30's `İndirilenler`). Comments may hold any UTF-8.
+2. **The link check** (`check_source --link build\ronin.map build\ronin_bench.map`, verify's link-check and CI;
+   build.bat bench writes its map too, and /MAP changes no byte of the exe). A symbol of a C runtime library passes
+   only if it is a function of `LINK_FUNCTIONS` (memcpy, memmove, memcpy_repmovs, memset, memset_repstos, __chkstk,
+   _alloca_probe, __isa_available_init, each with its reason in the table), or data or a local label of their objects
+   (`LINK_OBJECTS`: cpu_disp.obj's CPU flags, memcpy.obj's labels). Data is no call, and its set changes between MSVC
+   versions. A failing object is reported once, at its first symbol.
+3. **What each catches that the other misses.**
+
+   | | source check | link check |
+   |---|---|---|
+   | calls /O2 expands inline (`memcmp` of 4 bytes) | yes | no symbol reaches the link |
+   | code only in the debug build (RONIN_D3D_DEBUG), in no build, and tools/ | yes | no |
+   | the file and line of the call | yes | the map's line and the object only |
+   | SDK macros that expand to the CRT (`RtlEqualMemory` is `!memcmp`, C's `IsEqualGUID`), a function's address | no | yes |
+   | what the compiler emits (/GS cookies, C++ EH, operator new) and names missing from `CRT_NAMES` | no | yes |
+
+   A UCRT function such as `strlen` that /O2 does not inline cannot reach the release or bench exe at all: their links
+   name no libucrt.lib, so the link fails with LNK2019 (no file and line; the source check gives them). The link check
+   is for what libvcruntime.lib and libcmt.lib hold (memcmp, memchr, strchr, strstr, wcschr, the startup's pieces).
+4. **Not the debug build.** It links the full static debug CRT (/MTd: the CRT's startup, /GS cookies, _RTC_* checks,
+   the debug heap), hundreds of CRT symbols ronin never calls, so its map cannot tell ronin's calls from the CRT's own.
+   Its code is the bench build's (both RONIN_DEV=1) but for /Od and the D3D debug-layer code, which the source check
+   covers. tools/ link the default CRT for their `main`, so they are in the source check only.
+5. **The .bat files.** check_source walks the repository (not .git, build, dist) for .bat and .cmd files and scans
+   each line for command positions: a line's start (after `@` and a leading redirection), after `|`, `&`, `&&`, `||`,
+   `(` and `)` (the paren depth across lines), `do`, `else`, an `if` condition, `call` (but `call :label`), `start`'s
+   title and switches, cmd's `/c` or `/k`, and inside a `for /f` set's command (`('...')`, or backticks with
+   usebackq), its carets taken out. A word there passes when it is a path or a variable (`\`, `/`, `:`, `%`, `!`), a cmd
+   builtin, or one of `BAT_EXEMPT`: cl, rc and fxc (what vcvars64.bat puts on PATH and the scripts call) and git
+   (release-check.bat logs which one). Any other bare word fails, Windows program or not. The check reads no values: a
+   variable holding a bare name passes.
+6. **Its own cases.** `check_source --self-test` (44: 24 C, 17 .bat, 3 map) runs first in verify's source-check and in
+   CI. The first run on main found a scanner bug that no case had: the `&` of `2>&1` taken for a command separator,
+   16 false lines in verify.bat and release-check.bat. Fixed before the commit, and kept as a case.
+7. **The marker fuzz's fragments.** Its table of "fragments of multi-byte characters" held the bytes encoded once more
+   as UTF-8 (C3 A2, C2 82, ...): whole characters, so the fuzz never spliced a broken sequence. It now holds 13 real
+   fragments of U+0130, U+20AC and U+1F600 (lone leads, heads, continuation bytes, tails), and `test_utf8_fragments`
+   fails if any entry is valid UTF-8 alone. The seed sweep of `verify.bat phase` passed with them (256 seeds).
+
+### Measurements, #36 C runtime and program checks
+
+On main (210efee), before the fixes, with the new checks built:
+
+- the source check: the six `memcmp` (src/platform/win32_main.c:3950, 4022, 4087, 4154, 6768, 6817), ten non-ASCII
+  literals (nine on src/dev/test.c:506, one on src/platform/win32_input_test.c:461), no bare program in the four .bat
+  files;
+- the link check: `build/ronin_bench.map:467: C runtime function 'memcmp' linked from libvcruntime:memcmp.obj` (the
+  clipboard and DPI checks, whose length is known at run time; the frame comparisons' 3 bytes were inlined); the release
+  map clean (152 CRT symbols, all of the allowed objects).
+
+The mutations, each in the working tree, run through `verify.bat` and reverted (logs in build\proof\p36):
+
+| mutation | verify's last line | the line naming it |
+|---|---|---|
+| `memcmp(a, b, 4)` in base.c's mem_equal | `verify: FAIL: source-check (exit 1)` | `src/base/base.c:100: C runtime function 'memcmp' ...`; link-check passed (inlined) |
+| `strlen` in a `#if RONIN_DEV` block of app.c | `verify: FAIL: build bench (exit 1), source-check (exit 1), link-check (exit 1), ...` | `src/app/app.c:268: C runtime function 'strlen' ...`; the bench link: `LNK2019: unresolved external symbol strlen` |
+| `echo %HASH%\| findstr ...` added to dist.bat | `verify: FAIL: source-check (exit 1)` | `dist.bat:87: 'findstr' by its bare name: a Windows program by %SystemRoot%\System32\findstr.exe, ...` |
+| `RtlEqualMemory(a, c, n)` with a run-time n in the DPI check | `verify: FAIL: link-check (exit 1)` | `build\ronin_bench.map:467: C runtime function 'memcmp' linked from libvcruntime:memcmp.obj ...`; source-check passed |
+| `"\xC3\xA2"` put back into the fragment table | `verify: FAIL: test-bench (exit 9)` | `test: FAIL: utf8 fragments: entry 0 (2 bytes, first 0xc3) is valid UTF-8 on its own` |
+
+The first try of the fourth used `EqualMemory`, which these SDK headers (10.0.26100) do not define: C4013, no exe.
+
+- **The release exe**: built at 210efee and at 9dc0d98, 471,040 bytes each; 4 bytes differ, the COFF TimeDateStamp
+  and the POGO debug entry's TimeDateStamp (2 bytes each). With those zeroed both SHA-256 are
+  7a45c081e048d4986411649da543c9a3793fdea05bb25dbe821a19bd195c1da3, #25's. `--check-imports`: PASS, 3 DLLs, 135
+  functions.
+- **`verify.bat phase`** on 9dc0d98: PASS in 503 s. The seed sweep passed 256 seeds (180 s), the soaks passed (bench
+  1,000,000 events in 21.6 s), and the leak check passed. A plain `verify.bat` takes 72 s on this machine.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the

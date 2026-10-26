@@ -65,13 +65,14 @@ ronin is on the <a href="https://bskasan.github.io/ronin-text-editor/">documenta
 </table>
 <ul>
 <li>Run <code>verify.bat</code> before every commit. It builds all three, runs the source check (see <a href="#new-files">New files</a>), the
-  docs-check (the site in <code>docs\</code> is what its sources make), the smoke test (real frames, pixel checks) and the tests,
-  checks the release exe's imports, and prints one last line: only <code>verify: PASS</code> counts.</li>
+  link check (nothing of the C runtime in the release and bench links but memcpy, memset, memmove and the compiler's
+  helpers), the docs-check (the site in <code>docs\</code> is what its sources make), the smoke test (real frames, pixel checks)
+  and the tests, checks the release exe's imports, and prints one last line: only <code>verify: PASS</code> counts.</li>
 <li>Run <code>verify.bat phase</code> before you open a pull request for anything larger than a small fix (about 9 minutes): it
   adds the full tests on the debug build, a sweep of 256 fuzz seeds, a million-event soak and the leak check.</li>
-<li>Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the tests,
-  the docs-check, the import check and <code>--version</code>; it cannot run the smoke gate (no GPU, no D3D11 debug layer), so a
-  local <code>verify.bat</code> is required.</li>
+<li>Both run on your machine only. The CI workflow builds the three configurations and runs the source check, the link
+  check, the tests, the docs-check, the import check and <code>--version</code>; it cannot run the smoke gate (no GPU, no D3D11
+  debug layer), so a local <code>verify.bat</code> is required.</li>
 </ul>
 <p>From Git Bash, call them as <code>cmd //c &quot;.\verify.bat&quot;</code>. The dev flags are listed in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/CLAUDE.md">CLAUDE.md</a>, the design
 in <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/docs/ARCHITECTURE.md">docs/ARCHITECTURE.md</a>.</p>
@@ -104,7 +105,14 @@ maintainer's own check before a release (about 12 minutes); contributors never n
 <h2 id="what-a-pull-request-must-meet">What a pull request must meet</h2>
 <ul>
 <li>C11 for MSVC, <code>/W4 /WX</code> clean. C++ only in <code>src/platform/win32_dwrite.cpp</code>, and only C-style there.</li>
-<li>No C runtime functions: no stdio, no malloc / free, no <code>str*</code> (memcpy, memset and memmove are fine).</li>
+<li>No C runtime functions: no stdio, no malloc / free, no <code>str*</code> (memcpy, memset and memmove are fine). The source
+  check names each call of another one, and each C runtime header in src/platform/ and tools/, with its file and
+  line; the link check catches what a macro or the compiler brings in (such as <code>RtlEqualMemory</code>, which is <code>memcmp</code>).</li>
+<li>String and character literals are ASCII: write other characters as <code>\u</code> escapes (<code>\x</code> for a single byte), so a
+  literal never depends on the code page the compiler reads the file in. Comments may hold any UTF-8.</li>
+<li>In a .bat file, call every Windows program by its System32 path (<code>%SystemRoot%\System32\findstr.exe</code>), also after
+  a pipe and inside <code>for /f</code>: Git for Windows' usr\bin has its own find, sort and tar, and can come first on PATH. A
+  bare name is fine for cmd's builtins, cl, rc, fxc and git.</li>
 <li>No third-party code or libraries, and no new DLL import: <code>res/imports.txt</code> stays as it is.</li>
 <li>Memory from the arenas only; nothing allocated per keystroke or per frame; no idle timers or busy loops.</li>
 <li>Every feature is a named command with a one-line description, so it can be bound to a key and found with M-x and
@@ -143,8 +151,9 @@ second line saying in at most 72 characters what the file does:</p>
 </code></pre>
 <p>That line is also the file's description in the module map, word for word, in a row under its folder's heading.
 <code>verify.bat</code> runs the source check (<code>build\check_source.exe .</code>, built by <code>build.bat</code>): it names each file without the
-header or a row, each description that differs from the map, each row without a file, and each include that breaks
-the two rules, as <code>path:line: message</code>.</p>
+header or a row, each description that differs from the map, each row without a file, each include that breaks the
+two rules, each C runtime call, C runtime header and non-ASCII literal, and each program a .bat file calls by its bare
+name, as <code>path:line: message</code>.</p>
 <h2 id="reporting-a-bug">Reporting a bug</h2>
 <p>Use the bug report template and include the output of <code>ronin --version</code>. The release build writes no log, so attach
 instead: the exact keys you pressed, the file (or a small one that shows the bug), the lines of your <code>ronin.conf</code>
