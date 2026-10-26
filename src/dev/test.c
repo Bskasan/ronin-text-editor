@@ -443,6 +443,43 @@ static b32 test_line_states(Test *t, u64 seed) {
     return 1;
 }
 
+// Pieces of multi-byte characters for the marker fuzz, none valid UTF-8 alone (test_utf8_fragments checks it): from
+// U+0130 (C4 B0), U+20AC (E2 82 AC) and U+1F600 (F0 9F 98 80), lone lead bytes and heads that leave a sequence open
+// for the next insert to close (joins), lone continuation bytes and tails that land after or inside a character
+// (splits). Until #36 the table held these bytes encoded once more as UTF-8 (C3 A2, C2 82, ...): whole characters.
+static const char *const test_utf8_frags[] = {
+    "\xC4", "\xB0",                                                // 2 bytes
+    "\xE2", "\x82", "\xAC", "\xE2\x82", "\x82\xAC",                // 3 bytes
+    "\xF0", "\x9F", "\xF0\x9F", "\xF0\x9F\x98", "\x98\x80", "\x9F\x98\x80", // 4 bytes
+};
+
+// Every fragment fails to decode somewhere (a whole character would not), and each length has a lead and a tail.
+static b32 test_utf8_fragments(Test *t) {
+    i32 leads[5] = { 0 }, tails = 0;
+    for (i32 k = 0; k < (i32)ARRAY_COUNT(test_utf8_frags); k++) {
+        String8 f = str8_cstr(test_utf8_frags[k]);
+        b32 broken = 0;
+        for (i64 i = 0; i < f.len;) {
+            i64 advance;
+            u32 cp = utf8_decode(f.data + i, f.len - i, &advance);
+            broken |= cp == UTF_REPLACEMENT && advance == 1;
+            i += advance;
+        }
+        TEST_CHECK(t, f.len > 0 && broken, "utf8 fragments: entry %d (%D bytes, first 0x%X) is valid UTF-8 on its own", k, f.len,
+                   f.len ? (u64)f.data[0] : 0);
+        u8 b0 = f.len ? f.data[0] : 0;
+        if ((b0 & 0xC0) == 0x80) tails++;
+        else if ((b0 & 0xE0) == 0xC0) leads[2]++;
+        else if ((b0 & 0xF0) == 0xE0) leads[3]++;
+        else if ((b0 & 0xF8) == 0xF0) leads[4]++;
+    }
+    TEST_CHECK(t, leads[2] && leads[3] && leads[4] && tails, "utf8 fragments: leads of 2 / 3 / 4 bytes %d / %d / %d, tails %d",
+               leads[2], leads[3], leads[4], tails);
+    LOG("test: ok: utf8 fragments (%d, none valid alone: leads of 2 / 3 / 4 bytes and continuation tails)",
+        (i32)ARRAY_COUNT(test_utf8_frags));
+    return 1;
+}
+
 static b32 test_markers(Test *t, u64 seed) {
     t->rng = seed ^ 0x6d61726b6572ull;
     Buffer *buf = buffer_create(STR8_LIT("markers"));
@@ -503,8 +540,7 @@ static b32 test_markers(Test *t, u64 seed) {
             end = test_ref_snap(&ref, MAX(start, end));
             if (kind != 1) s = test_random_text(t, text, 1 + test_below(t, 8));
             if (kind != 1 && test_below(t, 3) == 0) { // fragments of multi-byte characters: joins and splits
-                static const char *frags[] = { "â", "", "¬", "â", "¬", "Ä", "", "ð", "" };
-                String8 f = str8_cstr(frags[test_below(t, ARRAY_COUNT(frags))]);
+                String8 f = str8_cstr(test_utf8_frags[test_below(t, ARRAY_COUNT(test_utf8_frags))]);
                 memcpy(text, f.data, (size_t)f.len);
                 s = str8(text, f.len);
             }
@@ -16976,6 +17012,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
 
     test_seeded(&t, test_fuzz, seed);
     arena_reset(&t.arena);
+    test_utf8_fragments(&t);
     test_seeded(&t, test_markers, seed);
     arena_reset(&t.arena);
     test_seeded(&t, test_marker_batch, seed);

@@ -726,6 +726,16 @@ LOCALAPPDATA pointed at fake folders. Each of those runs ended with the reason's
 | AF18 | release-check.bat, verify.bat, dist.bat and build.bat call every Windows program by its System32 path, so programs of the same names earlier on PATH (Git for Windows' usr\bin) are never run; git is the one on PATH, its path in the log | AUTOMATED-NEW | build\proof\p30\fakebin at the front of PATH: find, tar, sort, certutil, fc, findstr and where .exe, each printing "FAKE <name> called" and exiting 1. Before the fix `release-check.bat quick` failed at once ("ERROR: MSVC (cl.exe, x64) not found": build.bat's bare `where cl`, then `FAIL: tool`). After it, with that PATH: `release-check.bat quick` PASS (quick) with no FAKE line and "git: C:\Program Files\Git\mingw64\bin\git.exe", and verify.bat and dist.bat pass (Decisions, #30, 1). |
 | AF19 | release-check.bat's lines read right in a console (non-ASCII included), and its log is UTF-8 whether its output is a console, a file or a pipe | AUTOMATED-NEW | a quick run in a console (the app's Terminal panel, conpty): "versions: CHANGELOG.md:18: 1.0.0 — 2026-10-21" and "zip: unpack: ...\zip\İndirilenler ronin" as written (before the fix: "1.0.0 ÔÇö 2026-10-21", and the folder was really named "Ä°ndirilenler ronin", U+00C4 U+00B0; now U+0130); its log valid UTF-8 with E2 80 94 and C4 B0; the same run redirected to a file: those bytes in the file and the log. |
 
+## AG. C runtime and program checks (#36)
+
+The rule allows three C runtime functions (memcpy, memset, memmove) and Windows programs only by their System32 path in
+the .bat files; two checks keep it (Decisions, #36 in docs/ARCHITECTURE.md). The marker fuzz's fragments of multi-byte
+characters were found to be whole characters on the way.
+
+| Step | What | Status | Evidence |
+|---|---|---|---|
+| AG1 | The marker fuzz's fragment table holds pieces of multi-byte characters, none valid UTF-8 alone, with lone leads and heads (joins) and continuation bytes and tails (splits) of 2-, 3- and 4-byte characters | AUTOMATED-NEW | `test_utf8_fragments` (test.c): "test: ok: utf8 fragments (13, none valid alone ...)"; each entry decoded with `utf8_decode` must fail somewhere. Before #36 the table's 9 entries were these bytes encoded once more (C3 A2, C2 82, ...), all valid. |
+
 ## HUMAN steps
 
 In this order, with `build\ronin.exe` (or ronin_debug.exe):
