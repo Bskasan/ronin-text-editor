@@ -111,7 +111,7 @@ if "%MODE%"=="release" (
     set NAME=ronin_bench
     set OPT=/O2 /Zi /GS- /MT
     set DEFS=/DRONIN_DEV=1 /DRONIN_D3D_DEBUG=0 /DRONIN_NO_CRT=1
-    set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /NODEFAULTLIB /ENTRY:win32_entry libcmt.lib libvcruntime.lib
+    set LINKOPT=/DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP:build\ronin_bench.map /NODEFAULTLIB /ENTRY:win32_entry libcmt.lib libvcruntime.lib
 ) else (
     set NAME=ronin_debug
     set OPT=/Od /Zi /MTd

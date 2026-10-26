@@ -2,7 +2,9 @@
 rem ronin verify: the only gate before a commit.
 rem   verify.bat        builds debug, release and bench (each with the macro check), checks build.bat clean on a
 rem                     scratch tree (clean-check), runs the source check (tools\check_source.c: every source file's
-rem                     header against docs\ARCHITECTURE.md's module map, the include rules), the docs-check (the
+rem                     header against docs\ARCHITECTURE.md's module map, the include rules, no C runtime functions
+rem                     but memcpy, memset and memmove), the link check (the release and bench builds' linker maps:
+rem                     nothing of the C runtime but those three and the compiler helpers, #36), the docs-check (the
 rem                     documentation site in docs\ is what its sources make), --smoke on the debug and the bench
 rem                     build, --test on the bench build, and checks the release exe's imports and --version
 rem   verify.bat phase  the same, plus the full --test on the debug build, the seed sweep (--fuzz-seeds 1 256) on the
@@ -53,6 +55,7 @@ call :build bench ronin_bench
 set BENCH_OK=!BUILD_OK!
 call :clean_check
 call :source_check
+call :link_check
 
 if "!DEBUG_OK!"=="1" (
     call :docs_check
@@ -106,6 +109,7 @@ rem --- build <mode> <exe name>: a failed build removes its exe, so nothing runs
 set BUILD_OK=0
 echo verify: build %1
 if exist "build\%2.exe" del /q "build\%2.exe"
+if exist "build\%2.map" del /q "build\%2.map"
 call "%ROOT%build.bat" %1 > "build\verify\build-%1.log" 2>&1
 set CODE=!errorlevel!
 if not "!CODE!"=="0" (
@@ -164,6 +168,32 @@ set CODE=!errorlevel!
 if not "!CODE!"=="0" (
     type build\verify\source-check.log
     call :fail "source-check (exit !CODE!)"
+)
+exit /b 0
+
+rem --- link-check (#36): check_source --link on the linker maps of the release and bench builds (build.bat writes
+rem build\ronin.map and build\ronin_bench.map; :build removes a stale one): every symbol from a C runtime library is
+rem memcpy, memset, memmove, a compiler helper of its list or data of their objects. The debug build links the full
+rem static CRT, so its map cannot tell ronin's calls from the CRT's own. Its output: build\verify\link-check.log -----
+:link_check
+echo verify: link-check
+if not exist build\check_source.exe (
+    call :fail "link-check skipped (no build\check_source.exe)"
+    exit /b 0
+)
+if not exist build\ronin.map (
+    call :fail "link-check skipped (no build\ronin.map)"
+    exit /b 0
+)
+if not exist build\ronin_bench.map (
+    call :fail "link-check skipped (no build\ronin_bench.map)"
+    exit /b 0
+)
+build\check_source.exe --link build\ronin.map build\ronin_bench.map > build\verify\link-check.log 2>&1
+set CODE=!errorlevel!
+if not "!CODE!"=="0" (
+    type build\verify\link-check.log
+    call :fail "link-check (exit !CODE!)"
 )
 exit /b 0
 
