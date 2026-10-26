@@ -1,5 +1,5 @@
 /* ======================================================================
-   ronin: build check: headers, module map, includes, C runtime
+   ronin: build check: headers, module map, includes, C runtime, .bat programs
 
    Copyright (c) 2026 Bekir Kasan. Licensed under the MIT License; see
    LICENSE in the repository root. This software is provided "as is",
@@ -28,6 +28,8 @@
 // "check_source --link MAP..." (the release and bench builds' linker maps) fails on a symbol of a C runtime library but
 // the functions of LINK_FUNCTIONS and the data of LINK_OBJECTS: what a macro or the compiler brings in, which the source
 // does not show.
+// Every .bat and .cmd file of the repository calls programs by their path: a bare word at a command position must be a
+// cmd builtin or one of BAT_EXEMPT.
 // "check_source --self-test" runs the cases of the SELF_ tables.
 
 #define WIN32_LEAN_AND_MEAN
@@ -130,6 +132,17 @@ static const char *const CRT_HEADERS[] = {
     "crtdbg.h", "inttypes.h", "uchar.h", "strsafe.h", // strsafe.h: its inline functions call the CRT
 };
 
+// Bare words a .bat file may call: cmd's builtins, the MSVC and SDK tools vcvars64.bat puts on PATH that the scripts
+// call, and git (release-check.bat logs which one PATH finds). Every other program goes by its path; a Windows one by
+// %SystemRoot%\System32\<name>.exe (Git for Windows' usr\bin has find, sort, tar and more, and can come first, #30).
+static const char *const BAT_BUILTINS[] = {
+    "assoc", "break", "call", "cd", "chdir", "cls", "color", "copy", "date", "del", "dir", "echo", "endlocal", "erase",
+    "exit", "for", "ftype", "goto", "if", "md", "mkdir", "mklink", "move", "path", "pause", "popd", "prompt", "pushd",
+    "rd", "rem", "ren", "rename", "rmdir", "set", "setlocal", "shift", "start", "time", "title", "type", "ver",
+    "verify", "vol",
+};
+static const char *const BAT_EXEMPT[] = { "cl", "rc", "fxc", "git" };
+
 // The link check: the C runtime libraries' names in a linker map ("lib:object"), the functions that may come from them,
 // and the objects whose data and local labels may (the data is no call, and its set differs between MSVC versions).
 static const char *const CRT_LIBS[] = {
@@ -145,16 +158,19 @@ static const char *const LINK_FUNCTIONS[] = {
 };
 static const char *const LINK_OBJECTS[] = { "memcpy.obj", "memmove.obj", "memset.obj", "chkstk.obj", "cpu_disp.obj" };
 
+#define BAT_FILES_MAX 64
 #define CAPTURE_CAP 16384
 
 static SourceFile files[CHECK_FILES_MAX];
 static u32 file_count;
+static SourceFile bat_files[BAT_FILES_MAX];
+static u32 bat_count;
 static MapRow rows[CHECK_ROWS_MAX];
 static u32 row_count;
 static u8 *text; // one file at a time, CHECK_TEXT_CAP
 static char line_out[4096];
 static u32 line_len;
-static u32 problems, include_count, call_count;
+static u32 problems, include_count, call_count, command_count;
 static int capturing; // the self-test: problem lines go to `capture`, not to stdout
 static char capture[CAPTURE_CAP];
 static u32 capture_len;
@@ -785,6 +801,302 @@ static void check_file(const char *path) {
     if (!has_suffix(path, ".hlsl")) check_c(path, len);
 }
 
+// --- .bat files: programs by their path (#36) -----------------------------------------------------------------
+
+static void walk_bat(const char *dir) {
+    char pattern[CHECK_PATH_CAP];
+    u32 n = str_len(dir);
+    if (n + 3 >= CHECK_PATH_CAP) return;
+    for (u32 i = 0; i < n; i++) pattern[i] = dir[i];
+    if (n) pattern[n++] = '/';
+    pattern[n] = '*';
+    pattern[n + 1] = 0;
+    WCHAR w[CHECK_PATH_CAP];
+    if (!widen(pattern, w, CHECK_PATH_CAP)) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(w, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char name[CHECK_PATH_CAP];
+        if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, CHECK_PATH_CAP, NULL, NULL)) continue;
+        if (str_eq(name, ".") || str_eq(name, "..") || (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        if (!dir[0] && (str_eq(name, ".git") || str_eq(name, "build") || str_eq(name, "dist"))) continue;
+        u32 m = str_len(name);
+        if (n + m >= CHECK_PATH_CAP) continue;
+        char child[CHECK_PATH_CAP];
+        for (u32 i = 0; i < n; i++) child[i] = pattern[i];
+        for (u32 i = 0; i <= m; i++) child[n + i] = name[i];
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            walk_bat(child);
+        } else if (m > 4 && (span_eq_ci((const u8 *)name + m - 4, 4, ".bat") || span_eq_ci((const u8 *)name + m - 4, 4, ".cmd")) &&
+                   bat_count < BAT_FILES_MAX) {
+            for (u32 i = 0; i <= n + m; i++) bat_files[bat_count].path[i] = child[i];
+            bat_count++;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static int bat_blank(u8 c) { return c == ' ' || c == '\t' || c == '\r'; }
+
+static u32 bat_skip(const u8 *t, u32 n, u32 i) {
+    while (i < n && bat_blank(t[i])) i++;
+    return i;
+}
+
+// The end of the word at t[i]: a blank or one of ( ) | & < > ; , = outside quotes ('^' escapes a character).
+static u32 bat_word_end(const u8 *t, u32 n, u32 i) {
+    int quoted = 0;
+    for (; i < n; i++) {
+        u8 c = t[i];
+        if (c == '"') {
+            quoted = !quoted;
+        } else if (!quoted && c == '^' && i + 1 < n) {
+            i++;
+        } else if (!quoted && (bat_blank(c) || c == '(' || c == ')' || c == '|' || c == '&' || c == '<' || c == '>' ||
+                               c == ';' || c == ',' || c == '=')) {
+            break;
+        }
+    }
+    return i;
+}
+
+// An operand of if's comparison: up to a blank or "==" outside quotes.
+static u32 bat_operand_end(const u8 *t, u32 n, u32 i) {
+    int quoted = 0;
+    for (; i < n; i++) {
+        if (t[i] == '"') quoted = !quoted;
+        else if (!quoted && (bat_blank(t[i]) || (t[i] == '=' && i + 1 < n && t[i + 1] == '='))) break;
+    }
+    return i;
+}
+
+static void bat_scan(const char *path, u32 line, const u8 *t, u32 n, u32 *depth);
+
+// The command line inside a for /f set, its carets taken out (the outer line's parse removes them), scanned alone.
+static void bat_scan_inner(const char *path, u32 line, const u8 *t, u32 n) {
+    u8 buf[2048];
+    u32 m = 0, depth = 0;
+    for (u32 i = 0; i < n && m < sizeof(buf); i++) {
+        if (t[i] == '^' && i + 1 < n) i++;
+        buf[m++] = t[i];
+    }
+    bat_scan(path, line, buf, m, &depth);
+}
+
+// After "if": its condition (/i, not, exist X, defined X, errorlevel N, a==b, a op b); returns where the command starts.
+static u32 bat_if(const u8 *t, u32 n, u32 i) {
+    for (;;) {
+        i = bat_skip(t, n, i);
+        u32 e = bat_word_end(t, n, i);
+        const u8 *w = t + i;
+        if (span_eq_ci(w, e - i, "/i") || span_eq_ci(w, e - i, "not")) {
+            i = e;
+            continue;
+        }
+        if (span_eq_ci(w, e - i, "exist") || span_eq_ci(w, e - i, "defined") || span_eq_ci(w, e - i, "errorlevel") ||
+            span_eq_ci(w, e - i, "cmdextversion")) {
+            return bat_word_end(t, n, bat_skip(t, n, e));
+        }
+        break;
+    }
+    i = bat_skip(t, n, bat_operand_end(t, n, i));
+    if (i + 1 < n && t[i] == '=' && t[i + 1] == '=') i = bat_skip(t, n, i + 2);
+    else i = bat_skip(t, n, bat_word_end(t, n, i)); // equ, neq, lss, leq, gtr, geq
+    return bat_operand_end(t, n, i);
+}
+
+// After "for": its switches, the variable, "in", the set (a for /f command in it scanned), "do"; returns past "do".
+static u32 bat_for(const char *path, u32 line, const u8 *t, u32 n, u32 i) {
+    int f = 0, backquote = 0;
+    for (;;) {
+        i = bat_skip(t, n, i);
+        if (i >= n || t[i] != '/') break;
+        u32 e = bat_word_end(t, n, i);
+        int r = span_eq_ci(t + i, e - i, "/r");
+        f |= span_eq_ci(t + i, e - i, "/f");
+        i = e;
+        if (r) { // /r's optional root
+            u32 p = bat_skip(t, n, i);
+            if (p < n && t[p] != '%') i = bat_word_end(t, n, p);
+        }
+    }
+    if (f && i < n && t[i] == '"') { // the options
+        u32 e = i + 1;
+        while (e < n && t[e] != '"') e++;
+        for (u32 k = i + 1; k + 8 <= e; k++) backquote |= span_eq_ci(t + k, 8, "usebackq");
+        i = e < n ? e + 1 : e;
+    }
+    i = bat_word_end(t, n, bat_skip(t, n, i)); // %%x
+    i = bat_word_end(t, n, bat_skip(t, n, i)); // in
+    i = bat_skip(t, n, i);
+    if (i >= n || t[i] != '(') return i;
+    i = bat_skip(t, n, i + 1);
+    u8 open = i < n ? t[i] : 0;
+    if (f && ((open == '\'' && !backquote) || (open == '`' && backquote))) {
+        u32 a = i + 1, e = n;
+        for (u32 k = a; k < n; k++) {
+            if (t[k] != open) continue;
+            u32 p = bat_skip(t, n, k + 1);
+            if (p < n && t[p] == ')') {
+                e = k;
+                break;
+            }
+        }
+        bat_scan_inner(path, line, t + a, e - a);
+        i = e < n ? e + 1 : e;
+    }
+    int quoted = 0;
+    while (i < n && (quoted || t[i] != ')')) {
+        if (t[i] == '"') quoted = !quoted;
+        i++;
+    }
+    if (i < n) i++;
+    i = bat_skip(t, n, i);
+    u32 e = bat_word_end(t, n, i);
+    return span_eq_ci(t + i, e - i, "do") ? e : i;
+}
+
+// After "start": the title and the switches (/d takes a folder); returns where the program starts.
+static u32 bat_start(const u8 *t, u32 n, u32 i) {
+    i = bat_skip(t, n, i);
+    if (i < n && t[i] == '"') {
+        i++;
+        while (i < n && t[i] != '"') i++;
+        if (i < n) i++;
+    }
+    for (;;) {
+        i = bat_skip(t, n, i);
+        if (i >= n || t[i] != '/') return i;
+        u32 e = bat_word_end(t, n, i);
+        int d = span_eq_ci(t + i, e - i, "/d");
+        i = e;
+        if (d) i = bat_word_end(t, n, bat_skip(t, n, i));
+    }
+}
+
+// One line (or a for /f command): every word at a command position is a path, a builtin or exempt.
+static void bat_scan(const char *path, u32 line, const u8 *t, u32 n, u32 *depth) {
+    int at_command = 1, cmd_exe = 0;
+    u32 i = 0;
+    while (i < n) {
+        u8 c = t[i];
+        if (bat_blank(c)) {
+            i++;
+            continue;
+        }
+        if (!at_command) {
+            if (c == '"') {
+                i++;
+                while (i < n && t[i] != '"') i++;
+                i++;
+            } else if (c == '^') {
+                i += 2;
+            } else if (c == '>' || c == '<') { // a redirection: the '&' of 2>&1 joins no command
+                i++;
+                if (i < n && t[i] == '>') i++;
+                if (i < n && t[i] == '&') i++;
+            } else if (c == '|' || c == '&') {
+                at_command = 1, cmd_exe = 0;
+                i++;
+                if (i < n && t[i] == c) i++;
+            } else if (c == ')' && *depth > 0) {
+                (*depth)--;
+                at_command = 1, cmd_exe = 0;
+                i++;
+            } else if (cmd_exe && c == '/' && i + 1 < n && (t[i + 1] == 'c' || t[i + 1] == 'C' || t[i + 1] == 'k' || t[i + 1] == 'K') &&
+                       (i + 2 == n || bat_blank(t[i + 2]) || t[i + 2] == '"')) {
+                i = bat_skip(t, n, i + 2); // cmd's /c or /k: the rest is a command line (quoted as a whole, or not)
+                if (i < n && t[i] == '"') {
+                    u32 e = n;
+                    while (e > i + 1 && t[e - 1] != '"') e--;
+                    u32 inner = 0;
+                    if (e > i + 1) bat_scan(path, line, t + i + 1, e - 1 - (i + 1), &inner);
+                    else bat_scan(path, line, t + i + 1, n - (i + 1), &inner); // no closing quote
+                    return;
+                }
+                at_command = 1, cmd_exe = 0;
+            } else {
+                i++;
+            }
+            continue;
+        }
+        if (c == '@') {
+            i++;
+            continue;
+        }
+        if (c == '(' || c == ')') { // a block opens, or closes before "else", "&" or the line's end
+            if (c == '(') (*depth)++;
+            else if (*depth > 0) (*depth)--;
+            i++;
+            continue;
+        }
+        if (c == ':') return; // a label, or a "::" comment
+        if (c == '<' || c == '>' || (c >= '0' && c <= '9' && i + 1 < n && t[i + 1] == '>')) { // a redirection first
+            while (i < n && (t[i] == '<' || t[i] == '>' || t[i] == '&' || (t[i] >= '0' && t[i] <= '9'))) i++;
+            i = bat_word_end(t, n, bat_skip(t, n, i));
+            continue;
+        }
+        u32 e = bat_word_end(t, n, i);
+        if (e == i) { // ; , = between commands
+            i++;
+            continue;
+        }
+        const u8 *w = t + i;
+        u32 wn = e - i;
+        if (wn > 4 && span_eq_ci(w, 4, "echo") && (w[4] == '.' || w[4] == ':' || w[4] == '/' || w[4] == '\\' || w[4] == '[' ||
+                                                   w[4] == ']' || w[4] == '+')) {
+            e = i + 4; // echo. echo: ... are echo
+            wn = 4;
+        }
+        i = e;
+        at_command = 0;
+        command_count++;
+        int path_like = 0;
+        for (u32 k = 0; k < wn; k++) path_like |= w[k] == '\\' || w[k] == '/' || w[k] == ':' || w[k] == '%' || w[k] == '!';
+        if (wn >= 2 && w[0] == '"' && w[wn - 1] == '"') w++, wn -= 2;
+        if (path_like) { // a path, or a variable: cmd.exe by its path starts a command line at its /c or /k
+            u32 b = wn;
+            while (b > 0 && w[b - 1] != '\\' && w[b - 1] != '/') b--;
+            cmd_exe = span_eq_ci(w + b, wn - b, "cmd.exe") || span_eq_ci(w + b, wn - b, "cmd");
+            continue;
+        }
+        if (span_eq_ci(w, wn, "rem")) return;
+        if (span_eq_ci(w, wn, "if")) {
+            i = bat_if(t, n, i);
+            at_command = 1;
+        } else if (span_eq_ci(w, wn, "for")) {
+            i = bat_for(path, line, t, n, i);
+            at_command = 1;
+        } else if (span_eq_ci(w, wn, "call")) {
+            i = bat_skip(t, n, i);
+            if (i < n && t[i] == ':') i = bat_word_end(t, n, i); // call :label, then its arguments
+            else at_command = 1;
+        } else if (span_eq_ci(w, wn, "start")) {
+            i = bat_start(t, n, i);
+            at_command = 1;
+        } else if (span_eq_ci(w, wn, "else") || span_eq_ci(w, wn, "do")) {
+            at_command = 1;
+        } else if (!in_list_ci(w, wn, BAT_BUILTINS, COUNT(BAT_BUILTINS)) && !in_list_ci(w, wn, BAT_EXEMPT, COUNT(BAT_EXEMPT))) {
+            u32 stem = wn;
+            if (wn > 4 && (span_eq_ci(w + wn - 4, 4, ".exe") || span_eq_ci(w + wn - 4, 4, ".com"))) stem = wn - 4;
+            problem(path, line);
+            put("'");
+            put_n((const char *)w, wn);
+            put("' by its bare name: a Windows program by %SystemRoot%\\System32\\");
+            put_n((const char *)w, stem);
+            put(".exe, any other by its path (cmd builtins, cl, rc, fxc and git are exempt)");
+            end_line();
+        }
+    }
+}
+
+static void check_bat(const char *path, u32 len) {
+    u32 pos = 0, number = 0, n, depth = 0;
+    const u8 *s;
+    while (next_line(len, &pos, &s, &n)) bat_scan(path, ++number, s, n, &depth);
+}
+
 // --- the link check (#36) -------------------------------------------------------------------------------------
 
 // A linker map's symbol lines ("0001:00053b50  memcpy  0000000140054b50 f  libvcruntime:memcpy.obj", in "Publics by
@@ -877,6 +1189,7 @@ typedef struct SelfCase {
 } SelfCase;
 
 #define CRT_FN "C runtime function '"
+#define BARE " by its bare name"
 
 static const SelfCase SELF_C[] = {
     { "src/x/a.c", "int f(void) { return memcmp(a, b, 4); }", { "src/x/a.c:1: " CRT_FN "memcmp'" } },
@@ -904,6 +1217,33 @@ static const SelfCase SELF_C[] = {
     { "src/x/a.cpp", "auto s = R\"x(memcmp( \" )x\"; qsort(a, 1, 1, f);", { "src/x/a.cpp:1: " CRT_FN "qsort'" } },
     { "src/x/a.c", "char c = '\\''; int y = isdigit(c);", { "src/x/a.c:1: " CRT_FN "isdigit'" } },
     { "src/x/a.c", "int a = memcmp_like(x); int b = my_strlen(s); int c = strlen_s(s);", { 0 } },
+};
+
+static const SelfCase SELF_BAT[] = {
+    { "x.bat", "findstr x y", { "x.bat:1: 'findstr'" BARE } },
+    { "x.bat", "echo %H%| findstr /x y >nul", { "x.bat:1: 'findstr'" BARE } },
+    { "x.bat", "%X% && sort x || where y", { "x.bat:1: 'sort'" BARE, "x.bat:1: 'where'" BARE } },
+    { "x.bat", "if errorlevel 1 (\n    tar -t -f x\n)", { "x.bat:2: 'tar'" BARE } },
+    { "x.bat", "for %%F in (a b) do find \"x\" %%F", { "x.bat:1: 'find'" BARE } },
+    { "x.bat", "if \"%A%\"==\"b\" (set X=1) else certutil -hashfile x", { "x.bat:1: 'certutil'" BARE } },
+    { "x.bat", "if /i not \"%~1\"==\"x\" fc a b", { "x.bat:1: 'fc'" BARE } },
+    { "x.bat", "if !N! lss 1 more x\nif exist \"a b\" sort.exe x", { "x.bat:1: 'more'" BARE, "x.bat:2: 'sort.exe'" BARE } },
+    { "x.bat", "call findstr x\ncall :label findstr & where", { "x.bat:1: 'findstr'" BARE, "x.bat:2: 'where'" BARE } },
+    { "x.bat", "start \"\" /belownormal /d build /b /wait findstr x", { "x.bat:1: 'findstr'" BARE } },
+    { "x.bat", "\"%SystemRoot%\\System32\\cmd.exe\" /d /c sort x\ncmd /c x", { "x.bat:1: 'sort'" BARE, "x.bat:2: 'cmd'" BARE } },
+    { "x.bat", "for /f %%n in ('%SystemRoot%\\System32\\findstr.exe x y ^| find /c /v \"\"') do set N=%%n",
+      { "x.bat:1: 'find'" BARE } },
+    { "x.bat", "for /f \"usebackq delims=\" %%i in (`where cl`) do set X=%%i", { "x.bat:1: 'where'" BARE } },
+    { "x.bat", "if exist x (\n  echo a\n) else (\n  powershell -c x\n)", { "x.bat:4: 'powershell'" BARE } },
+    { "x.bat", "set A=1 & findstr x\necho dist: PASS (x) && sort y", { "x.bat:1: 'findstr'" BARE, "x.bat:2: 'sort'" BARE } },
+    { "x.bat", "call \"%ROOT%build.bat\" > \"%LOG%\" 2>&1\ncopy a b >nul 2>&1 && sort x", { "x.bat:2: 'sort'" BARE } },
+    { "x.bat",
+      "@echo off\nrem where and sort\n:: find\n:label\necho find the sort ^| where\nset \"X=a | sort\"\n"
+      "%SystemRoot%\\System32\\findstr.exe x y\ngit status\ncl /nologo x.c\nfxc /nologo x\nrc x\nbuild\\make_icon.exe a\n"
+      "echo(where\n>> \"!LOG!\" echo(x\n<nul set /p \"=x\" > y\nfor /f \"usebackq delims=\" %%L in (\"x.txt\") do set L=%%L\n"
+      "for /f %%s in ('build\\release_check.exe stamp') do set S=%%s\nif not \"%~1\"==\"\" if \"!Q!\"==\"0\" (\n  exit /b 1\n)\n"
+      "(set \"M=a (b) & c\" & goto failed)\nfor /f \"tokens=3\" %%v in ('%SystemRoot%\\System32\\findstr.exe /b /c:\"#x \" f') do set V=%%v",
+      { 0 } },
 };
 
 static const SelfCase SELF_MAP[] = {
@@ -939,6 +1279,7 @@ static u32 self_run(const char *kind, const SelfCase *cases, u32 count) {
         capture_len = 0;
         if (kind[0] == 'C') check_c(k->path, len);
         if (kind[0] == 'm') check_map(k->path, len);
+        if (kind[0] == 'b') check_bat(k->path, len);
         capturing = 0;
         u32 pos = 0, j = 0;
         int ok = 1;
@@ -984,6 +1325,7 @@ static int self_test(void) {
     u32 failed = 0, total = 0;
     failed += self_run("C", SELF_C, COUNT(SELF_C)), total += COUNT(SELF_C);
     failed += self_run("map", SELF_MAP, COUNT(SELF_MAP)), total += COUNT(SELF_MAP);
+    failed += self_run("bat", SELF_BAT, COUNT(SELF_BAT)), total += COUNT(SELF_BAT);
     put(failed ? "check_source: self-test: FAIL: " : "check_source: self-test: PASS: ");
     if (failed) {
         put_u32(failed);
@@ -1033,6 +1375,26 @@ int main(int argc, char **argv) {
         put("' in the module map: no such file");
         end_line();
     }
+    walk_bat("");
+    for (u32 i = 1; i < bat_count; i++) {
+        SourceFile x = bat_files[i];
+        u32 j = i;
+        while (j > 0 && str_less(x.path, bat_files[j - 1].path)) {
+            bat_files[j] = bat_files[j - 1];
+            j--;
+        }
+        bat_files[j] = x;
+    }
+    for (u32 i = 0; i < bat_count; i++) {
+        u32 len;
+        if (read_file(bat_files[i].path, &len)) {
+            check_bat(bat_files[i].path, len);
+        } else {
+            problem(bat_files[i].path, 0);
+            put("cannot be read");
+            end_line();
+        }
+    }
     if (problems) {
         put("check_source: FAIL: ");
         put_u32(problems);
@@ -1049,6 +1411,7 @@ int main(int argc, char **argv) {
     put(" map rows, ");
     put_u32(call_count);
     put(" calls without the C runtime");
+    put(", .bat files: "), put_u32(bat_count), put(", their commands by their path or exempt: "), put_u32(command_count);
     end_line();
     return 0;
 }
