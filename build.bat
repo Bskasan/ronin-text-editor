@@ -87,6 +87,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem --- the e2e driver (tools\e2e.c, #31): compiled here, run only by the maintainer (it takes the keyboard and mouse) ---
+cl /nologo /W4 /WX /O2 tools\e2e.c /Fobuild\e2e.obj /Fdbuild\e2e_cl.pdb /Febuild\e2e.exe /link /INCREMENTAL:NO user32.lib gdi32.lib advapi32.lib dwmapi.lib >nul
+if errorlevel 1 (
+    echo ERROR: tools\e2e.c did not compile
+    exit /b 1
+)
+
 rem --- the documentation site's generator (tools\make_docs.c, with src\dev\markdown.c): run by build.bat docs and verify ---
 cl /nologo /W4 /WX /O2 /std:c11 tools\make_docs.c /Fobuild\make_docs.obj /Fdbuild\make_docs_cl.pdb /Febuild\make_docs.exe /link /INCREMENTAL:NO >nul
 if errorlevel 1 (

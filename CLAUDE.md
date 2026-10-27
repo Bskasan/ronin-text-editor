@@ -232,6 +232,14 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
     cmd //c ".\release-check.bat quick"  # development runs (~10 s): the preconditions (tree and commit only reported),
                                      # the zip checks on an existing dist\, the HUMAN list, unchanged; last line
                                      # "release-check: PASS (quick)"
+    build\e2e.exe --exe build\ronin.exe [--scenario 1,2] [--repeat N]  # #31, maintainer only, with permission for each
+                                     # run (it takes the keyboard and the mouse; never by CI, verify or a script):
+                                     # the exe copied into build\tmp\e2e (--zip <zip>: the zip unpacked there),
+                                     # started with empty APPDATA and LOCALAPPDATA, typed into with SendInput, each
+                                     # key waiting for ronin's next frame; aborts on any physical input, a lost
+                                     # foreground or a layout switch; the machine's state checked after; last line
+                                     # "e2e: PASS (...)", "e2e: FAIL: ..." or "e2e: ABORT: ..."; log and screenshots
+                                     # in build\e2e\<yyyymmdd-hhmmss>\ (--out); --demo-abort layout|foreground
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.
@@ -733,14 +741,16 @@ because GitHub Pages serves those files; verify's docs-check keeps them equal to
 | `check_source.exe`, `check_source.obj` | build.bat (tools\check_source.c; run by verify.bat and CI) |
 | `make_docs.exe`, `make_docs.obj` | build.bat (tools\make_docs.c with src\dev\markdown.c; run by build.bat docs, verify.bat and CI) |
 | `release_check.exe`, `release_check.obj` | build.bat (tools\release_check.c; run only by release-check.bat, #30) |
+| `e2e.exe`, `e2e.obj` | build.bat (tools\e2e.c; run only by the maintainer, #31) |
 | `gen\themes.h` | build.bat (make_themes, from themes\*.conf: the built-in themes) |
 | `gen\quad_vs.h`, `gen\quad_ps.h` | build.bat (fxc, from src\platform\shaders\quad.hlsl) |
 | `gen\ronin.ico`, `gen\ronin.res` | build.bat (make_icon, then rc with res\ronin.rc) |
 | `ronin.log`, `crash.log` | every dev run; --crash |
-| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme), the coverage map's tests and the input harness's presses (tmp\p29set, tmp\p29proj, tmp\p29keys_h, tmp\p29keys), verify's and CI's docs-check (tmp\docs_check) and release-check.bat (tmp\release-check: the unpacked zip, the empty APPDATA and LOCALAPPDATA, the coverage tool's TEMP) |
+| `tmp\` | made by build.bat; filled on demand by --test, the smoke, the benches (the 100 MB files, p11big, p12bench, ...), --soak (tmp\soak), --leak-check (tmp\leak), the --fuzz-seeds workers (tmp\fuzz<k>), the crash tests (tmp\recovery, tmp\crash_rec), the git tests' fake gits (tmp\p19), the theme tests (tmp\p21themes), the real-git test's and the smoke's repository (tmp\gitrepo, tmp\gitrepo-home; made once), --bench-git (tmp\p19bench), verify's clean-check (tmp\clean_check, removed after it), the docs tests (tmp\p24dump, tmp\p24readme), the coverage map's tests and the input harness's presses (tmp\p29set, tmp\p29proj, tmp\p29keys_h, tmp\p29keys), verify's and CI's docs-check (tmp\docs_check), release-check.bat (tmp\release-check: the unpacked zip, the empty APPDATA and LOCALAPPDATA, the coverage tool's TEMP) and the e2e driver (tmp\e2e: the unpacked zip or the copied exe, each scenario run's working folder, APPDATA and LOCALAPPDATA; emptied at its start) |
 | `shots\` | made by build.bat; screenshots of --screenshot, --dump-atlas and --dpi-check run by hand, and --leak-check's frames |
 | `fuzz\` | --fuzz-seeds (the workers' logs) |
 | `verify\` | verify.bat (each step's log) |
+| `e2e\` | the e2e driver (#31): `<yyyymmdd-hhmmss>\`, a run's e2e.log and its BMP screenshots |
 | `release-check\` | release-check.bat (#30): `<yyyymmdd-hhmmss>.log`, the whole run, and `<yyyymmdd-hhmmss>\`, each step's output (verify's logs of both verify runs, the coverage report, the snapshots) |
 | `dist\` | dist.bat (the staging folder and `contents.txt`, the zip's listing; the zip and `SHA256SUMS.txt` go to dist\ at the root) |
 | `proof\` | scratch copies of the repository for a proof, made by hand; never required |
