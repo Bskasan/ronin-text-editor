@@ -4975,7 +4975,8 @@ a project); the other two scenarios follow (#31's body), then a step of release-
     files are compared byte for byte (UTF-8 LF and UTF-16 LE CRLF, each with its sidecar's encoding and line endings),
     then a second start in the same folders must show the notice, recover-file must give two windows, and the copy's
     text taken over by hand must save exactly. The expectation corrected in group 4: s11 first expected the copy beside
-    the original (a window_divider pixel), as MANUAL_TESTS Q6's wording says. ronin put it below: the pop-up rule
+    the original (a window_divider pixel), as MANUAL_TESTS Q6's wording said (now corrected to the pop-up rule). ronin put
+    it below: the pop-up rule
     (docs/src/windows-and-buffers.md) splits side by side only from split_width_threshold (160) columns, and this frame
     has 142, as Emacs's split-width-threshold does. ronin matched its documentation and Emacs, so the check follows the
     rule: a divider from 160 columns on, else the upper window's mode line above the lower one.
