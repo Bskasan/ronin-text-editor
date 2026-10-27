@@ -4838,7 +4838,8 @@ The first try of the fourth used `EqualMemory`, which these SDK headers (10.0.26
 Every key test before #31 ran in the dev builds (the headless app, the harness's hidden window, the smoke's injected
 keys); nothing typed into the shipped exe. tools/e2e.c (build\e2e.exe) does, from outside, with nothing added to the exe.
 It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS AH), group 2 scenarios 3 to 5 (the
-layouts, the clipboard, the mouse); the other six scenarios follow (#31's body), then a step of release-check.bat.
+layouts, the clipboard, the mouse), group 3 scenarios 6 to 9 (quitting, the configuration, the command list and M-x,
+a project); the other two scenarios follow (#31's body), then a step of release-check.bat.
 
 1. **Only what a user could see or get.** The release exe takes no test flag (only `--startup-ms`, `--no-activate`,
    `--version`) and writes no log, so the driver observes from outside: saved files byte for byte, the window title,
@@ -4935,6 +4936,30 @@ layouts, the clipboard, the mouse); the other six scenarios follow (#31's body),
     scrolls ronin's 3 lines a notch (APP_WHEEL_LINES, a constant); Emacs's default differs, reported to the maintainer
     and not changed here. Ctrl+wheel must give a larger cursor cell after two notches up and the first one after two
     down. A drag's button is released on any way out.
+13. **The real close button (scenario 6).** Its place comes from DWM (DWMWA_CAPTION_BUTTON_BOUNDS, the caption buttons'
+    area relative to the window; the close button its rightmost third), and the window's own hit test must answer
+    HTCLOSE there before anything is clicked. Windows' caption button takes a click only in steps, each waited for on
+    the screen: the pointer onto the button, then the button drawn hot (its pixels change), then the press, then
+    Windows tracking it (its capture on ronin's window), then the release. In the development runs a press sent with
+    the move, or right after it, was lost (no capture, the button left down), and a second click inside the double-click
+    area and time was a double click, which closes nothing; so the clicks alternate 8 px left and right of the button's
+    centre, and a pointer still on the button is first moved off and the button waited for unhot. A step that ends
+    ronin where a frame was expected says so ("ronin ended (exit code 0) after ..."), and ronin's own window going away
+    is not a lost foreground.
+14. **No flash, every composition (scenario 7).** The theme's change is watched on one pixel of the echo line at every
+    DWM composition from just before the save or the write until the new background shows: each composition before
+    must show the old background, and DWM's count of composed frames (DwmGetCompositionTimingInfo) must never step by
+    more than one between two reads, so no composition goes unseen; a flash shorter than a composition is never on the
+    screen. The writes as another program are an in-place one (one open, truncated, written, as Notepad saves) and a
+    temp file renamed over ronin.conf.
+15. **A project of its own (scenario 9).** The tree has a `.ronin-project` at its root: without it the project of a file
+    visited from it would be the nearest marker above, this repository's `.git`, and C-x p g would search the whole
+    repository. Background work is waited for on the screen, never by time: the finder until both matching rows show
+    their matched characters (the scan is in), the search until its match shows on lazy_highlight.
+16. **The expectation corrected in group 3.** s9 first expected *search* to open without being selected and pressed
+    C-x o to reach it. ronin selects it (results_project_search, "shown through the pop-up rule and selected"), as
+    Emacs's C-x p g (project-find-regexp) selects its *xref* window; ronin matched Emacs, so the C-x o went (the
+    expectations rule; the smoke's stage 8 shows *search* without selecting it on purpose).
 
 ### Measurements, #31 E2E driver
 
@@ -5004,6 +5029,27 @@ uk.txt 18 (£"@#~\|, AltGr's € and ¦); s4's clip.txt 50 bytes; s5's mouse.txt
 correction. Two faults of the driver, each fixed before the acceptance run that passed: the lone Ctrl release taken for
 physical input (f4ae929; point 4) and s5's click on point's own cell after the wheel (point 12; the first acceptance
 run's s5, round 1, failed `no new frame within 2 s after "click top-left"`; rounds 2 and 3 did not run).
+
+Group 3 (scenarios 6 to 9), the same machine and conditions, one block on 2026-10-27.
+
+| run | scenario | time | result |
+|---|---|---|---|
+| development (copy of build\ronin.exe), the last run of each | s6 / s7 / s8 / s9 | 2.0 s / 1.5 s / 1.1 s / 1.6 s | PASS / PASS / PASS / PASS |
+| acceptance 1 to 3 of 3 | s1 to s9 | s6 2.0, s7 1.5, s8 1.1, s9 1.2 s; s1 to s5 as before | all PASS (`e2e: PASS (27 scenario runs, 57.5 s)`) |
+
+| mutation | scenario | the line |
+|---|---|---|
+| the close button and Alt+F4 quit without asking (EVENT_CLOSE in app_update) | s6 | `e2e: s6: ronin ended (exit code 0) after "close button" (s6 step 5)` |
+| the built-in colors applied while a config change settles (app_update) | s7 | `e2e: s7: a composition showed #072626 at 1262,791 while another program wrote ronin.conf in place with moonfly (only #141415, then #080808 expected)` |
+| a click outside the command list box does nothing (modal_click) | s8 | `e2e: s8: no new frame within 2 s after "click outside the box" (s8 step 19)` |
+| a search's visit one column past the match (results_visit) | s9 | `e2e: s9: proj\src\widget_beta.c: byte 37 is 0x6e, expected 0x51 (saved 55 bytes, expected 55)` |
+
+The theme changes of s7: ronin's own save 6 compositions from #072626 to #141415, the in-place write 6 from #141415 to
+#080808, the rename 5 from #080808 to #161616, none missed. M7's flash showed in the in-place write, not in ronin's own
+save, which reloads the file it has just written at once. Every run's state lines as before, with the 6 lone Ctrl
+releases of s3's three runs. One expectation corrected (decision 16: *search* is selected, as in Emacs). Faults of the
+driver, each fixed before the acceptance run: the close button clicked with the move in one step (no capture, nothing
+closed), and its second click a double click (decision 13); M7's failure line printed into its screenshot's line.
 
 ## After 1.0
 
