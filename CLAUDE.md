@@ -168,9 +168,10 @@ every piece of work is a GitHub issue, worked on its own branch and merged throu
   docs/releases/checklist-<version>.md, `build.bat docs`, dist.bat. After the merge the maintainer tags v<version> on
   main and publishes the release with the zip.
 - A release pull request is opened only after a full `release-check.bat` PASS on its branch's last commit (#30;
-  maintainer only, an announced heavy run of about 12 minutes): the commit published on origin and containing origin's
+  maintainer only, an announced heavy run of about 13 minutes): the commit published on origin and containing origin's
   main, the versions in agreement, `verify.bat phase`, dist.bat, the coverage report, the zip checked without the focus,
-  the HUMAN list that is left, the maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin unchanged.
+  the zip's exe driven with real input (tools/e2e.c, #31; after a key press, the machine left alone), the HUMAN list
+  that is left, the maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin unchanged.
 
 ## Commit policy (every branch)
 
@@ -217,7 +218,7 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # last line "dist: PASS: <zip> (<bytes> bytes, SHA-256 <hash>)"; the version
                                      # is src/app/version.h's. It packs the working copy's files: a text file a tool
                                      # wrote with LF stays LF until checked out again (a fresh clone has CRLF)
-    cmd //c ".\release-check.bat"    # maintainer only, before a release pull request (#30; a heavy run, ~12 min):
+    cmd //c ".\release-check.bat"    # maintainer only, before a release pull request (#30; a heavy run, ~13 min):
                                      # the debug build, the preconditions (a clean tree; HEAD = origin's main, or on
                                      # another branch = that branch on origin with origin's main in it, read by
                                      # git ls-remote; version.h = CHANGELOG.md's first dated section, and
@@ -225,7 +226,9 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # --test under Microsoft.CodeCoverage.Console: a report, never a gate), the zip
                                      # (unpacked into a folder with a space and İ: its files, --version, the version
                                      # resource, --check-imports, a --no-activate start and close with the foreground
-                                     # watched, nothing written, --startup-ms --no-activate), the HUMAN list of
+                                     # watched, nothing written, --startup-ms --no-activate), e2e (#31: after a key
+                                     # press, build\e2e.exe --zip on the zip, every scenario once, the keyboard and the
+                                     # mouse taken for about a minute; full run only), the HUMAN list of
                                      # docs\MANUAL_TESTS.md, the maintainer's folders and the repository unchanged;
                                      # stops at the first failing step; last line "release-check: PASS" or
                                      # "release-check: FAIL: <step>"; log build\release-check\<yyyymmdd-hhmmss>.log

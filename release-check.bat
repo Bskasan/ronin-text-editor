@@ -1,10 +1,12 @@
 @echo off
 rem ronin release-check (#30): the maintainer's check before a release pull request. Never run by CI, never needed
-rem from contributors; a full run is one announced heavy run (about 12 minutes, the machine left alone).
+rem from contributors; a full run is one announced heavy run (about 13 minutes, the machine left alone).
 rem   release-check.bat        the preconditions (a clean tree; HEAD published on origin and containing origin's main;
 rem                            src\app\version.h, CHANGELOG.md's first dated section and docs\releases\<version>.md
 rem                            agree), verify.bat phase, dist.bat, the code coverage of the debug build's --test (a
-rem                            report, never a gate), the zip checked without taking the focus, the HUMAN list of
+rem                            report, never a gate), the zip checked without taking the focus, then the zip's exe
+rem                            driven with real input by build\e2e.exe (#31; after a key press, the machine left
+rem                            alone: it takes the keyboard and the mouse for about a minute), the HUMAN list of
 rem                            docs\MANUAL_TESTS.md, and the maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin
 rem                            unchanged
 rem   release-check.bat quick  for development runs: the preconditions (the tree and the commit reported, not
@@ -157,7 +159,23 @@ call :show "!RUN!\zip.txt"
 if not "!CODE!"=="0" (set "M=the zip check failed (above)" & goto failed)
 call :end
 
+rem --- e2e: the zip's exe driven with real input (tools\e2e.c, #31); full run only: it takes the keyboard and the mouse
+if "!QUICK!"=="1" goto human
+set "STEP=e2e"
+call :begin
+set "M=release-check: the next step takes the keyboard and the mouse for about 1 minute; press a key, then leave the machine (any key or mouse input stops it)"
+call :say
+pause >nul
+build\e2e.exe --zip "dist\!ZIPNAME!" --out "!RUN!\e2e" > "!RUN!\e2e.txt" 2>&1
+set CODE=!errorlevel!
+call :show "!RUN!\e2e.txt"
+call :last_line "!RUN!\e2e.txt"
+if not "!CODE!"=="0" (set "M=the e2e driver exit !CODE! (its last line above; log and screenshots in !RUN!\e2e\)" & goto failed)
+if not "!LAST:~0,11!"=="e2e: PASS (" (set "M=the e2e driver's last line is not e2e: PASS, above" & goto failed)
+call :end
+
 rem --- human: the HUMAN steps left, from docs\MANUAL_TESTS.md itself ---------------------------------------------------
+:human
 set "STEP=human"
 call :begin
 build\release_check.exe human docs\MANUAL_TESTS.md > "!RUN!\human.txt" 2>&1
