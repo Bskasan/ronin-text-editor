@@ -774,11 +774,23 @@ static void save_shot(Session *s, const u32 *px, const char *label) {
     end_line();
 }
 
-// A failed check: the line (already begun with put_prefix and the message), then the screenshot.
-static Result fail_end(Session *s) {
+// A failed check's line (already begun with put_prefix and the message), unless an abort was reported meanwhile:
+// physical input reaches the low-level hooks before any window, so a failure it caused (another window covering
+// ronin, the foreground gone) is found with the abort already set; the abort wins and the line is dropped.
+static Result fail_line(void) {
+    if (aborted()) {
+        line.len = 0;
+        return R_ABORT;
+    }
     end_line();
-    save_shot(s, s->cur ? s->cur : NULL, "fail");
     return R_FAIL;
+}
+
+// The same, then the screenshot.
+static Result fail_end(Session *s) {
+    Result r = fail_line();
+    if (r == R_FAIL) save_shot(s, s->cur ? s->cur : NULL, "fail");
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -1407,8 +1419,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
         put(" (error ");
         put_i64(GetLastError());
         put(")");
-        end_line();
-        return R_FAIL;
+        return fail_line();
     }
     InterlockedExchange(&watch.pid, (LONG)s->pi.dwProcessId);
     ResumeThread(s->pi.hThread);
@@ -1436,8 +1447,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
                 EnumWindows(list_windows_cb, (LPARAM)&any);
                 if (!any.found) put(" none");
             }
-            end_line();
-            return R_FAIL;
+            return fail_line();
         }
         tick();
     }
@@ -1452,8 +1462,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
             put("ronin's window did not become the foreground window (the foreground is ");
             describe_window(&line, GetForegroundWindow());
             put("; Windows refused the activation?)");
-            end_line();
-            return R_FAIL;
+            return fail_line();
         }
     }
     InterlockedExchange(&watch.fg_armed, 1);
@@ -1467,8 +1476,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
     if (!capture_setup(s)) {
         put_prefix(s);
         put("the client area cannot be captured");
-        end_line();
-        return R_FAIL;
+        return fail_line();
     }
     // The first frame: the filled cursor block drawn and the screen settled.
     for (;;) {
