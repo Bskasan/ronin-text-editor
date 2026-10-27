@@ -101,7 +101,8 @@ breaks an existing ronin.conf, theme file or key. Every pull request that change
 configures adds that change to the &quot;Unreleased&quot; section of <a href="https://github.com/Bskasan/ronin-text-editor/blob/main/CHANGELOG.md">CHANGELOG.md</a>; workflow and contributor-only
 changes need no entry. A release is a pull request of its own (the version in <code>src/app/version.h</code>, the changelog's
 section dated, the release notes in <code>docs/releases/</code>); the maintainer tags and publishes it. <code>release-check.bat</code> is the
-maintainer's own check before a release (about 12 minutes); contributors never need to run it.</p>
+maintainer's own check before a release (about 12 minutes); contributors never need to run it. <code>tools/e2e.c</code>
+(<code>build\e2e.exe</code>) takes the keyboard and the mouse to drive the shipped exe; only the maintainer runs it.</p>
 <h2 id="what-a-pull-request-must-meet">What a pull request must meet</h2>
 <ul>
 <li>C11 for MSVC, <code>/W4 /WX</code> clean. C++ only in <code>src/platform/win32_dwrite.cpp</code>, and only C-style there.</li>

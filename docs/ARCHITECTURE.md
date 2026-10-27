@@ -4833,6 +4833,111 @@ The first try of the fourth used `EqualMemory`, which these SDK headers (10.0.26
 - **`verify.bat phase`** on 9dc0d98: PASS in 503 s. The seed sweep passed 256 seeds (180 s), the soaks passed (bench
   1,000,000 events in 21.6 s), and the leak check passed. A plain `verify.bat` takes 72 s on this machine.
 
+### Decisions, #31 E2E driver
+
+Every key test before #31 ran in the dev builds (the headless app, the harness's hidden window, the smoke's injected
+keys); nothing typed into the shipped exe. tools/e2e.c (build\e2e.exe) does, from outside, with nothing added to the exe.
+It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS AH); the other nine scenarios follow
+(#31's body), then a step of release-check.bat.
+
+1. **Only what a user could see or get.** The release exe takes no test flag (only `--startup-ms`, `--no-activate`,
+   `--version`) and writes no log, so the driver observes from outside: saved files byte for byte, the window title,
+   pixels of the client area as composed on the screen (BitBlt of the screen DC after DwmFlush, as `--startup-capture`;
+   the swap chain is bit-exact), the clipboard through its API, the processes. Every capture first checks that the
+   client area's corners and centre are ronin's window (WindowFromPoint), so a covering window fails with its name and is
+   never taken for ronin's frame. The cell size is measured from the first frame's filled cursor block, not assumed.
+   Probes stay two cells in from the right edge: Windows 11 rounds the window's corners over the client area (the first
+   development run read `#2e3737` at the bottom-right corner).
+2. **Each key waits for ronin's frame.** SendInput puts a key's events into ronin's input queue in order, and ronin
+   handles each event completely before its next frame; an idle ronin draws nothing (no blink, no timers), and every
+   handled key changes the screen (a typed character, a cursor move, a prompt, "C-x-" for a prefix). So after each key
+   the driver looks at the screen once per DWM composition until the client area differs from the settled frame before
+   the key, then until it stops changing (two equal compositions): that is the key's frame. A key that draws nothing is a
+   mistake in the script, and the bound names it ("no new frame within 2 s after ..."). A step can also wait for the title
+   (a file visited), for its file to change (a change notification on the folder armed before the key; a save swaps a
+   temp file in, so a change is the whole new file) and for the process's end. Every bound (2 s a frame, 5 s a title or
+   a file, 10 s the window or the exit) only turns a hang into a failure; nothing sleeps a fixed time. The waits for the
+   window and the title look again at each composition: in the first development runs neither an EVENT_OBJECT_SHOW nor a
+   NAMECHANGE out-of-context event woke them (the window was found and the title set, but the wait was not woken); the
+   WinEvent hooks still count those events for a failure's line.
+3. **Real keys.** A key is one SendInput call with all its events (modifiers down, the key down and up, modifiers up),
+   so none is ever left held. Characters go through VkKeyScanExW for the layout of ronin's thread, with scan codes from
+   MapVirtualKeyExW; Ctrl and Meta are the left keys, AltGr the right Alt (the layout adds its Ctrl); no
+   KEYEVENTF_UNICODE. A character the layout cannot type fails the step.
+4. **Aborts, one line each, never retried.** A watch thread holds WH_KEYBOARD_LL and WH_MOUSE_LL (any event without the
+   injected flag is physical) and the WinEvent hooks. Before the first key the driver waits for 5 s without physical
+   input (at most 2 minutes), so the key that started it and the maintainer leaving do not count; then any physical key
+   or mouse input aborts. So does the foreground going to another window (the hook, and a check before every key with
+   the keyboard focus), and a change of the layout of ronin's thread (checked before and after every key; the line
+   names both layouts and the last key sent). Ctrl+C on the driver's console aborts the same way. Exit 3.
+5. **The machine as it was.** Recorded before the run and, after it (an abort too), restored and compared, each with
+   an `e2e: state:` line:
+   - the keyboard layouts: the loaded list, HKCU\Keyboard Layout\Preload and Substitutes, the User Profile (read only)
+     and the foreground thread's layout; a layout loaded since is unloaded, ronin is given its layout back before it is
+     ended, and the foreground window is asked for the recorded one;
+   - the clipboard: every format saved byte for byte, in Windows' order. Synthesized ones are never set back by hand
+     (Windows makes them again): CF_LOCALE, and of CF_UNICODETEXT, CF_TEXT and CF_OEMTEXT all but the first listed.
+     After the run the others are set back, then every saved format is read back and compared byte for byte and the
+     formats present compared with the saved list; any difference names the format and fails the run. A format that
+     cannot be copied byte for byte (a bitmap, a metafile, a palette, a private or GDI handle) makes the run refuse
+     before anything is typed (exit 2). Windows clipboard history must be off (ronin's own copies would stay in it).
+     The first design took text only; the maintainer's clipboard holds Chromium's two metadata formats with any text
+     copied from a browser or an Electron app, so every memory-based format is kept instead;
+   - the maintainer's %APPDATA%\ronin and %LOCALAPPDATA%\ronin (release_check's snapshot: path, size, time, hash);
+   - the processes: ronin runs in a job (KILL_ON_JOB_CLOSE), whose count must be 0, and no ronin.exe from the run's
+     folder may be left;
+   - the pointer's position. Caps Lock on refuses the run; the driver never toggles it.
+6. **The exe and its folders.** `--zip` unpacks with Windows' tar into build\tmp\e2e\İndirilenler ronin (a space and a
+   non-ASCII letter, as release-check's zip step); `--exe` copies the exe there (a running build\ronin.exe would break
+   the next release link). Every start gets its own working folder and empty APPDATA and LOCALAPPDATA, set in the
+   driver's environment and inherited. Nothing is written outside build\: build\tmp\e2e (emptied at the start) and the
+   run's log and BMP screenshots (no encoder needed) in build\e2e\<stamp> or `--out`.
+7. **`--demo-abort`** shows the two aborts a script can cause: a layout request posted to ronin, a second ronin taking
+   the foreground. Physical input cannot be faked; that abort is a HUMAN step (AH4).
+8. **A standalone tool.** The string, output, file and snapshot helpers are copied from release_check.c, as the tools
+   are single files; a shared header would mean changing release_check.c, outside #31. Mouse clicks, drags and the wheel
+   come with scenario 5: unused functions would fail /W4 /WX, and stage 1 only moves the pointer off ronin's window.
+9. **Who runs it.** By CLAUDE.md's rule (changed in #31) it runs only with the maintainer's permission for each run,
+   announced with what it does and how long it takes, the maintainer away from the machine; never in CI or verify.bat.
+
+### Measurements, #31 E2E driver
+
+Stage 1, on this machine (Windows 11, one monitor, the window 1280x800 client pixels, cell 9x19 at 100%), US layout
+active; each run as announced to the maintainer, the machine left alone. Start to first frame (the window, the
+foreground, the title, the settled frame with the cursor): 0.2 s every start.
+
+| run | scenario | time | result |
+|---|---|---|---|
+| acceptance 1 of 3 (copy of build\ronin.exe) | s1 / s2 | 1.7 s / 2.3 s | PASS / PASS |
+| acceptance 2 of 3 | s1 / s2 | 1.7 s / 2.3 s | PASS / PASS |
+| acceptance 3 of 3 | s1 / s2 | 1.7 s / 2.3 s | PASS / PASS (`e2e: PASS (6 scenario runs, 12.3 s)`) |
+| dist\ronin-1.0.0-windows-x64.zip, unpacked by the driver | s1 / s2 | 2.1 s / 2.4 s | PASS / PASS |
+
+Each scenario shown to fail once, on a release exe built from a scratch copy of the branch (build\proof\e2e-m1, e2e-m2):
+
+| mutation | scenario | the line |
+|---|---|---|
+| the first byte of a UTF-8 save written plus one (buffer_write_to) | s1 | `e2e: s1: first.txt: byte 0 is 0x49, expected 0x48 (saved 37 bytes, expected 37)` |
+| CRLF buffers saved with LF (`crlf` forced to 0 in buffer_write_to) | s2 | `e2e: s2: crlf.c: byte 16 is 0x0a, expected 0x0d (saved 86 bytes, expected 91)` |
+
+The aborts (exit 3), the machine as before after each:
+
+- `--demo-abort layout`: `e2e: ABORT: the keyboard layout of ronin's thread switched from 04090409 to 08090809, after
+  "H" (s1 step 13) (not retried)`, with `layout 04090409 given back to ronin`.
+- `--demo-abort foreground`: `e2e: ABORT: the foreground went to "ronin" (ronin.exe, pid 23360); ronin under test is pid
+  6760, after "H" (s1 step 13) (not retried)`.
+
+The state lines of every run: `keyboard layouts as before (08090809 04090409 040b040b 040b0809; active 04090409;
+Preload, Substitutes and User Profile equal)`; `clipboard put back and read back byte for byte equal, no other format: 6
+formats` (CF_UNICODETEXT 1,216 bytes, Chromium's two formats, CF_LOCALE, CF_TEXT and CF_OEMTEXT synthesized); the
+maintainer's two ronin folders unchanged; no process of the run left. `git status --ignored` outside build\ and dist\
+equal before and after. The expectations of s1 and s2 needed no correction (M-f went over "ğüş" as one word, as Emacs).
+
+The development runs found five faults of the driver, each fixed before the acceptance runs: the clipboard check
+refused text copied from a Chromium-based program (point 5 of the decisions); the window wait and the title wait were
+not woken by their WinEvents (point 2); the echo-area probe sat in the window's rounded corner (point 1); s2's two
+starts wrote screenshots under the same names; an abort found before a key named that key as sent.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the
