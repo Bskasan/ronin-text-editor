@@ -14,7 +14,8 @@
 //       [--demo-abort layout|foreground]
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
 // layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
-// button, Alt+F4), 7 the configuration file created and reloaded, 8 the command list and M-x.
+// button, Alt+F4), 7 the configuration file created and reloaded, 8 the command list and M-x, 9 a project's finder and
+// search.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -55,7 +56,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 8
+#define SCENARIOS 9
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -70,13 +71,16 @@ static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', '
 #define FILE_MS 5000
 #define WINDOW_MS 10000      // the window, the foreground, the first frame
 #define EXIT_MS 10000
+#define WORK_MS 10000        // background work shown on the screen: a project's scan, a search's results
 
 // ronin's default theme (themes/ronin.conf), bit-exact on the screen.
 #define THEME_BACKGROUND 0x072626u
 #define THEME_CURSOR 0x90ee90u
 #define THEME_MODE_LINE 0xd3b58du
 #define THEME_PROMPT 0x0fdfafu          // prompt = string
+#define THEME_COMPLETION_MATCH 0xffffffu // completion_match = keyword
 #define THEME_WINDOW_DIVIDER 0x126367u
+#define THEME_LAZY_HIGHLIGHT 0x668b8bu
 #define THEME_MODAL_BORDER 0x2e8b8bu
 // The built-in themes' backgrounds (themes\*.conf).
 #define VAGUE_BACKGROUND 0x141415u
@@ -1381,6 +1385,18 @@ static b32 has_color(Session *s, const u32 *px, i32 x0, i32 y0, i32 x1, i32 y1, 
 // The echo line (the client area's last line) of the settled frame holds color c.
 static b32 echo_has(Session *s, u32 c) { return has_color(s, s->frame, 0, s->h - s->line_h, s->w, s->h, c); }
 
+// The separate bands of pixel rows holding color c: one per text row (the glyphs of two rows never touch).
+static i32 color_rows(Session *s, const u32 *px, u32 c) {
+    i32 bands = 0;
+    b32 in = 0;
+    for (i32 y = 0; y < s->h; y++) {
+        b32 any = has_color(s, px, 0, y, s->w, y + 1, c);
+        if (any && !in) bands++;
+        in = any;
+    }
+    return bands;
+}
+
 // A condition on the settled frame after the last step, or that step's failure saying what was expected.
 static Result expect(Session *s, b32 ok, const char *what) {
     if (ok) return R_OK;
@@ -1423,6 +1439,48 @@ static Result frame_as_kept(Session *s, const char *kept_label) {
     Result r = fail_end(s);
     if (r == R_FAIL) save_shot(s, s->kept, "kept");
     return r;
+}
+
+// Background work shown on the screen (a scan's rows, a search's matches): the captures at each composition until
+// cond holds, at most 10 s; then the frame settled.
+static Result wait_screen(Session *s, b32 (*cond)(Session *, const u32 *), const char *what) {
+    u64 t0 = GetTickCount64(), deadline = t0 + WORK_MS;
+    for (;;) {
+        if (aborted()) return R_ABORT;
+        if (ronin_ended(s)) return ended_fail(s);
+        tick();
+        if (!capture(s, s->cur)) {
+            put_prefix(s);
+            put("the window is covered by ");
+            bput_n(&line, covered.data, covered.len);
+            return fail_end(s);
+        }
+        if (cond(s, s->cur)) break;
+        if (GetTickCount64() >= deadline) {
+            put_prefix(s);
+            put(what);
+            put(": not shown within 10 s after ");
+            bput_n(&line, where.data, where.len);
+            return fail_end(s);
+        }
+    }
+    Wait w = settle(s, GetTickCount64() + SETTLE_MS);
+    if (w == W_ABORT) return R_ABORT;
+    if (w == W_TIMEOUT) {
+        put_prefix(s);
+        put("the frames did not settle within 1 s once ");
+        put(what);
+        put(" showed");
+        return fail_end(s);
+    }
+    put_prefix(s);
+    put(what);
+    put(": shown ");
+    bput_secs(&line, GetTickCount64() - t0);
+    put(" after ");
+    bput_n(&line, where.data, where.len);
+    end_line();
+    return R_OK;
 }
 
 // DWM's count of composed frames.
@@ -3002,6 +3060,93 @@ static Result scenario_8(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 9: a project (ronin <dir>): the finder's fuzzy match and order, the search and a visit of its match
+
+#define S9_FILLERS 300
+#define S9_BETA "int beta(void) {\n    return 2;\n}\nint needle_word = 3;\n"
+
+// The finder's two candidates, each with its matched characters in completion_match.
+static b32 two_rows_matched(Session *s, const u32 *px) { return color_rows(s, px, THEME_COMPLETION_MATCH) >= 2; }
+
+// *search*'s match on its lazy_highlight background.
+static b32 match_shown(Session *s, const u32 *px) { return has_color(s, px, 0, 0, s->w, s->h, THEME_LAZY_HIGHLIGHT); }
+
+// The project: a .ronin-project at its root (else a file's project would be the nearest marker above it, this
+// repository), two files matching "alpha" (in a file name at a word start; in a folder's name), one needle_word, and
+// fillers.
+static b32 scenario_9_tree(Session *s, wchar_t *proj) {
+    wchar_t p[PATH_CAP];
+    wjoin(proj, s->cwd, L"proj");
+    static const wchar_t *const dirs[4] = { L"", L"\\src", L"\\alpha_notes", L"\\gen" };
+    for (i32 i = 0; i < 4; i++) {
+        wjoin(p, proj, NULL);
+        i64 n = wlen(p);
+        for (i32 k = 0; dirs[i][k]; k++) p[n++] = dirs[i][k];
+        p[n] = 0;
+        if (!make_dir(p)) return 0;
+    }
+    static const struct { const wchar_t *name; const char *text; } files[4] = {
+        { L"proj\\.ronin-project", "" },
+        { L"proj\\src\\widget_alpha.c", "int alpha(void) { return 1; }\n" },
+        { L"proj\\src\\widget_beta.c", S9_BETA },
+        { L"proj\\alpha_notes\\readme.txt", "notes\n" },
+    };
+    for (i32 i = 0; i < 4; i++) {
+        wjoin(p, s->cwd, files[i].name);
+        Str t = cstr(files[i].text);
+        if (!write_file(p, t.data, t.len)) return 0;
+    }
+    for (i32 i = 0; i < S9_FILLERS; i++) {
+        wchar_t name[32] = L"proj\\gen\\f000.txt";
+        name[10] = (wchar_t)('0' + i / 100);
+        name[11] = (wchar_t)('0' + i / 10 % 10);
+        name[12] = (wchar_t)('0' + i % 10);
+        wjoin(p, s->cwd, name);
+        if (!write_file(p, (const u8 *)"filler\n", 7)) return 0;
+    }
+    return 1;
+}
+
+static Result scenario_9_body(Session *s, const wchar_t *proj) {
+    const wchar_t *args[1] = { proj };
+    Result r = session_start(s, args, 1, L"*scratch* - ronin");
+    if (r != R_OK) return r;
+    // C-x p f, "alpha": both matches listed (the scan in), RET: the file-name match first.
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "p")) != R_OK || (r = key(s, "f")) != R_OK || (r = type(s, "alpha")) != R_OK)
+        return r;
+    if ((r = wait_screen(s, two_rows_matched, "two candidates with their matched characters")) != R_OK) return r;
+    if ((r = key_title(s, "RET", L"widget_alpha.c - ronin")) != R_OK) return r;
+    // C-x p g, needle_word, RET: *search* in the other window, selected (as Emacs's C-x p g selects its *xref*), with the
+    // match; n, RET: visited and selected.
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "p")) != R_OK || (r = key(s, "g")) != R_OK || (r = type(s, "needle_word")) != R_OK ||
+        (r = key(s, "RET")) != R_OK)
+        return r;
+    if ((r = wait_screen(s, match_shown, "the match on lazy_highlight (#668b8b)")) != R_OK) return r;
+    if ((r = key(s, "n")) != R_OK) return r;
+    if ((r = key_title(s, "RET", L"widget_beta.c - ronin")) != R_OK) return r;
+    // A Q typed where the visit put point: right before the match.
+    if ((r = type(s, "Q")) != R_OK || (r = key(s, "C-x")) != R_OK) return r;
+    static const char want[] = "int beta(void) {\n    return 2;\n}\nint Qneedle_word = 3;\n";
+    if ((r = key_save(s, "C-s", "proj\\src\\widget_beta.c", str((const u8 *)want, sizeof(want) - 1))) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK) return r;
+    return key_exit(s, "C-c");
+}
+
+static Result scenario_9(void) {
+    Session s;
+    if (!session_prepare(&s, "s9", NULL)) return R_FAIL;
+    wchar_t proj[PATH_CAP];
+    if (!scenario_9_tree(&s, proj)) {
+        put("e2e: s9: cannot write the project's tree");
+        end_line();
+        return R_FAIL;
+    }
+    Result r = scenario_9_body(&s, proj);
+    session_end(&s);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // The machine's state: recorded before the run, restored and compared after it
 
 // A registry key's values (and its subkeys' to depth) as text, exact (the data in hex).
@@ -3736,7 +3881,7 @@ int wmain(int argc, wchar_t **argv) {
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
         static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5,
-                                                                    scenario_6, scenario_7, scenario_8 };
+                                                                    scenario_6, scenario_7, scenario_8, scenario_9 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
