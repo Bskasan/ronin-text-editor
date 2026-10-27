@@ -15,7 +15,7 @@
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
 // layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
 // button, Alt+F4), 7 the configuration file created and reloaded, 8 the command list and M-x, 9 a project's finder and
-// search.
+// search, 10 a build with an error, next-error and the fix.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -56,7 +56,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 9
+#define SCENARIOS 10
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -82,6 +82,8 @@ static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', '
 #define THEME_WINDOW_DIVIDER 0x126367u
 #define THEME_LAZY_HIGHLIGHT 0x668b8bu
 #define THEME_MODAL_BORDER 0x2e8b8bu
+#define THEME_COMPILATION_ERROR 0xff0000u
+#define THEME_NUMBER 0x7ad0c6u          // search_line_number = number
 // The built-in themes' backgrounds (themes\*.conf).
 #define VAGUE_BACKGROUND 0x141415u
 #define MOONFLY_BACKGROUND 0x080808u
@@ -3147,6 +3149,171 @@ static Result scenario_9(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 10: a build in a project: an MSVC-format error, next-error to it, the fix, the build again
+
+// The processes below ronin (its build's cmd.exe and what that starts), from one Toolhelp snapshot: their count, and
+// their names added to `seen` (each once).
+static i32 ronin_descendants(Session *s, Buf *seen) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    static DWORD tree[256];
+    i32 n = 0, count = 0;
+    tree[n++] = s->pi.dwProcessId;
+    for (b32 grew = 1; grew && n < 256;) { // parents before children are not guaranteed: until nothing is added
+        grew = 0;
+        PROCESSENTRY32W pe;
+        pe.dwSize = sizeof(pe);
+        for (BOOL more = Process32FirstW(snap, &pe); more && n < 256; more = Process32NextW(snap, &pe)) {
+            b32 in = 0, parent_in = 0;
+            for (i32 i = 0; i < n; i++) {
+                if (tree[i] == pe.th32ProcessID) in = 1;
+                if (tree[i] == pe.th32ParentProcessID) parent_in = 1;
+            }
+            if (in || !parent_in || pe.th32ProcessID == s->pi.dwProcessId) continue;
+            tree[n++] = pe.th32ProcessID;
+            count++;
+            grew = 1;
+            u8 name_mem[300];
+            Buf name = { name_mem, 0, sizeof(name_mem) };
+            bput_w(&name, pe.szExeFile, wlen(pe.szExeFile));
+            if (str_find(str(seen->data, seen->len), str(name.data, name.len), 0) < 0) {
+                if (seen->len) bput(seen, ", ");
+                bput_n(seen, name.data, name.len);
+            }
+        }
+    }
+    CloseHandle(snap);
+    return count;
+}
+
+// Until no process runs below ronin (a build ended with all it started), at most 10 s; the names seen are printed.
+static Result wait_no_build(Session *s, const char *what) {
+    u8 seen_mem[512];
+    Buf seen = { seen_mem, 0, sizeof(seen_mem) };
+    u64 deadline = GetTickCount64() + WORK_MS;
+    i32 left;
+    while ((left = ronin_descendants(s, &seen)) > 0) {
+        if (aborted()) return R_ABORT;
+        if (GetTickCount64() >= deadline) {
+            put_prefix(s);
+            put(what);
+            put(": ");
+            put_i64(left);
+            put(" process(es) still below ronin after 10 s (");
+            bput_n(&line, seen.data, seen.len);
+            put(")");
+            return fail_end(s);
+        }
+        tick();
+    }
+    put_prefix(s);
+    put(what);
+    put(": build processes seen: ");
+    if (seen.len) bput_n(&line, seen.data, seen.len);
+    else put("none (ended before a snapshot)");
+    put("; none left");
+    end_line();
+    return R_OK;
+}
+
+// The screen settled again (a frame that came after the last wait: a build's end on the mode line).
+static Result resettle(Session *s) {
+    if (!capture(s, s->cur)) {
+        put_prefix(s);
+        put("the window is covered by ");
+        bput_n(&line, covered.data, covered.len);
+        return fail_end(s);
+    }
+    Wait w = settle(s, GetTickCount64() + SETTLE_MS);
+    if (w == W_ABORT) return R_ABORT;
+    if (w == W_TIMEOUT) {
+        put_prefix(s);
+        put("the frames did not settle within 1 s");
+        return fail_end(s);
+    }
+    return R_OK;
+}
+
+// *compilation*'s error: the kind in compilation_error and its location in search_line_number.
+static b32 error_shown(Session *s, const u32 *px) {
+    return has_color(s, px, 0, 0, s->w, s->h, THEME_COMPILATION_ERROR) && has_color(s, px, 0, 0, s->w, s->h, THEME_NUMBER);
+}
+
+static Result scenario_10_body(Session *s, const wchar_t *proj) {
+    const wchar_t *args[1] = { proj };
+    Result r = session_start(s, args, 1, L"*scratch* - ronin");
+    if (r != R_OK) return r;
+    // C-x p c, RET ([build]'s .\b.bat): *compilation* in the other window with the error colored; the build ends.
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "p")) != R_OK || (r = key(s, "c")) != R_OK || (r = key(s, "RET")) != R_OK)
+        return r;
+    if ((r = wait_screen(s, error_shown, "the error in compilation_error (#ff0000) with its location (#7ad0c6)")) != R_OK) return r;
+    if ((r = wait_no_build(s, "the failing build")) != R_OK || (r = resettle(s)) != R_OK) return r;
+    // M-g n: a.c visited at the error, its line highlighted (the landing highlight, lazy_highlight).
+    if ((r = key(s, "M-g")) != R_OK || (r = key_title(s, "n", L"a.c - ronin")) != R_OK || (r = resettle(s)) != R_OK) return r;
+    RECT box;
+    b32 lit = cursor_box(s, &box) && has_color(s, s->frame, 0, box.top, s->w, box.bottom + 1, THEME_LAZY_HIGHLIGHT);
+    if ((r = expect(s, lit, "the error's line not highlighted (lazy_highlight #668b8b on the cursor's row)")) != R_OK) return r;
+    // The fix where next-error put point (on the x), saved.
+    if ((r = key(s, "C-d")) != R_OK || (r = type(s, "0")) != R_OK || (r = key(s, "C-x")) != R_OK) return r;
+    if ((r = key_save(s, "C-s", "proj\\a.c", cstr("int f(void) {\n    return 0;\n}\n"))) != R_OK) return r;
+    // C-x p c, RET (the last command): built.txt written, the build ended, no error on the screen.
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "p")) != R_OK || (r = key(s, "c")) != R_OK) return r;
+    wchar_t built[PATH_CAP];
+    wjoin(built, proj, L"built.txt");
+    FileWait fw;
+    file_wait_arm(&fw, proj, built, "proj\\built.txt");
+    Str got = { 0, 0 };
+    r = key(s, "RET");
+    if (r == R_OK) r = file_wait(s, &fw, &got);
+    file_wait_end(&fw);
+    free_file(got);
+    if (r == R_OK) r = wait_no_build(s, "the fixed build");
+    if (r == R_OK) r = resettle(s);
+    if (r == R_OK) r = expect(s, !has_color(s, s->frame, 0, 0, s->w, s->h, THEME_COMPILATION_ERROR), "an error still shown after the fixed build");
+    if (r == R_OK) {
+        put_prefix(s);
+        put("the fixed build wrote built.txt; no error shown");
+        end_line();
+        save_shot(s, s->frame, "built");
+    }
+    if (r == R_OK && (r = key(s, "C-x")) == R_OK) r = key_exit(s, "C-c");
+    return r;
+}
+
+static Result scenario_10(void) {
+    Session s;
+    if (!session_prepare(&s, "s10", NULL)) return R_FAIL;
+    wchar_t proj[PATH_CAP], p[PATH_CAP];
+    wjoin(proj, s.cwd, L"proj");
+    static const struct { const wchar_t *name; const char *text; } files[3] = {
+        { L".ronin-project", "[build]\ncommand = .\\b.bat\n" },
+        { L"a.c", "int f(void) {\n    return x;\n}\n" },
+        { L"b.bat", "@echo off\r\n"
+                    "%SystemRoot%\\System32\\findstr.exe /c:\"return 0;\" a.c >nul && goto ok\r\n"
+                    "echo a.c(2,12): error C2065: 'x': undeclared identifier\r\n"
+                    "exit /b 2\r\n"
+                    ":ok\r\n"
+                    "echo build ok\r\n"
+                    "echo ok> built.txt\r\n"
+                    "exit /b 0\r\n" },
+    };
+    b32 ok = make_dir(proj);
+    for (i32 i = 0; i < 3 && ok; i++) {
+        wjoin(p, proj, files[i].name);
+        Str t = cstr(files[i].text);
+        ok = write_file(p, t.data, t.len);
+    }
+    if (!ok) {
+        put("e2e: s10: cannot write the project");
+        end_line();
+        return R_FAIL;
+    }
+    Result r = scenario_10_body(&s, proj);
+    session_end(&s);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // The machine's state: recorded before the run, restored and compared after it
 
 // A registry key's values (and its subkeys' to depth) as text, exact (the data in hex).
@@ -3881,7 +4048,8 @@ int wmain(int argc, wchar_t **argv) {
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
         static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5,
-                                                                    scenario_6, scenario_7, scenario_8, scenario_9 };
+                                                                    scenario_6, scenario_7, scenario_8, scenario_9,
+                                                                    scenario_10 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
