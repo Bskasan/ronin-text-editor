@@ -14,7 +14,7 @@
 //       [--demo-abort layout|foreground]
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
 // layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
-// button, Alt+F4), 7 the configuration file created and reloaded.
+// button, Alt+F4), 7 the configuration file created and reloaded, 8 the command list and M-x.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -55,7 +55,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 7
+#define SCENARIOS 8
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -76,6 +76,8 @@ static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', '
 #define THEME_CURSOR 0x90ee90u
 #define THEME_MODE_LINE 0xd3b58du
 #define THEME_PROMPT 0x0fdfafu          // prompt = string
+#define THEME_WINDOW_DIVIDER 0x126367u
+#define THEME_MODAL_BORDER 0x2e8b8bu
 // The built-in themes' backgrounds (themes\*.conf).
 #define VAGUE_BACKGROUND 0x141415u
 #define MOONFLY_BACKGROUND 0x080808u
@@ -728,6 +730,7 @@ typedef struct Session {
     HBITMAP bmp, old;
     u32 *dib;                     // the capture's pixels (0x00RRGGBB, top-down)
     u32 *frame, *cur, *spare;     // the settled frame; captures
+    u32 *kept;                    // a settled frame kept to compare a later one with (frame_keep, frame_as_kept)
     i32 cell_w, cell_h;           // measured from the first frame's cursor block
     RECT cursor0;
     i32 shots;
@@ -852,7 +855,8 @@ static b32 capture_setup(Session *s) {
     s->frame = (u32 *)VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     s->cur = (u32 *)VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     s->spare = (u32 *)VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    return s->frame && s->cur && s->spare;
+    s->kept = (u32 *)VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    return s->frame && s->cur && s->spare && s->kept;
 }
 
 static void capture_release(Session *s) {
@@ -865,6 +869,8 @@ static void capture_release(Session *s) {
     if (s->frame) VirtualFree(s->frame, 0, MEM_RELEASE);
     if (s->cur) VirtualFree(s->cur, 0, MEM_RELEASE);
     if (s->spare) VirtualFree(s->spare, 0, MEM_RELEASE);
+    if (s->kept) VirtualFree(s->kept, 0, MEM_RELEASE);
+    s->kept = NULL;
     s->mem = NULL;
     s->screen = NULL;
     s->frame = s->cur = s->spare = NULL;
@@ -1383,6 +1389,40 @@ static Result expect(Session *s, b32 ok, const char *what) {
     put(", after ");
     bput_n(&line, where.data, where.len);
     return fail_end(s);
+}
+
+static void frame_keep(Session *s) { memcpy(s->kept, s->frame, (size_t)s->w * (size_t)s->h * 4); }
+
+// The settled frame equal to the kept one byte for byte; the first difference named, both frames saved.
+static Result frame_as_kept(Session *s, const char *kept_label) {
+    i64 n = (i64)s->w * s->h, i = 0;
+    while (i < n && s->frame[i] == s->kept[i]) i++;
+    if (i == n) {
+        put_prefix(s);
+        put("the frame after ");
+        bput_n(&line, where.data, where.len);
+        put(" equals the one ");
+        put(kept_label);
+        end_line();
+        return R_OK;
+    }
+    put_prefix(s);
+    put("the frame after ");
+    bput_n(&line, where.data, where.len);
+    put(" differs from the one ");
+    put(kept_label);
+    put(" at ");
+    put_i64(i % s->w);
+    put(",");
+    put_i64(i / s->w);
+    put(" (#");
+    put_hex(s->frame[i], 6);
+    put(", was #");
+    put_hex(s->kept[i], 6);
+    put(")");
+    Result r = fail_end(s);
+    if (r == R_FAIL) save_shot(s, s->kept, "kept");
+    return r;
 }
 
 // DWM's count of composed frames.
@@ -2913,6 +2953,55 @@ static Result scenario_7(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 8: the command list (C-S-p: filter and RET, a click outside, ESC) and M-x with TAB
+
+static Result scenario_8_body(Session *s) {
+    static const wchar_t *const none[1] = { NULL };
+    Result r = session_start(s, none, 0, L"*scratch* - ronin");
+    if (r != R_OK) return r;
+    // C-S-p, "find", RET: the box gone and "Find file:" asking; a path RET visits it in this window.
+    if ((r = key(s, "C-S-p")) != R_OK) return r;
+    if ((r = expect(s, has_color(s, s->frame, 0, 0, s->w, s->h, THEME_MODAL_BORDER), "no command list box (#2e8b8b)")) != R_OK) return r;
+    if ((r = type(s, "find")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = expect(s, !has_color(s, s->frame, 0, 0, s->w, s->h, THEME_MODAL_BORDER) && echo_has(s, THEME_PROMPT),
+                    "the box still shown, or no prompt on the echo line")) != R_OK)
+        return r;
+    if ((r = type(s, "target.txt")) != R_OK || (r = key_title(s, "RET", L"target.txt - ronin")) != R_OK) return r;
+    if ((r = expect(s, !has_color(s, s->frame, 0, 0, s->w, s->h, THEME_WINDOW_DIVIDER),
+                    "a window divider (#126367): visited in another window")) != R_OK)
+        return r;
+    // C-S-p, then a click outside the box on the w of "world": closed, nothing moved (point still at the start).
+    frame_keep(s);
+    if ((r = key(s, "C-S-p")) != R_OK) return r;
+    RECT box;
+    color_box(s, s->frame, THEME_MODAL_BORDER, &box);
+    POINT p = cell_point(s, 0, 6);
+    p.x -= s->origin.x;
+    p.y -= s->origin.y;
+    if ((r = expect(s, p.x < box.left || p.x > box.right || p.y < box.top || p.y > box.bottom,
+                    "the cell 1:7 lies inside the command list box")) != R_OK)
+        return r;
+    if ((r = mouse(s, M_CLICK, 0, 6, 0, "click outside the box")) != R_OK || (r = frame_as_kept(s, "before C-S-p")) != R_OK) return r;
+    // C-S-p, ESC: the same.
+    if ((r = key(s, "C-S-p")) != R_OK || (r = key(s, "ESC")) != R_OK || (r = frame_as_kept(s, "before C-S-p")) != R_OK) return r;
+    // M-x, "upc", TAB (completed to upcase-word, the one command with "upc"), RET: run at point.
+    if ((r = key(s, "M-x")) != R_OK || (r = type(s, "upc")) != R_OK || (r = key(s, "TAB")) != R_OK || (r = key(s, "RET")) != R_OK)
+        return r;
+    if ((r = key(s, "C-x")) != R_OK || (r = key_save(s, "C-s", "target.txt", cstr("HELLO world\n"))) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK) return r;
+    return key_exit(s, "C-c");
+}
+
+static Result scenario_8(void) {
+    Session s;
+    if (!session_prepare(&s, "s8", NULL)) return R_FAIL;
+    if (!session_write(&s, "target.txt", cstr("hello world\n"))) return R_FAIL;
+    Result r = scenario_8_body(&s);
+    session_end(&s);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // The machine's state: recorded before the run, restored and compared after it
 
 // A registry key's values (and its subkeys' to depth) as text, exact (the data in hex).
@@ -3647,7 +3736,7 @@ int wmain(int argc, wchar_t **argv) {
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
         static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5,
-                                                                    scenario_6, scenario_7 };
+                                                                    scenario_6, scenario_7, scenario_8 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
