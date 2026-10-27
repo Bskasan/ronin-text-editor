@@ -4869,7 +4869,11 @@ It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS A
    input (at most 2 minutes), so the key that started it and the maintainer leaving do not count; then any physical key
    or mouse input aborts. So does the foreground going to another window (the hook, and a check before every key with
    the keyboard focus), and a change of the layout of ronin's thread (checked before and after every key; the line
-   names both layouts and the last key sent). Ctrl+C on the driver's console aborts the same way. Exit 3.
+   names both layouts and the last key sent). Ctrl+C on the driver's console aborts the same way. Exit 3. An abort
+   wins over any failure found after it: physical input reaches the low-level hooks before any window, so a failure it
+   causes (a window covering ronin, the foreground gone) is found with the abort already set, and the failure's line is
+   dropped. The first physical-key run (the Windows key or Alt+Tab) ended `e2e: FAIL: s1` with "the window is covered
+   by "" (explorer.exe, ...)" because the frame wait looked for an abort only before each capture.
 5. **The machine as it was.** Recorded before the run and, after it (an abort too), restored and compared, each with
    an `e2e: state:` line:
    - the keyboard layouts: the loaded list, HKCU\Keyboard Layout\Preload and Substitutes, the User Profile (read only)
