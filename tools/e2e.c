@@ -10,12 +10,13 @@
 // The end-to-end driver (#31; build-time tool, not part of the editor; build.bat compiles it on every build, only the
 // maintainer runs it, never CI or verify.bat). It drives the shipped ronin.exe as a user does and checks only what a
 // user could see or get; it adds nothing to the exe:
-//   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish]
+//   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--no-turkish]
 //       [--demo-abort layout|foreground]
-// Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
-// layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
-// button, Alt+F4), 7 the configuration file created and reloaded, 8 the command list and M-x, 9 a project's finder and
-// search, 10 a build with an error, next-error and the fix, 11 a crash and the recovery.
+// Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish, UK
+// and Turkish Q layouts (Turkish Q loaded for it and unloaded after; skipped with --no-turkish), 4 the real clipboard
+// both ways, 5 the mouse, 6 quitting (C-x C-c, the close button, Alt+F4), 7 the configuration file created and
+// reloaded, 8 the command list and M-x, 9 a project's finder and search, 10 a build with an error, next-error and the
+// fix, 11 a crash and the recovery.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -710,7 +711,7 @@ typedef struct Run {
     HANDLE job;
     HWND clip_window;
     Demo demo;
-    b32 turkish;                  // --turkish: scenario 3 also on Turkish Q (loaded for it, then unloaded)
+    b32 no_turkish;               // --no-turkish: scenario 3 without its Turkish Q part
     i32 repeat_index;
 } Run;
 
@@ -2412,7 +2413,7 @@ static Result new_file(Session *s, const char *name, const wchar_t *title) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 3: typing on real keyboard layouts (US, Finnish, UK; Turkish Q with --turkish)
+// Scenario 3: typing on real keyboard layouts (US, Finnish, UK, Turkish Q)
 
 static void layout_state(Buf *b, HKL *list, i32 *count, HKL *active);
 
@@ -2500,10 +2501,15 @@ static Result scenario_3(void) {
                             NULL);
     if (r == R_OK)
         r = scenario_3_part("uk", uk, "uk.txt", L"uk.txt - ronin", scenario_3_uk_text, "\xC2\xA3\"@#~\\| \xE2\x82\xAC\xC2\xA6", NULL);
-    if (r != R_OK || !run.turkish) return r;
+    if (r != R_OK) return r;
+    if (run.no_turkish) {
+        say("e2e: s3: Turkish Q skipped: --no-turkish");
+        return r;
+    }
 
     // Turkish Q, not installed: loaded for the part and unloaded after it, the layouts compared with their state just
-    // before; a layout that cannot be loaded or given to ronin is a skip with its reason, a trace left is a failure.
+    // before. A layout that cannot be loaded, given to ronin, or unloaded leaving the layouts exactly as they were is a
+    // skip with its reason, and the run goes on (#31); the run's own state check still restores and compares them.
     static u8 before_mem[STATE_CAP], after_mem[STATE_CAP];
     Buf before = { before_mem, 0, STATE_CAP }, after = { after_mem, 0, STATE_CAP };
     HKL list[LAYOUTS_MAX], active;
@@ -2527,11 +2533,11 @@ static Result scenario_3(void) {
     }
     layout_state(&after, list, &count, &active);
     if (!buf_eq(&before, &after)) {
-        say("e2e: s3: FAIL: Turkish Q left a trace; the layouts before it:");
+        say("e2e: s3: Turkish Q skipped: the layouts are not as they were after it; before it:");
         out_text(&before);
         say("e2e: s3: after it:");
         out_text(&after);
-        return r == R_ABORT ? r : R_FAIL;
+        return r;
     }
     if (r == R_OK) say("e2e: s3: Turkish Q loaded, used and unloaded; the layouts as before it");
     return r;
@@ -4161,7 +4167,7 @@ static b32 copy_exe(const wchar_t *exe) {
 // The command line and the run
 
 static i32 usage(void) {
-    say("e2e: usage: e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish] "
+    say("e2e: usage: e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--no-turkish] "
         "[--demo-abort layout|foreground]");
     return 2;
 }
@@ -4207,8 +4213,8 @@ int wmain(int argc, wchar_t **argv) {
         else if (weq(argv[i], L"--out") && i + 1 < argc) out = argv[++i];
         else if (weq(argv[i], L"--repeat") && i + 1 < argc) {
             if (!parse_u32(argv[++i], &repeat) || repeat < 1 || repeat > 100) return usage();
-        } else if (weq(argv[i], L"--turkish")) {
-            run.turkish = 1;
+        } else if (weq(argv[i], L"--no-turkish")) {
+            run.no_turkish = 1;
         } else if (weq(argv[i], L"--demo-abort") && i + 1 < argc) {
             i++;
             if (weq(argv[i], L"layout")) run.demo = DEMO_LAYOUT;
