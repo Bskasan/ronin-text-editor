@@ -13,7 +13,7 @@
 //   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish]
 //       [--demo-abort layout|foreground]
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
-// layouts (and Turkish Q with --turkish).
+// layouts (and Turkish Q with --turkish), 4 the real clipboard both ways.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -54,7 +54,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 3
+#define SCENARIOS 4
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -2006,6 +2006,146 @@ static Result scenario_3(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 4: the real clipboard both ways
+
+static b32 clip_open(void);
+
+// After a key that copies: the clipboard's sequence number changed (at most 5 s), then its CF_UNICODETEXT into out.
+static Result clip_wait_read(Session *s, DWORD seq_before, wchar_t *out, i64 cap, i64 *len) {
+    u64 deadline = GetTickCount64() + FILE_MS;
+    while (GetClipboardSequenceNumber() == seq_before) {
+        if (aborted()) return R_ABORT;
+        if (GetTickCount64() >= deadline) {
+            put_prefix(s);
+            put("the clipboard did not change within 5 s after ");
+            bput_n(&line, where.data, where.len);
+            return fail_end(s);
+        }
+        tick();
+    }
+    *len = 0;
+    if (!clip_open()) {
+        put_prefix(s);
+        put("the clipboard cannot be opened to read it");
+        return fail_end(s);
+    }
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    const wchar_t *t = h ? (const wchar_t *)GlobalLock(h) : NULL;
+    if (t) {
+        SIZE_T units = GlobalSize(h) / sizeof(wchar_t);
+        while ((SIZE_T)*len < units && *len < cap && t[*len]) {
+            out[*len] = t[*len];
+            (*len)++;
+        }
+        GlobalUnlock(h);
+    }
+    CloseClipboard();
+    if (!t) {
+        put_prefix(s);
+        put("the clipboard holds no CF_UNICODETEXT after ");
+        bput_n(&line, where.data, where.len);
+        return fail_end(s);
+    }
+    return R_OK;
+}
+
+// The text read against expected, unit by unit; the first difference named.
+static Result compare_units(Session *s, const wchar_t *got, i64 len, const wchar_t *expected) {
+    i64 n = wlen(expected), i = 0;
+    while (i < len && i < n && got[i] == expected[i]) i++;
+    put_prefix(s);
+    put("CF_UNICODETEXT: ");
+    if (i == len && i == n) {
+        put_i64(len);
+        put(" units, as expected");
+        end_line();
+        return R_OK;
+    }
+    if (i < len && i < n) {
+        put("unit ");
+        put_i64(i);
+        put(" is 0x");
+        put_hex(got[i], 4);
+        put(", expected 0x");
+        put_hex(expected[i], 4);
+        put(" (");
+    } else {
+        put("equal up to unit ");
+        put_i64(i);
+        put(" (");
+    }
+    put_i64(len);
+    put(" units, expected ");
+    put_i64(n);
+    put(")");
+    return fail_end(s);
+}
+
+// The clipboard set to text as another program sets it (no other format).
+static b32 clip_write_text(const wchar_t *text) {
+    if (!clip_open()) return 0;
+    EmptyClipboard();
+    i64 n = wlen(text);
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)(n + 1) * sizeof(wchar_t));
+    wchar_t *p = g ? (wchar_t *)GlobalLock(g) : NULL;
+    b32 ok = p != NULL;
+    if (p) {
+        memcpy(p, text, (size_t)(n + 1) * sizeof(wchar_t));
+        GlobalUnlock(g);
+        ok = SetClipboardData(CF_UNICODETEXT, g) != NULL;
+    }
+    if (!ok && g) GlobalFree(g);
+    CloseClipboard();
+    return ok;
+}
+
+// M-w and the clipboard's text read and compared.
+static Result copy_and_check(Session *s, const wchar_t *expected) {
+    static wchar_t got[4096];
+    i64 len = 0;
+    DWORD seq = GetClipboardSequenceNumber();
+    Result r = key(s, "M-w");
+    if (r == R_OK) r = clip_wait_read(s, seq, got, 4096, &len);
+    if (r == R_OK) r = compare_units(s, got, len, expected);
+    return r;
+}
+
+static Result scenario_4_body(Session *s) {
+    static const wchar_t *const none[1] = { NULL };
+    Result r = session_start(s, none, 0, L"*scratch* - ronin");
+    if (r == R_OK) r = new_file(s, "clip.txt", L"clip.txt - ronin");
+    if (r == R_OK && (r = type(s, "first line")) == R_OK && (r = key(s, "RET")) == R_OK) r = type(s, "second line");
+    if (r == R_OK && (r = key(s, "RET")) == R_OK) r = type(s, "third");
+    // Two lines copied: CRLF on the clipboard.
+    if (r == R_OK && (r = key(s, "M-<")) == R_OK && (r = key(s, "C-SPC")) == R_OK && (r = key(s, "C-n")) == R_OK) r = key(s, "C-n");
+    if (r == R_OK) r = copy_and_check(s, L"first line\r\nsecond line\r\n");
+    // Text another program put there: yanked with LF.
+    if (r == R_OK && !clip_write_text(L"pasted one\r\npasted two\r\n")) {
+        put_prefix(s);
+        put("the clipboard cannot be written");
+        r = fail_end(s);
+    }
+    if (r == R_OK) {
+        put_prefix(s);
+        put("CF_UNICODETEXT \"pasted one\\r\\npasted two\\r\\n\" put on the clipboard");
+        end_line();
+    }
+    if (r == R_OK && (r = key(s, "M->")) == R_OK && (r = key(s, "C-y")) == R_OK) r = key(s, "C-x");
+    static const char saved[] = "first line\nsecond line\nthirdpasted one\npasted two\n";
+    if (r == R_OK) r = key_save(s, "C-s", "clip.txt", str((const u8 *)saved, sizeof(saved) - 1));
+    if (r == R_OK && (r = key(s, "C-x")) == R_OK) r = key_exit(s, "C-c");
+    return r;
+}
+
+static Result scenario_4(void) {
+    Session s;
+    if (!session_prepare(&s, "s4", NULL)) return R_FAIL;
+    Result r = scenario_4_body(&s);
+    session_end(&s);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // The machine's state: recorded before the run, restored and compared after it
 
 // A registry key's values (and its subkeys' to depth) as text, exact (the data in hex).
@@ -2739,7 +2879,7 @@ int wmain(int argc, wchar_t **argv) {
         InterlockedExchange(&watch.armed, 1);
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
-        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3 };
+        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
