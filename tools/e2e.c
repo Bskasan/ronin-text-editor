@@ -458,6 +458,8 @@ typedef struct Watch {
     volatile LONG shows, names, foregrounds; // window events seen for ronin's process (for a failure's line)
     HANDLE abort_event, quiet_event, show_event, title_event, fg_event, ready;
     DWORD thread_id;
+    u8 physical_down[32];       // keys pressed by a hand and not yet released (the hook thread only)
+    volatile LONG lone_ups, lone_vk; // releases with no physical press: Windows' own (a layout switch away from AltGr)
     HANDLE thread;
 } Watch;
 
@@ -491,6 +493,18 @@ static LRESULT CALLBACK watch_key(int code, WPARAM wp, LPARAM lp) {
             u8 mem[128];
             Buf d = { mem, 0, sizeof(mem) };
             bput(&d, "a physical key (VK 0x");
+            // A hand's key is pressed before it is released, and that press already counted (a key held since
+            // before the quiet wait repeats its press). A release with no press is made by Windows: switching
+            // ronin from a layout with AltGr back to US releases the left Ctrl that AltGr's right Alt implies.
+            u8 bit = (u8)(1u << (k->vkCode & 7));
+            u8 *slot = &watch.physical_down[(k->vkCode >> 3) & 31];
+            if (!(k->flags & LLKHF_UP)) *slot |= bit;
+            else if (*slot & bit) *slot &= (u8)~bit;
+            else {
+                InterlockedIncrement(&watch.lone_ups);
+                InterlockedExchange(&watch.lone_vk, (LONG)k->vkCode);
+                return CallNextHookEx(NULL, code, wp, lp);
+            }
             bput_hex(&d, k->vkCode, 2);
             bput(&d, ", scan 0x");
             bput_hex(&d, k->scanCode, 2);
@@ -2189,6 +2203,14 @@ static b32 restore_and_check(void) {
             put(" process(es) left in the run's job");
             end_line();
         }
+    }
+    if (watch.lone_ups) {
+        put("e2e: state: ");
+        put_i64(watch.lone_ups);
+        put(" key release(s) with no physical press, made by Windows, not counted as input (last VK 0x");
+        bput_hex(&line, (u64)watch.lone_vk, 2);
+        put(")");
+        end_line();
     }
     return ok;
 }
