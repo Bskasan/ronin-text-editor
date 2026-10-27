@@ -239,7 +239,8 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # key waiting for ronin's next frame; aborts on any physical input, a lost
                                      # foreground or a layout switch; the machine's state checked after; last line
                                      # "e2e: PASS (...)", "e2e: FAIL: ..." or "e2e: ABORT: ..."; log and screenshots
-                                     # in build\e2e\<yyyymmdd-hhmmss>\ (--out); --demo-abort layout|foreground
+                                     # in build\e2e\<yyyymmdd-hhmmss>\ (--out); --demo-abort layout|foreground;
+                                     # --turkish: scenario 3 also on Turkish Q (loaded for it, then unloaded)
 
 Report benchmark numbers from ronin_bench.exe (dev flags, optimized code). Its smoke run skips
 the debug-layer check; the smoke acceptance criterion is the debug build.

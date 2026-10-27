@@ -4837,8 +4837,8 @@ The first try of the fourth used `EqualMemory`, which these SDK headers (10.0.26
 
 Every key test before #31 ran in the dev builds (the headless app, the harness's hidden window, the smoke's injected
 keys); nothing typed into the shipped exe. tools/e2e.c (build\e2e.exe) does, from outside, with nothing added to the exe.
-It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS AH); the other nine scenarios follow
-(#31's body), then a step of release-check.bat.
+It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS AH), group 2 scenarios 3 to 5 (the
+layouts, the clipboard, the mouse); the other six scenarios follow (#31's body), then a step of release-check.bat.
 
 1. **Only what a user could see or get.** The release exe takes no test flag (only `--startup-ms`, `--no-activate`,
    `--version`) and writes no log, so the driver observes from outside: saved files byte for byte, the window title,
@@ -4863,7 +4863,12 @@ It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS A
 3. **Real keys.** A key is one SendInput call with all its events (modifiers down, the key down and up, modifiers up),
    so none is ever left held. Characters go through VkKeyScanExW for the layout of ronin's thread, with scan codes from
    MapVirtualKeyExW; Ctrl and Meta are the left keys, AltGr the right Alt (the layout adds its Ctrl); no
-   KEYEVENTF_UNICODE. A character the layout cannot type fails the step.
+   KEYEVENTF_UNICODE. A character the layout cannot type fails the step. Since group 2 a character VkKeyScanExW does
+   not find (an AltGr character, a dead key's accent) is looked for as the input harness does (win32_input_test.c):
+   every key with nothing, Shift, AltGr and AltGr+Shift through ToUnicodeEx with flag 0x4 (no keyboard state touched);
+   a character only Ctrl or only Alt makes is refused, as that key would be a chord. A dead key typed as text is
+   followed by Space (it draws nothing alone, and Space gives the accent itself); a dead key with its letter is one
+   step with one frame.
 4. **Aborts, one line each, never retried.** A watch thread holds WH_KEYBOARD_LL and WH_MOUSE_LL (any event without the
    injected flag is physical) and the WinEvent hooks. Before the first key the driver waits for 5 s without physical
    input (at most 2 minutes), so the key that started it and the maintainer leaving do not count; then any physical key
@@ -4873,7 +4878,12 @@ It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS A
    wins over any failure found after it: physical input reaches the low-level hooks before any window, so a failure it
    causes (a window covering ronin, the foreground gone) is found with the abort already set, and the failure's line is
    dropped. The first physical-key run (the Windows key or Alt+Tab) ended `e2e: FAIL: s1` with "the window is covered
-   by "" (explorer.exe, ...)" because the frame wait looked for an abort only before each capture.
+   by "" (explorer.exe, ...)" because the frame wait looked for an abort only before each capture. A key release
+   without the injected flag counts only after a physical press of that key: a hand presses before it releases, that
+   press aborts already, and a key held since before the quiet wait repeats its press. Windows makes such a lone
+   release of the left Ctrl (VK 0xa2) when ronin's layout goes from Finnish or UK, layouts with AltGr, back to US: the
+   first group 2 run aborted on it, with no key sent at that moment. These releases are counted in an `e2e: state:`
+   line (one for each AltGr layout left, in every run since).
 5. **The machine as it was.** Recorded before the run and, after it (an abort too), restored and compared, each with
    an `e2e: state:` line:
    - the keyboard layouts: the loaded list, HKCU\Keyboard Layout\Preload and Substitutes, the User Profile (read only)
@@ -4900,9 +4910,31 @@ It is built in stages: stage 1 is the core and scenarios 1 and 2 (MANUAL_TESTS A
    the foreground. Physical input cannot be faked; that abort is a HUMAN step (AH4).
 8. **A standalone tool.** The string, output, file and snapshot helpers are copied from release_check.c, as the tools
    are single files; a shared header would mean changing release_check.c, outside #31. Mouse clicks, drags and the wheel
-   come with scenario 5: unused functions would fail /W4 /WX, and stage 1 only moves the pointer off ronin's window.
+   came with scenario 5: unused functions would fail /W4 /WX, and stage 1 only moved the pointer off ronin's window.
 9. **Who runs it.** By CLAUDE.md's rule (changed in #31) it runs only with the maintainer's permission for each run,
    announced with what it does and how long it takes, the maintainer away from the machine; never in CI or verify.bat.
+10. **Layouts (scenario 3).** ronin is given a layout as the language bar would: WM_INPUTLANGCHANGEREQUEST posted to its
+    window (ronin leaves it to DefWindowProc), then at most 2 s for GetKeyboardLayout of its thread to answer it; every
+    later key is checked against that layout, and ronin gets its first one back before it is ended (an abort too). One
+    start per layout: US, Finnish (the keyboard 040b loaded here under en-GB, 040b0809) and UK (08090809), each typing
+    its own letters and symbols, AltGr's, and on Finnish every dead key with a letter and alone; then the same chords on
+    each layout's own keys (RET, M-<, C-e, C-/ undoing a typed run, M->, M-% with !, C-x C-s). Turkish Q is not loaded on
+    this machine: `--turkish` loads it with KLF_NOTELLSHELL for that part only, unloads it after, and compares the
+    layouts' record before and after it; a difference fails the run. Not in the default run, which uses only layouts the
+    machine has.
+11. **The clipboard both ways (scenario 4).** M-w of two lines must put exactly "first line\r\nsecond line\r\n" as
+    CF_UNICODETEXT on the real clipboard (read after its sequence number changes); then the driver puts CRLF text there
+    as another program does, and C-y must yield LF lines in the saved file. The run's clipboard save and restore (point
+    5) surrounds it.
+12. **The mouse (scenario 5).** Clicks, a drag (press, moves cell by cell, release; a release draws nothing, so its
+    effect is checked by M-w), a double click on a word, the wheel and Ctrl+wheel, all absolute over the virtual screen.
+    The cell width and the line height are measured by moving the cursor (C-f, C-n), not taken from the cursor block.
+    Two clicks in a row land on different cells (ronin counts a press within the double-click time and area as the next
+    click of a series), and no click lands where point already is: it would draw nothing (the first acceptance run
+    failed on that, after five wheel notches had already left point at the top line's start, as Emacs does). The wheel
+    scrolls ronin's 3 lines a notch (APP_WHEEL_LINES, a constant); Emacs's default differs, reported to the maintainer
+    and not changed here. Ctrl+wheel must give a larger cursor cell after two notches up and the first one after two
+    down. A drag's button is released on any way out.
 
 ### Measurements, #31 E2E driver
 
@@ -4947,6 +4979,31 @@ The development runs found five faults of the driver, each fixed before the acce
 refused text copied from a Chromium-based program (point 5 of the decisions); the window wait and the title wait were
 not woken by their WinEvents (point 2); the echo-area probe sat in the window's rounded corner (point 1); s2's two
 starts wrote screenshots under the same names; an abort found before a key named that key as sent.
+
+Group 2 (scenarios 3 to 5), the same machine and conditions, one block on 2026-10-27; runs with an image on the
+clipboard refused before anything was typed, as designed (`the clipboard's format 2 CF_BITMAP is a handle, not memory`).
+
+| run | scenario | time | result |
+|---|---|---|---|
+| development (copy of build\ronin.exe) | s3 / s4 / s5 | 6.2 s / 1.6 s / 1.2 s | PASS / PASS / PASS |
+| `--turkish` (Turkish Q loaded, used, unloaded) | s3 | 8.0 s | PASS: "tr.txt: 31 bytes, as expected", "Turkish Q loaded, used and unloaded; the layouts as before it" |
+| acceptance 1 to 3 of 3 | s1 / s2 / s3 / s4 / s5 | 1.7 / 2.3 / 6.1-6.2 / 1.6 / 1.2 s | all PASS (`e2e: PASS (15 scenario runs, 39.5 s)`) |
+
+| mutation | scenario | the line |
+|---|---|---|
+| AltGr never recognized (the Right Alt's message time compared with the synthetic Left Ctrl's plus one, win32_handle_message) | s3 | `e2e: s3: fi.txt: byte 14 is 0x20, expected 0x40 (saved 31 bytes, expected 45)` |
+| no CR before LF on the clipboard (clip_utf16_write) | s4 | `e2e: s4: CF_UNICODETEXT: unit 10 is 0x000a, expected 0x000d (23 units, expected 25)` |
+| a click one column to the right (app_mouse_pos) | s5 | `e2e: s5: CF_UNICODETEXT: unit 0 is 0x0035, expected 0x0030 (10 units, expected 10)` |
+
+After the M3 run (ronin ended with its Finnish layout given back) the state check found the foreground window on
+040b0809, asked it for 04090409, and the layouts compared as before. Every run's state lines as in stage 1, plus
+`2 key release(s) with no physical press, made by Windows, not counted as input (last VK 0xa2)` after s3 (3 with
+`--turkish`). Typed on each layout: us.txt 31 bytes, fi.txt 45 (åäö ÅÄÖ, AltGr's @£$€{[]}\|, ´e `a ¨u ^o ~n, ´ alone),
+uk.txt 18 (£"@#~\|, AltGr's € and ¦); s4's clip.txt 50 bytes; s5's mouse.txt 1,502 bytes, the cell 9 px wide and lines
+19 px apart, the cursor 9x19, 13x27 after two Ctrl+wheel notches up, 9x19 after two down. The expectations needed no
+correction. Two faults of the driver, each fixed before the acceptance run that passed: the lone Ctrl release taken for
+physical input (f4ae929; point 4) and s5's click on point's own cell after the wheel (point 12; the first acceptance
+run's s5, round 1, failed `no new frame within 2 s after "click top-left"`; rounds 2 and 3 did not run).
 
 ## After 1.0
 

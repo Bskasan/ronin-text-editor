@@ -129,8 +129,8 @@ dev builds; they are not part of the repository.
 | E11 | Three C-k, then C-y elsewhere: one piece | AUTOMATED-NEW | manual tests E11. |
 | E12 | M-d, M-DEL, C-w, M-w, C-y | AUTOMATED | `test_kill`. |
 | E13 | C-y then M-y cycles | AUTOMATED | `test_kill` yank-pop. |
-| E14 | M-w lines, paste in Notepad: line breaks right | HUMAN | Needs Notepad. Most of it: `--clipboard-check` (kill-ring-save of two lines puts CRLF lines on the real clipboard). It is skipped while the clipboard holds anything but plain text. |
-| E15 | Copy in a browser, C-y in ronin | HUMAN | Needs a browser. Most of it: `--clipboard-check` (CRLF text put there as by another program yanks as LF lines); fake clipboard: `test_kill` "clipboard: yanked with LF". |
+| E14 | M-w lines, paste in Notepad: line breaks right | AUTOMATED-NEW | e2e scenario 4 (#31, AH7): M-w of two lines in the shipped exe puts exactly "first line\r\nsecond line\r\n" as CF_UNICODETEXT on the real clipboard, the CRLF lines a program such as Notepad pastes as two lines ("CF_UNICODETEXT: 25 units, as expected"). Before #31 HUMAN (it needed Notepad); also `--clipboard-check` (debug build). |
+| E15 | Copy in a browser, C-y in ronin | AUTOMATED-NEW | e2e scenario 4 (#31, AH7): CRLF text put on the real clipboard by another program (the driver, as a browser or any program does) yanked by C-y in the shipped exe and saved as LF lines ("clip.txt: 50 bytes, as expected"). Before #31 HUMAN (it needed a browser); also `--clipboard-check`, and `test_kill` "clipboard: yanked with LF" on the fake clipboard. |
 | E16 | Type, C-x u / C-/ repeatedly: undone step by step | AUTOMATED | `test_undo_commands`. **Note:** typing is undone in runs of up to 20 characters (Emacs), not word by word. |
 | E17 | After undoing, an arrow, then C-x u: the text returns | AUTOMATED | `test_undo_commands` "after another command undo undoes the undos". |
 | E18 | Type, C-x u, C-?: redone | AUTOMATED | `test_undo_commands` undo-redo; C-? reachable: harness. |
@@ -750,7 +750,8 @@ characters were found to be whole characters on the way.
 LOCALAPPDATA, and types into its window with SendInput; it checks only what a user could see or get (saved files, the
 title, screen pixels, the clipboard, processes). It takes the keyboard and the mouse, so it runs only with the
 maintainer's permission for each run, the machine left alone (CLAUDE.md); never in CI or verify. Each key waits for
-ronin's next frame (Decisions, #31 in docs/ARCHITECTURE.md). Stage 1 of #31: scenarios 1 and 2; the other nine follow.
+ronin's next frame (Decisions, #31 in docs/ARCHITECTURE.md). Stage 1 of #31: scenarios 1 and 2; group 2: scenarios 3
+to 5; the other six follow.
 
 | Step | What | Status | Evidence |
 |---|---|---|---|
@@ -759,6 +760,9 @@ ronin's next frame (Decisions, #31 in docs/ARCHITECTURE.md). Stage 1 of #31: sce
 | AH3 | A run aborts at once with one line when ronin's keyboard layout switches (both layouts named, with the last key sent) and when the foreground goes to another window (named, with its program and pid); the layout is given back to ronin and everything of the run is ended | AUTOMATED-NEW | `--demo-abort layout`: "e2e: ABORT: the keyboard layout of ronin's thread switched from 04090409 to 08090809, after \"H\" (s1 step 13) (not retried)", "layout 04090409 given back to ronin"; `--demo-abort foreground` (a second ronin started): "e2e: ABORT: the foreground went to \"ronin\" (ronin.exe, pid 23360); ronin under test is pid 6760, after \"H\" (s1 step 13) (not retried)", "no process of the run left"; exit 3 both. |
 | AH4 | A run aborts at once with one line on a physical key and on a physical mouse input | HUMAN | only a real hand makes physical input; HUMAN step 71. Run by the maintainer on 2026-10-27 (build\e2e\20261027-164508 and -164540), the letter D, then the mouse moved without a click: "e2e: ABORT: a physical key (VK 0x44, scan 0x20, down), after \"x\" (s1 step 10) (not retried)" and "e2e: ABORT: a physical mouse move, after \"t\" (s1 step 11) (not retried)", exit 3, every state line as before. A first run with the Windows key or Alt+Tab ended FAIL ("the window is covered by \"\" (explorer.exe, ...)"): the abort did not win over the failure it caused; fixed in ce7b7d1 (Decisions, #31, point 4). |
 | AH5 | After every run, an aborted or refused one too: the keyboard layouts (the loaded list, Preload, Substitutes, the User Profile, the active one), the clipboard (every format put back, read back byte for byte, nothing else), %APPDATA%\ronin and %LOCALAPPDATA%\ronin as before; no process of the run left | AUTOMATED-NEW | the `e2e: state:` lines of every run of #31's stage 1, e.g. "keyboard layouts as before (08090809 04090409 040b040b 040b0809; active 04090409; Preload, Substitutes and User Profile equal)", "clipboard put back and read back byte for byte equal, no other format: 6 formats: 13 CF_UNICODETEXT (1216 bytes), 49849 \"Chromium internal source RFH token\" (24 bytes), ... 7 CF_OEMTEXT (608 bytes, synthesized)", "... unchanged", "no process of the run left"; nothing new outside build\ (git status --ignored before and after). Refused before anything is typed (exit 2): a clipboard with Chromium's formats under the first, text-only design ("the clipboard holds format 49849 \"Chromium internal source RFH token\", ..."), and Windows clipboard history on ("e2e: FAIL: Windows clipboard history is on: ronin's copies would stay in it; turn it off for the run", build\e2e\20261027-164411). |
+| AH6 | Typing on real keyboard layouts, ronin given each as the language bar would: on US, Finnish and UK each its letters and symbols, the AltGr characters, on Finnish every dead key with a letter and alone, then RET, M-<, C-e, C-/ (a typed run undone), M->, M-% with !, C-x C-s on that layout's own keys; the file saved exactly; the layouts as before after the run | AUTOMATED-NEW | e2e scenario 3 (`--scenario 3`): "layout 040b0809 given to ronin", "us.txt: 31 bytes, as expected", "fi.txt: 45 bytes, as expected", "uk.txt: 18 bytes, as expected", "layout 04090409 given to ronin" before each C-x C-c; three times in the acceptance run. With `--turkish` (Turkish Q, not loaded on this machine, loaded for the part and unloaded): "tr.txt: 31 bytes, as expected", "Turkish Q loaded, used and unloaded; the layouts as before it". Shown to fail with AltGr never recognized: "fi.txt: byte 14 is 0x20, expected 0x40 (saved 31 bytes, expected 45)". Windows' lone left Ctrl releases on leaving an AltGr layout are not physical input: "2 key release(s) with no physical press, made by Windows, not counted as input (last VK 0xa2)" (Decisions, #31, point 4). |
+| AH7 | The real clipboard both ways from the shipped exe: M-w of two lines gives CRLF text to other programs, and CRLF text from another program yanked by C-y saves as LF lines | AUTOMATED-NEW | e2e scenario 4 (`--scenario 4`): "CF_UNICODETEXT: 25 units, as expected" (exactly "first line\r\nsecond line\r\n"), "CF_UNICODETEXT \"pasted one\r\npasted two\r\n\" put on the clipboard", "clip.txt: 50 bytes, as expected"; three times in the acceptance run; the clipboard put back after each. Shown to fail with no CR before LF on the clipboard: "CF_UNICODETEXT: unit 10 is 0x000a, expected 0x000d (23 units, expected 25)". Replaces E14 and E15 (HUMAN steps 8 and 9). |
+| AH8 | The mouse on the shipped exe: a click sets point, a drag selects, a double click takes a word, the wheel scrolls 3 lines a notch, Ctrl+wheel scales the text up and back | AUTOMATED-NEW | e2e scenario 5 (`--scenario 5`): "measured: cell 9 px wide, lines 19 px apart", the click's typed X on line 3 column 9, the drag's M-w "05 alpha b" ("CF_UNICODETEXT: 10 units, as expected"), the double click's "beta" (4 units), five notches down and a click at line 16, column 6, "Ctrl+wheel: cursor 9x19, two notches up 13x27, two down 9x19", "mouse.txt: 1502 bytes, as expected"; three times in the acceptance run. Shown to fail with a click one column to the right: "CF_UNICODETEXT: unit 0 is 0x0035, expected 0x0030 (10 units, expected 10)". The 3 lines a notch are ronin's (APP_WHEEL_LINES), not Emacs's default; reported to the maintainer. |
 
 ## HUMAN steps
 
@@ -775,8 +779,8 @@ In this order, with `build\ronin.exe` (or ronin_debug.exe):
    and scroll with the wheel.
 7. **G11**: The same with a 100 MB C file (`build\tmp\bench_syntax_100mb.c`, made by `ronin_bench.exe
    --bench-syntax`): M->, the colors appear within about a second, and typing is never blocked.
-8. **E14**: Select two lines in ronin, M-w, paste in Notepad: two lines.
-9. **E15**: Copy text from a browser, C-y in ronin.
+8. **E14**: Covered by tools/e2e.c scenario 4 since #31 (AH7); nothing to do by hand.
+9. **E15**: Covered by tools/e2e.c scenario 4 since #31 (AH7); nothing to do by hand.
 10. **I4**: Set `render_mode = classic`, then natural, then symmetric in ronin.conf. Each looks different.
 11. **I8**: Edit ronin.conf in Notepad and save. The change applies; the default theme never flashes.
 12. **J9**: Leave a modified file and sign out of Windows. The sign-out is blocked with "Unsaved
@@ -1007,6 +1011,5 @@ Issue #31, the e2e driver:
     `e2e: state:` lines saying the layouts, the clipboard and the folders are as before. Run it again and move the mouse
     instead: `e2e: ABORT: a physical mouse move`. The two lines go into AH4's evidence.
 
-Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1),
-`ronin_debug.exe --dpi-check build\shots\dpi` (A9), and `ronin_debug.exe --clipboard-check` (E14,
-E15; copy some plain text, e.g. from Notepad, first).
+Dev helpers that take most of the work out of the others: `ronin_debug.exe --idle-check` (A4, Z1)
+and `ronin_debug.exe --dpi-check build\shots\dpi` (A9).
