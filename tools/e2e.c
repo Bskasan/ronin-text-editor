@@ -13,7 +13,8 @@
 //   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish]
 //       [--demo-abort layout|foreground]
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
-// layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse.
+// layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
+// button, Alt+F4).
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -54,7 +55,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 5
+#define SCENARIOS 6
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -74,6 +75,7 @@ static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', '
 #define THEME_BACKGROUND 0x072626u
 #define THEME_CURSOR 0x90ee90u
 #define THEME_MODE_LINE 0xd3b58du
+#define THEME_PROMPT 0x0fdfafu          // prompt = string
 
 typedef struct Str {
     const u8 *data;
@@ -455,6 +457,7 @@ typedef struct Watch {
     Buf abort_text;
     volatile LONG armed;        // 0: physical input only restarts the quiet wait; 1: it aborts
     volatile LONG pid;          // ronin's process (0 between starts)
+    HWND volatile hwnd;         // its window, once found
     volatile LONG fg_armed;     // the foreground leaving ronin aborts
     volatile LONG exiting;      // ronin is being ended: the foreground may go
     volatile LONG64 last_physical;
@@ -572,7 +575,8 @@ static void CALLBACK watch_event(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LON
         if (watched && pid == watched) {
             InterlockedIncrement(&watch.foregrounds);
             SetEvent(watch.fg_event);
-        } else if (watch.fg_armed && !watch.exiting) {
+        } else if (watch.fg_armed && !watch.exiting && watch.hwnd && IsWindow(watch.hwnd) && IsWindowVisible(watch.hwnd)) {
+            // (ronin's window hidden or gone: it closed itself, and the step waiting on it reports that)
             u8 mem[768];
             Buf d = { mem, 0, sizeof(mem) };
             bput(&d, "the foreground went to ");
@@ -939,14 +943,37 @@ static Wait settle(Session *s, u64 deadline) {
     return W_OK;
 }
 
-// After a key: the client area at each composition until it differs from the settled frame, then settled again.
+// ronin ended where a frame was expected (its window is gone: no screenshot): its exit code and the key after which.
+static Result ended_fail(Session *s) {
+    DWORD code = 0;
+    GetExitCodeProcess(s->pi.hProcess, &code);
+    s->running = 0;
+    InterlockedExchange(&watch.pid, 0);
+    put_prefix(s);
+    put("ronin ended (exit code ");
+    put_i64(code);
+    put(") after ");
+    bput_n(&line, where.data, where.len);
+    return fail_line();
+}
+
+static b32 ronin_ended(Session *s) { return s->pi.hProcess && WaitForSingleObject(s->pi.hProcess, 0) == WAIT_OBJECT_0; }
+
+// After a key: the client area at each composition until it differs from the settled frame, then settled again. ronin
+// ending meanwhile fails the step as such (its window hidden or gone first: the process waited for).
 static Result wait_frame(Session *s) {
     i64 n = (i64)s->w * s->h;
     u64 deadline = GetTickCount64() + FRAME_MS;
     for (;;) {
         if (aborted()) return R_ABORT;
+        if (ronin_ended(s)) return ended_fail(s);
         tick();
         if (!capture(s, s->cur)) {
+            if (!IsWindow(s->hwnd) || !IsWindowVisible(s->hwnd)) {
+                Wait w = wait_handle(s->pi.hProcess, GetTickCount64() + EXIT_MS, 1);
+                if (w == W_ABORT) return R_ABORT;
+                if (w == W_OK) return ended_fail(s);
+            }
             put_prefix(s);
             put("step ");
             put_i64(s->step);
@@ -1029,6 +1056,7 @@ static const struct { const char *name; WORD vk; } named_keys[] = {
     { "RET", VK_RETURN }, { "SPC", VK_SPACE }, { "TAB", VK_TAB }, { "DEL", VK_BACK }, { "ESC", VK_ESCAPE },
     { "<left>", VK_LEFT }, { "<right>", VK_RIGHT }, { "<up>", VK_UP }, { "<down>", VK_DOWN },
     { "<home>", VK_HOME }, { "<end>", VK_END }, { "<prior>", VK_PRIOR }, { "<next>", VK_NEXT }, { "<delete>", VK_DELETE },
+    { "<f4>", VK_F4 },
 };
 
 // One chord in kbd notation ("C-x", "M-%", "RET", "a"); 0 when it is not one or the layout cannot type it.
@@ -1325,6 +1353,145 @@ static Result mouse(Session *s, MouseAct act, i32 row, i32 col, i32 notches, con
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Checks on the settled frame and waits on the screen (scenarios 6 to 9)
+
+// Whether a pixel of color c lies in [x0, x1) x [y0, y1) of px.
+static b32 has_color(Session *s, const u32 *px, i32 x0, i32 y0, i32 x1, i32 y1, u32 c) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > s->w) x1 = s->w;
+    if (y1 > s->h) y1 = s->h;
+    for (i32 y = y0; y < y1; y++) {
+        for (i32 x = x0; x < x1; x++) if (px[(i64)y * s->w + x] == c) return 1;
+    }
+    return 0;
+}
+
+// The echo line (the client area's last line) of the settled frame holds color c.
+static b32 echo_has(Session *s, u32 c) { return has_color(s, s->frame, 0, s->h - s->line_h, s->w, s->h, c); }
+
+// A condition on the settled frame after the last step, or that step's failure saying what was expected.
+static Result expect(Session *s, b32 ok, const char *what) {
+    if (ok) return R_OK;
+    put_prefix(s);
+    put(what);
+    put(", after ");
+    bput_n(&line, where.data, where.len);
+    return fail_end(s);
+}
+
+// One pixel of the screen as composed now (any window's, the caption's too).
+static b32 screen_pixel(Session *s, POINT p, u32 *c) {
+    if (!BitBlt(s->mem, 0, 0, 1, 1, s->screen, p.x, p.y, SRCCOPY)) return 0;
+    GdiFlush();
+    *c = s->dib[0] & 0xFFFFFFu;
+    return 1;
+}
+
+// The close button of ronin's window: the caption buttons' area from DWM (window-relative), its rightmost third,
+// checked to be the close button by the window's own hit test before anything is clicked; then the frame.
+static Result click_close(Session *s) {
+    Result r = before_key(s);
+    if (r != R_OK) return r;
+    s->step++;
+    where_set(s, "close button");
+    RECT wr, b;
+    GetWindowRect(s->hwnd, &wr);
+    if (DwmGetWindowAttribute(s->hwnd, DWMWA_CAPTION_BUTTON_BOUNDS, &b, sizeof(b)) != S_OK || b.right <= b.left) {
+        put_prefix(s);
+        put("DWM gives no caption button bounds for ronin's window; nothing clicked");
+        return fail_end(s);
+    }
+    i32 x = wr.left + b.right - (b.right - b.left) / 6, y = wr.top + (b.top + b.bottom) / 2;
+    static i32 clicks; // alternately 8 px left and right of the button's centre (see below)
+    x += (clicks++ % 2) ? 8 : -8;
+    DWORD_PTR hit = 0;
+    LPARAM at = (LPARAM)(((u32)(u16)x) | ((u32)(u16)y << 16));
+    if (!SendMessageTimeoutW(s->hwnd, WM_NCHITTEST, 0, at, SMTO_ABORTIFHUNG, 1000, &hit) || hit != HTCLOSE) {
+        put_prefix(s);
+        put("the point ");
+        put_i64(x);
+        put(",");
+        put_i64(y);
+        put(" (caption buttons ");
+        put_i64(b.left);
+        put("..");
+        put_i64(b.right);
+        put(" of the window at ");
+        put_i64(wr.left);
+        put(",");
+        put_i64(wr.top);
+        put(") is hit-test ");
+        put_i64((i64)hit);
+        put(", not HTCLOSE (20); nothing clicked");
+        return fail_end(s);
+    }
+    // Each click lands 16 px from the last one: a second press inside the double-click area and time is a double click,
+    // which closes nothing (the second click of a development run). The pointer comes from off the window: on the
+    // button already, it is moved off first and the button waited for unhot. Then the pointer onto the button, and once
+    // ronin's thread has taken it there (Windows draws the button hot: its pixels change) the press; the release once
+    // Windows tracks the press (its capture on ronin's window). A press sent with the move, or right after it, was lost
+    // in the development runs (no capture, the button left down).
+    i32 bw = (b.right - b.left) / 3;
+    POINT spot = { wr.left + b.right - bw + 3, y }; // inside the button, at its left edge, away from both clicks
+    INPUT in;
+    u32 before = 0, now_px = 0;
+    u64 deadline = GetTickCount64() + FRAME_MS;
+    for (i32 phase = 0; phase < 2; phase++) {
+        POINT cp;
+        GetCursorPos(&cp);
+        b32 on = cp.x >= wr.left + b.right - bw && cp.x < wr.left + b.right && cp.y >= wr.top + b.top && cp.y < wr.top + b.bottom;
+        if (phase == 0 && !on) continue;
+        if (!screen_pixel(s, spot, &before)) {
+            put_prefix(s);
+            put("the close button's pixels cannot be read");
+            return fail_end(s);
+        }
+        i32 tx = phase == 0 ? (wr.left - 8 >= GetSystemMetrics(SM_XVIRTUALSCREEN) ? wr.left - 8 : wr.right + 8) : x;
+        i32 ty = phase == 0 ? (wr.top + wr.bottom) / 2 : y;
+        mouse_input(&in, tx, ty, 0, 0);
+        SendInput(1, &in, sizeof(INPUT));
+        for (;;) {
+            if (aborted()) return R_ABORT;
+            tick();
+            if (screen_pixel(s, spot, &now_px) && now_px != before) break;
+            if (GetTickCount64() >= deadline) {
+                put_prefix(s);
+                put(phase == 0 ? "the close button was not drawn unhot within 2 s of the pointer leaving it (its pixel stayed #"
+                               : "the close button was not drawn hot within 2 s of the pointer on it (its pixel stayed #");
+                put_hex(before, 6);
+                put(")");
+                return fail_end(s);
+            }
+        }
+    }
+    mouse_input(&in, x, y, MOUSEEVENTF_LEFTDOWN, 0);
+    SendInput(1, &in, sizeof(INPUT));
+    mouse_held = 1;
+    deadline = GetTickCount64() + FRAME_MS;
+    for (;;) {
+        if (aborted()) return R_ABORT;
+        GUITHREADINFO gui;
+        memset(&gui, 0, sizeof(gui));
+        gui.cbSize = sizeof(gui);
+        if (GetGUIThreadInfo(s->tid, &gui) && gui.hwndCapture == s->hwnd) break;
+        if (GetTickCount64() >= deadline) {
+            mouse_release();
+            put_prefix(s);
+            put("the close button's press was not tracked (no capture on ronin's window) within 2 s");
+            return fail_end(s);
+        }
+        tick();
+    }
+    mouse_input(&in, x, y, MOUSEEVENTF_LEFTUP, 0);
+    SendInput(1, &in, sizeof(INPUT));
+    mouse_held = 0;
+    r = wait_frame(s);
+    if (r == R_OK) r = after_step(s);
+    return r;
+}
+
 // Each character of text typed as its own key, each with its frame.
 static Result type(Session *s, const char *text) {
     Str t = cstr(text);
@@ -1423,49 +1590,85 @@ static Result compare_bytes(Session *s, const char *name, Str got, Str expected)
     return fail_end(s);
 }
 
-// A key that saves `name` in the working folder: its frame, then the file changed (a change notification on the
-// folder, armed before the key), then its bytes against expected.
-static Result key_save(Session *s, const char *k, const char *name, Str expected) {
-    wchar_t wname[PATH_CAP], path[PATH_CAP];
-    wfrom_utf8(wname, PATH_CAP, cstr(name));
-    wjoin(path, s->cwd, wname);
-    Str before = read_file(path);
-    HANDLE note = FindFirstChangeNotificationW(s->cwd, FALSE, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE |
-                                                                 FILE_NOTIFY_CHANGE_SIZE);
-    Result r = key(s, k);
+// A file about to change: its bytes before, and a change notification on its folder (and below: a folder not made yet)
+// armed before the key that changes it.
+typedef struct FileWait {
+    wchar_t path[PATH_CAP];
+    const char *name; // as the lines name it
+    Str before;
+    HANDLE note;
+} FileWait;
+
+static void file_wait_arm(FileWait *fw, const wchar_t *dir, const wchar_t *path, const char *name) {
+    wjoin(fw->path, path, NULL);
+    fw->name = name;
+    fw->before = read_file(path);
+    fw->note = FindFirstChangeNotificationW(dir, TRUE, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                                                           FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE);
+}
+
+// Until the file differs from its bytes before (*got: the new ones), at most 5 s.
+static Result file_wait(Session *s, FileWait *fw, Str *got) {
     u64 deadline = GetTickCount64() + FILE_MS;
-    Str got = { 0, 0 };
-    while (r == R_OK) {
-        got = read_file(path);
-        b32 changed = got.data && (!before.data || !str_eq(got, before));
-        if (changed) break;
-        free_file(got);
-        got.data = NULL;
-        Wait w = note != INVALID_HANDLE_VALUE ? wait_handle(note, deadline, 1) : W_TIMEOUT;
-        if (w == W_ABORT) r = R_ABORT;
-        else if (w == W_TIMEOUT) {
+    for (;;) {
+        *got = read_file(fw->path);
+        if (got->data && (!fw->before.data || !str_eq(*got, fw->before))) return R_OK;
+        free_file(*got);
+        got->data = NULL;
+        Wait w = fw->note != INVALID_HANDLE_VALUE ? wait_handle(fw->note, deadline, 1) : W_TIMEOUT;
+        if (w == W_ABORT) return R_ABORT;
+        if (w == W_TIMEOUT) {
             put_prefix(s);
-            put(name);
+            put(fw->name);
             put(": not written within 5 s after ");
             bput_n(&line, where.data, where.len);
-            r = fail_end(s);
-        } else {
-            FindNextChangeNotification(note);
+            return fail_end(s);
         }
+        FindNextChangeNotification(fw->note);
     }
-    if (note != INVALID_HANDLE_VALUE) FindCloseChangeNotification(note);
-    free_file(before);
+}
+
+static void file_wait_end(FileWait *fw) {
+    if (fw->note != INVALID_HANDLE_VALUE) FindCloseChangeNotification(fw->note);
+    free_file(fw->before);
+    fw->before.data = NULL;
+}
+
+// The folder part of a path (no trailing separator).
+static void parent_dir(wchar_t *dst, const wchar_t *path) {
+    wjoin(dst, path, NULL);
+    i64 cut = 0;
+    for (i64 i = 0; dst[i]; i++) if (dst[i] == '\\') cut = i;
+    dst[cut] = 0;
+}
+
+// A key that saves the file at path (named `name` in the lines): its frame, then the file changed, then its bytes
+// against expected.
+static Result key_save_path(Session *s, const char *k, const wchar_t *path, const char *name, Str expected) {
+    wchar_t dir[PATH_CAP];
+    parent_dir(dir, path);
+    FileWait fw;
+    file_wait_arm(&fw, dir, path, name);
+    Str got = { 0, 0 };
+    Result r = key(s, k);
+    if (r == R_OK) r = file_wait(s, &fw, &got);
+    file_wait_end(&fw);
     if (r == R_OK) r = compare_bytes(s, name, got, expected);
     free_file(got);
     if (r == R_OK) save_shot(s, s->frame, "saved");
     return r;
 }
 
-// A key that ends ronin: the process's end and its exit code 0.
-static Result key_exit(Session *s, const char *k) {
-    InterlockedExchange(&watch.exiting, 1);
-    Result r = send_key(s, k);
-    if (r != R_OK) return r;
+// The same for `name` in the working folder (a relative path below it).
+static Result key_save(Session *s, const char *k, const char *name, Str expected) {
+    wchar_t wname[PATH_CAP], path[PATH_CAP];
+    wfrom_utf8(wname, PATH_CAP, cstr(name));
+    wjoin(path, s->cwd, wname);
+    return key_save_path(s, k, path, name, expected);
+}
+
+// ronin's end after the key just sent: the process's end and its exit code 0.
+static Result wait_exit(Session *s) {
     Wait w = wait_handle(s->pi.hProcess, GetTickCount64() + EXIT_MS, 1);
     if (w == W_ABORT) return R_ABORT;
     if (w == W_TIMEOUT) {
@@ -1490,6 +1693,31 @@ static Result key_exit(Session *s, const char *k) {
         return fail_end(s);
     }
     return R_OK;
+}
+
+// A key that ends ronin: the process's end and its exit code 0.
+static Result key_exit(Session *s, const char *k) {
+    InterlockedExchange(&watch.exiting, 1);
+    Result r = send_key(s, k);
+    return r == R_OK ? wait_exit(s) : r;
+}
+
+// A key that saves `name` in the working folder and ends ronin (the y of the quit question): the file changed, its
+// bytes, then the end and exit code 0.
+static Result key_save_exit(Session *s, const char *k, const char *name, Str expected) {
+    wchar_t wname[PATH_CAP], path[PATH_CAP];
+    wfrom_utf8(wname, PATH_CAP, cstr(name));
+    wjoin(path, s->cwd, wname);
+    FileWait fw;
+    file_wait_arm(&fw, s->cwd, path, name);
+    Str got = { 0, 0 };
+    InterlockedExchange(&watch.exiting, 1);
+    Result r = send_key(s, k);
+    if (r == R_OK) r = file_wait(s, &fw, &got);
+    file_wait_end(&fw);
+    if (r == R_OK) r = compare_bytes(s, name, got, expected);
+    free_file(got);
+    return r == R_OK ? wait_exit(s) : r;
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,6 +1874,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
         tick();
     }
     s->hwnd = ctx.found;
+    watch.hwnd = s->hwnd;
     s->tid = GetWindowThreadProcessId(s->hwnd, NULL);
     for (;;) {
         if (GetForegroundWindow() == s->hwnd) break;
@@ -1695,9 +1924,12 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
     RECT wr;
     GetWindowRect(s->hwnd, &wr);
     i32 vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    i32 px = wr.right + 8 < vx + GetSystemMetrics(SM_CXVIRTUALSCREEN) ? wr.right + 8 : wr.left - 8;
+    // Left of the window, at its middle: away from the caption buttons, which a pointer near the top-right corner
+    // showed hot (scenario 6 waits for the close button to turn hot).
+    i32 px = wr.left - 8 >= vx ? wr.left - 8 : wr.right + 8;
     if (px < vx) px = vx;
-    i32 py = wr.top > vy ? wr.top : vy;
+    i32 py = (wr.top + wr.bottom) / 2;
+    if (py < vy) py = vy;
     mouse_move(px, py);
     put_prefix(s);
     put("started in ");
@@ -1745,6 +1977,7 @@ static void session_end(Session *s) {
     }
     InterlockedExchange(&watch.fg_armed, 0);
     InterlockedExchange(&watch.pid, 0);
+    watch.hwnd = NULL;
     if (s->pi.hProcess) CloseHandle(s->pi.hProcess);
     if (s->pi.hThread) CloseHandle(s->pi.hThread);
     s->pi.hProcess = s->pi.hThread = NULL;
@@ -2341,6 +2574,81 @@ static Result scenario_5(void) {
     if (!session_write(&s, "mouse.txt", str(text.data, text.len))) return R_FAIL;
     Result r = scenario_5_body(&s);
     session_end(&s);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 6: quitting by C-x C-c, the close button and Alt+F4, each asking about a modified file
+
+#define S6_TEXT "first line\nsecond line\n"
+
+// The question is open: the prompt color on the echo line, ronin still running.
+static Result asked(Session *s) { return expect(s, echo_has(s, THEME_PROMPT), "no question (the prompt color #0fdfaf) on the echo line"); }
+
+// One start on quit.txt: the keys of `part`.
+static Result scenario_6_part(const char *part, Result (*keys)(Session *)) {
+    Session s;
+    if (!session_prepare(&s, "s6", part)) return R_FAIL;
+    if (!session_write(&s, "quit.txt", cstr(S6_TEXT))) return R_FAIL;
+    static const wchar_t *const args[1] = { L"quit.txt" };
+    Result r = session_start(&s, args, 1, L"quit.txt - ronin");
+    if (r == R_OK) r = keys(&s);
+    session_end(&s);
+    return r;
+}
+
+// The file as the start wrote it.
+static Result quit_file_unchanged(Session *s) {
+    wchar_t path[PATH_CAP];
+    wjoin(path, s->cwd, L"quit.txt");
+    Str got = read_file(path);
+    Result r = compare_bytes(s, "quit.txt", got, cstr(S6_TEXT));
+    free_file(got);
+    return r;
+}
+
+// C-x C-c on a modified file: "Save file ...?", n: "Modified buffers exist; exit anyway?", yes RET: ended, the file as
+// it was.
+static Result scenario_6_cxc(Session *s) {
+    Result r;
+    if ((r = type(s, "edit")) != R_OK || (r = key(s, "C-x")) != R_OK || (r = key(s, "C-c")) != R_OK || (r = asked(s)) != R_OK) return r;
+    if ((r = key(s, "n")) != R_OK || (r = asked(s)) != R_OK || (r = type(s, "yes")) != R_OK) return r;
+    if ((r = key_exit(s, "RET")) != R_OK) return r;
+    return quit_file_unchanged(s);
+}
+
+// The close button: the same question, n, then no RET: ronin stays, nothing asks; the close button again, y: saved,
+// ended.
+static Result scenario_6_close(Session *s) {
+    Result r;
+    if ((r = type(s, "edit")) != R_OK || (r = click_close(s)) != R_OK || (r = asked(s)) != R_OK) return r;
+    if ((r = key(s, "n")) != R_OK || (r = asked(s)) != R_OK || (r = type(s, "no")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = expect(s, !echo_has(s, THEME_PROMPT) && !ronin_ended(s), "a question still open, or ronin ended")) != R_OK) return r;
+    if ((r = click_close(s)) != R_OK || (r = asked(s)) != R_OK) return r;
+    return key_save_exit(s, "y", "quit.txt", cstr("edit" S6_TEXT));
+}
+
+// Alt+F4: the same question, q: "exit anyway?", yes RET: ended, the file as it was.
+static Result scenario_6_altf4(Session *s) {
+    Result r;
+    if ((r = type(s, "more")) != R_OK || (r = key(s, "M-<f4>")) != R_OK || (r = asked(s)) != R_OK) return r;
+    if ((r = key(s, "q")) != R_OK || (r = asked(s)) != R_OK || (r = type(s, "yes")) != R_OK) return r;
+    if ((r = key_exit(s, "RET")) != R_OK) return r;
+    return quit_file_unchanged(s);
+}
+
+// Alt+F4 with nothing modified: ended at once, nothing asked.
+static Result scenario_6_plain(Session *s) {
+    Result r = key_exit(s, "M-<f4>");
+    if (r != R_OK) return r;
+    return quit_file_unchanged(s);
+}
+
+static Result scenario_6(void) {
+    Result r = scenario_6_part("cxc", scenario_6_cxc);
+    if (r == R_OK) r = scenario_6_part("close", scenario_6_close);
+    if (r == R_OK) r = scenario_6_part("altf4", scenario_6_altf4);
+    if (r == R_OK) r = scenario_6_part("plain", scenario_6_plain);
     return r;
 }
 
@@ -3078,7 +3386,8 @@ int wmain(int argc, wchar_t **argv) {
         InterlockedExchange(&watch.armed, 1);
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
-        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5 };
+        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5,
+                                                                    scenario_6 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
