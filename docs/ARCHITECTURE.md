@@ -4919,10 +4919,13 @@ a project); the other two scenarios follow (#31's body), then a step of release-
     later key is checked against that layout, and ronin gets its first one back before it is ended (an abort too). One
     start per layout: US, Finnish (the keyboard 040b loaded here under en-GB, 040b0809) and UK (08090809), each typing
     its own letters and symbols, AltGr's, and on Finnish every dead key with a letter and alone; then the same chords on
-    each layout's own keys (RET, M-<, C-e, C-/ undoing a typed run, M->, M-% with !, C-x C-s). Turkish Q is not loaded on
-    this machine: `--turkish` loads it with KLF_NOTELLSHELL for that part only, unloads it after, and compares the
-    layouts' record before and after it; a difference fails the run. Not in the default run, which uses only layouts the
-    machine has.
+    each layout's own keys (RET, M-<, C-e, C-/ undoing a typed run, M->, M-% with !, C-x C-s). Then Turkish Q, which is
+    not loaded on this machine: s3 loads it with KLF_NOTELLSHELL for that part only, unloads it after, and compares the
+    layouts' record before and after it. When it cannot be loaded, is not taken by ronin, or leaves the layouts other
+    than they were, the run prints `e2e: s3: Turkish Q skipped: <reason>` and goes on (#31); the run's own state check
+    (point 5) still restores and compares the layouts. `--no-turkish` skips it for a run that must. As group 2's approved
+    plan said, its first try was a separate run (`--turkish` then), and once that passed with no trace it joined the
+    default run; group 2's code had left it opt-in, which the audit before the merge found and corrected.
 11. **The clipboard both ways (scenario 4).** M-w of two lines must put exactly "first line\r\nsecond line\r\n" as
     CF_UNICODETEXT on the real clipboard (read after its sequence number changes); then the driver puts CRLF text there
     as another program does, and C-y must yield LF lines in the saved file. The run's clipboard save and restore (point
