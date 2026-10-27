@@ -51,7 +51,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 1
+#define SCENARIOS 2
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -1354,6 +1354,14 @@ static b32 session_prepare(Session *s, const char *name, const char *part) {
     return 1;
 }
 
+// A file in the session's working folder.
+static b32 session_write(Session *s, const char *name, Str data) {
+    wchar_t wname[PATH_CAP], path[PATH_CAP];
+    wfrom_utf8(wname, PATH_CAP, cstr(name));
+    wjoin(path, s->cwd, wname);
+    return write_file(path, data.data, data.len);
+}
+
 // Starts a process of the exe in the session's folder, in the run's job; 0 when it could not.
 static b32 start_in_job(Session *s, const wchar_t *const *args, i32 count, PROCESS_INFORMATION *pi) {
     static wchar_t cmdline[4 * PATH_CAP];
@@ -1676,6 +1684,71 @@ static Result scenario_1(void) {
     put("the unpacked folder unchanged");
     end_line();
     return R_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 2: editing real files opened as ronin +LINE:COL file (a CRLF file and a UTF-8 file with a BOM)
+
+// One file of s2: written fresh, ronin started on it from +LINE:COL, the keys, C-s and its bytes, C-x C-c.
+static Result scenario_2_file(const char *name, const wchar_t *const *args, const wchar_t *title, Str content,
+                              Result (*keys)(Session *), Str expected) {
+    Session s;
+    if (!session_prepare(&s, "s2", name)) return R_FAIL;
+    if (!session_write(&s, name, content)) {
+        put("e2e: s2: cannot write ");
+        put(name);
+        end_line();
+        return R_FAIL;
+    }
+    Result r = session_start(&s, args, 2, title);
+    if (r == R_OK) r = keys(&s);
+    if (r == R_OK) r = key_save(&s, "C-s", name, expected);
+    if (r == R_OK) r = key(&s, "C-x");
+    if (r == R_OK) r = key_exit(&s, "C-c");
+    session_end(&s);
+    return r;
+}
+
+// crlf.c from +2:5: the end of line 2, a comment typed, the line's start, a word, kill, yank twice, undo, isearch,
+// query-replace from point; then C-x (C-s follows).
+static Result scenario_2_crlf_keys(Session *s) {
+    Result r;
+    if ((r = key(s, "C-e")) != R_OK || (r = type(s, " // x")) != R_OK || (r = key(s, "C-a")) != R_OK) return r;
+    if ((r = key(s, "M-f")) != R_OK || (r = key(s, "C-k")) != R_OK || (r = key(s, "C-y")) != R_OK) return r;
+    if ((r = key(s, "C-y")) != R_OK || (r = key(s, "C-/")) != R_OK) return r;
+    if ((r = key(s, "C-s")) != R_OK || (r = type(s, "beta")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = key(s, "M-%")) != R_OK || (r = type(s, "alpha")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = type(s, "gamma")) != R_OK || (r = key(s, "RET")) != R_OK || (r = key(s, "!")) != R_OK) return r;
+    return key(s, "C-x");
+}
+
+// bom.txt from +2:5 (after three two-byte letters and a space): the end of the line, typing, the line's start, M-f over
+// the non-ASCII word, kill, yank, undo, a character typed there, isearch, query-replace from point; then C-x.
+static Result scenario_2_bom_keys(Session *s) {
+    Result r;
+    if ((r = key(s, "C-e")) != R_OK || (r = type(s, " x")) != R_OK || (r = key(s, "C-a")) != R_OK) return r;
+    if ((r = key(s, "M-f")) != R_OK || (r = key(s, "C-k")) != R_OK || (r = key(s, "C-y")) != R_OK) return r;
+    if ((r = key(s, "C-/")) != R_OK || (r = type(s, "!")) != R_OK) return r;
+    if ((r = key(s, "C-s")) != R_OK || (r = type(s, "alpha")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = key(s, "M-%")) != R_OK || (r = type(s, "line")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = type(s, "row")) != R_OK || (r = key(s, "RET")) != R_OK || (r = key(s, "!")) != R_OK) return r;
+    return key(s, "C-x");
+}
+
+static Result scenario_2(void) {
+    static const char crlf[] = "int main(void) {\r\n    int alpha = 1;\r\n    int beta = 2;\r\n    return alpha + beta;\r\n}\r\n";
+    static const char crlf_saved[] =
+        "int main(void) {\r\n    int alpha = 1; // x\r\n    int beta = 2;\r\n    return gamma + beta;\r\n}\r\n";
+    // café au lait / ğüş alpha beta / last alpha line, with a BOM and LF.
+    static const char bom[] = "\xEF\xBB\xBF" "caf\xC3\xA9 au lait\n\xC4\x9F\xC3\xBC\xC5\x9F alpha beta\nlast alpha line\n";
+    static const char bom_saved[] = "\xEF\xBB\xBF" "caf\xC3\xA9 au lait\n\xC4\x9F\xC3\xBC\xC5\x9F!\nlast alpha row\n";
+    static const wchar_t *const crlf_args[2] = { L"+2:5", L"crlf.c" };
+    static const wchar_t *const bom_args[2] = { L"+2:5", L"bom.txt" };
+    Result r = scenario_2_file("crlf.c", crlf_args, L"crlf.c - ronin", str((const u8 *)crlf, sizeof(crlf) - 1),
+                               scenario_2_crlf_keys, str((const u8 *)crlf_saved, sizeof(crlf_saved) - 1));
+    if (r != R_OK) return r;
+    return scenario_2_file("bom.txt", bom_args, L"bom.txt - ronin", str((const u8 *)bom, sizeof(bom) - 1), scenario_2_bom_keys,
+                           str((const u8 *)bom_saved, sizeof(bom_saved) - 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -2402,7 +2475,7 @@ int wmain(int argc, wchar_t **argv) {
         InterlockedExchange(&watch.armed, 1);
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
-        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1 };
+        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
