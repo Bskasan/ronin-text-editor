@@ -14,7 +14,7 @@
 //       [--demo-abort layout|foreground]
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
 // layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
-// button, Alt+F4).
+// button, Alt+F4), 7 the configuration file created and reloaded.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -55,7 +55,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 6
+#define SCENARIOS 7
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -76,6 +76,10 @@ static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', '
 #define THEME_CURSOR 0x90ee90u
 #define THEME_MODE_LINE 0xd3b58du
 #define THEME_PROMPT 0x0fdfafu          // prompt = string
+// The built-in themes' backgrounds (themes\*.conf).
+#define VAGUE_BACKGROUND 0x141415u
+#define MOONFLY_BACKGROUND 0x080808u
+#define OXIDE_BACKGROUND 0x161616u
 
 typedef struct Str {
     const u8 *data;
@@ -1381,12 +1385,125 @@ static Result expect(Session *s, b32 ok, const char *what) {
     return fail_end(s);
 }
 
+// DWM's count of composed frames.
+static u64 dwm_frames(void) {
+    DWM_TIMING_INFO ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    return DwmGetCompositionTimingInfo(NULL, &ti) == S_OK ? (u64)ti.cFrame : 0;
+}
+
+// One pixel of the client area as composed now; 0 when another window covers it.
+static b32 capture_pixel(Session *s, i32 x, i32 y, u32 *c) {
+    POINT p = { s->origin.x + x, s->origin.y + y };
+    HWND at = WindowFromPoint(p);
+    if ((at ? GetAncestor(at, GA_ROOT) : NULL) != s->hwnd) {
+        covered.len = 0;
+        describe_window(&covered, at ? GetAncestor(at, GA_ROOT) : NULL);
+        return 0;
+    }
+    if (!BitBlt(s->mem, 0, 0, 1, 1, s->screen, p.x, p.y, SRCCOPY)) return 0;
+    GdiFlush();
+    *c = s->dib[0] & 0xFFFFFFu;
+    return 1;
+}
+
 // One pixel of the screen as composed now (any window's, the caption's too).
 static b32 screen_pixel(Session *s, POINT p, u32 *c) {
     if (!BitBlt(s->mem, 0, 0, 1, 1, s->screen, p.x, p.y, SRCCOPY)) return 0;
     GdiFlush();
     *c = s->dib[0] & 0xFFFFFFu;
     return 1;
+}
+
+// The pixel at (x, y) at every DWM composition from `frame0` (dwm_frames before the change began) until it is `to`, at
+// most 5 s; each one before must show `from`, so nothing else (a default theme's flash) was ever on the screen there.
+// A composition not looked at (DWM's count jumped by more than one) fails too, as a flash there could not be ruled out.
+// Then the frame settled.
+static Result watch_pixel(Session *s, u64 frame0, i32 x, i32 y, u32 from, u32 to, const char *what) {
+    u64 t0 = GetTickCount64(), deadline = t0 + FILE_MS, last = frame0;
+    i32 seen = 0;
+    for (;;) {
+        if (aborted()) return R_ABORT;
+        if (ronin_ended(s)) return ended_fail(s);
+        tick();
+        u64 now = dwm_frames();
+        u32 c = 0;
+        if (!capture_pixel(s, x, y, &c)) {
+            put_prefix(s);
+            put("the window is covered by ");
+            bput_n(&line, covered.data, covered.len);
+            put(" while ");
+            put(what);
+            return fail_end(s);
+        }
+        if (now > last + 1) {
+            put_prefix(s);
+            put("compositions ");
+            put_i64((i64)(last + 1));
+            put(" to ");
+            put_i64((i64)(now - 1));
+            put(" went by unseen while ");
+            put(what);
+            put(" (the capture was too slow to rule out a flash)");
+            return fail_end(s);
+        }
+        if (now > last) seen++;
+        last = now;
+        if (c == to) break;
+        if (c != from) {
+            put_prefix(s);
+            put("a composition showed #");
+            put_hex(c, 6);
+            put(" at ");
+            put_i64(x);
+            put(",");
+            put_i64(y);
+            put(" while ");
+            put(what);
+            put(" (only #");
+            put_hex(from, 6);
+            put(", then #");
+            put_hex(to, 6);
+            put(" expected)");
+            b32 shot = capture(s, s->cur);
+            Result fr = fail_line();
+            if (fr == R_FAIL && shot) save_shot(s, s->cur, "flash");
+            return fr;
+        }
+        if (GetTickCount64() >= deadline) {
+            put_prefix(s);
+            put("#");
+            put_hex(to, 6);
+            put(" not shown at ");
+            put_i64(x);
+            put(",");
+            put_i64(y);
+            put(" within 5 s while ");
+            put(what);
+            put(" (still #");
+            put_hex(c, 6);
+            put(")");
+            return fail_end(s);
+        }
+    }
+    if (!capture(s, s->cur)) return fail_end(s);
+    Wait w = settle(s, GetTickCount64() + SETTLE_MS);
+    if (w == W_ABORT) return R_ABORT;
+    put_prefix(s);
+    put("#");
+    put_hex(from, 6);
+    put(" to #");
+    put_hex(to, 6);
+    put(" in ");
+    bput_secs(&line, GetTickCount64() - t0);
+    put(" while ");
+    put(what);
+    put(": ");
+    put_i64(seen);
+    put(" compositions seen, none missed, none in another color");
+    end_line();
+    return R_OK;
 }
 
 // The close button of ronin's window: the caption buttons' area from DWM (window-relative), its rightmost third,
@@ -2653,6 +2770,149 @@ static Result scenario_6(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 7: the configuration file created by C-c , and applied whenever it is saved, from ronin or another program
+
+// Where s in hay starts, the first time at or after `from`; -1 if nowhere.
+static i64 str_find(Str hay, Str s, i64 from) {
+    for (i64 i = from; i + s.len <= hay.len; i++) if (mem_eq(hay.data + i, s.data, s.len)) return i;
+    return -1;
+}
+
+// text with the one "theme = <from>" line's value replaced (into b).
+static void with_theme(Buf *b, Str text, i64 at, const char *from, const char *to) {
+    b->len = 0;
+    bput_n(b, text.data, at);
+    bput(b, "theme = ");
+    bput(b, to);
+    i64 skip = at + 8 + cstr_len(from);
+    bput_n(b, text.data + skip, text.len - skip);
+}
+
+// ronin.conf written as another program does: in place (truncated and written, as Notepad saves) or as a temp file
+// renamed over it.
+static b32 write_as_other(const wchar_t *path, Buf *text, b32 by_rename) {
+    if (!by_rename) return write_file(path, text->data, text->len);
+    wchar_t tmp[PATH_CAP];
+    wjoin(tmp, path, NULL);
+    i64 n = wlen(tmp);
+    const wchar_t *suffix = L".e2e-tmp";
+    for (i64 i = 0; suffix[i] && n < PATH_CAP - 1; i++) tmp[n++] = suffix[i];
+    tmp[n] = 0;
+    return write_file(tmp, text->data, text->len) && MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING);
+}
+
+static Result scenario_7_body(Session *s, wchar_t *conf) {
+    static const wchar_t *const none[1] = { NULL };
+    Result r = session_start(s, none, 0, L"*scratch* - ronin");
+    if (r != R_OK) return r;
+    // The probe: the echo line's background two cells in from the right edge (the window's rounded corner).
+    i32 px = s->w - 2 * s->cell_w, py = s->h - s->line_h / 2;
+    if ((r = probe(s, "the echo area", px, py, THEME_BACKGROUND)) != R_OK) return r;
+    // C-c , creates ronin.conf from the built-in defaults and visits it.
+    if ((r = key(s, "C-c")) != R_OK || (r = key_title(s, ",", L"ronin.conf - ronin")) != R_OK) return r;
+    Str made = read_file(conf);
+    static const char line_ronin[] = "theme = ronin";
+    i64 at = made.data ? str_find(made, cstr(line_ronin), 0) : -1;
+    b32 once = at > 0 && made.data[at - 1] == '\n' && str_find(made, cstr(line_ronin), at + 1) < 0 &&
+               at + 13 < made.len && (made.data[at + 13] == '\n' || made.data[at + 13] == '\r');
+    put_prefix(s);
+    if (!made.data || !once) {
+        put(made.data ? "ronin.conf has no single line \"theme = ronin\"" : "ronin.conf was not created");
+        free_file(made);
+        return fail_end(s);
+    }
+    put("ronin.conf created: ");
+    put_i64(made.len);
+    put(" bytes, ");
+    put(str_find(made, cstr("\r\n"), 0) >= 0 ? "CRLF" : "LF");
+    put(", one line \"theme = ronin\"");
+    end_line();
+    static u8 want_mem[1 << 17];
+    Buf want = { want_mem, 0, sizeof(want_mem) };
+    // theme = vague by M-% and C-x C-s: the file exactly that, and the background from ronin's to vague's.
+    if ((r = key(s, "M-%")) == R_OK && (r = type(s, line_ronin)) == R_OK && (r = key(s, "RET")) == R_OK &&
+        (r = type(s, "theme = vague")) == R_OK && (r = key(s, "RET")) == R_OK && (r = key(s, "!")) == R_OK)
+        r = key(s, "C-x");
+    if (r == R_OK) {
+        with_theme(&want, made, at, "ronin", "vague");
+        wchar_t dir[PATH_CAP];
+        parent_dir(dir, conf);
+        FileWait fw;
+        file_wait_arm(&fw, dir, conf, "ronin.conf");
+        u64 f0 = dwm_frames();
+        Str got = { 0, 0 };
+        r = send_key(s, "C-s");
+        if (r == R_OK) r = watch_pixel(s, f0, px, py, THEME_BACKGROUND, VAGUE_BACKGROUND, "ronin.conf was saved from ronin with vague");
+        if (r == R_OK) r = file_wait(s, &fw, &got);
+        file_wait_end(&fw);
+        if (r == R_OK) r = compare_bytes(s, "ronin.conf", got, str(want.data, want.len));
+        free_file(got);
+        if (r == R_OK) save_shot(s, s->frame, "vague");
+    }
+    // Written by another program in place (moonfly), then by a rename (oxide).
+    static const struct { const char *from, *to; u32 c0, c1; b32 rename; const char *what; } writes[2] = {
+        { "vague", "moonfly", VAGUE_BACKGROUND, MOONFLY_BACKGROUND, 0, "another program wrote ronin.conf in place with moonfly" },
+        { "moonfly", "oxide", MOONFLY_BACKGROUND, OXIDE_BACKGROUND, 1, "another program replaced ronin.conf by a rename with oxide" },
+    };
+    for (i32 i = 0; i < 2 && r == R_OK; i++) {
+        with_theme(&want, made, at, "ronin", writes[i].to);
+        u64 f0 = dwm_frames();
+        where.len = 0;
+        bput(&where, writes[i].what);
+        if (!write_as_other(conf, &want, writes[i].rename)) {
+            put_prefix(s);
+            put("cannot write ronin.conf (error ");
+            put_i64(GetLastError());
+            put(")");
+            r = fail_line();
+            break;
+        }
+        r = watch_pixel(s, f0, px, py, writes[i].c0, writes[i].c1, writes[i].what);
+        if (r == R_OK) save_shot(s, s->frame, writes[i].to);
+    }
+    free_file(made);
+    if (r == R_OK && (r = key(s, "C-x")) == R_OK) r = key_exit(s, "C-c");
+    return r;
+}
+
+static Result scenario_7(void) {
+    Session s;
+    if (!session_prepare(&s, "s7", NULL)) return R_FAIL;
+    wchar_t appdata[PATH_CAP], conf[PATH_CAP], local[PATH_CAP];
+    session_dir_path(&s, appdata, L"appdata");
+    wjoin(conf, appdata, L"ronin\\ronin.conf");
+    Result r = scenario_7_body(&s, conf);
+    session_end(&s);
+    if (r != R_OK) return r;
+    // APPDATA holds ronin.conf and nothing else (no temp file left); LOCALAPPDATA no file.
+    walk(appdata);
+    i32 files = 0;
+    b32 only = 1;
+    for (i32 i = 0; i < walk_buf.count; i++) {
+        Entry *e = &walk_buf.items[i];
+        if (e->folder) continue;
+        files++;
+        if (!str_eq(str(e->path, e->path_len), cstr("ronin/ronin.conf"))) only = 0;
+    }
+    put_prefix(&s);
+    if (files != 1 || !only) {
+        put("APPDATA holds ");
+        put_i64(files);
+        put(" files, expected only ronin/ronin.conf:");
+        for (i32 i = 0; i < walk_buf.count; i++) {
+            put(" ");
+            bput_n(&line, walk_buf.items[i].path, walk_buf.items[i].path_len);
+        }
+        end_line();
+        return R_FAIL;
+    }
+    put("APPDATA: only ronin/ronin.conf");
+    end_line();
+    session_dir_path(&s, local, L"localappdata");
+    return no_files(&s, "LOCALAPPDATA", local);
+}
+
+// ---------------------------------------------------------------------------
 // The machine's state: recorded before the run, restored and compared after it
 
 // A registry key's values (and its subkeys' to depth) as text, exact (the data in hex).
@@ -3387,7 +3647,7 @@ int wmain(int argc, wchar_t **argv) {
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
         static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5,
-                                                                    scenario_6 };
+                                                                    scenario_6, scenario_7 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
