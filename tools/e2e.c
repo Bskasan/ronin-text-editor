@@ -15,7 +15,7 @@
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
 // layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse, 6 quitting (C-x C-c, the close
 // button, Alt+F4), 7 the configuration file created and reloaded, 8 the command list and M-x, 9 a project's finder and
-// search, 10 a build with an error, next-error and the fix.
+// search, 10 a build with an error, next-error and the fix, 11 a crash and the recovery.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -56,7 +56,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 10
+#define SCENARIOS 11
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -3314,6 +3314,330 @@ static Result scenario_10(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 11: a crash with two modified files, the recovery files, the next start's notice and recover-file
+
+#define S11_ONE "first\n"
+#define S11_ONE_SAVED "first\ncrash one"
+
+// ASCII text as UTF-16 LE with a BOM, LF as CRLF (into b).
+static void utf16le_crlf(Buf *b, const char *text) {
+    b->len = 0;
+    bput(b, "\xFF\xFE");
+    for (const char *c = text; *c; c++) {
+        if (*c == '\n') bput_n(b, (const u8 *)"\r\0", 2);
+        u8 unit[2] = { (u8)*c, 0 };
+        bput_n(b, unit, 2);
+    }
+}
+
+// The same file whatever the case and the separators.
+static b32 same_path(Str a, const wchar_t *b) {
+    u8 mem[PATH_CAP * 3];
+    Buf bb = { mem, 0, sizeof(mem) };
+    bput_w(&bb, b, wlen(b));
+    if (a.len != bb.len) return 0;
+    for (i64 i = 0; i < a.len; i++) {
+        u8 x = a.data[i] == '/' ? '\\' : a.data[i], y = bb.data[i] == '/' ? '\\' : bb.data[i];
+        if (x >= 'A' && x <= 'Z') x = (u8)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (u8)(y - 'A' + 'a');
+        if (x != y) return 0;
+    }
+    return 1;
+}
+
+// A WerFault.exe or vsjitdebugger.exe whose command line names ronin's pid: waited for to end by itself (10 s), then
+// ended; printed either way. Its command line through NtQueryInformationProcess(ProcessCommandLineInformation).
+typedef struct NtUnicode {
+    USHORT len, cap;
+    PWSTR text;
+} NtUnicode;
+typedef LONG(NTAPI *NtQueryProcessFn)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+static b32 names_pid(const wchar_t *cmd, i64 n, DWORD pid) {
+    wchar_t digits[16];
+    i32 dn = 0;
+    for (DWORD v = pid; v || !dn; v /= 10) digits[dn++] = (wchar_t)('0' + v % 10);
+    for (i64 i = 0; i + dn <= n; i++) {
+        b32 eq = 1;
+        for (i32 k = 0; k < dn && eq; k++) eq = cmd[i + k] == digits[dn - 1 - k];
+        b32 left = i == 0 || cmd[i - 1] < '0' || cmd[i - 1] > '9', right = i + dn == n || cmd[i + dn] < '0' || cmd[i + dn] > '9';
+        if (eq && left && right) return 1;
+    }
+    return 0;
+}
+
+static i32 crash_helpers(DWORD pid, b32 end_them) {
+    NtQueryProcessFn query = (NtQueryProcessFn)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (!query || snap == INVALID_HANDLE_VALUE) return 0;
+    i32 found = 0;
+    PROCESSENTRY32W pe;
+    pe.dwSize = sizeof(pe);
+    for (BOOL more = Process32FirstW(snap, &pe); more; more = Process32NextW(snap, &pe)) {
+        if (CompareStringOrdinal(pe.szExeFile, -1, L"WerFault.exe", -1, TRUE) != CSTR_EQUAL &&
+            CompareStringOrdinal(pe.szExeFile, -1, L"vsjitdebugger.exe", -1, TRUE) != CSTR_EQUAL)
+            continue;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | (end_them ? PROCESS_TERMINATE : 0), FALSE, pe.th32ProcessID);
+        if (!h) continue;
+        static u8 info[8192];
+        ULONG got = 0;
+        if (query(h, 60, info, sizeof(info), &got) == 0) {
+            NtUnicode *u = (NtUnicode *)info;
+            if (names_pid(u->text, u->len / 2, pid)) {
+                found++;
+                put("e2e: s11: ");
+                put_w(pe.szExeFile);
+                put(", pid ");
+                put_i64(pe.th32ProcessID);
+                put(", names ronin's pid");
+                if (end_them) {
+                    TerminateProcess(h, 1);
+                    put(": ended");
+                }
+                end_line();
+            }
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return found;
+}
+
+// The recovery folder: exactly the two .recovered files and their sidecars, each copy the bytes a save would write,
+// each sidecar naming its file, encoding and line endings. *two_name: the copy of two.txt's name.
+static Result recovery_check(Session *s, const wchar_t *dir, Buf *one_saved, Buf *two_saved, wchar_t *two_name) {
+    wchar_t pattern[PATH_CAP], p[PATH_CAP], orig[PATH_CAP];
+    wjoin(pattern, dir, L"*");
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileW(pattern, &fd);
+    i32 copies = 0, sidecars = 0;
+    Result r = R_OK;
+    two_name[0] = 0;
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            i64 n = wlen(fd.cFileName);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (n > 5 && CompareStringOrdinal(fd.cFileName + n - 5, 5, L".path", 5, TRUE) == CSTR_EQUAL) {
+                sidecars++;
+                continue;
+            }
+            if (n <= 10 || CompareStringOrdinal(fd.cFileName + n - 10, 10, L".recovered", 10, TRUE) != CSTR_EQUAL) continue;
+            copies++;
+            b32 one = CompareStringOrdinal(fd.cFileName, 8, L"one.txt ", 8, TRUE) == CSTR_EQUAL;
+            b32 two = CompareStringOrdinal(fd.cFileName, 8, L"two.txt ", 8, TRUE) == CSTR_EQUAL;
+            if (two) wjoin(two_name, fd.cFileName, NULL);
+            if (r != R_OK || (!one && !two)) continue;
+            wjoin(p, dir, fd.cFileName);
+            Str got = read_file(p);
+            r = compare_bytes(s, one ? "one.txt's recovery copy" : "two.txt's recovery copy", got,
+                              one ? str(one_saved->data, one_saved->len) : str(two_saved->data, two_saved->len));
+            free_file(got);
+            if (r != R_OK) continue;
+            // The sidecar: the file's path, then its encoding and line endings.
+            i64 k = wlen(p);
+            const wchar_t *suffix = L".path";
+            for (i64 i = 0; suffix[i]; i++) p[k++] = suffix[i];
+            p[k] = 0;
+            Str side = read_file(p);
+            wjoin(orig, s->cwd, one ? L"one.txt" : L"two.txt");
+            Str rest = cstr(one ? "encoding: UTF-8\nline endings: LF\n" : "encoding: UTF-16LE\nline endings: CRLF\n");
+            i64 nl = side.data ? str_find(side, cstr("\n"), 0) : -1;
+            b32 good = nl > 0 && same_path(str(side.data, nl), orig) && str_eq(str(side.data + nl + 1, side.len - nl - 1), rest);
+            put_prefix(s);
+            put(one ? "one.txt" : "two.txt");
+            put("'s sidecar: ");
+            if (good) {
+                put("its path, ");
+                bput_n(&line, rest.data, rest.len - 1);
+                for (i64 i = 0; i < line.len; i++) if (line.data[i] == '\n') line.data[i] = ',';
+                end_line();
+            } else {
+                if (side.data) bput_n(&line, side.data, side.len);
+                else put("missing");
+                for (i64 i = 0; i < line.len; i++) if (line.data[i] == '\n') line.data[i] = '|';
+                r = fail_line();
+            }
+            free_file(side);
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    if (r != R_OK) return r;
+    put_prefix(s);
+    put("recovery: ");
+    put_i64(copies);
+    put(" .recovered files and ");
+    put_i64(sidecars);
+    put(" sidecars");
+    if (copies != 2 || sidecars != 2 || !two_name[0]) {
+        put(", expected 2 and 2 (one.txt's and two.txt's)");
+        return fail_line();
+    }
+    end_line();
+    return R_OK;
+}
+
+// The echo line holds something (a message): a pixel in it that is not the background.
+static b32 echo_written(Session *s) {
+    for (i32 y = s->h - s->line_h; y < s->h; y++) {
+        for (i32 x = 0; x < s->w - 2 * s->cell_w; x++) if (s->frame[(i64)y * s->w + x] != THEME_BACKGROUND) return 1;
+    }
+    return 0;
+}
+
+static Result scenario_11_crash(Session *s) {
+    static const wchar_t *const args[2] = { L"one.txt", L"two.txt" };
+    UINT mode = SetErrorMode(SEM_NOGPFAULTERRORBOX); // inherited by ronin: no Windows dialog, no JIT debugger asked
+    SetErrorMode(mode | SEM_NOGPFAULTERRORBOX);
+    Result r = session_start(s, args, 2, L"one.txt - ronin");
+    SetErrorMode(mode);
+    if (r != R_OK) return r;
+    // Both files modified, neither saved.
+    if ((r = key(s, "M->")) != R_OK || (r = type(s, "crash one")) != R_OK || (r = key(s, "C-x")) != R_OK || (r = key(s, "b")) != R_OK)
+        return r;
+    if ((r = type(s, "two.txt")) != R_OK || (r = key_title(s, "RET", L"two.txt - ronin")) != R_OK) return r;
+    if ((r = key(s, "M->")) != R_OK || (r = type(s, "crash two")) != R_OK) return r;
+    // A thread started in ronin at address 8: an access violation inside ronin, its own crash filter runs.
+    if ((r = before_key(s)) != R_OK) return r;
+    s->step++;
+    where_set(s, "the crash (a thread at address 8)");
+    InterlockedExchange(&watch.exiting, 1);
+    HANDLE t = CreateRemoteThread(s->pi.hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)(uintptr_t)8, NULL, 0, NULL);
+    if (!t) {
+        put_prefix(s);
+        put("CreateRemoteThread failed (error ");
+        put_i64(GetLastError());
+        put(")");
+        return fail_end(s);
+    }
+    CloseHandle(t);
+    Wait w = wait_handle(s->pi.hProcess, GetTickCount64() + EXIT_MS, 1);
+    if (w == W_ABORT) return R_ABORT;
+    if (w == W_TIMEOUT) {
+        put_prefix(s);
+        put("ronin still running 10 s after the crash");
+        return fail_end(s);
+    }
+    s->running = 0;
+    InterlockedExchange(&watch.pid, 0);
+    DWORD code = 0;
+    GetExitCodeProcess(s->pi.hProcess, &code);
+    put_prefix(s);
+    put("ronin ended by the crash, exit code 0x");
+    put_hex(code, 8);
+    if (code != 0xC0000005u) {
+        put(", expected 0xc0000005");
+        return fail_line();
+    }
+    end_line();
+    // Windows' crash helpers for this pid: left to end by themselves, else ended (none expected with the error mode).
+    u64 deadline = GetTickCount64() + EXIT_MS;
+    while (crash_helpers(s->pi.dwProcessId, 0) && GetTickCount64() < deadline) {
+        if (aborted()) return R_ABORT;
+        tick();
+    }
+    if (!crash_helpers(s->pi.dwProcessId, 1)) {
+        put_prefix(s);
+        put("no WerFault.exe or vsjitdebugger.exe for ronin's pid left");
+        end_line();
+    }
+    return R_OK;
+}
+
+static Result scenario_11_recover(Session *s, const wchar_t *copy_name, Buf *two_saved) {
+    static const wchar_t *const none[1] = { NULL };
+    Result r = session_start(s, none, 0, L"*scratch* - ronin");
+    if (r != R_OK) return r;
+    if ((r = expect(s, echo_written(s), "no notice on the echo line at the start")) != R_OK) return r;
+    put_prefix(s);
+    put("the start's echo line holds a message (the recovery notice)");
+    end_line();
+    // M-x recover-file, two: two.txt in this window, its copy in the other one.
+    if ((r = key(s, "M-x")) != R_OK || (r = type(s, "recover-file")) != R_OK || (r = key(s, "RET")) != R_OK) return r;
+    if ((r = type(s, "two")) != R_OK || (r = key_title(s, "RET", L"two.txt - ronin")) != R_OK || (r = resettle(s)) != R_OK) return r;
+    // The pop-up rule (docs/src/windows-and-buffers.md): side by side from split_width_threshold (160) columns on, else
+    // one above the other, two.txt's window on top and selected: its mode line a full pixel row above the last window's.
+    if (s->w / s->cell_w >= 160) {
+        if ((r = expect(s, has_color(s, s->frame, 0, 0, s->w, s->h, THEME_WINDOW_DIVIDER), "no second window (the copy beside two.txt)")) != R_OK)
+            return r;
+    } else {
+        b32 above = 0;
+        for (i32 y = 0; y < s->h - 2 * s->line_h && !above; y++) {
+            const u32 *row = s->frame + (i64)y * s->w;
+            above = row[0] == THEME_MODE_LINE && row[s->w - 1] == THEME_MODE_LINE;
+        }
+        if ((r = expect(s, above, "no second window (the copy below two.txt)")) != R_OK) return r;
+    }
+    // The copy taken over by hand: C-x o, C-x h, M-w; C-x o, C-x h, DEL, C-y; saved.
+    wchar_t title[PATH_CAP];
+    wjoin(title, copy_name, NULL);
+    i64 n = wlen(title);
+    const wchar_t *suffix = L" - ronin";
+    for (i64 i = 0; suffix[i]; i++) title[n++] = suffix[i];
+    title[n] = 0;
+    if ((r = key(s, "C-x")) != R_OK || (r = key_title(s, "o", title)) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "h")) != R_OK || (r = key(s, "M-w")) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK || (r = key_title(s, "o", L"two.txt - ronin")) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "h")) != R_OK || (r = key(s, "DEL")) != R_OK || (r = key(s, "C-y")) != R_OK)
+        return r;
+    if ((r = key(s, "C-x")) != R_OK || (r = key_save(s, "C-s", "two.txt", str(two_saved->data, two_saved->len))) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK) return r;
+    return key_exit(s, "C-c");
+}
+
+static Result scenario_11(void) {
+    Session s;
+    if (!session_prepare(&s, "s11", NULL)) return R_FAIL;
+    static u8 two_mem[256], two_saved_mem[256], one_mem[64];
+    Buf two = { two_mem, 0, sizeof(two_mem) }, two_saved = { two_saved_mem, 0, sizeof(two_saved_mem) };
+    Buf one_saved = { one_mem, 0, sizeof(one_mem) };
+    utf16le_crlf(&two, "second\n");
+    utf16le_crlf(&two_saved, "second\ncrash two");
+    bput(&one_saved, S11_ONE_SAVED);
+    if (!session_write(&s, "one.txt", cstr(S11_ONE)) || !session_write(&s, "two.txt", str(two.data, two.len))) return R_FAIL;
+    Result r = scenario_11_crash(&s);
+    Session again = s;
+    session_end(&s);
+    if (r != R_OK) return r;
+    // The recovery files, the originals as they were.
+    wchar_t dir[PATH_CAP], copy_name[PATH_CAP], p[PATH_CAP];
+    session_dir_path(&s, dir, L"localappdata\\ronin\\recovery");
+    if ((r = recovery_check(&s, dir, &one_saved, &two_saved, copy_name)) != R_OK) return r;
+    wjoin(p, s.cwd, L"one.txt");
+    Str got = read_file(p);
+    r = compare_bytes(&s, "one.txt (on disk, untouched)", got, cstr(S11_ONE));
+    free_file(got);
+    if (r != R_OK) return r;
+    wjoin(p, s.cwd, L"two.txt");
+    got = read_file(p);
+    r = compare_bytes(&s, "two.txt (on disk, untouched)", got, str(two.data, two.len));
+    free_file(got);
+    if (r != R_OK) return r;
+    // The next start in the same folders (APPDATA and LOCALAPPDATA still point at them).
+    memset(&s, 0, sizeof(s));
+    s.name = again.name;
+    s.part = "again";
+    wjoin(s.dir, again.dir, NULL);
+    wjoin(s.cwd, again.cwd, NULL);
+    r = scenario_11_recover(&s, copy_name, &two_saved);
+    session_end(&s);
+    if (r != R_OK) return r;
+    // ronin overwrote nothing of the recovery folder.
+    walk(dir);
+    i32 files = 0;
+    for (i32 i = 0; i < walk_buf.count; i++) files += !walk_buf.items[i].folder;
+    put_prefix(&s);
+    put("recovery folder after recover-file: ");
+    put_i64(files);
+    put(" files");
+    if (files != 4) {
+        put(", expected the 4 still there");
+        return fail_line();
+    }
+    end_line();
+    return R_OK;
+}
+
+// ---------------------------------------------------------------------------
 // The machine's state: recorded before the run, restored and compared after it
 
 // A registry key's values (and its subkeys' to depth) as text, exact (the data in hex).
@@ -4049,7 +4373,7 @@ int wmain(int argc, wchar_t **argv) {
         typedef Result (*ScenarioFn)(void);
         static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5,
                                                                     scenario_6, scenario_7, scenario_8, scenario_9,
-                                                                    scenario_10 };
+                                                                    scenario_10, scenario_11 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
