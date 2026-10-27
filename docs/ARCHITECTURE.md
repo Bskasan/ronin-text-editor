@@ -4960,6 +4960,31 @@ a project); the other two scenarios follow (#31's body), then a step of release-
     C-x o to reach it. ronin selects it (results_project_search, "shown through the pop-up rule and selected"), as
     Emacs's C-x p g (project-find-regexp) selects its *xref* window; ronin matched Emacs, so the C-x o went (the
     expectations rule; the smoke's stage 8 shows *search* without selecting it on purpose).
+17. **A build of its own (scenario 10).** The project's [build] command is a batch file the driver writes: it prints
+    one error in MSVC's exact format and exits 2 until a.c returns 0, then writes built.txt. No compiler runs: the
+    scenario checks ronin's side (the matcher, the colors, next-error, the save, the rebuild), the same on every machine
+    in about a second. A real build of ronin with the real compiler (its paths, its tree of processes, its environment)
+    stays HUMAN step 21 (O23 stays mixed). A build's end is waited for in two ways, both observed: the processes below
+    ronin (a Toolhelp walk from ronin's pid down, repeated until none is left, their names printed) and the screen
+    settling after them. The fixed build's end is also its file: built.txt written.
+18. **A crash without a dialog (scenario 11).** The driver sets SEM_NOGPFAULTERRORBOX for itself before ronin starts,
+    and ronin inherits it, so Windows Error Reporting shows nothing; AeDebug and WER's settings are never touched. The
+    crash is a thread the driver starts in ronin at address 8 (CreateRemoteThread): an access violation while ronin is
+    idle, through ronin's own crash filter, exit code 0xC0000005. A WerFault.exe or vsjitdebugger.exe whose command
+    line names ronin's pid (read with NtQueryInformationProcess) would be waited for and ended; none came. The recovery
+    files are compared byte for byte (UTF-8 LF and UTF-16 LE CRLF, each with its sidecar's encoding and line endings),
+    then a second start in the same folders must show the notice, recover-file must give two windows, and the copy's
+    text taken over by hand must save exactly. The expectation corrected in group 4: s11 first expected the copy beside
+    the original (a window_divider pixel), as MANUAL_TESTS Q6's wording says. ronin put it below: the pop-up rule
+    (docs/src/windows-and-buffers.md) splits side by side only from split_width_threshold (160) columns, and this frame
+    has 142, as Emacs's split-width-threshold does. ronin matched its documentation and Emacs, so the check follows the
+    rule: a divider from 160 columns on, else the upper window's mode line above the lower one.
+19. **The step in release-check.bat.** `e2e` runs after `zip`, in a full run only (quick jumps past it), on the zip
+    just made: `build\e2e.exe --zip "dist\<zip>" --out "<run>\e2e"`, every scenario once. It says that the keyboard and
+    the mouse are taken next and waits for a key (`pause`); the driver's own 5 s without physical input then lets the
+    maintainer leave. Its exit code must be 0 and its last line begin `e2e: PASS (`; anything else is
+    `release-check: FAIL: e2e` with the driver's last line above it. The driver adds nothing to the exe: the release
+    exe of main and of this branch differ only in their link time stamps (below).
 
 ### Measurements, #31 E2E driver
 
@@ -5050,6 +5075,36 @@ save, which reloads the file it has just written at once. Every run's state line
 releases of s3's three runs. One expectation corrected (decision 16: *search* is selected, as in Emacs). Faults of the
 driver, each fixed before the acceptance run: the close button clicked with the move in one step (no capture, nothing
 closed), and its second click a double click (decision 13); M7's failure line printed into its screenshot's line.
+
+Group 4 (scenarios 10 and 11, the release-check step, the final acceptance), the same machine and conditions, one
+block on 2026-10-27.
+
+| run | scenario | time | result |
+|---|---|---|---|
+| development (copy of build\ronin.exe) | s10 / s11 | 1.2 s / 2.3 s | PASS / PASS (s11's first run failed on the expectation of decision 18, corrected) |
+| the step's command line (a .bat with release-check.bat's lines), dist\ronin-1.0.0-windows-x64.zip | s1 to s11 | 23.8 s | `e2e: PASS (11 scenario runs, 23.8 s)`, exit 0 |
+| final acceptance, 1 to 3 of 3 | s1 to s11 | s1 1.7, s2 2.3, s3 6.1, s4 1.6, s5 1.2-1.3, s6 3.4-3.5, s7 1.5, s8 1.1, s9 1.2, s10 0.8, s11 2.2-2.3 s | all PASS (`e2e: PASS (33 scenario runs, 71.5 s)`) |
+
+| mutation | scenario | the line |
+|---|---|---|
+| the MSVC location's line read one too far (compile_match_msvc) | s10 | `e2e: s10: proj\a.c: byte 25 is 0x78, expected 0x30 (saved 30 bytes, expected 30)` |
+| nothing written at a crash (app_crash_write) | s11 | `e2e: s11: recovery: 0 .recovered files and 0 sidecars, expected 2 and 2 (one.txt's and two.txt's)` |
+
+s6 took 3.4-3.5 s in every run of this block, 2.0 s in group 3's; its steps are unchanged and the cause was not looked
+into (each step waits for what it shows, so the time is not a pass condition). The failing build ended before a process snapshot saw it ("none (ended before a snapshot)"); the
+fixed one was seen as cmd.exe and conhost.exe; none was left after either. No WerFault.exe or vsjitdebugger.exe came
+for any crash. Every run's state lines as before (s3's lone Ctrl releases: 2 a run); `git status --ignored` outside
+build\ and dist\ equal before and after the acceptance. Twice the block stopped before a scenario and was started again
+by the maintainer: the clipboard held an image (refused before anything was typed, exit 2), and once, right after
+ronin's start in the M11 run, `e2e: ABORT: a physical mouse move, after the start (s11) (not retried)` (exit 3, the
+machine as before); M11 then ran as the table shows.
+
+The exe of main (807f318, `git archive` into build\proof\main-exe) and of this branch, both `build.bat release`: 471,040
+bytes each; they differ in 4 bytes, the COFF header's TimeDateStamp (0xf0, 0xf1) and the debug directory's (0x65e24,
+0x65e25); with those zeroed both have the same SHA-256 (7a45c081e048d498...).
+
+The HUMAN list after group 4 (release_check.exe human): 67 rows (52 HUMAN, 15 mixed), from 68 (52, 16): Q6 is
+AUTOMATED-NEW, O23 stays mixed.
 
 ## After 1.0
 
