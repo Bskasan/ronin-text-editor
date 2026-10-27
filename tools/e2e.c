@@ -13,7 +13,7 @@
 //   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish]
 //       [--demo-abort layout|foreground]
 // Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
-// layouts (and Turkish Q with --turkish), 4 the real clipboard both ways.
+// layouts (and Turkish Q with --turkish), 4 the real clipboard both ways, 5 the mouse.
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -54,7 +54,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 4
+#define SCENARIOS 5
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -713,6 +713,7 @@ typedef struct Session {
     DWORD tid;
     HKL hkl;                      // ronin's layout now: every key is checked against it
     HKL hkl0;                     // its layout at the start, given back before it is ended
+    i32 line_h;                   // measured from a cursor moved one line (scenarios that click); else the cell height
     POINT origin;                 // the client area on the screen
     i32 w, h;
     HDC screen, mem;
@@ -1244,6 +1245,86 @@ static Result give_layout(Session *s, HKL hkl) {
     return R_OK;
 }
 
+// ---------------------------------------------------------------------------
+// The mouse: every event absolute and injected; a click's press and release in one call, a drag's press, moves and
+// release each a step of its own
+
+static b32 mouse_held; // a drag's button is down: released on any way out
+
+static void mouse_input(INPUT *in, i32 x, i32 y, DWORD flags, DWORD data) {
+    i32 vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    i32 vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    memset(in, 0, sizeof(*in));
+    in->type = INPUT_MOUSE;
+    in->mi.dx = (LONG)(((i64)(x - vx) * 65535 + (vw - 1) / 2) / (vw > 1 ? vw - 1 : 1));
+    in->mi.dy = (LONG)(((i64)(y - vy) * 65535 + (vh - 1) / 2) / (vh > 1 ? vh - 1 : 1));
+    in->mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | flags;
+    in->mi.mouseData = data;
+    in->mi.dwExtraInfo = (ULONG_PTR)INPUT_TAG;
+}
+
+static void mouse_release(void) {
+    if (!mouse_held) return;
+    POINT p;
+    GetCursorPos(&p);
+    INPUT in;
+    mouse_input(&in, p.x, p.y, MOUSEEVENTF_LEFTUP, 0);
+    SendInput(1, &in, sizeof(INPUT));
+    mouse_held = 0;
+}
+
+// The centre of text cell (row, col) on the screen, from the measured cursor block (its top-left is cell (0, 0)
+// when measured), the cell width and the line height.
+static POINT cell_point(Session *s, i32 row, i32 col) {
+    POINT p;
+    p.x = s->origin.x + s->cursor0.left + col * s->cell_w + s->cell_w / 2;
+    p.y = s->origin.y + s->cursor0.top + row * s->line_h + (s->cursor0.bottom - s->cursor0.top + 1) / 2;
+    return p;
+}
+
+typedef enum MouseAct { M_CLICK, M_DOUBLE, M_PRESS, M_MOVE, M_RELEASE, M_WHEEL, M_CTRL_WHEEL } MouseAct;
+
+// One mouse step at cell (row, col): the checks, the events, then the frame (none for a release, which draws nothing:
+// its effect is the region a later key shows). notches for the wheel (negative: towards the user, down the text).
+static Result mouse(Session *s, MouseAct act, i32 row, i32 col, i32 notches, const char *label) {
+    Result r = before_key(s);
+    if (r != R_OK) return r;
+    s->step++;
+    where_set(s, label);
+    POINT p = cell_point(s, row, col);
+    INPUT in[6];
+    UINT n = 0;
+    switch (act) {
+    case M_CLICK:
+    case M_DOUBLE:
+        mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTDOWN, 0);
+        mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTUP, 0);
+        if (act == M_DOUBLE) {
+            mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTDOWN, 0);
+            mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTUP, 0);
+        }
+        break;
+    case M_PRESS: mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTDOWN, 0); break;
+    case M_MOVE: mouse_input(&in[n++], p.x, p.y, 0, 0); break;
+    case M_RELEASE: mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTUP, 0); break;
+    case M_WHEEL:
+    case M_CTRL_WHEEL:
+        if (act == M_CTRL_WHEEL) key_input(&in[n++], VK_CONTROL, 0x1D, 0, 0);
+        mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_WHEEL, (DWORD)(notches * WHEEL_DELTA));
+        if (act == M_CTRL_WHEEL) key_input(&in[n++], VK_CONTROL, 0x1D, 0, 1);
+        break;
+    }
+    SendInput(n, in, sizeof(INPUT));
+    if (act == M_PRESS) mouse_held = 1;
+    if (act == M_RELEASE) {
+        mouse_held = 0;
+        return after_step(s);
+    }
+    r = wait_frame(s);
+    if (r == R_OK) r = after_step(s);
+    return r;
+}
+
 // Each character of text typed as its own key, each with its frame.
 static Result type(Session *s, const char *text) {
     Str t = cstr(text);
@@ -1609,7 +1690,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
         }
     }
     s->cell_w = s->cursor0.right - s->cursor0.left + 1;
-    s->cell_h = s->cursor0.bottom - s->cursor0.top + 1;
+    s->cell_h = s->line_h = s->cursor0.bottom - s->cursor0.top + 1;
     s->hkl = s->hkl0 = GetKeyboardLayout(s->tid);
     RECT wr;
     GetWindowRect(s->hwnd, &wr);
@@ -1644,6 +1725,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
 
 // Ends whatever of the session still runs (the job's processes) and releases it.
 static void session_end(Session *s) {
+    mouse_release();
     if (s->running && s->hkl0 && GetKeyboardLayout(s->tid) != s->hkl0) {
         // Its layout switched (an abort): given back first, so the session's input language is the recorded one again.
         PostMessageW(s->hwnd, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)s->hkl0);
@@ -2141,6 +2223,123 @@ static Result scenario_4(void) {
     Session s;
     if (!session_prepare(&s, "s4", NULL)) return R_FAIL;
     Result r = scenario_4_body(&s);
+    session_end(&s);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 5: the mouse
+
+// The filled cursor's box in the settled frame.
+static b32 cursor_box(Session *s, RECT *box) { return color_box(s, s->frame, THEME_CURSOR, box); }
+
+static Result scenario_5_body(Session *s) {
+    static const wchar_t *const args[1] = { L"mouse.txt" };
+    Result r = session_start(s, args, 1, L"mouse.txt - ronin");
+    if (r != R_OK) return r;
+    // The cell width and the line height measured by moving the cursor a character and a line.
+    RECT box;
+    if ((r = key(s, "C-f")) != R_OK) return r;
+    if (cursor_box(s, &box)) s->cell_w = box.left - s->cursor0.left;
+    if ((r = key(s, "C-b")) != R_OK || (r = key(s, "C-n")) != R_OK) return r;
+    if (cursor_box(s, &box)) s->line_h = box.top - s->cursor0.top;
+    if ((r = key(s, "C-p")) != R_OK) return r;
+    put_prefix(s);
+    put("measured: cell ");
+    put_i64(s->cell_w);
+    put(" px wide, lines ");
+    put_i64(s->line_h);
+    put(" px apart");
+    end_line();
+    if (s->cell_w <= 0 || s->line_h <= 0) {
+        put_prefix(s);
+        put("the cursor did not move as expected while measuring");
+        return fail_end(s);
+    }
+    // A click sets point (line 3, column 9), shown by a typed X.
+    if ((r = mouse(s, M_CLICK, 2, 8, 0, "click 3:9")) != R_OK || (r = type(s, "X")) != R_OK) return r;
+    // A drag selects (line 5, columns 6 to 15), shown by M-w and the clipboard.
+    if ((r = mouse(s, M_PRESS, 4, 5, 0, "press 5:6")) != R_OK) return r;
+    for (i32 col = 6; col <= 15; col++) {
+        char label[32] = "move 5:";
+        label[7] = (char)('0' + (col + 1) / 10);
+        label[8] = (char)('0' + (col + 1) % 10);
+        label[9] = 0;
+        if ((r = mouse(s, M_MOVE, 4, col, 0, label)) != R_OK) return r;
+    }
+    if ((r = mouse(s, M_RELEASE, 4, 15, 0, "release 5:16")) != R_OK || (r = copy_and_check(s, L"05 alpha b")) != R_OK) return r;
+    // A double click takes a word (beta on line 7).
+    if ((r = mouse(s, M_DOUBLE, 6, 15, 0, "double click 7:16")) != R_OK || (r = copy_and_check(s, L"beta")) != R_OK) return r;
+    // The wheel scrolls: 5 notches down, 3 lines each, so the top line is line 16; a click there and a typed W. The
+    // scroll already left point at the top line's start (as Emacs does), so the click goes to column 6: a click
+    // where point is draws nothing.
+    for (i32 i = 0; i < 5; i++) {
+        if ((r = mouse(s, M_WHEEL, 10, 10, -1, "wheel down")) != R_OK) return r;
+    }
+    if ((r = mouse(s, M_CLICK, 0, 5, 0, "click 16:6")) != R_OK || (r = type(s, "W")) != R_OK) return r;
+    // Ctrl+wheel scales the text: two notches up give a larger cell, two down the same cell as before.
+    RECT b0, b1, b2;
+    if (!cursor_box(s, &b0)) {
+        put_prefix(s);
+        put("no filled cursor before Ctrl+wheel");
+        return fail_end(s);
+    }
+    for (i32 i = 0; i < 2; i++) {
+        if ((r = mouse(s, M_CTRL_WHEEL, 10, 10, 1, "Ctrl+wheel up")) != R_OK) return r;
+    }
+    b32 got1 = cursor_box(s, &b1);
+    for (i32 i = 0; i < 2; i++) {
+        if ((r = mouse(s, M_CTRL_WHEEL, 10, 10, -1, "Ctrl+wheel down")) != R_OK) return r;
+    }
+    b32 got2 = cursor_box(s, &b2);
+    i32 w0 = b0.right - b0.left + 1, h0 = b0.bottom - b0.top + 1;
+    i32 w1 = got1 ? b1.right - b1.left + 1 : 0, h1 = got1 ? b1.bottom - b1.top + 1 : 0;
+    i32 w2 = got2 ? b2.right - b2.left + 1 : 0, h2 = got2 ? b2.bottom - b2.top + 1 : 0;
+    put_prefix(s);
+    put("Ctrl+wheel: cursor ");
+    put_i64(w0);
+    put("x");
+    put_i64(h0);
+    put(", two notches up ");
+    put_i64(w1);
+    put("x");
+    put_i64(h1);
+    put(", two down ");
+    put_i64(w2);
+    put("x");
+    put_i64(h2);
+    if (!(w1 > w0 && h1 > h0 && w2 == w0 && h2 == h0)) {
+        put(": expected larger, then equal to the first");
+        return fail_end(s);
+    }
+    end_line();
+    if ((r = key(s, "C-x")) != R_OK) return r;
+    static u8 want_mem[4096];
+    Buf want = { want_mem, 0, sizeof(want_mem) };
+    for (i32 i = 1; i <= 60; i++) {
+        bput(&want, i == 16 ? "line W" : "line ");
+        bput_i64(&want, i / 10);
+        bput_i64(&want, i % 10);
+        bput(&want, i == 3 ? " Xalpha beta gamma\n" : " alpha beta gamma\n");
+    }
+    if ((r = key_save(s, "C-s", "mouse.txt", str(want.data, want.len))) != R_OK) return r;
+    if ((r = key(s, "C-x")) != R_OK) return r;
+    return key_exit(s, "C-c");
+}
+
+static Result scenario_5(void) {
+    Session s;
+    if (!session_prepare(&s, "s5", NULL)) return R_FAIL;
+    static u8 text_mem[4096];
+    Buf text = { text_mem, 0, sizeof(text_mem) };
+    for (i32 i = 1; i <= 60; i++) {
+        bput(&text, "line ");
+        bput_i64(&text, i / 10);
+        bput_i64(&text, i % 10);
+        bput(&text, " alpha beta gamma\n");
+    }
+    if (!session_write(&s, "mouse.txt", str(text.data, text.len))) return R_FAIL;
+    Result r = scenario_5_body(&s);
     session_end(&s);
     return r;
 }
@@ -2879,7 +3078,7 @@ int wmain(int argc, wchar_t **argv) {
         InterlockedExchange(&watch.armed, 1);
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
-        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4 };
+        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3, scenario_4, scenario_5 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
