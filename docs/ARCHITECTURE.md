@@ -4930,6 +4930,12 @@ The aborts (exit 3), the machine as before after each:
   "H" (s1 step 13) (not retried)`, with `layout 04090409 given back to ronin`.
 - `--demo-abort foreground`: `e2e: ABORT: the foreground went to "ronin" (ronin.exe, pid 23360); ronin under test is pid
   6760, after "H" (s1 step 13) (not retried)`.
+- Physical input, run by the maintainer (MANUAL_TESTS AH4) after ce7b7d1: the letter D, `e2e: ABORT: a physical key (VK
+  0x44, scan 0x20, down), after "x" (s1 step 10) (not retried)`; the mouse moved without a click, `e2e: ABORT: a physical
+  mouse move, after "t" (s1 step 11) (not retried)`. Before ce7b7d1 the Windows key (or Alt+Tab) ended the run
+  `e2e: FAIL: s1` (an explorer.exe window covering ronin), not an abort (Decisions, point 4).
+- With Windows clipboard history on, a run refused before anything was typed: `e2e: FAIL: Windows clipboard history is
+  on: ronin's copies would stay in it; turn it off for the run` (exit 2).
 
 The state lines of every run: `keyboard layouts as before (08090809 04090409 040b040b 040b0809; active 04090409;
 Preload, Substitutes and User Profile equal)`; `clipboard put back and read back byte for byte equal, no other format: 6
