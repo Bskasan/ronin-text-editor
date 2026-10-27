@@ -10,7 +10,10 @@
 // The end-to-end driver (#31; build-time tool, not part of the editor; build.bat compiles it on every build, only the
 // maintainer runs it, never CI or verify.bat). It drives the shipped ronin.exe as a user does and checks only what a
 // user could see or get; it adds nothing to the exe:
-//   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2] [--repeat N] [--out <dir>] [--demo-abort layout|foreground]
+//   e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish]
+//       [--demo-abort layout|foreground]
+// Scenarios (#31): 1 the first start, 2 editing CRLF and BOM files from +LINE:COL, 3 typing on the US, Finnish and UK
+// layouts (and Turkish Q with --turkish).
 // --zip unpacks the dist zip with Windows' tar into build\tmp\e2e\<run>\İndirilenler ronin; --exe copies the exe there
 // (a running build\ronin.exe would break the next release link). Every start of ronin gets its own empty APPDATA and
 // LOCALAPPDATA (the driver's environment, inherited) and runs in a job that ends it with the driver.
@@ -51,7 +54,7 @@ typedef int b32;
 #define CLIP_FORMATS_MAX 64                  // clipboard formats saved
 #define CLIP_BYTES_MAX ((SIZE_T)64 << 20)    // and their bytes in all
 #define LAYOUTS_MAX 64
-#define SCENARIOS 2
+#define SCENARIOS 3
 // "İndirilenler ronin" (a space and a non-ASCII letter, as a user's Downloads folder), spelled out: build.bat compiles
 // the tools without /utf-8 and literals stay ASCII.
 static const wchar_t UNPACK_FOLDER[] = { 0x0130, 'n', 'd', 'i', 'r', 'i', 'l', 'e', 'n', 'l', 'e', 'r', ' ', 'r', 'o', 'n', 'i', 'n', 0 };
@@ -455,11 +458,11 @@ typedef struct Watch {
     volatile LONG fg_armed;     // the foreground leaving ronin aborts
     volatile LONG exiting;      // ronin is being ended: the foreground may go
     volatile LONG64 last_physical;
+    u8 physical_down[32];       // keys pressed by a hand and not yet released (the hook thread only)
+    volatile LONG lone_ups, lone_vk; // releases with no physical press: Windows' own (a layout switch away from AltGr)
     volatile LONG shows, names, foregrounds; // window events seen for ronin's process (for a failure's line)
     HANDLE abort_event, quiet_event, show_event, title_event, fg_event, ready;
     DWORD thread_id;
-    u8 physical_down[32];       // keys pressed by a hand and not yet released (the hook thread only)
-    volatile LONG lone_ups, lone_vk; // releases with no physical press: Windows' own (a layout switch away from AltGr)
     HANDLE thread;
 } Watch;
 
@@ -490,9 +493,6 @@ static LRESULT CALLBACK watch_key(int code, WPARAM wp, LPARAM lp) {
     if (code == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lp;
         if (!(k->flags & LLKHF_INJECTED)) {
-            u8 mem[128];
-            Buf d = { mem, 0, sizeof(mem) };
-            bput(&d, "a physical key (VK 0x");
             // A hand's key is pressed before it is released, and that press already counted (a key held since
             // before the quiet wait repeats its press). A release with no press is made by Windows: switching
             // ronin from a layout with AltGr back to US releases the left Ctrl that AltGr's right Alt implies.
@@ -505,6 +505,9 @@ static LRESULT CALLBACK watch_key(int code, WPARAM wp, LPARAM lp) {
                 InterlockedExchange(&watch.lone_vk, (LONG)k->vkCode);
                 return CallNextHookEx(NULL, code, wp, lp);
             }
+            u8 mem[128];
+            Buf d = { mem, 0, sizeof(mem) };
+            bput(&d, "a physical key (VK 0x");
             bput_hex(&d, k->vkCode, 2);
             bput(&d, ", scan 0x");
             bput_hex(&d, k->scanCode, 2);
@@ -691,6 +694,7 @@ typedef struct Run {
     HANDLE job;
     HWND clip_window;
     Demo demo;
+    b32 turkish;                  // --turkish: scenario 3 also on Turkish Q (loaded for it, then unloaded)
     i32 repeat_index;
 } Run;
 
@@ -707,7 +711,8 @@ typedef struct Session {
     b32 running;
     HWND hwnd;
     DWORD tid;
-    HKL hkl;                      // ronin's layout for this start
+    HKL hkl;                      // ronin's layout now: every key is checked against it
+    HKL hkl0;                     // its layout at the start, given back before it is ended
     POINT origin;                 // the client area on the screen
     i32 w, h;
     HDC screen, mem;
@@ -975,21 +980,47 @@ enum { KM_CTRL = 1, KM_META = 2, KM_SHIFT = 4, KM_ALTGR = 8 };
 typedef struct Stroke {
     WORD vk;
     u32 mods;
+    b32 dead; // the key is a dead key: alone it types nothing, its accent waits for the next key
 } Stroke;
 
-// The key and modifiers that type c on hkl (VkKeyScanExW); 0 when the layout has none.
+// What vk types with Shift / AltGr on hkl, looked at without touching any keyboard state (ToUnicodeEx flag 0x4);
+// *dead when it is a dead key (its accent returned). 0 when it types nothing.
+static u32 layout_char(HKL hkl, u32 vk, u32 mods, b32 *dead) {
+    BYTE state[256];
+    memset(state, 0, sizeof(state));
+    if (mods & KM_SHIFT) state[VK_SHIFT] = state[VK_LSHIFT] = 0x80;
+    if (mods & KM_ALTGR) state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_MENU] = state[VK_RMENU] = 0x80;
+    WCHAR buf[8];
+    int n = ToUnicodeEx(vk, MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, hkl), state, buf, 8, 0x4, hkl);
+    if (dead) *dead = n < 0;
+    return n == 1 || n == -1 ? buf[0] : 0;
+}
+
+// The key and modifiers that type c on hkl, as the input harness finds them (win32_input_test.c): VkKeyScanExW, else
+// every key with nothing, Shift, AltGr and AltGr+Shift through ToUnicodeEx (dead keys and AltGr characters it misses).
+// A character only Ctrl or only Alt makes is refused (that key would be a chord). 0 when the layout has none.
 static b32 char_stroke(HKL hkl, u32 c, Stroke *st) {
     if (c > 0xFFFF) return 0;
     SHORT r = VkKeyScanExW((WCHAR)c, hkl);
-    if (r == -1) return 0;
-    u32 shift = (u32)(r >> 8) & 0xFF;
-    if (shift & ~7u) return 0; // Hankaku and other states: not a plain key
-    st->vk = (WORD)(r & 0xFF);
-    st->mods = 0;
-    if (shift & 1) st->mods |= KM_SHIFT;
-    if ((shift & 6) == 6) st->mods |= KM_ALTGR;
-    else if (shift & 2) st->mods |= KM_CTRL;
-    else if (shift & 4) st->mods |= KM_META;
+    u32 vk = 0, shift = 0;
+    if (r != -1) {
+        vk = (u32)r & 0xFF;
+        shift = ((u32)r >> 8) & 0xFF;
+    } else {
+        static const u32 states[] = { 0, KM_SHIFT, KM_ALTGR, KM_ALTGR | KM_SHIFT };
+        for (i32 s = 0; s < 4 && !vk; s++) {
+            for (u32 k = 0x08; k < 0xFF && !vk; k++) {
+                if (layout_char(hkl, k, states[s], NULL) != c) continue;
+                vk = k;
+                shift = ((states[s] & KM_SHIFT) ? 1u : 0u) | ((states[s] & KM_ALTGR) ? 6u : 0u);
+            }
+        }
+        if (!vk) return 0;
+    }
+    if ((shift & ~7u) || (shift & 6) == 2 || (shift & 6) == 4) return 0; // Kana and such, a Ctrl-only or Alt-only one
+    st->vk = (WORD)vk;
+    st->mods = ((shift & 1) ? KM_SHIFT : 0) | ((shift & 6) == 6 ? KM_ALTGR : 0);
+    layout_char(hkl, vk, st->mods, &st->dead);
     return 1;
 }
 
@@ -1010,6 +1041,7 @@ static b32 parse_stroke(HKL hkl, Str t, Stroke *st) {
         if (str_is(t, named_keys[i].name)) {
             st->vk = named_keys[i].vk;
             st->mods = mods;
+            st->dead = 0;
             return 1;
         }
     }
@@ -1134,6 +1166,11 @@ static Result send_key(Session *s, const char *key) {
     s->step++;
     where_set(s, key);
     send_stroke(s->hkl, st);
+    if (st.dead && !(st.mods & (KM_CTRL | KM_META))) {
+        // A dead key typed as text: Space after it gives the accent itself (it draws nothing alone).
+        Stroke space = { VK_SPACE, 0, 0 };
+        send_stroke(s->hkl, space);
+    }
     return R_OK;
 }
 
@@ -1143,6 +1180,68 @@ static Result key(Session *s, const char *k) {
     if (r == R_OK) r = wait_frame(s);
     if (r == R_OK) r = after_step(s);
     return r;
+}
+
+// A dead key, then the letter it composes with: one step, one frame (the dead key alone draws nothing).
+static Result compose(Session *s, u32 accent, u32 base) {
+    Stroke dead, letter;
+    u8 label_mem[32];
+    Buf label = { label_mem, 0, sizeof(label_mem) };
+    WCHAR pair[2] = { (WCHAR)accent, (WCHAR)base };
+    bput_w(&label, &pair[0], 1);
+    bput(&label, " ");
+    bput_w(&label, &pair[1], 1);
+    label.data[label.len] = 0;
+    if (!char_stroke(s->hkl, accent, &dead) || !dead.dead || !char_stroke(s->hkl, base, &letter)) {
+        put_prefix(s);
+        put("step ");
+        put_i64(s->step + 1);
+        put(": \"");
+        bput_n(&line, label.data, label.len);
+        put("\" is no dead key and letter on layout ");
+        bput_hkl(&line, s->hkl);
+        return fail_end(s);
+    }
+    Result r = before_key(s);
+    if (r != R_OK) return r;
+    s->step++;
+    where_set(s, (const char *)label.data);
+    send_stroke(s->hkl, dead);
+    send_stroke(s->hkl, letter);
+    r = wait_frame(s);
+    if (r == R_OK) r = after_step(s);
+    return r;
+}
+
+// ronin given a layout as the language bar would (WM_INPUTLANGCHANGEREQUEST, which it leaves to DefWindowProc), at
+// most 2 s for its thread to have it; then the frames settled. The layout every later key is checked against.
+static Result give_layout(Session *s, HKL hkl) {
+    if (aborted()) return R_ABORT;
+    PostMessageW(s->hwnd, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)hkl);
+    u64 deadline = GetTickCount64() + 2000;
+    while (GetKeyboardLayout(s->tid) != hkl) {
+        if (aborted()) return R_ABORT;
+        if (GetTickCount64() >= deadline) {
+            put_prefix(s);
+            put("ronin did not take layout ");
+            bput_hkl(&line, hkl);
+            put(" within 2 s (its layout is ");
+            bput_hkl(&line, GetKeyboardLayout(s->tid));
+            put(")");
+            return fail_line();
+        }
+        tick();
+    }
+    s->hkl = hkl;
+    if (!capture(s, s->cur)) return fail_end(s);
+    Wait w = settle(s, GetTickCount64() + SETTLE_MS);
+    if (w == W_ABORT) return R_ABORT;
+    put_prefix(s);
+    put("layout ");
+    bput_hkl(&line, hkl);
+    put(" given to ronin");
+    end_line();
+    return R_OK;
 }
 
 // Each character of text typed as its own key, each with its frame.
@@ -1511,7 +1610,7 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
     }
     s->cell_w = s->cursor0.right - s->cursor0.left + 1;
     s->cell_h = s->cursor0.bottom - s->cursor0.top + 1;
-    s->hkl = GetKeyboardLayout(s->tid);
+    s->hkl = s->hkl0 = GetKeyboardLayout(s->tid);
     RECT wr;
     GetWindowRect(s->hwnd, &wr);
     i32 vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -1545,15 +1644,15 @@ static Result session_start(Session *s, const wchar_t *const *args, i32 count, c
 
 // Ends whatever of the session still runs (the job's processes) and releases it.
 static void session_end(Session *s) {
-    if (s->running && s->hkl && GetKeyboardLayout(s->tid) != s->hkl) {
+    if (s->running && s->hkl0 && GetKeyboardLayout(s->tid) != s->hkl0) {
         // Its layout switched (an abort): given back first, so the session's input language is the recorded one again.
-        PostMessageW(s->hwnd, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)s->hkl);
+        PostMessageW(s->hwnd, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)s->hkl0);
         u64 deadline = GetTickCount64() + 2000;
-        while (GetKeyboardLayout(s->tid) != s->hkl && GetTickCount64() < deadline) tick();
+        while (GetKeyboardLayout(s->tid) != s->hkl0 && GetTickCount64() < deadline) tick();
         put_prefix(s);
         put("layout ");
-        bput_hkl(&line, s->hkl);
-        put(GetKeyboardLayout(s->tid) == s->hkl ? " given back to ronin" : " could not be given back to ronin");
+        bput_hkl(&line, s->hkl0);
+        put(GetKeyboardLayout(s->tid) == s->hkl0 ? " given back to ronin" : " could not be given back to ronin");
         end_line();
     }
     if (s->running) {
@@ -1771,6 +1870,139 @@ static Result scenario_2(void) {
     if (r != R_OK) return r;
     return scenario_2_file("bom.txt", bom_args, L"bom.txt - ronin", str((const u8 *)bom, sizeof(bom) - 1), scenario_2_bom_keys,
                            str((const u8 *)bom_saved, sizeof(bom_saved) - 1));
+}
+
+// C-x C-f of a new file in the working folder, its name typed, RET: its title.
+static Result new_file(Session *s, const char *name, const wchar_t *title) {
+    Result r;
+    if ((r = key(s, "C-x")) != R_OK || (r = key(s, "C-f")) != R_OK || (r = type(s, name)) != R_OK) return r;
+    return key_title(s, "RET", title);
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 3: typing on real keyboard layouts (US, Finnish, UK; Turkish Q with --turkish)
+
+static void layout_state(Buf *b, HKL *list, i32 *count, HKL *active);
+
+// The loaded layout whose keyboard is `layout` (the HKL's high word), the one with language `lang` first; NULL if none.
+static HKL find_layout(u16 layout, u16 lang) {
+    HKL list[LAYOUTS_MAX];
+    i32 n = GetKeyboardLayoutList(LAYOUTS_MAX, list);
+    HKL any = NULL;
+    for (i32 i = 0; i < n; i++) {
+        u32 h = (u32)(uintptr_t)list[i];
+        if ((h >> 16) != layout) continue;
+        if ((h & 0xFFFF) == lang) return list[i];
+        if (!any) any = list[i];
+    }
+    return any;
+}
+
+static Result scenario_3_us_text(Session *s) { return type(s, "Hello, US! {}[]\\|@#$~ 1+2=3"); }
+
+// Finnish: its letters, AltGr symbols, each dead key with a letter, and a dead key then Space (the accent itself).
+static Result scenario_3_fi_text(Session *s) {
+    Result r;
+    if ((r = type(s, "\xC3\xA5\xC3\xA4\xC3\xB6 \xC3\x85\xC3\x84\xC3\x96 @\xC2\xA3$\xE2\x82\xAC{[]}\\| ")) != R_OK) return r;
+    if ((r = compose(s, 0xB4, 'e')) != R_OK || (r = compose(s, '`', 'a')) != R_OK || (r = compose(s, 0xA8, 'u')) != R_OK) return r;
+    if ((r = compose(s, '^', 'o')) != R_OK || (r = compose(s, '~', 'n')) != R_OK || (r = type(s, " ")) != R_OK) return r;
+    return type(s, "\xC2\xB4");
+}
+
+// UK: its Shift symbols, the key left of Z, AltGr's euro and broken bar.
+static Result scenario_3_uk_text(Session *s) { return type(s, "\xC2\xA3\"@#~\\| \xE2\x82\xAC\xC2\xA6"); }
+
+// Turkish Q: its six letters both cases from their own keys, and AltGr+Q's @.
+static Result scenario_3_tr_text(Session *s) {
+    return type(s, "\xC4\x9F\xC3\xBC\xC5\x9F\xC4\xB1\xC3\xB6\xC3\xA7 \xC4\x9E\xC3\x9C\xC5\x9E\xC4\xB0\xC3\x96\xC3\x87 @");
+}
+
+// One layout's part: ronin started and given the layout, a new file, the layout's text, then edits by chords on its
+// own keys (M-< and M->, C-e, C-/ undoing a typed run, M-% with !), C-x C-s and the bytes; the start's layout given
+// back, C-x C-c. *not_taken set (and R_FAIL returned) when ronin would not take the layout.
+static Result scenario_3_part(const char *label, HKL hkl, const char *file, const wchar_t *title, Result (*text)(Session *),
+                              const char *expected_text, b32 *not_taken) {
+    Session s;
+    if (!session_prepare(&s, "s3", label)) return R_FAIL;
+    static const wchar_t *const none[1] = { NULL };
+    Result r = session_start(&s, none, 0, L"*scratch* - ronin");
+    if (r == R_OK && hkl != s.hkl0) {
+        r = give_layout(&s, hkl);
+        if (r == R_FAIL && not_taken) *not_taken = 1;
+    }
+    if (r == R_OK) r = new_file(&s, file, title);
+    if (r == R_OK) r = text(&s);
+    if (r == R_OK && (r = key(&s, "RET")) == R_OK) r = type(&s, "second");
+    if (r == R_OK && (r = key(&s, "M-<")) == R_OK && (r = key(&s, "C-e")) == R_OK) r = type(&s, " end");
+    if (r == R_OK && (r = key(&s, "C-/")) == R_OK && (r = key(&s, "M->")) == R_OK) r = key(&s, "M-<");
+    if (r == R_OK && (r = key(&s, "M-%")) == R_OK && (r = type(&s, "second")) == R_OK) r = key(&s, "RET");
+    if (r == R_OK && (r = type(&s, "2nd")) == R_OK && (r = key(&s, "RET")) == R_OK) r = key(&s, "!");
+    if (r == R_OK && (r = key(&s, "C-x")) == R_OK) {
+        static u8 want_mem[512];
+        Buf want = { want_mem, 0, sizeof(want_mem) };
+        bput(&want, expected_text);
+        bput(&want, "\n2nd");
+        r = key_save(&s, "C-s", file, str(want.data, want.len));
+    }
+    if (r == R_OK && s.hkl != s.hkl0) r = give_layout(&s, s.hkl0);
+    if (r == R_OK && (r = key(&s, "C-x")) == R_OK) r = key_exit(&s, "C-c");
+    session_end(&s);
+    return r;
+}
+
+static Result scenario_3(void) {
+    HKL us = find_layout(0x0409, 0x0409), fi = find_layout(0x040B, 0x0809), uk = find_layout(0x0809, 0x0809);
+    if (!us || !fi || !uk) {
+        put("e2e: s3: FAIL: a layout is not installed:");
+        put(us ? "" : " US (00000409)");
+        put(fi ? "" : " Finnish (0000040B)");
+        put(uk ? "" : " UK (00000809)");
+        end_line();
+        return R_FAIL;
+    }
+    Result r = scenario_3_part("us", us, "us.txt", L"us.txt - ronin", scenario_3_us_text, "Hello, US! {}[]\\|@#$~ 1+2=3", NULL);
+    if (r == R_OK)
+        r = scenario_3_part("fi", fi, "fi.txt", L"fi.txt - ronin", scenario_3_fi_text,
+                            "\xC3\xA5\xC3\xA4\xC3\xB6 \xC3\x85\xC3\x84\xC3\x96 @\xC2\xA3$\xE2\x82\xAC{[]}\\| "
+                            "\xC3\xA9\xC3\xA0\xC3\xBC\xC3\xB4\xC3\xB1 \xC2\xB4",
+                            NULL);
+    if (r == R_OK)
+        r = scenario_3_part("uk", uk, "uk.txt", L"uk.txt - ronin", scenario_3_uk_text, "\xC2\xA3\"@#~\\| \xE2\x82\xAC\xC2\xA6", NULL);
+    if (r != R_OK || !run.turkish) return r;
+
+    // Turkish Q, not installed: loaded for the part and unloaded after it, the layouts compared with their state just
+    // before; a layout that cannot be loaded or given to ronin is a skip with its reason, a trace left is a failure.
+    static u8 before_mem[STATE_CAP], after_mem[STATE_CAP];
+    Buf before = { before_mem, 0, STATE_CAP }, after = { after_mem, 0, STATE_CAP };
+    HKL list[LAYOUTS_MAX], active;
+    i32 count;
+    layout_state(&before, list, &count, &active);
+    HKL tr = LoadKeyboardLayoutW(L"0000041F", KLF_NOTELLSHELL);
+    if (!tr) {
+        say("e2e: s3: Turkish Q skipped: LoadKeyboardLayoutW(\"0000041F\") failed");
+        return R_OK;
+    }
+    b32 was_loaded = 0;
+    for (i32 i = 0; i < count; i++) was_loaded |= list[i] == tr;
+    b32 not_taken = 0;
+    r = scenario_3_part("tr", tr, "tr.txt", L"tr.txt - ronin", scenario_3_tr_text,
+                        "\xC4\x9F\xC3\xBC\xC5\x9F\xC4\xB1\xC3\xB6\xC3\xA7 \xC4\x9E\xC3\x9C\xC5\x9E\xC4\xB0\xC3\x96\xC3\x87 @",
+                        &not_taken);
+    if (!was_loaded) UnloadKeyboardLayout(tr);
+    if (r == R_FAIL && not_taken) {
+        say("e2e: s3: Turkish Q skipped: ronin did not take the layout (the line above)");
+        r = R_OK;
+    }
+    layout_state(&after, list, &count, &active);
+    if (!buf_eq(&before, &after)) {
+        say("e2e: s3: FAIL: Turkish Q left a trace; the layouts before it:");
+        out_text(&before);
+        say("e2e: s3: after it:");
+        out_text(&after);
+        return r == R_ABORT ? r : R_FAIL;
+    }
+    if (r == R_OK) say("e2e: s3: Turkish Q loaded, used and unloaded; the layouts as before it");
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -2297,7 +2529,7 @@ static b32 copy_exe(const wchar_t *exe) {
 // The command line and the run
 
 static i32 usage(void) {
-    say("e2e: usage: e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2] [--repeat N] [--out <dir>] "
+    say("e2e: usage: e2e (--zip <zip> | --exe <ronin.exe>) [--scenario 1,2,...] [--repeat N] [--out <dir>] [--turkish] "
         "[--demo-abort layout|foreground]");
     return 2;
 }
@@ -2343,6 +2575,8 @@ int wmain(int argc, wchar_t **argv) {
         else if (weq(argv[i], L"--out") && i + 1 < argc) out = argv[++i];
         else if (weq(argv[i], L"--repeat") && i + 1 < argc) {
             if (!parse_u32(argv[++i], &repeat) || repeat < 1 || repeat > 100) return usage();
+        } else if (weq(argv[i], L"--turkish")) {
+            run.turkish = 1;
         } else if (weq(argv[i], L"--demo-abort") && i + 1 < argc) {
             i++;
             if (weq(argv[i], L"layout")) run.demo = DEMO_LAYOUT;
@@ -2505,7 +2739,7 @@ int wmain(int argc, wchar_t **argv) {
         InterlockedExchange(&watch.armed, 1);
         say("e2e: the machine is left alone: any physical key or mouse input from now on aborts the run");
         typedef Result (*ScenarioFn)(void);
-        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2 };
+        static const ScenarioFn fns[SCENARIOS + 1] = { NULL, scenario_1, scenario_2, scenario_3 };
         for (u32 rep = 1; rep <= repeat && exit_code == 0; rep++) {
             run.repeat_index = (i32)rep;
             for (i32 i = 1; i <= SCENARIOS && exit_code == 0; i++) {
