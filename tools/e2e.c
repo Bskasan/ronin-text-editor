@@ -521,13 +521,23 @@ static LRESULT CALLBACK watch_key(int code, WPARAM wp, LPARAM lp) {
                 InterlockedExchange(&watch.lone_vk, (LONG)k->vkCode);
                 return CallNextHookEx(NULL, code, wp, lp);
             }
-            u8 mem[128];
+            // What the hook saw, so a repeat can be explained: the flags (LLKHF_*), the extra info, the event's time.
+            u8 mem[256];
             Buf d = { mem, 0, sizeof(mem) };
             bput(&d, "a physical key (VK 0x");
             bput_hex(&d, k->vkCode, 2);
             bput(&d, ", scan 0x");
             bput_hex(&d, k->scanCode, 2);
-            bput(&d, (k->flags & LLKHF_UP) ? ", up)" : ", down)");
+            bput(&d, (k->flags & LLKHF_UP) ? ", up" : ", down");
+            bput(&d, ", message 0x");
+            bput_hex(&d, (u64)wp, 4);
+            bput(&d, ", LLKHF flags 0x");
+            bput_hex(&d, k->flags, 8);
+            bput(&d, ", extra info 0x");
+            bput_hex(&d, (u64)k->dwExtraInfo, 16);
+            bput(&d, ", time ");
+            bput_i64(&d, k->time);
+            bput(&d, ")");
             watch_physical(&d);
         }
     }
@@ -535,20 +545,44 @@ static LRESULT CALLBACK watch_key(int code, WPARAM wp, LPARAM lp) {
 }
 
 static LRESULT CALLBACK watch_mouse(int code, WPARAM wp, LPARAM lp) {
+    // The position of the hook's last mouse event, injected or not (the hook thread only): where a move came from.
+    static POINT last;
+    static b32 have_last;
     if (code == HC_ACTION) {
         MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
         if (!(m->flags & LLMHF_INJECTED)) {
-            u8 mem[128];
+            // What the hook saw, so a repeat can be explained: the message, the position before (the last event's, else
+            // the cursor's) and after, the flags (LLMHF_*), mouseData, the extra info, the event's time.
+            POINT from = last;
+            if (!have_last && !GetCursorPos(&from)) from.x = from.y = 0;
+            u8 mem[256];
             Buf d = { mem, 0, sizeof(mem) };
             if (wp == WM_MOUSEMOVE) bput(&d, "a physical mouse move");
             else if (wp == WM_MOUSEWHEEL || wp == WM_MOUSEHWHEEL) bput(&d, "a physical mouse wheel");
-            else {
-                bput(&d, "a physical mouse button (message 0x");
-                bput_hex(&d, (u64)wp, 4);
-                bput(&d, ")");
-            }
+            else bput(&d, "a physical mouse button");
+            bput(&d, " (message 0x");
+            bput_hex(&d, (u64)wp, 4);
+            bput(&d, ", from ");
+            bput_i64(&d, from.x);
+            bput(&d, ",");
+            bput_i64(&d, from.y);
+            bput(&d, " to ");
+            bput_i64(&d, m->pt.x);
+            bput(&d, ",");
+            bput_i64(&d, m->pt.y);
+            bput(&d, ", LLMHF flags 0x");
+            bput_hex(&d, m->flags, 8);
+            bput(&d, ", mouseData 0x");
+            bput_hex(&d, m->mouseData, 8);
+            bput(&d, ", extra info 0x");
+            bput_hex(&d, (u64)m->dwExtraInfo, 16);
+            bput(&d, ", time ");
+            bput_i64(&d, m->time);
+            bput(&d, ")");
             watch_physical(&d);
         }
+        last = m->pt;
+        have_last = 1;
     }
     return CallNextHookEx(NULL, code, wp, lp);
 }
