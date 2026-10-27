@@ -4957,7 +4957,7 @@ a project); the other two scenarios follow (#31's body), then a step of release-
     DWM composition from just before the save or the write until the new background shows: each composition before
     must show the old background, and DWM's count of composed frames (DwmGetCompositionTimingInfo) must never step by
     more than one between two reads, so no composition goes unseen; a flash shorter than a composition is never on the
-    screen. The writes as another program are an in-place one (one open, truncated, written, as Notepad saves) and a
+    screen. The writes as another program are an in-place one (one open, truncated, written) and a
     temp file renamed over ronin.conf.
 15. **A project of its own (scenario 9).** The tree has a `.ronin-project` at its root: without it the project of a file
     visited from it would be the nearest marker above, this repository's `.git`, and C-x p g would search the whole
@@ -5112,7 +5112,9 @@ bytes each; they differ in 4 bytes, the COFF header's TimeDateStamp (0xf0, 0xf1)
 0x65e25); with those zeroed both have the same SHA-256 (7a45c081e048d498...).
 
 The HUMAN list after group 4 (release_check.exe human): 67 rows (52 HUMAN, 15 mixed), from 68 (52, 16): Q6 is
-AUTOMATED-NEW, O23 stays mixed.
+AUTOMATED-NEW, O23 stays mixed. Then 68 rows (53 HUMAN, 15 mixed): E14, E15, I8 and T21 named Notepad, a browser and
+the physical keyboard, which the scenarios never use (the driver plays them), so they say what the scenarios check and
+the real programs and keyboard are AH15 (HUMAN step 72).
 
 ## After 1.0
 
