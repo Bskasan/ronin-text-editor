@@ -4884,7 +4884,11 @@ a project); the other two scenarios follow (#31's body), then a step of release-
    press aborts already, and a key held since before the quiet wait repeats its press. Windows makes such a lone
    release of the left Ctrl (VK 0xa2) when ronin's layout goes from Finnish or UK, layouts with AltGr, back to US: the
    first group 2 run aborted on it, with no key sent at that moment. These releases are counted in an `e2e: state:`
-   line (one for each AltGr layout left, in every run since).
+   line (one for each AltGr layout left, in every run since). A physical-input abort's line also says what the hook
+   saw, so a repeat can be explained: for a key its message, LLKHF flags, extra info and time; for the mouse the
+   message, the position before (the hook's last mouse event, else the cursor) and after, the LLMHF flags, mouseData,
+   extra info and time. Added after an unexplained `a physical mouse move, after the start (s11)` in group 4's block,
+   with the maintainer away from the machine; what aborts did not change.
 5. **The machine as it was.** Recorded before the run and, after it (an abort too), restored and compared, each with
    an `e2e: state:` line:
    - the keyboard layouts: the loaded list, HKCU\Keyboard Layout\Preload and Substitutes, the User Profile (read only)
