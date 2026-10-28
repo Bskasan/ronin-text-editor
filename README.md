@@ -26,9 +26,10 @@ windows side by side, a minibuffer and Emacs' keys.
 | <img src="docs/images/command-list.png" width="280" alt="The command list filtered with &quot;file&quot;"> | <img src="docs/images/git-changes.png" width="280" alt="The git changes view: a file's diff with a removed and an added line"> | <img src="docs/images/themes/moonfly.png" width="280" alt="ronin with the moonfly theme"> |
 | `C-S-p` lists every command with what it does and its keys; type to filter, `RET` runs the selected one. | `C-x g` shows the project's uncommitted changes and each file's diff, colored, in a box over the windows. | Five dark themes are built in, `M-x set-theme` tries them, and a theme of your own is a short text file. |
 
-If ronin crashes, it first writes its unsaved changes to recovery files, and the next start offers them
-(`M-x recover-file`). A power loss, or ronin ended from outside (Task Manager, a forced shutdown), loses unsaved
-changes: there is no auto-save yet ([#11](https://github.com/Bskasan/ronin-text-editor/issues/11)).
+If ronin itself crashes, it writes each modified buffer that belongs to a file to a recovery file when it can, and the
+next start offers them (`M-x recover-file`). Buffers without a file, such as `*scratch*`, a power loss and ronin ended
+from outside (Task Manager, a forced shutdown) are not covered: there is no auto-save yet
+([#11](https://github.com/Bskasan/ronin-text-editor/issues/11)).
 
 ## Keys
 
