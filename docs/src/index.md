@@ -24,7 +24,8 @@ default keys.
   view of git's changes, and a terminal or an AI assistant's command line one key away.
 - A command list (`C-S-p`): every command with what it does and its keys.
 - One text configuration file, applied as soon as it is saved; every key can be rebound; five themes.
-- Files: UTF-8 and UTF-16, line endings kept byte for byte, a 100 MB file opens in about 40 ms; crash recovery.
+- Files: UTF-8 and UTF-16, line endings kept byte for byte, a 100 MB file opens in about 40 ms; unsaved changes recovered
+  after ronin crashes (not after a power loss or a forced end).
 
 ## Where to start
 
