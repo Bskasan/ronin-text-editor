@@ -12,6 +12,9 @@ configuration created on the first run), 47 (themes) and 41 (`C-x g` on a real r
 Do step 36 (`build.bat clean`) only after the release is published: it removes dist\, and the zip in dist\ is the file
 whose SHA-256 the release notes give.
 
+Filled in on 2026-10-28 (#45) with only what the repository and GitHub show, and step 66 from the owner. An empty
+status is a step nobody has shown done, not one that failed.
+
 | step | tests | what to do | blocks the tag | status |
 |---|---|---|---|---|
 | 1 | A1, A3 | Start ronin from Explorer, a terminal and a pinned taskbar icon: no white flash, the title "*scratch* - ronin". | | |
@@ -63,20 +66,20 @@ whose SHA-256 the release notes give.
 | 47 | W1, W8 | With the zip's exe: `theme = vague` in ronin.conf, then M-x set-theme moonfly, oxide, mellifluous with a region and two windows: each like its picture, readable. | yes | |
 | 48 | W12 | An old ronin.conf with every color: the override message; delete the [colors] lines: the theme appears. | | |
 | 49 | X5 | README on GitHub, desktop and phone width: the top first, every image loads, tables readable. | | |
-| 50 | X6 | The CI run's builds, source check, tests, imports and version steps are green; report the smoke step's last lines. | | |
-| 51 | X7 | New issue offers two templates and no blank issue; a pull request opens with the checklist. | | |
+| 50 | X6 | The CI run's builds, source check, tests, imports and version steps are green; report the smoke step's last lines. | | done: the build run of 3d181be (39578720565, 2026-10-21) green; the smoke lines in Measurements (#45, from GitHub) |
+| 51 | X7 | New issue offers two templates and no blank issue; a pull request opens with the checklist. | | the files only (#45): config.yml `blank_issues_enabled: false`, bug_report.md, feature_request.md, PULL_REQUEST_TEMPLATE.md; the New issue page itself: to tick |
 | 52 | X8 | The external links of README and CONTRIBUTING lead where they say. | | |
 | 53 | Y8 | `git clone` of GitHub's repository, `verify.bat`: `verify: PASS`, the source check PASS. | | |
-| 54 | Z8 | Pages: Deploy from a branch, main, /docs; the site shows the overview. | | |
+| 54 | Z8 | Pages: Deploy from a branch, main, /docs; the site shows the overview. | | done: Pages from main, /docs, status built (#45, from GitHub) |
 | 55 | Z7 | The site on a desktop and a phone: the navigation as described, no sideways scrolling, every page reached. | | |
 | 56 | Z9 | Every image of the published site loads. | | |
 | 57 | Z10 | README's first screen on GitHub: logo, name, line, badges, hero, links, about one screen. | | done: the owner, 2026-10-21 ("judged on GitHub; fine") |
 | 58 | Z11 | The badges: MIT, build passing, the latest release (1.0.0 after step 64), Windows 10+ x64; each but the last a link. | | |
-| 59 | Z14 | The CI run of the push is green, the docs-check step included; report the smoke step's last lines. | | smoke lines reported 2026-10-21 (Measurements, Phase 25); the run's green: to tick |
+| 59 | Z14 | The CI run of the push is green, the docs-check step included; report the smoke step's last lines. | | done: smoke lines reported 2026-10-21 (Measurements, Phase 25); the build run of 3d181be (39578720565) green, the docs-check included (#45, from GitHub) |
 | 60 | AA7 | Copy the zip to a new folder, mark it downloaded in PowerShell: ``Set-Content <zip> -Stream Zone.Identifier -Value "[ZoneTransfer]`nZoneId=3"``; Explorer's Extract All; double-click ronin.exe: SmartScreen, More info, Run anyway; "*scratch* - ronin" opens. | yes | |
 | 61 | AA4 | That ronin.exe with `%APPDATA%\ronin` renamed away for the test: ronin's own colors, and no `%APPDATA%\ronin` appears while you use it. | yes | |
 | 62 | AA4 | Then C-c , : `%APPDATA%\ronin\ronin.conf` is created and shown; `theme = vague` under [settings], C-x C-s: the colors change. Put your own folder back. | yes | |
-| 63 | AA8 | `git push`, then `git push origin v1.0.0`. | after the tag | |
-| 64 | AA9 | The GitHub release from tag v1.0.0: title "ronin 1.0.0", the text of docs/releases/1.0.0.md, the zip and SHA256SUMS.txt from dist\ attached, set as the latest release. | after the tag | |
-| 65 | AA10 | The Releases page lists ronin 1.0.0 with both files; README's release badge says v1.0.0. | after the tag | |
-| 66 | AA11 | Download the zip from the release, `Get-FileHash`: the SHA-256 of the notes; unzip it and run ronin.exe once. | after the tag | |
+| 63 | AA8 | `git push`, then `git push origin v1.0.0`. | after the tag | done: the annotated tag v1.0.0 ("ronin 1.0.0") on origin, on 3d181be (#45, from GitHub) |
+| 64 | AA9 | The GitHub release from tag v1.0.0: title "ronin 1.0.0", the text of docs/releases/1.0.0.md, the zip and SHA256SUMS.txt from dist\ attached, set as the latest release. | after the tag | done: "ronin 1.0.0" published 2026-10-21 09:54 UTC, the zip (263,347 bytes) and SHA256SUMS.txt attached, its hash a0c37803... as the notes', the latest release; the text reworded on GitHub from docs/releases/1.0.0.md (#45, from GitHub) |
+| 65 | AA10 | The Releases page lists ronin 1.0.0 with both files; README's release badge says v1.0.0. | after the tag | the release with both files and GitHub's latest release v1.0.0 (#45, from GitHub); the badge itself: to tick |
+| 66 | AA11 | Download the zip from the release, `Get-FileHash`: the SHA-256 of the notes; unzip it and run ronin.exe once. | after the tag | done: the owner (reported 2026-10-28, #45) |
