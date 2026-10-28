@@ -12,8 +12,9 @@ rem                            unchanged
 rem   release-check.bat quick  for development runs: the preconditions (the tree and the commit reported, not
 rem                            required), the zip checks on an existing dist\, the HUMAN list and the unchanged check
 rem From Git Bash: cmd //c ".\release-check.bat" [quick]
-rem It stops at the first failing step. The last line is "release-check: PASS" (quick: "release-check: PASS (quick)")
-rem or "release-check: FAIL: <step>". The whole run is build\release-check\<yyyymmdd-hhmmss>.log, each step's output
+rem It stops at the first failing step. The last line is "release-check: PASS" (quick: "release-check: PASS (quick)";
+rem a full run with text under CHANGELOG.md's Unreleased: "release-check: PASS (dry run)") or
+rem "release-check: FAIL: <step>". The whole run is build\release-check\<yyyymmdd-hhmmss>.log, each step's output
 rem is kept in build\release-check\<yyyymmdd-hhmmss>\. Nothing outside build\ is written but dist\ (dist.bat's zip).
 rem The helper is tools\release_check.c (build\release_check.exe, made by build.bat).
 setlocal EnableDelayedExpansion
@@ -80,6 +81,9 @@ build\release_check.exe versions . > "!RUN!\versions.txt" 2>&1
 set CODE=!errorlevel!
 call :show "!RUN!\versions.txt"
 if not "!CODE!"=="0" (set "M=the versions disagree (above)" & goto failed)
+rem Text under CHANGELOG.md's Unreleased: a dry run, and the last line says so (#45).
+set DRY=0
+%SystemRoot%\System32\findstr.exe /c:"a dry run, not a release" "!RUN!\versions.txt" >nul && set DRY=1
 set "VERSION="
 for /f "tokens=3" %%v in ('%SystemRoot%\System32\findstr.exe /b /c:"#define RONIN_VERSION " src\app\version.h') do set "VERSION=%%~v"
 if not defined VERSION (set "M=no RONIN_VERSION in src\app\version.h" & goto failed)
@@ -214,7 +218,7 @@ if !CS! lss 0 set /a CS+=8640000
 set /a SECS=CS/100
 set "M=release-check: total !SECS! s"
 call :say
-if "!QUICK!"=="1" (set "M=release-check: PASS (quick)") else (set "M=release-check: PASS")
+if "!QUICK!"=="1" (set "M=release-check: PASS (quick)") else if "!DRY!"=="1" (set "M=release-check: PASS (dry run)") else (set "M=release-check: PASS")
 call :say
 exit /b 0
 
