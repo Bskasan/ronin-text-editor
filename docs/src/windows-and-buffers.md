@@ -46,6 +46,7 @@ mode line. `M-x revert-buffer` reloads a buffer from its file by hand.
 
 ## Crash recovery
 
-When ronin itself crashes, it first writes its unsaved buffers to `%LOCALAPPDATA%\ronin\recovery`; the next start says
-so, and `M-x recover-file` recovers a file from its copy. It is a best effort: nothing is written when the process is
+When ronin itself crashes, it first writes each modified buffer that visits a file to `%LOCALAPPDATA%\ronin\recovery`,
+when the recovery file can be created; the next start says so, and `M-x recover-file` recovers a file from its copy.
+Buffers without a file, such as `*scratch*`, are not written. It is a best effort: nothing is written when the process is
 ended from outside or the power fails.

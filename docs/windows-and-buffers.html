@@ -90,8 +90,9 @@ goes through a temporary file.</p>
 activated and at once for the buffers on screen. A buffer with unsaved changes is never touched, only flagged in the
 mode line. <code>M-x revert-buffer</code> reloads a buffer from its file by hand.</p>
 <h2 id="crash-recovery">Crash recovery</h2>
-<p>When ronin itself crashes, it first writes its unsaved buffers to <code>%LOCALAPPDATA%\ronin\recovery</code>; the next start says
-so, and <code>M-x recover-file</code> recovers a file from its copy. It is a best effort: nothing is written when the process is
+<p>When ronin itself crashes, it first writes each modified buffer that visits a file to <code>%LOCALAPPDATA%\ronin\recovery</code>,
+when the recovery file can be created; the next start says so, and <code>M-x recover-file</code> recovers a file from its copy.
+Buffers without a file, such as <code>*scratch*</code>, are not written. It is a best effort: nothing is written when the process is
 ended from outside or the power fails.</p>
 <nav class="pager" aria-label="Previous and next page">
 <a rel="prev" href="editing.html">&larr; Editing</a><a rel="next" href="projects.html">Projects and search &rarr;</a>
