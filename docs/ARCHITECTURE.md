@@ -5127,6 +5127,24 @@ the real programs and keyboard are AH15 (HUMAN step 72).
    longest), and the job 15: room for a slow runner, and above the worst case of one hung step at its limit (about 7
    minutes), so the `if: always()` upload still runs. It also uploads build\ronin.log, the last run's log, which is the
    hung one's.
+2. **The zip release-check tested is the one published.** release-check.bat's dist step makes the zip on the release
+   branch's last commit, and its zip and e2e steps run on that file. The zip is not byte-reproducible (Decisions,
+   Phase 25, point 10), so a dist.bat after the tag would publish a file nothing tested. docs/releases/checklist-1.0.1.md
+   forbids a build or dist.bat between release-check and the upload, checks after the merge that main's HEAD has the
+   tree release-check passed (`git diff --quiet`; "Rebase and merge" gives the commits new hashes), and before the upload
+   that the zip's SHA-256 is still the one of release-check's dist line. So the committed notes hold no size or hash:
+   SHA256SUMS.txt carries it, and the published text takes both from that dist line.
+3. **An empty Unreleased.** The release pull request leaves an empty `## Unreleased` above the dated section, as every
+   later pull request expects; release_check reads it as a release, and only text under it as a dry run, whose full run
+   ends `release-check: PASS (dry run)` (Decisions, #30, point 4).
+
+### Measurements, #45 Release 1.0.1
+
+The release exe at this branch's commit before the version change (1.0.0) and after it (1.0.1), both `build.bat
+release`: 471,040 bytes each (1.0.0's release exe was 470,016: main's changes since add 1,024 bytes). They differ in 7 bytes: the COFF
+header's and the debug directory's TimeDateStamps (0xf0, 0x65e24), the ANSI "1.0.0" of `--version` (0x5bd1a), the
+version resource's VS_FIXEDFILEINFO file and product version (0x71ece, 0x71ed6) and its UTF-16 FileVersion and
+ProductVersion strings (0x71fdc, 0x72120). `--check-imports`: the same three DLLs as res\imports.txt.
 
 ## After 1.0
 

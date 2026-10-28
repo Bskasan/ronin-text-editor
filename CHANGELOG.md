@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.1 — 2026-10-28
+
+A bug-fix release: replace ronin.exe; ronin.conf, themes and keys stay as they are.
+
 ### Changed
 
 - Contributing: every change now starts as a GitHub issue and reaches main through a pull request; CONTRIBUTING.md
