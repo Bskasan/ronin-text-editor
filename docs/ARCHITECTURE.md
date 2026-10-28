@@ -5116,6 +5116,16 @@ AUTOMATED-NEW, O23 stays mixed. Then 68 rows (53 HUMAN, 15 mixed): E14, E15, I8 
 the physical keyboard, which the scenarios never use (the driver plays them), so they say what the scenarios check and
 the real programs and keyboard are AH15 (HUMAN step 72).
 
+### Decisions, #45 Release 1.0.1
+
+1. **CI time limits.** A run of the workflow takes about 3 minutes (the build 60 s, the debug `--test` 61 s, the bench
+   `--test` 47 s, the rest about 10 s). The job had `timeout-minutes: 30` since Phase 22, but a step stopped by it never
+   reached its own copy of build\ronin.log into build\ci, so the uploaded logs had nothing of the run that hung. Now the
+   build step has 10 minutes (a cold runner's vswhere and vcvars), every step that starts a ronin exe 5 (five times the
+   longest), and the job 15: room for a slow runner, and above the worst case of one hung step at its limit (about 7
+   minutes), so the `if: always()` upload still runs. It also uploads build\ronin.log, the last run's log, which is the
+   hung one's.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the

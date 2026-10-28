@@ -1,7 +1,8 @@
 # ronin's continuous build (Phase 22): the three configurations, the source check (Phase 23), the tests of the debug
 # and the bench build, the documentation site's docs-check (Phase 24), the release exe's imports and --version. It needs no secret. The smoke test (real frames on a GPU, the D3D11 debug
 # layer) and `verify.bat phase` stay local steps: see CONTRIBUTING.md. The bench build's smoke runs here only to
-# find out whether WARP renders on the runner's desktop; it never fails the job.
+# find out whether WARP renders on the runner's desktop; it never fails the job. A hung step fails at its own time limit
+# and the logs are still uploaded, build\ronin.log (the hung run's) among them (#45).
 name: build
 
 on:
@@ -15,7 +16,9 @@ jobs:
   build:
     name: build and test
     runs-on: windows-latest
-    timeout-minutes: 30
+    # A run takes about 3 minutes. 15 leaves room for a slow runner and is above one hung step at its limit (the build
+    # ~1, a step's 5, the rest ~1), so the logs are still uploaded; it is only the last stop (#45).
+    timeout-minutes: 15
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -24,6 +27,7 @@ jobs:
       # sets. No toolset is pinned: the flags need VS 2019 16.10 or later, and the runner has VS 2022 or later.
       - name: Build debug, release and bench
         shell: cmd
+        timeout-minutes: 10
         run: |
           call .\build.bat || exit /b 1
           call .\build.bat release || exit /b 1
@@ -57,9 +61,11 @@ jobs:
           $lines | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
       # The exes are GUI programs: each is started and waited for (only the process itself: some tests let a
-      # grandchild go on purpose), and its build\ronin.log kept as build\ci\<step>.log.
+      # grandchild go on purpose), and its build\ronin.log kept as build\ci\<step>.log. Each step that starts one has
+      # 5 minutes (the longest, the debug --test, takes about 1).
       - name: Test (debug build)
         shell: pwsh
+        timeout-minutes: 5
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           $p = Start-Process -FilePath build\ronin_debug.exe -ArgumentList "--test" -PassThru
@@ -73,6 +79,7 @@ jobs:
 
       - name: Test (bench build)
         shell: pwsh
+        timeout-minutes: 5
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           $p = Start-Process -FilePath build\ronin_bench.exe -ArgumentList "--test" -PassThru
@@ -88,6 +95,7 @@ jobs:
       # the committed docs\ (verify.bat's docs-check): a stale, missing or extra page fails. No GPU needed.
       - name: Documentation site up to date (docs-check)
         shell: pwsh
+        timeout-minutes: 5
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           if (Test-Path build\tmp\docs_check) { Remove-Item -Recurse -Force build\tmp\docs_check }
@@ -106,6 +114,7 @@ jobs:
 
       - name: Release imports (res\imports.txt)
         shell: pwsh
+        timeout-minutes: 5
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           $p = Start-Process -FilePath build\ronin_debug.exe -ArgumentList "--check-imports", "build\ronin.exe", "res\imports.txt" -PassThru
@@ -119,6 +128,7 @@ jobs:
 
       - name: Release --version
         shell: pwsh
+        timeout-minutes: 5
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           $p = Start-Process -FilePath build\ronin.exe -ArgumentList "--version" -RedirectStandardOutput build\ci\version.log -PassThru
@@ -131,6 +141,7 @@ jobs:
       - name: "Smoke (bench build; informational: does WARP render on the runner's desktop?)"
         continue-on-error: true
         shell: pwsh
+        timeout-minutes: 5
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           "This step's process: session $([System.Diagnostics.Process]::GetCurrentProcess().SessionId), interactive window station: $([Environment]::UserInteractive)"
@@ -149,10 +160,13 @@ jobs:
           if ($p.ExitCode -ne 0) { exit 1 }
           exit 0
 
+      # build\ronin.log is the last run's log: a step stopped at its time limit never copied it into build\ci (#45).
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ronin-logs
-          path: build/ci/*.log
+          path: |
+            build/ci/*.log
+            build/ronin.log
           if-no-files-found: ignore
