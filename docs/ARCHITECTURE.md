@@ -4599,9 +4599,9 @@ step of its own.
    summary. It has its own table-cell splitter instead of markdown.c's `md_cells`. That one keeps a `|` inside a code
    span and knows no `\|`, while GitHub splits at every unescaped `|`. Including markdown.c for one function would also
    leave its other static functions unused, which /W4 /WX refuses (C4505).
-2. **The order:** tool (the debug build), preconditions, verify-phase, dist, coverage, zip, human, unchanged. It stops
-   at the first failing step: `release-check: FAIL: <step>`, after the line naming the cause. Otherwise it ends with
-   `release-check: PASS`.
+2. **The order:** tool (the debug build), preconditions, verify-phase, dist, coverage, zip, e2e (since #31; full run
+   only), human, unchanged. It stops at the first failing step: `release-check: FAIL: <step>`, after the line naming
+   the cause. Otherwise it ends with `release-check: PASS` (a dry run: `release-check: PASS (dry run)`, point 4).
    - verify-phase and dist each need exit 0 and their own last line (exactly `verify: PASS`; `dist: PASS: ...`).
    - dist.bat runs verify.bat again: an ordinary verify after the phase one. Its logs replace build\verify\, so both
      sets are copied into the run's folder.
