@@ -7,7 +7,7 @@ A small, fast, Emacs-style code editor for Windows, written in C with no depende
 ## Why
 
 ronin keeps three goals in a fixed order: input latency and speed first, a small and simple program second, features
-third. A keystroke's command and its frame take about 20 microseconds; an idle ronin draws nothing and uses no CPU;
+third. ronin's own work for a keystroke, the command and its frame, takes 20 to 30 microseconds; an idle ronin draws nothing and uses no CPU;
 the whole editor is one executable of under half a megabyte that needs nothing but Windows.
 
 It looks and works like Emacs as Jonathan Blow uses it, with ideas from the Focus and 4coder editors: no tabs, menus,
