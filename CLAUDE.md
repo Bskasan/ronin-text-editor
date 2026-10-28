@@ -230,7 +230,8 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # press, build\e2e.exe --zip on the zip, every scenario once, the keyboard and the
                                      # mouse taken for about a minute; full run only), the HUMAN list of
                                      # docs\MANUAL_TESTS.md, the maintainer's folders and the repository unchanged;
-                                     # stops at the first failing step; last line "release-check: PASS" or
+                                     # stops at the first failing step; last line "release-check: PASS" (with
+                                     # text under CHANGELOG.md's Unreleased "release-check: PASS (dry run)", #45) or
                                      # "release-check: FAIL: <step>"; log build\release-check\<yyyymmdd-hhmmss>.log
     cmd //c ".\release-check.bat quick"  # development runs (~10 s): the preconditions (tree and commit only reported),
                                      # the zip checks on an existing dist\, the HUMAN list, unchanged; last line

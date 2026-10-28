@@ -13,7 +13,8 @@
 //       the local time as yyyymmdd-hhmmss (the run's log name; %date% depends on the locale)
 //   release_check versions <root>
 //       src\app\version.h's RONIN_VERSION (equal to its MAJOR.MINOR.PATCH), CHANGELOG.md's first dated heading
-//       "## X.Y.Z — YYYY-MM-DD" and docs\releases\X.Y.Z.md: one version, or one line naming the mismatch
+//       "## X.Y.Z — YYYY-MM-DD" and docs\releases\X.Y.Z.md: one version, or one line naming the mismatch; an
+//       Unreleased section with text above that heading is noted as "a dry run, not a release", an empty one is not
 //   release_check zip <zip> <version> <work dir> <dist list> <debug exe> <imports.txt>
 //       the zip unpacked by Windows' tar into <work dir>\İndirilenler ronin (a space and a non-ASCII letter, as a
 //       user's Downloads folder; tar runs there, so it never gets that name as an argument), then from there: its
@@ -773,11 +774,18 @@ static i32 mode_versions(const wchar_t *root) {
     }
     Str rest = log, line;
     i64 number = 0, unreleased = 0;
-    b32 found = 0;
+    b32 found = 0, unreleased_text = 0;
     while (next_line(&rest, &line)) {
         number++;
-        if (str_eq(str_trim(line), cstr("## Unreleased"))) unreleased = number;
-        if (!str_starts(line, "## ") || line.len < 4 || !is_digit(line.data[3])) continue;
+        if (str_eq(str_trim(line), cstr("## Unreleased"))) {
+            unreleased = number;
+            continue;
+        }
+        if (!str_starts(line, "## ") || line.len < 4 || !is_digit(line.data[3])) {
+            // A release keeps an empty Unreleased above its section (#45); any text under it makes the run a dry run.
+            if (unreleased && str_trim(line).len) unreleased_text = 1;
+            continue;
+        }
         found = 1;
         Str heading = str_skip(line, 3);
         i64 sp = 0;
@@ -808,10 +816,14 @@ static i32 mode_versions(const wchar_t *root) {
         put_i64(number);
         put(": ");
         put_s(heading);
-        if (unreleased) {
+        if (unreleased && unreleased_text) {
             put(" (an Unreleased section above it, line ");
             put_i64(unreleased);
             put(": a dry run, not a release)");
+        } else if (unreleased) {
+            put(" (an empty Unreleased section above it, line ");
+            put_i64(unreleased);
+            put(")");
         }
         end_line();
         break;

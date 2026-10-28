@@ -4612,9 +4612,11 @@ step of its own.
    - origin is read with `git ls-remote`, never fetched, so the run writes nothing into .git. If origin's main is not in
      the clone, the line says "git fetch first". A detached HEAD fails.
 4. **The versions:** version.h's RONIN_VERSION equal to its MAJOR.MINOR.PATCH, CHANGELOG.md's first dated heading
-   `## X.Y.Z — YYYY-MM-DD`, docs/releases/X.Y.Z.md. An Unreleased section above that heading is noted as "a dry run, not
-   a release": between releases the run checks main as it stands, the last release's version. On a release branch the
-   release pull request has already dated the section.
+   `## X.Y.Z — YYYY-MM-DD`, docs/releases/X.Y.Z.md. An Unreleased section with text above that heading is noted as "a
+   dry run, not a release": between releases the run checks main as it stands, the last release's version. On a release
+   branch the release pull request has already dated the section and left an empty Unreleased above it, which is a
+   release (#45). A full run that was a dry run ends `release-check: PASS (dry run)`, so it is never taken for a release
+   pass (#45).
 5. **One list of the zip's files**, res/dist_files.txt.
    - dist.bat copies exactly those files (ronin.exe from build\, the rest from the working tree) and checks the zip's
      listing against them. Before, it copied `samples\*.*`, which would have shipped an ignored file (a .log, a .pdb)
