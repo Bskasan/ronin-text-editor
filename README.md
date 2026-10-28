@@ -14,10 +14,11 @@
 ![ronin with two windows side by side, Jai on the left and C on the right, and M-x listing the window commands in the minibuffer](docs/images/hero.png)
 
 ronin keeps three goals in a fixed order: input latency and speed first, a small and simple program second, features
-third. ronin's own work for a keystroke, the command and its frame, takes 20 to 30 microseconds, an idle ronin uses no
-CPU, and the whole editor is one executable of under half a megabyte that needs nothing but Windows. It looks and works
-like Emacs as Jonathan Blow uses it, with ideas from the Focus and 4coder editors: no tabs, menus or scroll bars, but
-windows side by side, a minibuffer and Emacs' keys.
+third. Typing a character costs ronin a median of 20 to 30 microseconds of its own work, the command and its frame,
+measured on the development machine; that is not the time until it is on screen. An idle ronin uses no CPU, and the
+whole editor is one executable of under half a megabyte that needs nothing but Windows. It looks and works like Emacs
+as Jonathan Blow uses it, with ideas from the Focus and 4coder editors: no tabs, menus or scroll bars, but windows side
+by side, a minibuffer and Emacs' keys.
 
 **[Download](https://github.com/Bskasan/ronin-text-editor/releases/latest)** · **[Documentation](https://bskasan.github.io/ronin-text-editor/)**
 
