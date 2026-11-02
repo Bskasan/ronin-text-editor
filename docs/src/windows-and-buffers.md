@@ -6,6 +6,11 @@ The frame holds up to 8 windows, side by side or one above the other, each showi
 scroll position; two windows can show the same buffer. A click selects a window; drag the line between two windows, or
 a mode line, to resize.
 
+The mouse wheel scrolls the window under the pointer, whichever is selected, as far as Windows' "lines to scroll at a
+time" setting says (Settings > Bluetooth & devices > Mouse), and follows a change of it without a restart. "One screen at
+a time", or more lines than the window shows, scrolls what `C-v` does; 0 does not scroll. The boxes over the windows,
+such as the command list and the git changes view, follow it too. Ctrl+wheel changes the text size, one step a notch.
+
 | keys | command | what it does |
 |---|---|---|
 | `C-x 2` `C-x 3` | `split-window-below` `split-window-right` | split the selected window below / right |

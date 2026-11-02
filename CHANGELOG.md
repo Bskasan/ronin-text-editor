@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- The mouse wheel now follows Windows' "lines to scroll at a time" setting, including one screen at a time, and picks up a change without a restart. It always scrolled 3 lines before.
+
 ## 1.0.1 — 2026-10-28
 
 A bug-fix release: replace ronin.exe; ronin.conf, themes and keys stay as they are.

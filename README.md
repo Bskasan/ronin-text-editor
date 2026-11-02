@@ -49,6 +49,9 @@ Emacs' default keys: `C-` is Ctrl, `M-` is Alt, and `C-x C-s` means Ctrl+X, then
 
 Every command and its default keys are on the [keys page](https://bskasan.github.io/ronin-text-editor/keys.html).
 
+The mouse wheel scrolls the window under the pointer as far as Windows' "lines to scroll at a time" setting says, one
+screen at a time included, and follows a change of it without a restart. Ctrl+wheel changes the text size.
+
 ## Install
 
 1. Download `ronin-<version>-windows-x64.zip` from [Releases](https://github.com/Bskasan/ronin-text-editor/releases/latest) and unzip it anywhere; there is no installer.
