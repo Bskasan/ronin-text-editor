@@ -29,6 +29,8 @@ typedef struct Coverage {
     Arena *arena;
     u32 clip_calls, clip_seq;  // ronin's real clipboard calls and Windows' sequence number when --test started
     String8 trees[2];          // %APPDATA%\ronin and %LOCALAPPDATA%\ronin then, as coverage_tree lists them
+    u32 wheel_real;            // Windows' wheel setting then (#43)
+    b32 wheel_real_ok;
 } Coverage;
 
 typedef struct CoverageAllow {
@@ -69,6 +71,7 @@ static String8 coverage_tree(Arena *arena, i32 which) {
 void coverage_begin(Coverage *c, Arena *arena) {
     c->arena = arena;
     c->clip_calls = os_dev_clipboard_real(&c->clip_seq);
+    c->wheel_real_ok = os_dev_wheel_real(&c->wheel_real);
     for (i32 i = 0; i < 2; i++) c->trees[i] = coverage_tree(arena, i);
     os_dev_cover_enable(1);
 }
@@ -222,6 +225,14 @@ i32 coverage_check(Coverage *c) {
         failures++;
     }
     if (seq != c->clip_seq) LOG("test: coverage: the clipboard changed during the run, not by ronin (another program)");
+    // Windows' wheel setting: nothing in ronin writes it; a person changing it meanwhile fails the run too.
+    u32 wheel_now = 0;
+    b32 wheel_ok = os_dev_wheel_real(&wheel_now);
+    if (wheel_ok != c->wheel_real_ok || wheel_now != c->wheel_real) {
+        LOG("test: FAIL: Windows' wheel setting changed during --test: now %U (call %s), before %U (call %s)", (u64)wheel_now, wheel_ok ? "ok" : "failed",
+            (u64)c->wheel_real, c->wheel_real_ok ? "ok" : "failed");
+        failures++;
+    }
     for (i32 i = 0; i < 2; i++) {
         String8 now = coverage_tree(arena, i), was = c->trees[i];
         if (str8_equal(now, was)) continue;

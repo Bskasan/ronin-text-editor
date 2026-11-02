@@ -95,6 +95,8 @@ typedef struct Platform {
     u64 clip_committed;
     u32 clip_seq;
     u32 clip_real_calls;     // real clipboard calls: opens, reads, writes, the sequence number (none in --test)
+    b32 wheel_fake;          // win32_read_wheel_lines takes wheel_fake_value instead of asking Windows
+    u32 wheel_fake_value;
     String8 dev_own_exe;     // os_dev_own_processes_only: the only program that may start directly (empty: any)
     HANDLE dev_job_port, dev_job_thread; // ... every job's new processes, named by win32_dev_job_watch
     WCHAR dev_job_allowed[3][MAX_PATH];  // ... the images allowed in a job: this exe, cmd.exe, conhost.exe
@@ -111,6 +113,7 @@ typedef struct Platform {
 
     i32 width, height; // client area, pixels
     u32 dpi;
+    u32 wheel_lines;   // Windows' lines per notch (os_wheel_lines)
     b32 redraw;
     b32 quit;
     b32 minimized;
@@ -2844,9 +2847,52 @@ static b32 win32_is_key_message(UINT msg) {
     return msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP;
 }
 
+// Windows' lines per notch into p->wheel_lines; a failed call keeps the value it has (3 at the start).
+static void win32_read_wheel_lines(Platform *p) {
+#if RONIN_DEV
+    if (p->wheel_fake) {
+        p->wheel_lines = p->wheel_fake_value;
+        LOG("wheel: fake: %d", (i32)p->wheel_lines);
+        return;
+    }
+#endif
+    UINT lines = 0;
+    if (SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) {
+        p->wheel_lines = lines;
+#if RONIN_DEV
+        LOG("wheel: SPI_GETWHEELSCROLLLINES ok: %U", (u64)lines);
+    } else {
+        LOG("wheel: SPI_GETWHEELSCROLLLINES failed (error %d), keeping %U", (i32)GetLastError(), (u64)p->wheel_lines);
+#endif
+    }
+}
+
+u32 os_wheel_lines(void) {
+    return g_platform->wheel_lines;
+}
+
+#if RONIN_DEV
+void os_dev_wheel_fake(b32 on, u32 value) {
+    g_platform->wheel_fake = on;
+    g_platform->wheel_fake_value = value;
+}
+
+b32 os_dev_wheel_real(u32 *lines) {
+    UINT value = 0;
+    b32 ok = SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &value, 0) != 0;
+    *lines = value;
+    return ok;
+}
+#endif
+
 static LRESULT win32_handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     Platform *p = g_platform;
     switch (msg) {
+    // Any setting changed, whatever wParam says (some broadcasts carry 0): rare, and the read is cheap. No frame.
+    case WM_SETTINGCHANGE:
+        win32_read_wheel_lines(p);
+        break;
+
     // Shutdown or logoff. With unsaved files: refuse, give the reason, and let the app ask what to save
     // (the save-buffers-kill-terminal chain); it removes the reason once nothing is unsaved or it exits.
     case WM_QUERYENDSESSION:
@@ -7220,6 +7266,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
     p->seed = 0x7ea1;
     p->leak_cycles = 200;
 #endif
+    p->wheel_lines = 3; // Windows' default, until it is read
     g_platform = p;
     SetUnhandledExceptionFilter(win32_crash_filter); // modified files to the recovery directory, then the crash goes on
     win32_stack_guarantee();
@@ -7390,8 +7437,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
                                    : p->bench_windows ? "bench-windows" : p->bench_project ? "bench-project" : p->bench_grep ? "bench-grep" : p->bench_compile ? "bench-compile"
                                    : p->bench_cursors ? "bench-cursors" : p->bench_modal ? "bench-modal" : p->bench_git ? "bench-git"
                                    : (p->screenshot_path.len || p->atlas_path.len) ? "capture" : "interactive");
-    // Tests, the smoke, benches and screenshots never touch the real clipboard.
-    if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) os_dev_clipboard_fake(1);
+    // Tests, the smoke, benches and screenshots never touch the real clipboard, and scroll 3 lines a notch whatever
+    // this machine's wheel setting is.
+    if (p->test || p->fuzz_count || p->soak_events || win32_dev_batch_mode(p)) {
+        os_dev_clipboard_fake(1);
+        os_dev_wheel_fake(1, 3);
+    }
+    win32_read_wheel_lines(p);
     if (p->clipboard_check) { // headless, the real clipboard
         i32 code = win32_dev_clipboard_check(p);
         if (p->log_file && p->log_file != INVALID_HANDLE_VALUE) CloseHandle(p->log_file);
@@ -7459,6 +7511,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, PWSTR cmd_line,
         p->files[0] = (AppFileArg){ test_bench_syntax_file(&p->perm, str8_fmt(&p->perm, "%S\\tmp", exe_dir)), 0, 0 };
         p->file_count = 1;
     }
+#else
+    win32_read_wheel_lines(p);
 #endif
 
     // Argument parsing above takes microseconds; the device thread starts right after it.

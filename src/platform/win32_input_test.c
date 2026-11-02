@@ -885,6 +885,46 @@ typedef struct ItRun {
     i32 failures;
 } ItRun;
 
+// WM_SETTINGCHANGE reads Windows' wheel setting again (#43): the fake's value only arrives through the message, with
+// either wParam, and the message asks for no frame. Then the real read, without changing anything. The message goes
+// to this window alone; the setting is never written. The failures.
+static i32 it_wheel_setting(Platform *p, HWND hwnd) {
+    i32 failures = 0;
+    u32 was = os_wheel_lines();
+    p->redraw = 0;
+    os_dev_wheel_fake(1, 7);
+    u32 unread = os_wheel_lines();
+    SendMessageW(hwnd, WM_SETTINGCHANGE, SPI_SETWHEELSCROLLLINES, 0);
+    u32 read = os_wheel_lines();
+    os_dev_wheel_fake(1, OS_WHEEL_PAGE);
+    SendMessageW(hwnd, WM_SETTINGCHANGE, 0, 0);
+    u32 read_any = os_wheel_lines();
+    b32 redraw = p->redraw;
+    if (unread != was || read != 7 || read_any != OS_WHEEL_PAGE || redraw) {
+        LOG("test: FAIL: wheel setting: %U before the message (%U expected), 7 gave %U, page with wParam 0 gave %U, redraw %d", (u64)unread, (u64)was,
+            (u64)read, (u64)read_any, redraw);
+        failures++;
+    }
+    u32 real = 0;
+    b32 real_ok = os_dev_wheel_real(&real);
+    os_dev_wheel_fake(0, 0);
+    SendMessageW(hwnd, WM_SETTINGCHANGE, SPI_SETWHEELSCROLLLINES, 0);
+    u32 got = os_wheel_lines();
+    if (!real_ok || got != real) {
+        LOG("test: FAIL: wheel setting: the real read gave %U, Windows says %U (call %s)", (u64)got, (u64)real, real_ok ? "ok" : "failed");
+        failures++;
+    }
+    os_dev_wheel_fake(1, 3);
+    SendMessageW(hwnd, WM_SETTINGCHANGE, 0, 0);
+    if (os_wheel_lines() != 3) {
+        LOG("test: FAIL: wheel setting: the fake did not come back");
+        failures++;
+    }
+    p->redraw = 0;
+    if (!failures) LOG("test: ok: wheel setting: WM_SETTINGCHANGE reads it again (either wParam, no frame), the real read equals Windows' value (%U)", (u64)real);
+    return failures;
+}
+
 static DWORD WINAPI it_thread(void *param) {
     ItRun *run = param;
     Platform *p = run->p;
@@ -906,6 +946,7 @@ static DWORD WINAPI it_thread(void *param) {
     }
     it_pump();
     p->event_count = 0;
+    run->failures += it_wheel_setting(p, hwnd);
 
     Arena arena = arena_create(GB(1));
     ItPress press = { 0 };
