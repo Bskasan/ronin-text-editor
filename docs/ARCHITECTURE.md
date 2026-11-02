@@ -5146,6 +5146,48 @@ header's and the debug directory's TimeDateStamps (0xf0, 0x65e24), the ANSI "1.0
 version resource's VS_FIXEDFILEINFO file and product version (0x71ece, 0x71ed6) and its UTF-16 FileVersion and
 ProductVersion strings (0x71fdc, 0x72120). `--check-imports`: the same three DLLs as res\imports.txt.
 
+### Decisions, #43 Wheel lines
+
+The wheel scrolled a fixed 3 lines a notch (`APP_WHEEL_LINES`). It now follows Windows' setting; this supersedes #31's
+note that the 3 lines are ronin's constant.
+
+1. **Where it is read.** `SystemParametersInfoW(SPI_GETWHEELSCROLLLINES)`, in USER32.dll, already imported: no new DLL,
+   res/imports.txt unchanged. src/platform/win32_main.c reads it at startup and on WM_SETTINGCHANGE, into a cached value
+   the app takes with `os_wheel_lines()`, so the wheel path makes no system call. There is no polling, and idle stays at
+   0% CPU. A failed call keeps the value it had, 3 at the start; dev builds log every read's outcome.
+2. **Any WM_SETTINGCHANGE reads it again**, whatever its wParam: some broadcasts carry 0, the read is cheap and the
+   message is rare. It goes on to DefWindowProc as before and asks for no frame.
+3. **More lines than are viewable is a page.** N larger than the rows of the window or pane under the pointer scrolls a
+   page, as `WHEEL_PAGESCROLL` does, following Microsoft's text for SPI_SETWHEELSCROLLLINES: "If the number of lines to
+   scroll is greater than the number of lines viewable, and in particular if it is WHEEL_PAGESCROLL (#defined as
+   UINT_MAX), the scroll operation should be interpreted as clicking once in the page down or page up regions of the
+   scroll bar." A notch never jumps over text nobody saw.
+4. **A page is what that place's page key does:** C-v's `MAX(rows - VIEW_CONTEXT_LINES, 1)` in a window,
+   modal-next-page's `g.rows` in a box. The wheel stays silent at the ends of the buffer (`view_scroll_lines`, no "End of
+   buffer").
+5. **One formula for every value:** `accum += wheel * per_notch`, `lines = accum / 120`. 120 units are exactly one notch;
+   in page mode 60 units are half a page, in whole lines. At 0 nothing accumulates.
+6. **The accumulated remainder is dropped when the step changes**, on a new setting or when the pointer moves to a window
+   of another size: a remainder in the old step's units would make the next notch wrong by a line.
+7. **A wheel event over no window or pane no longer accumulates.** Both callers need the rows under the pointer first,
+   so with none there is nothing to scale it by.
+8. **WM_MOUSEHWHEEL is not handled**, as before, so SPI_GETWHEELSCROLLCHARS is not read. Ctrl+wheel is unchanged: its
+   branch comes first, with its own remainder.
+9. **The dev-only source.** `os_dev_wheel_fake`, inside `#if RONIN_DEV` like the fake clipboard; batch runs (--test,
+   --fuzz-seeds, --soak, the smoke, benches, screenshots) start with it at 3, so verify does not depend on the machine's
+   setting. It is no setting, command, key or flag, so the feature map (#29) has nothing to track. No code writes the
+   real setting; --test reads it before and after and fails on a change (coverage.c), like the %APPDATA% folders.
+10. **A notch at 0 changes no pixel,** and `wait_frame` (tools/e2e.c) waits for a changed picture, not for a frame, so it
+    would fail. Nothing happening is shown by what follows, without a fixed wait: the headless test feeds a key that moves
+    point and checks the top line, and s5 sends the notches without waiting (`M_WHEEL_SILENT`), then clicks on row 0, which
+    does change the picture. Input arrives in order, so the W typed there lands on line 1 only if the top did not move.
+11. **s5 does not read ronin's layout, and NOT CHECKED is not a pass.** The driver checks what it can know from outside:
+    1 to 20 lines a notch, and 0. A screen at a time and larger values depend on the window's rows, and computing those
+    from pixels would copy ronin's layout into the driver and check it against itself. So s5 leaves the wheel out, says
+    why, and the run ends in `e2e: NOT CHECKED: ... (not a pass)`, exit 4; release-check.bat stops there, as on any exit
+    but 0. A setting of up to 20 in a window of fewer rows would fail s5 although ronin is right; the driver's window is
+    far larger. HUMAN step 73 covers page mode.
+
 ## After 1.0
 
 What may come after 1.0, in about this order: first what users will miss most, then speed on extreme input, then the

@@ -242,7 +242,9 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # started with empty APPDATA and LOCALAPPDATA, typed into with SendInput, each
                                      # key waiting for ronin's next frame; aborts on any physical input, a lost
                                      # foreground or a layout switch; the machine's state checked after; last line
-                                     # "e2e: PASS (...)", "e2e: FAIL: ..." or "e2e: ABORT: ..."; log and screenshots
+                                     # "e2e: PASS (...)", "e2e: FAIL: ...", "e2e: ABORT: ..." or, exit 4, "e2e: NOT
+                                     # CHECKED: ... (not a pass)": scenario 5 reads Windows' wheel setting and cannot
+                                     # check one screen at a time or above 20 lines (#43); log and screenshots
                                      # in build\e2e\<yyyymmdd-hhmmss>\ (--out); --demo-abort layout|foreground;
                                      # scenario 3 also on Turkish Q (loaded for it, then unloaded; "Turkish Q
                                      # skipped: <reason>" when it cannot leave the layouts as they were),
@@ -460,7 +462,9 @@ the final flush and the Present separately, the Presents that waited a vertical 
 and the presentation mode: "overlay" (DWM shows the window directly) makes Present(0, 0) wait
 one refresh interval with two buffers; that is not CPU work of ours. --test, the smoke, the
 benches and screenshot runs use an in-memory fake clipboard: they never touch the real one
-(interactive dev runs and --clipboard-check do). Dev builds log the private bytes at the startup stages
+(interactive dev runs and --clipboard-check do). They and --soak, --fuzz-seeds and --leak-check also take Windows' wheel
+setting from a dev-only fake, 3 lines a notch (#43); nothing in ronin writes the real one, and --test fails if it
+changed. Dev builds log the private bytes at the startup stages
 ("memory:" lines in build\ronin.log) and the startup timeline: each stage in ms since process
 creation ("startup:" lines, recorded by os_dev_stage, logged once after the first frame).
 
