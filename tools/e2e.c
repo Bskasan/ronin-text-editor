@@ -2730,16 +2730,60 @@ static Result scenario_4(void) {
 static b32 cursor_box(Session *s, RECT *box) { return color_box(s, s->frame, THEME_CURSOR, box); }
 
 #define S5_MAX_WHEEL_LINES 20
-#define S5_LINES (60 + 5 * S5_MAX_WHEEL_LINES) // the top line never reaches the end
+#define S5_CONTEXT_LINES 2 // what C-v keeps on screen: a page is the rows less these
+#define S5_MAX_PAGE 100
+#define S5_LINES (60 + 6 * S5_MAX_PAGE) // the top line never reaches the end: 5 pages, and a window of them
 
 // Set by a scenario that could not make a check on this machine: the run does not end in PASS (exit 4).
 static const char *not_checked_why;
 static i32 not_checked_scenario;
 
+// The lines C-v scrolls, seen from outside: from the top of the file it leaves point at the start of the new top line,
+// so a typed P saved there has that many lines before it. C-/ takes the P out again and M-< returns to the top.
+static Result s5_measure_page(Session *s, i32 *page) {
+    Result r;
+    if ((r = key(s, "C-v")) != R_OK || (r = type(s, "P")) != R_OK || (r = key(s, "C-x")) != R_OK) return r;
+    wchar_t wname[PATH_CAP], path[PATH_CAP], dir[PATH_CAP];
+    wfrom_utf8(wname, PATH_CAP, cstr("mouse.txt"));
+    wjoin(path, s->cwd, wname);
+    parent_dir(dir, path);
+    FileWait fw;
+    file_wait_arm(&fw, dir, path, "mouse.txt");
+    Str got = { 0, 0 };
+    r = key(s, "C-s");
+    if (r == R_OK) r = file_wait(s, &fw, &got);
+    if (r == R_OK) {
+        Str was = fw.before;
+        i64 at = 0;
+        i32 lines = 0;
+        for (; at < was.len && at < got.len && got.data[at] == was.data[at]; at++) lines += got.data[at] == '\n';
+        b32 marker = was.data && got.len == was.len + 1 && got.data[at] == 'P' && at > 0 && got.data[at - 1] == '\n' &&
+                     mem_eq(got.data + at + 1, was.data + at, was.len - at);
+        *page = lines;
+        if (!marker) {
+            put_prefix(s);
+            put("C-v and a typed P: expected one byte added, a P at the start of a later line; ");
+            put_i64(got.len);
+            put(" bytes (");
+            put_i64(was.len);
+            put(" before), first difference at byte ");
+            put_i64(at);
+            r = fail_end(s);
+        }
+    }
+    file_wait_end(&fw);
+    free_file(got);
+    if (r != R_OK) return r;
+    if ((r = key(s, "C-/")) != R_OK) return r;
+    return key(s, "M-<");
+}
+
 static Result scenario_5_body(Session *s) {
     static const wchar_t *const args[1] = { L"mouse.txt" };
     Result r = session_start(s, args, 1, L"mouse.txt - ronin");
     if (r != R_OK) return r;
+    i32 page = 0;
+    if ((r = s5_measure_page(s, &page)) != R_OK) return r;
     // The cell width and the line height measured by moving the cursor a character and a line.
     RECT box;
     if ((r = key(s, "C-f")) != R_OK) return r;
@@ -2773,31 +2817,42 @@ static Result scenario_5_body(Session *s) {
     if ((r = mouse(s, M_RELEASE, 4, 15, 0, "release 5:16")) != R_OK || (r = copy_and_check(s, L"05 alpha b")) != R_OK) return r;
     // A double click takes a word (beta on line 7).
     if ((r = mouse(s, M_DOUBLE, 6, 15, 0, "double click 7:16")) != R_OK || (r = copy_and_check(s, L"beta")) != R_OK) return r;
-    // The wheel follows Windows' setting (#43), read here and never written: 5 notches down, N lines each, so the top
-    // line is line 1 + 5 N; a click there and a typed W, whose place in the saved file shows the top line. The scroll
-    // already left point at the top line's start (as Emacs does), so the click goes to column 6: a click where point
-    // is draws nothing. Only what is known without reading ronin's layout is checked: 1 to 20 lines, and 0, whose
-    // notches change no pixel (the click after them does). A screen at a time, or more lines, depends on the window's
-    // rows: the wheel is left out, and the run does not pass.
+    // The wheel follows Windows' setting (#43), read here and never written: 5 notches down, so the top line is line
+    // 1 + 5 N, or 1 + 5 pages for a screen at a time and for more lines than the rows (the page + its context lines);
+    // a click there and a typed W, whose place in the saved file shows the top line. The scroll already left point at
+    // the top line's start (as Emacs does), so the click goes to column 6: a click where point is draws nothing. The
+    // page is what C-v did, never computed from pixels. Notches at 0 change no pixel (the click after them does). With
+    // no value, or one mouse.txt is not made for, the wheel is left out and the run does not pass.
     UINT wheel_lines = 0; // 0xFFFFFFFF: WHEEL_PAGESCROLL, which is UINT_MAX (limits.h, a C runtime header)
-    b32 wheel_ok =SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheel_lines, 0) != 0;
-    b32 wheel_known = wheel_ok && wheel_lines <= S5_MAX_WHEEL_LINES;
-    i32 want_top = wheel_known ? 1 + 5 * (i32)wheel_lines : 1;
+    b32 wheel_ok = SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheel_lines, 0) != 0;
+    b32 wheel_screen = wheel_ok && wheel_lines == 0xFFFFFFFFu;
+    b32 wheel_known = wheel_ok && page <= S5_MAX_PAGE && (wheel_screen || wheel_lines <= S5_MAX_WHEEL_LINES);
+    b32 wheel_page = wheel_known && (wheel_screen || wheel_lines > (UINT)(page + S5_CONTEXT_LINES));
+    i32 want_top = !wheel_known ? 1 : wheel_page ? 1 + 5 * page : 1 + 5 * (i32)wheel_lines;
     put_prefix(s);
     if (!wheel_ok) {
         not_checked_why = "the wheel: SPI_GETWHEELSCROLLLINES failed";
         put(not_checked_why);
     } else if (!wheel_known) {
-        not_checked_why = wheel_lines == 0xFFFFFFFFu ? "the wheel: Windows' setting is one screen at a time; its page depends on ronin's layout"
-                                                     : "the wheel: Windows' setting is above 20 lines a notch; it may exceed the window's rows, which make it a page";
+        not_checked_why = page > S5_MAX_PAGE ? "the wheel: the measured page is above 100 lines, too long for mouse.txt"
+                                             : "the wheel: Windows' setting is above 20 lines a notch, too many for mouse.txt";
         put("Windows' wheel setting: ");
         put_i64((i64)wheel_lines);
-        put("; not checked, ");
+        put("; measured page ");
+        put_i64(page);
+        put(" (C-v); not checked, ");
         put(not_checked_why);
     } else {
         put("Windows' wheel setting: ");
-        put_i64((i64)wheel_lines);
-        put(" lines a notch; expected top line ");
+        if (wheel_screen) {
+            put("one screen at a time");
+        } else {
+            put_i64((i64)wheel_lines);
+            put(wheel_page ? " lines a notch, above the page + 2" : " lines a notch");
+        }
+        put("; measured page ");
+        put_i64(page);
+        put(" (C-v); expected top line ");
         put_i64(want_top);
         put(" (client area ");
         put_i64(s->h);
@@ -2846,7 +2901,7 @@ static Result scenario_5_body(Session *s) {
     }
     end_line();
     if ((r = key(s, "C-x")) != R_OK) return r;
-    static u8 want_mem[8192];
+    static u8 want_mem[32768];
     Buf want = { want_mem, 0, sizeof(want_mem) };
     for (i32 i = 1; i <= S5_LINES; i++) {
         bput(&want, i == want_top ? "line W" : "line ");
@@ -2862,7 +2917,7 @@ static Result scenario_5_body(Session *s) {
 static Result scenario_5(void) {
     Session s;
     if (!session_prepare(&s, "s5", NULL)) return R_FAIL;
-    static u8 text_mem[8192];
+    static u8 text_mem[32768];
     Buf text = { text_mem, 0, sizeof(text_mem) };
     for (i32 i = 1; i <= S5_LINES; i++) {
         bput(&text, "line ");
