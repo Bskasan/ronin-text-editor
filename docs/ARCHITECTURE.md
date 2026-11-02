@@ -5181,12 +5181,14 @@ note that the 3 lines are ronin's constant.
     would fail. Nothing happening is shown by what follows, without a fixed wait: the headless test feeds a key that moves
     point and checks the top line, and s5 sends the notches without waiting (`M_WHEEL_SILENT`), then clicks on row 0, which
     does change the picture. Input arrives in order, so the W typed there lands on line 1 only if the top did not move.
-11. **s5 does not read ronin's layout, and NOT CHECKED is not a pass.** The driver checks what it can know from outside:
-    1 to 20 lines a notch, and 0. A screen at a time and larger values depend on the window's rows, and computing those
-    from pixels would copy ronin's layout into the driver and check it against itself. So s5 leaves the wheel out, says
-    why, and the run ends in `e2e: NOT CHECKED: ... (not a pass)`, exit 4; release-check.bat stops there, as on any exit
-    but 0. A setting of up to 20 in a window of fewer rows would fail s5 although ronin is right; the driver's window is
-    800 px high with lines 19 px apart, about twice that. HUMAN step 73 covers page mode.
+11. **s5 does not read ronin's layout, and NOT CHECKED is not a pass.** Computing the rows from pixels would copy ronin's
+    layout into the driver and check it against itself, so s5 learns the page from what a user sees: from the top of the
+    file C-v, a typed P, a save; the P's line in the saved file is the page, and C-/ and M-< put everything back. Then 5
+    notches must end at line 1 + 5 N with N up to the page + 2 (C-v's 2 lines of context), else, and for a screen at a
+    time, at 1 + 5 pages; at 0, on line 1. With no value (the call failed), or above what mouse.txt is made for (20 lines
+    a notch, a page of 100), s5 leaves the wheel out, says why, and the run ends in `e2e: NOT CHECKED: ... (not a pass)`,
+    exit 4; release-check.bat stops there, as on any exit but 0. The page + 2 equals the rows from 3 rows up; s5's clicks
+    and pointer need 11 rows anyway. HUMAN step 73 covers Windows' own Settings app.
 
 ### Measurements, #43 Wheel lines
 

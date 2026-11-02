@@ -243,8 +243,8 @@ From Git Bash (with `NoDefaultCurrentDirectoryInExePath=1` set, cmd needs the ex
                                      # key waiting for ronin's next frame; aborts on any physical input, a lost
                                      # foreground or a layout switch; the machine's state checked after; last line
                                      # "e2e: PASS (...)", "e2e: FAIL: ...", "e2e: ABORT: ..." or, exit 4, "e2e: NOT
-                                     # CHECKED: ... (not a pass)": scenario 5 reads Windows' wheel setting and cannot
-                                     # check one screen at a time or above 20 lines (#43); log and screenshots
+                                     # CHECKED: ... (not a pass)": scenario 5 reads Windows' wheel setting, learns the
+                                     # page from C-v and cannot check above 20 lines (#43); log and screenshots
                                      # in build\e2e\<yyyymmdd-hhmmss>\ (--out); --demo-abort layout|foreground;
                                      # scenario 3 also on Turkish Q (loaded for it, then unloaded; "Turkish Q
                                      # skipped: <reason>" when it cannot leave the layouts as they were),
