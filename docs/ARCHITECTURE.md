@@ -5186,7 +5186,29 @@ note that the 3 lines are ronin's constant.
     from pixels would copy ronin's layout into the driver and check it against itself. So s5 leaves the wheel out, says
     why, and the run ends in `e2e: NOT CHECKED: ... (not a pass)`, exit 4; release-check.bat stops there, as on any exit
     but 0. A setting of up to 20 in a window of fewer rows would fail s5 although ronin is right; the driver's window is
-    far larger. HUMAN step 73 covers page mode.
+    800 px high with lines 19 px apart, about twice that. HUMAN step 73 covers page mode.
+
+### Measurements, #43 Wheel lines
+
+The startup read in a debug run (`--config build\tmp\p43.conf --no-activate --startup-ms`): `wheel:
+SPI_GETWHEELSCROLLLINES ok: 3`. The release exe: 471,040 bytes, as #45 measured it; `os_dev_wheel` 0 times in
+build\ronin.map; `--check-imports` the same three DLLs. e2e s5 on 9c9042d, 2026-11-02: 3 lines a notch, top line 16,
+PASS in 1.7 s (build\e2e\20261102-125918).
+
+`verify.bat phase` has **not passed** on this branch; the soak has to be made reproducible first (#50):
+
+| run | soak on bench | soak on debug | --test on debug, seed sweep, leak check |
+|---|---|---|---|
+| 9c9042d | FAIL, exit 6 | FAIL, exit 6 | PASS |
+| 9c9042d plus watch logging, not committed | FAIL, exit 6 | PASS | PASS |
+
+Both failures are the row "directory watches 3 | 3 | 4 | 4 | 4 | 4 | LEAK" with the handle ledger alongside it. The logged
+run names the fourth watch: `watch+ tree slot 5 ...\build\tmp\demo_build`, the tree watch of a project the walk reached
+between events 600,000 and 700,000 in a hand-made folder outside the soak's fixture. It was opened once and stayed; at
+most 3 tree watches were open at once, under PROJECT_KEPT (4). So it is live, bounded state, not a growing leak. The first
+run was not logged, so its fourth watch is inferred from the same row. This change opens no watch but does change the
+walk: main passed the one soak run tried, and whether main can reach that folder too is not known. `verify.bat phase`
+must pass on this branch after #50 is merged and the branch is rebased.
 
 ## After 1.0
 
