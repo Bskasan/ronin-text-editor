@@ -32,8 +32,10 @@
 // %APPDATA%\ronin and %LOCALAPPDATA%\ronin, no process of the run left,
 // the pointer's position. The log and screenshots (BMP) go to --out, by default build\e2e\<yyyymmdd-hhmmss>.
 // --demo-abort shows an abort once: a layout switch posted to ronin, or a second ronin taking the foreground.
-// Every line it prints starts with "e2e:"; the last one is "e2e: PASS (...)", "e2e: FAIL: ..." or "e2e: ABORT: ...".
-// Exit 0 = pass, 1 = a failed check, 2 = wrong arguments or a precondition not met (nothing typed), 3 = aborted.
+// Every line it prints starts with "e2e:"; the last one is "e2e: PASS (...)", "e2e: FAIL: ...", "e2e: ABORT: ..." or
+// "e2e: NOT CHECKED: ... (not a pass)".
+// Exit 0 = pass, 1 = a failed check, 2 = wrong arguments or a precondition not met (nothing typed), 3 = aborted,
+// 4 = no check failed, but one could not be made on this machine (never a pass).
 // No C runtime calls: Win32 only (the CRT's startup aside, as the other tools).
 
 #define WIN32_LEAN_AND_MEAN
@@ -1361,7 +1363,7 @@ static POINT cell_point(Session *s, i32 row, i32 col) {
     return p;
 }
 
-typedef enum MouseAct { M_CLICK, M_DOUBLE, M_PRESS, M_MOVE, M_RELEASE, M_WHEEL, M_CTRL_WHEEL } MouseAct;
+typedef enum MouseAct { M_CLICK, M_DOUBLE, M_PRESS, M_MOVE, M_RELEASE, M_WHEEL, M_WHEEL_SILENT, M_CTRL_WHEEL } MouseAct;
 
 // One mouse step at cell (row, col): the checks, the events, then the frame (none for a release, which draws nothing:
 // its effect is the region a later key shows). notches for the wheel (negative: towards the user, down the text).
@@ -1387,6 +1389,7 @@ static Result mouse(Session *s, MouseAct act, i32 row, i32 col, i32 notches, con
     case M_MOVE: mouse_input(&in[n++], p.x, p.y, 0, 0); break;
     case M_RELEASE: mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_LEFTUP, 0); break;
     case M_WHEEL:
+    case M_WHEEL_SILENT:
     case M_CTRL_WHEEL:
         if (act == M_CTRL_WHEEL) key_input(&in[n++], VK_CONTROL, 0x1D, 0, 0);
         mouse_input(&in[n++], p.x, p.y, MOUSEEVENTF_WHEEL, (DWORD)(notches * WHEEL_DELTA));
@@ -1399,6 +1402,9 @@ static Result mouse(Session *s, MouseAct act, i32 row, i32 col, i32 notches, con
         mouse_held = 0;
         return after_step(s);
     }
+    // A notch that scrolls nothing changes no pixel: wait_frame would wait for a changed picture in vain. The next
+    // action that does change one comes after it in the input queue, and shows what the notch did.
+    if (act == M_WHEEL_SILENT) return after_step(s);
     r = wait_frame(s);
     if (r == R_OK) r = after_step(s);
     return r;
@@ -2723,6 +2729,13 @@ static Result scenario_4(void) {
 // The filled cursor's box in the settled frame.
 static b32 cursor_box(Session *s, RECT *box) { return color_box(s, s->frame, THEME_CURSOR, box); }
 
+#define S5_MAX_WHEEL_LINES 20
+#define S5_LINES (60 + 5 * S5_MAX_WHEEL_LINES) // the top line never reaches the end
+
+// Set by a scenario that could not make a check on this machine: the run does not end in PASS (exit 4).
+static const char *not_checked_why;
+static i32 not_checked_scenario;
+
 static Result scenario_5_body(Session *s) {
     static const wchar_t *const args[1] = { L"mouse.txt" };
     Result r = session_start(s, args, 1, L"mouse.txt - ronin");
@@ -2760,13 +2773,42 @@ static Result scenario_5_body(Session *s) {
     if ((r = mouse(s, M_RELEASE, 4, 15, 0, "release 5:16")) != R_OK || (r = copy_and_check(s, L"05 alpha b")) != R_OK) return r;
     // A double click takes a word (beta on line 7).
     if ((r = mouse(s, M_DOUBLE, 6, 15, 0, "double click 7:16")) != R_OK || (r = copy_and_check(s, L"beta")) != R_OK) return r;
-    // The wheel scrolls: 5 notches down, 3 lines each, so the top line is line 16; a click there and a typed W. The
-    // scroll already left point at the top line's start (as Emacs does), so the click goes to column 6: a click
-    // where point is draws nothing.
-    for (i32 i = 0; i < 5; i++) {
-        if ((r = mouse(s, M_WHEEL, 10, 10, -1, "wheel down")) != R_OK) return r;
+    // The wheel follows Windows' setting (#43), read here and never written: 5 notches down, N lines each, so the top
+    // line is line 1 + 5 N; a click there and a typed W, whose place in the saved file shows the top line. The scroll
+    // already left point at the top line's start (as Emacs does), so the click goes to column 6: a click where point
+    // is draws nothing. Only what is known without reading ronin's layout is checked: 1 to 20 lines, and 0, whose
+    // notches change no pixel (the click after them does). A screen at a time, or more lines, depends on the window's
+    // rows: the wheel is left out, and the run does not pass.
+    UINT wheel_lines = 0; // 0xFFFFFFFF: WHEEL_PAGESCROLL, which is UINT_MAX (limits.h, a C runtime header)
+    b32 wheel_ok =SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheel_lines, 0) != 0;
+    b32 wheel_known = wheel_ok && wheel_lines <= S5_MAX_WHEEL_LINES;
+    i32 want_top = wheel_known ? 1 + 5 * (i32)wheel_lines : 1;
+    put_prefix(s);
+    if (!wheel_ok) {
+        not_checked_why = "the wheel: SPI_GETWHEELSCROLLLINES failed";
+        put(not_checked_why);
+    } else if (!wheel_known) {
+        not_checked_why = wheel_lines == 0xFFFFFFFFu ? "the wheel: Windows' setting is one screen at a time; its page depends on ronin's layout"
+                                                     : "the wheel: Windows' setting is above 20 lines a notch; it may exceed the window's rows, which make it a page";
+        put("Windows' wheel setting: ");
+        put_i64((i64)wheel_lines);
+        put("; not checked, ");
+        put(not_checked_why);
+    } else {
+        put("Windows' wheel setting: ");
+        put_i64((i64)wheel_lines);
+        put(" lines a notch; expected top line ");
+        put_i64(want_top);
+        put(" (client area ");
+        put_i64(s->h);
+        put(" px high)");
     }
-    if ((r = mouse(s, M_CLICK, 0, 5, 0, "click 16:6")) != R_OK || (r = type(s, "W")) != R_OK) return r;
+    end_line();
+    if (not_checked_why) not_checked_scenario = 5;
+    for (i32 i = 0; wheel_known && i < 5; i++) {
+        if ((r = mouse(s, wheel_lines ? M_WHEEL : M_WHEEL_SILENT, 10, 10, -1, "wheel down")) != R_OK) return r;
+    }
+    if ((r = mouse(s, M_CLICK, 0, 5, 0, "click on the top line")) != R_OK || (r = type(s, "W")) != R_OK) return r;
     // Ctrl+wheel scales the text: two notches up give a larger cell, two down the same cell as before.
     RECT b0, b1, b2;
     if (!cursor_box(s, &b0)) {
@@ -2804,10 +2846,10 @@ static Result scenario_5_body(Session *s) {
     }
     end_line();
     if ((r = key(s, "C-x")) != R_OK) return r;
-    static u8 want_mem[4096];
+    static u8 want_mem[8192];
     Buf want = { want_mem, 0, sizeof(want_mem) };
-    for (i32 i = 1; i <= 60; i++) {
-        bput(&want, i == 16 ? "line W" : "line ");
+    for (i32 i = 1; i <= S5_LINES; i++) {
+        bput(&want, i == want_top ? "line W" : "line ");
         bput_i64(&want, i / 10);
         bput_i64(&want, i % 10);
         bput(&want, i == 3 ? " Xalpha beta gamma\n" : " alpha beta gamma\n");
@@ -2820,9 +2862,9 @@ static Result scenario_5_body(Session *s) {
 static Result scenario_5(void) {
     Session s;
     if (!session_prepare(&s, "s5", NULL)) return R_FAIL;
-    static u8 text_mem[4096];
+    static u8 text_mem[8192];
     Buf text = { text_mem, 0, sizeof(text_mem) };
-    for (i32 i = 1; i <= 60; i++) {
+    for (i32 i = 1; i <= S5_LINES; i++) {
         bput(&text, "line ");
         bput_i64(&text, i / 10);
         bput_i64(&text, i % 10);
@@ -4431,7 +4473,7 @@ int wmain(int argc, wchar_t **argv) {
                 runs++;
                 put("e2e: s");
                 put_i64(i);
-                put(r == R_OK ? ": PASS (" : r == R_FAIL ? ": FAIL (" : ": ABORT (");
+                put(r == R_FAIL ? ": FAIL (" : r == R_ABORT ? ": ABORT (" : not_checked_scenario == i ? ": NOT CHECKED (" : ": PASS (");
                 bput_secs(&line, GetTickCount64() - t0);
                 put(")");
                 end_line();
@@ -4465,6 +4507,14 @@ int wmain(int argc, wchar_t **argv) {
     if (!state_ok && exit_code == 0) {
         exit_code = 1;
         bput(&final, "e2e: FAIL: state (its lines above)");
+    }
+    if (exit_code == 0 && not_checked_why) {
+        exit_code = 4;
+        bput(&final, "e2e: NOT CHECKED: s");
+        bput_i64(&final, not_checked_scenario);
+        bput(&final, ": ");
+        bput(&final, not_checked_why);
+        bput(&final, " (not a pass)");
     }
     if (exit_code == 0) {
         bput(&final, "e2e: PASS (");
