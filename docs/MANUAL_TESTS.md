@@ -1058,7 +1058,8 @@ Issue #43, the wheel:
 
 73. **AJ9**: Start `build\ronin.exe` on a long file and leave it running. Note the value of Settings > Bluetooth & devices
     > Mouse > "Roll the mouse wheel to scroll" and "Lines to scroll at a time".
-    1. Set the lines to 1, without restarting ronin: one notch over ronin scrolls one line. Set them to 10: ten lines.
+    1. Select "Multiple lines at a time" under "Roll the mouse wheel to scroll", then set "Lines to scroll at a time" to
+       1, without restarting ronin: one notch over ronin scrolls one line. Set them to 10: ten lines.
     2. Choose one screen at a time: one notch scrolls what C-v does. C-S-p: one notch scrolls the list a page; C-g.
     3. Put both settings back as they were.
 
