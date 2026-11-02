@@ -11,7 +11,6 @@
 // views laid out in the frame, drawing of text in its token colors, cursors, mode lines and the
 // echo area. View logic lives in view.c.
 
-#define APP_WHEEL_LINES 3 // per notch (120 units)
 #define APP_PAD_PX 4      // left padding of a text area at 96 DPI
 #define APP_CONFIG_RESERVE MB(16)
 #define APP_HEADLESS_CELL_W 8  // the cell of a headless app (dev: --test), which has no font
@@ -82,7 +81,8 @@ struct App {
     Renderer *renderer;          // during a frame: commands that change the font rebind the atlas at once
     b32 quit;
     b32 focused;                 // the window has keyboard focus
-    i32 wheel_accum;             // wheel units * APP_WHEEL_LINES not yet turned into lines
+    i32 wheel_accum;             // wheel units * wheel_per_notch not yet turned into lines
+    i32 wheel_per_notch;         // the lines per notch of the last wheel event
     u8 title[256];               // the window title last set
     i32 title_len;
     i32 laid_w, laid_h, laid_cell_w, laid_line_h; // the layout the views were last fitted to
@@ -1464,6 +1464,22 @@ static void app_drag_split(App *app, i32 x, i32 y) {
 extern const Command CMD_SAVE_BUFFERS_KILL_TERMINAL, CMD_TEXT_SCALE_INCREASE, CMD_TEXT_SCALE_DECREASE;
 static void app_run_command(App *app, const Command *cmd, u32 codepoint, b32 shift_translated);
 
+// Wheel units (120 a notch; less from a high-resolution wheel) to whole lines, for the window or pane under the
+// pointer with these rows and this page. Windows' setting says the lines per notch; "one screen at a time", or more
+// lines than are viewable, is a page. A remainder in another step's units is dropped.
+static i32 app_wheel_lines(App *app, i32 wheel, i32 rows, i32 page) {
+    u32 setting = os_wheel_lines();
+    i32 per_notch = setting == OS_WHEEL_PAGE || setting > (u32)rows ? page : (i32)setting;
+    if (per_notch != app->wheel_per_notch) {
+        app->wheel_accum = 0;
+        app->wheel_per_notch = per_notch;
+    }
+    app->wheel_accum += wheel * per_notch;
+    i32 lines = app->wheel_accum / 120;
+    app->wheel_accum -= lines * 120;
+    return lines;
+}
+
 // The wheel scrolls the view under the mouse; point is dragged along to stay visible. With Ctrl it
 // changes the text scale, one step per notch.
 static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
@@ -1473,12 +1489,11 @@ static void app_wheel(App *app, i32 x, i32 y, i32 wheel, u32 mods) {
         for (; app->wheel_scale_accum <= -120; app->wheel_scale_accum += 120) app_run_command(app, &CMD_TEXT_SCALE_DECREASE, 0, 0);
         return;
     }
-    app->wheel_accum += wheel * APP_WHEEL_LINES;
-    i32 lines = app->wheel_accum / 120;
-    app->wheel_accum -= lines * 120;
     i32 i = window_at(&app->windows, x, y);
-    if (!lines || i < 0) return;
+    if (i < 0) return;
     View *v = app->windows.nodes[i].view;
+    i32 lines = app_wheel_lines(app, wheel, v->rows, MAX(v->rows - VIEW_CONTEXT_LINES, 1)); // a page as C-v's
+    if (!lines) return;
     view_scroll_lines(v, -lines); // positive = away from the user = towards the top
     // The primary point dragged into the window may pass other cursors or meet one: ordered and merged again,
     // as after a command.

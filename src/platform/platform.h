@@ -133,6 +133,7 @@ u32  os_dev_clipboard_real(u32 *seq); // ronin's real clipboard calls so far (op
 u32  os_wheel_lines(void);            // lines per notch, OS_WHEEL_PAGE or 0 (no scrolling); no system call
 #if RONIN_DEV
 void os_dev_wheel_fake(b32 on, u32 value); // on: the next read takes value instead of asking Windows; it does not read
+void os_dev_wheel_read(void);              // the read WM_SETTINGCHANGE does, for tests without a window
 b32  os_dev_wheel_real(u32 *lines);        // Windows' value now, whatever the fake holds: the observer
 #endif
 
