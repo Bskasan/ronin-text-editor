@@ -126,6 +126,17 @@ u32  os_dev_clipboard_real(u32 *seq); // ronin's real clipboard calls so far (op
 #endif
 
 // ---------------------------------------------------------------------------
+// The mouse wheel: Windows' lines per notch, read at startup and on WM_SETTINGCHANGE (#43). Dev builds can replace
+// the source by a fake (tests, smoke, benches, screenshots: 3); nothing here ever changes the setting.
+
+#define OS_WHEEL_PAGE 0xFFFFFFFFu     // "one screen at a time"
+u32  os_wheel_lines(void);            // lines per notch, OS_WHEEL_PAGE or 0 (no scrolling); no system call
+#if RONIN_DEV
+void os_dev_wheel_fake(b32 on, u32 value); // on: the next read takes value instead of asking Windows; it does not read
+b32  os_dev_wheel_real(u32 *lines);        // Windows' value now, whatever the fake holds: the observer
+#endif
+
+// ---------------------------------------------------------------------------
 // Directory watches: a change notification (file names, sizes, write times) on one directory,
 // delivered as EVENT_DIR_CHANGED. Waited on with the messages: no polling, no timers.
 
