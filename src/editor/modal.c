@@ -371,13 +371,12 @@ static void modal_click(App *app, AppLayout *l, i32 x, i32 y, i32 clicks) {
 // The wheel scrolls the pane under the pointer; its selection stays where it is.
 static void modal_wheel(App *app, i32 x, i32 y, i32 wheel) {
     Modal *m = &app->modal;
-    app->wheel_accum += wheel * APP_WHEEL_LINES;
-    i32 lines = app->wheel_accum / 120;
-    app->wheel_accum -= lines * 120;
-    for (i32 p = 0; lines && p < m->spec.panes; p++) {
+    for (i32 p = 0; p < m->spec.panes; p++) {
         if (!modal_inside(m->g.panes[p], x, y)) continue;
+        i32 lines = app_wheel_lines(app, wheel, m->g.rows, MAX(m->g.rows, 1)); // a page as modal-next-page's
         ModalList *list = &m->lists[p];
-        list->top = CLAMP(list->top - lines, 0, MAX(list->count - m->g.rows, 0));
+        if (lines) list->top = CLAMP(list->top - lines, 0, MAX(list->count - m->g.rows, 0));
+        return;
     }
 }
 

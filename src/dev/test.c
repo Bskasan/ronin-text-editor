@@ -6182,6 +6182,12 @@ static b32 test_mc_collapse(Test *t) {
     return 1;
 }
 
+// Windows' wheel setting as the app sees it, through the dev-only source; the real one is never written (#43).
+static void test_wheel_set(u32 value) {
+    os_dev_wheel_fake(1, value);
+    os_dev_wheel_read();
+}
+
 // The wheel over the first view: positive notches scroll towards the top.
 static void test_app_wheel(Test *t, App *app, i32 notches) {
     Event e = { .kind = EVENT_MOUSE_WHEEL, .x = 100, .y = 100, .wheel = notches * 120 };
@@ -14219,6 +14225,190 @@ static String8 test_git_status_text(Arena *arena, const GitStatus *st) {
     return s;
 }
 
+// One wheel event of `units` at x, y.
+static void test_wheel_units(Test *t, App *app, i32 x, i32 y, i32 units, u32 mods) {
+    Event e = { .kind = EVENT_MOUSE_WHEEL, .x = x, .y = y, .wheel = units, .mods = mods };
+    app_dev_feed_events(app, &e, 1, &t->arena);
+}
+
+// Windows' wheel setting (#43) at 1, 3, 10, page and 0, through the dev-only source: in a window and in the command
+// list's box (the git view's pane: test_git_changes; Ctrl+wheel's steps need a font: the smoke's text scale). A notch
+// at 0 changes nothing, so a key follows it: the app still answers, and the top did not move in between.
+static b32 test_wheel_setting(Test *t) {
+    App *app = test_app_create(t);
+    TEST_CHECK(t, app, "wheel setting: no app");
+    u8 *text = PUSH_ARRAY(&t->arena, u8, 400 * 9 + 1);
+    for (i32 i = 0; i < 400; i++) fmt_buf(text + i * 9, 10, "line %03d\n", i);
+    app_dev_show_scratch(app, str8(text, 400 * 9));
+    View *v = app_selected_view(app);
+    i32 rows = v->rows, page = MAX(rows - VIEW_CONTEXT_LINES, 1);
+    TEST_CHECK(t, rows > 20, "wheel setting: %d rows", rows);
+
+    // N lines a notch, and partial deltas adding up to whole lines.
+    u32 values[] = { 1, 3, 10 };
+    for (i32 k = 0; k < (i32)ARRAY_COUNT(values); k++) {
+        i32 n = (i32)values[k];
+        test_wheel_set(values[k]);
+        app_dev_feed(app, "M-<", &t->arena);
+        test_app_wheel(t, app, -1);
+        TEST_CHECK(t, view_top_line(v) == n, "wheel setting %d: one notch: top %D", n, view_top_line(v));
+        test_app_wheel(t, app, -1);
+        TEST_CHECK(t, view_top_line(v) == 2 * n, "wheel setting %d: two notches: top %D", n, view_top_line(v));
+        test_app_wheel(t, app, 1);
+        TEST_CHECK(t, view_top_line(v) == n, "wheel setting %d: one back: top %D", n, view_top_line(v));
+        for (i32 part = 1; part <= 3; part++) {
+            test_wheel_units(t, app, 100, 100, -40, 0);
+            TEST_CHECK(t, view_top_line(v) == n + part * 40 * n / 120, "wheel setting %d: %d x 40 units: top %D", n, part, view_top_line(v));
+        }
+    }
+
+    // A page: as C-v, on the window under the pointer; half a notch is half a page.
+    test_wheel_set(OS_WHEEL_PAGE);
+    app_dev_feed(app, "M-< C-v", &t->arena);
+    TEST_CHECK(t, view_top_line(v) == page, "wheel setting page: C-v's top %D", view_top_line(v));
+    app_dev_feed(app, "M-<", &t->arena);
+    test_app_wheel(t, app, -1);
+    TEST_CHECK(t, view_top_line(v) == page, "wheel setting page: one notch: top %D, a page %d", view_top_line(v), page);
+    test_app_wheel(t, app, 1);
+    TEST_CHECK(t, view_top_line(v) == 0, "wheel setting page: one back: top %D", view_top_line(v));
+    test_wheel_units(t, app, 100, 100, -60, 0);
+    TEST_CHECK(t, view_top_line(v) == page / 2, "wheel setting page: half a notch: top %D", view_top_line(v));
+    test_wheel_units(t, app, 100, 100, -60, 0);
+    TEST_CHECK(t, view_top_line(v) == page, "wheel setting page: the other half: top %D", view_top_line(v));
+    app_dev_feed(app, "M-< C-x 2", &t->arena);
+    View *lower = test_win(app, 1);
+    i32 lower_page = MAX(lower->rows - VIEW_CONTEXT_LINES, 1);
+    test_wheel_units(t, app, 100, lower->y + 10, -120, 0);
+    TEST_CHECK(t, app_dev_window_selected(app) == 0 && app_dev_window_top(app, 0) == 0 && app_dev_window_top(app, 1) == lower_page,
+               "wheel setting page: the window under the pointer, not the selected one: tops %D, %D (a page %d)", app_dev_window_top(app, 0),
+               app_dev_window_top(app, 1), lower_page);
+    app_dev_feed(app, "C-x 1", &t->arena);
+
+    // More lines than are viewable is a page; exactly as many are still lines.
+    test_wheel_set((u32)rows);
+    app_dev_feed(app, "M-<", &t->arena);
+    test_app_wheel(t, app, -1);
+    TEST_CHECK(t, view_top_line(v) == rows, "wheel setting %d = the rows: top %D", rows, view_top_line(v));
+    test_wheel_set((u32)rows + 1);
+    app_dev_feed(app, "M-<", &t->arena);
+    test_app_wheel(t, app, -1);
+    TEST_CHECK(t, view_top_line(v) == page, "wheel setting %d above the rows: top %D, a page %d", rows + 1, view_top_line(v), page);
+    app_dev_frame_size(app, 1280, 8 * 16);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+    TEST_CHECK(t, v->rows < 10, "wheel setting: a small frame has %d rows", v->rows);
+    test_wheel_set(10);
+    app_dev_feed(app, "M-<", &t->arena);
+    test_app_wheel(t, app, -1);
+    TEST_CHECK(t, view_top_line(v) == MAX(v->rows - VIEW_CONTEXT_LINES, 1), "wheel setting 10 in %d rows: top %D", v->rows, view_top_line(v));
+    app_dev_frame_size(app, 1280, 800);
+    app_dev_feed_events(app, NULL, 0, &t->arena);
+
+    // 0: nothing moves and nothing adds up; then a key does what it does, and the top is where it was.
+    test_wheel_set(3);
+    app_dev_feed(app, "M-<", &t->arena);
+    test_app_wheel(t, app, -2);
+    i64 top = view_top_line(v), point = test_app_point(app);
+    test_wheel_set(0);
+    test_app_wheel(t, app, -10);
+    TEST_CHECK(t, view_top_line(v) == top && test_app_point(app) == point && app->wheel_accum == 0, "wheel setting 0: top %D, point %D, remainder %d",
+               view_top_line(v), test_app_point(app), app->wheel_accum);
+    app_dev_feed(app, "C-n", &t->arena);
+    TEST_CHECK(t, test_app_point(app) == point + 9 && view_top_line(v) == top, "wheel setting 0: then C-n: point %D, top %D", test_app_point(app),
+               view_top_line(v));
+    test_wheel_set(3);
+    test_app_wheel(t, app, -1);
+    TEST_CHECK(t, view_top_line(v) == top + 3, "wheel setting 0, then 3: one notch: top %D", view_top_line(v));
+
+    // A remainder in the old step's units is dropped when the step changes.
+    test_wheel_set(1);
+    app_dev_feed(app, "M-<", &t->arena);
+    test_wheel_units(t, app, 100, 100, -60, 0);
+    TEST_CHECK(t, view_top_line(v) == 0 && app->wheel_accum == -60, "wheel setting: half a notch at 1: top %D, remainder %d", view_top_line(v), app->wheel_accum);
+    test_wheel_set(3);
+    test_app_wheel(t, app, -1);
+    TEST_CHECK(t, view_top_line(v) == 3 && app->wheel_accum == 0, "wheel setting: then a notch at 3: top %D, remainder %d", view_top_line(v), app->wheel_accum);
+
+    // Over no window: nothing moves, and the remainder is as it was.
+    test_wheel_units(t, app, 100, 100, -20, 0);
+    i32 accum = app->wheel_accum;
+    top = view_top_line(v);
+    test_wheel_units(t, app, 5000, 5000, -120, 0);
+    TEST_CHECK(t, view_top_line(v) == top && app->wheel_accum == accum && accum == -60, "wheel setting: over no window: top %D, remainder %d",
+               view_top_line(v), app->wheel_accum);
+    app->wheel_accum = 0;
+
+    // Ctrl+wheel leaves the lines alone at every value: its own remainder, whole notches taken.
+    u32 all[] = { 1, 3, 10, OS_WHEEL_PAGE, 0 };
+    for (i32 k = 0; k < (i32)ARRAY_COUNT(all); k++) {
+        test_wheel_set(all[k]);
+        top = view_top_line(v);
+        test_wheel_units(t, app, 100, 100, -60, KEYMOD_CTRL);
+        TEST_CHECK(t, view_top_line(v) == top && app->wheel_scale_accum == -60 && app->wheel_accum == 0, "wheel setting %U: Ctrl, half a notch: top %D, its remainder %d",
+                   (u64)all[k], view_top_line(v), app->wheel_scale_accum);
+        test_wheel_units(t, app, 100, 100, -60, KEYMOD_CTRL);
+        test_wheel_units(t, app, 100, 100, 120, KEYMOD_CTRL);
+        TEST_CHECK(t, view_top_line(v) == top && app->wheel_scale_accum == 0 && app->wheel_accum == 0, "wheel setting %U: Ctrl, whole notches: top %D, its remainder %d",
+                   (u64)all[k], view_top_line(v), app->wheel_scale_accum);
+    }
+
+    // The command list's box: the same, a page being the pane's rows; the selection stays.
+    test_wheel_set(3);
+    app_dev_feed(app, "C-S-p", &t->arena);
+    TEST_CHECK(t, test_cmdlist(app), "wheel setting: C-S-p did not open the command list");
+    Modal *m = &app->modal;
+    ModalList *list = &m->lists[0];
+    i32 x = (i32)m->g.panes[0].x0 + 8, y = (i32)m->g.panes[0].y0 + 8;
+    i64 last_top = MAX(list->count - m->g.rows, 0);
+    TEST_CHECK(t, last_top >= m->g.rows, "wheel setting: the command list has %D rows, %d shown", list->count, m->g.rows);
+    i64 selected = list->selected;
+    for (i32 k = 0; k < (i32)ARRAY_COUNT(values); k++) {
+        i32 n = (i32)values[k];
+        test_wheel_set(values[k]);
+        list->top = 0;
+        test_wheel_units(t, app, x, y, -120, 0);
+        TEST_CHECK(t, list->top == n && list->selected == selected, "wheel setting %d: the box: top %D, selected %D", n, list->top, list->selected);
+        test_wheel_units(t, app, x, y, 120, 0);
+        TEST_CHECK(t, list->top == 0, "wheel setting %d: the box, one back: top %D", n, list->top);
+        for (i32 part = 1; part <= 3; part++) {
+            test_wheel_units(t, app, x, y, -40, 0);
+            TEST_CHECK(t, list->top == part * 40 * n / 120, "wheel setting %d: the box, %d x 40 units: top %D", n, part, list->top);
+        }
+    }
+    test_wheel_set(OS_WHEEL_PAGE);
+    list->top = 0;
+    test_wheel_units(t, app, x, y, -120, 0);
+    TEST_CHECK(t, list->top == m->g.rows && list->selected == selected, "wheel setting page: the box: top %D, %d rows", list->top, m->g.rows);
+    test_wheel_set((u32)m->g.rows + 1);
+    list->top = 0;
+    test_wheel_units(t, app, x, y, -120, 0);
+    TEST_CHECK(t, list->top == m->g.rows, "wheel setting above the box's rows: top %D, %d rows", list->top, m->g.rows);
+    test_wheel_set(3);
+    list->top = 0;
+    test_wheel_units(t, app, x, y, -40, 0);
+    accum = app->wheel_accum;
+    test_wheel_units(t, app, 1, 1, -120, 0); // outside its panes
+    TEST_CHECK(t, list->top == 1 && app->wheel_accum == accum && accum == 0, "wheel setting: the box, over no pane: top %D, remainder %d", list->top, app->wheel_accum);
+    test_wheel_units(t, app, x, y, -20, 0);
+    accum = app->wheel_accum;
+    test_wheel_units(t, app, 1, 1, -120, 0);
+    TEST_CHECK(t, list->top == 1 && app->wheel_accum == accum && accum == -60, "wheel setting: the box, a remainder over no pane: top %D, remainder %d", list->top, app->wheel_accum);
+    app->wheel_accum = 0;
+    test_wheel_set(0);
+    list->top = 0;
+    list->selected = selected;
+    test_wheel_units(t, app, x, y, -1200, 0);
+    TEST_CHECK(t, list->top == 0 && list->selected == selected && app->wheel_accum == 0, "wheel setting 0: the box: top %D, selected %D", list->top, list->selected);
+    app_dev_feed(app, "<down>", &t->arena);
+    TEST_CHECK(t, list->selected == selected + 1 && list->top == 0, "wheel setting 0: the box, then <down>: selected %D, top %D", list->selected, list->top);
+    app_dev_feed(app, "C-g", &t->arena);
+
+    test_wheel_set(3);
+    if (!test_app_destroy(t, app, "wheel setting")) return 0;
+    LOG("test: ok: wheel setting (1, 3, 10, page, 0): lines per notch and partial deltas in a window and in the command list, a page as C-v and the "
+        "pane's rows, the window under the pointer, more lines than rows, the remainder dropped on a new step, over no window or pane, Ctrl+wheel's own remainder");
+    return 1;
+}
+
 static b32 test_git_parse(Test *t) {
     // Status: every kind, a rename's and a copy's source after it, a UTF-8 path, the branch record and its forms.
     static const u8 status[] = "## main...origin/main [ahead 1]\0M  src/app.c\0 M README.md\0A  new.c\0 D gone.c\0"
@@ -14775,6 +14965,14 @@ static b32 test_git_changes(Test *t) {
     app_dev_feed_events(app, &wheel, 1, &t->arena);
     TEST_CHECK(t, m->lists[1].top == 2 + page + 3 && m->lists[0].selected == 6, "git changes: the wheel scrolls the pane under it: %D",
                m->lists[1].top);
+    // Windows' wheel setting (#43): the diff pane follows it, a page being the pane's own.
+    test_wheel_set(1);
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 2 + page + 4 && m->lists[0].selected == 6, "git changes: the wheel at 1: %D", m->lists[1].top);
+    test_wheel_set(OS_WHEEL_PAGE);
+    app_dev_feed_events(app, &wheel, 1, &t->arena);
+    TEST_CHECK(t, m->lists[1].top == 2 + 2 * page + 4 && m->lists[0].selected == 6, "git changes: the wheel at page: %D", m->lists[1].top);
+    test_wheel_set(3);
     app_dev_feed(app, "TAB <down>", &t->arena);
     test_git_wait(t, app, 10000);
     GitRow *crlf = &v->rows[7];
@@ -17140,6 +17338,7 @@ i32 test_run(u64 seed, String8 tmp_dir) {
     test_modal_layer(&t);
     arena_reset(&t.arena);
     test_command_list(&t);
+    test_wheel_setting(&t);
     arena_reset(&t.arena);
     test_seeded(&t, test_modal_fuzz, seed);
     arena_reset(&t.arena);

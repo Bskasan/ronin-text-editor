@@ -2877,6 +2877,10 @@ void os_dev_wheel_fake(b32 on, u32 value) {
     g_platform->wheel_fake_value = value;
 }
 
+void os_dev_wheel_read(void) {
+    win32_read_wheel_lines(g_platform);
+}
+
 b32 os_dev_wheel_real(u32 *lines) {
     UINT value = 0;
     b32 ok = SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &value, 0) != 0;
@@ -4320,6 +4324,26 @@ static i32 win32_smoke_text_scale(Platform *p) {
     LOG("smoke: %s: text scale: cell %dx%d, C-x C-+ %dx%d, C-x C-0 %dx%d, C-x C-- %dx%d, Ctrl+wheel %dx%d, %d font set-up(s); "
         "font_size = 14 in the config: %dx%d, %d more set-up", ok ? "ok" : "FAIL", w0, h0, w1, h1, w2, h2, w3, h3, w4, h4, s4 - s0,
         w5, h5, s5 - s4);
+    // Ctrl+wheel is one scale step a notch at every value of Windows' wheel setting (#43).
+    static const u32 settings[] = { 1, 10, OS_WHEEL_PAGE, 0 };
+    for (i32 i = 0; i < ARRAY_COUNT(settings); i++) {
+        os_dev_wheel_fake(1, settings[i]);
+        os_dev_wheel_read();
+        i32 wu, hu, wd, hd;
+        win32_push_event(p, wheel);
+        win32_frame(p);
+        app_dev_cell(p->app, &wu, &hu);
+        Event down = wheel;
+        down.wheel = -120;
+        win32_push_event(p, down);
+        win32_frame(p);
+        app_dev_cell(p->app, &wd, &hd);
+        b32 step_ok = hu > h5 && wd == w5 && hd == h5;
+        LOG("smoke: %s: Ctrl+wheel at wheel setting %U: a notch up %dx%d, one down %dx%d", step_ok ? "ok" : "FAIL", (u64)settings[i], wu, hu, wd, hd);
+        ok &= step_ok;
+    }
+    os_dev_wheel_fake(1, 3);
+    os_dev_wheel_read();
     return ok ? EXIT_OK : EXIT_FONT;
 }
 
